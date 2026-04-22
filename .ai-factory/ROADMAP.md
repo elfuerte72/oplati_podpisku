@@ -7,7 +7,7 @@
 ## Milestones
 
 - [x] **Project bootstrap** — pnpm + Turborepo монорепа, каркасы `@oplati/{agent,db,types}`, ENV-шаблон, MCP-конфиг, полная документация в `docs/`
-- [ ] **Next.js app `apps/web`** — инициализация приложения, Supabase-клиенты (browser+server), Sentry baseline
+- [x] **Next.js app `apps/web`** — инициализация приложения, Supabase-клиенты (browser+server), Sentry baseline
 - [ ] **Telegram webhook + AI v1** — `/api/bot` на grammY с проверкой secret-token, Claude без tools, системный промпт консультанта
 - [ ] **Базовая схема БД** — `users`, `conversations`, `messages` в Drizzle, миграция применена через `db:push`
 - [ ] **Preview-деплой (Vercel fra1)** — end-to-end smoke: `/start` → AI-ответ → запись в Supabase
@@ -31,3 +31,4 @@
 | Milestone | Date |
 |---|---|
 | Project bootstrap | 2026-04-22 |
+| Next.js app `apps/web` | 2026-04-22 |
