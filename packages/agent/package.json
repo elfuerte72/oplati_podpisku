@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
-    "@oplati/db": "workspace:*",
     "@oplati/types": "workspace:*",
     "zod": "^3.23.8"
   },
