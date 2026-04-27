@@ -17,6 +17,12 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
+- **Telegram webhook + AI v1** ([Journal 2026-04-27](./.ai-factory/Journal/2026-04-27-telegram-webhook-ai-v1.md))
+  - `POST /api/bot` (grammY, Node runtime) с проверкой `X-Telegram-Bot-Api-Secret-Token`; webhook всегда отвечает `200 OK`, кроме невалидного secret-token (`401`).
+  - Stateless round-trip: `runAgentNoTools()` в `@oplati/agent` — Claude (Opus 4.6) с `SYSTEM_PROMPT` консультанта, без tools.
+  - `/start` → `GREETING`; обычный текст → ответ AI; длинные ответы (> 4096) режутся по строкам через `splitForTelegram`.
+  - `telegramUpdateSchema` в `@oplati/types` — минимальный Zod-slice (`update_id`, `message.{chat, from?, text?}`).
+  - `lib/telegram/{bot.ts, handle-update.ts}` — lazy-init Bot + диспатч с verbose-логированием (тексты сообщений в логи не попадают, `*.text` редактируется на уровне pino).
 - **Next.js 16 baseline в `apps/web/`** ([PR #1](https://github.com/elfuerte72/oplati_podpisku/pull/1), 2026-04-22)
   - App Router + Tailwind v4 + TypeScript strict (`noUncheckedIndexedAccess`, `verbatimModuleSyntax`).
   - Интеграция с pnpm/Turborepo: `transpilePackages`, workspace-зависимости `@oplati/{agent,db,types}`.

@@ -75,7 +75,7 @@ oplati_podpicky/
 └── README.md
 ```
 
-**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Бот/чат/платёжные endpoints — следующие milestones.
+**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Реализован milestone «Telegram webhook + AI v1» — `/api/bot` (grammY, secret-token, Claude без tools, stateless). Следующие milestones — базовая схема БД (`users/conversations/messages`) и preview-деплой.
 
 ## Границы пакетов
 
@@ -100,7 +100,9 @@ oplati_podpicky/
 | `apps/web/lib/sentry.ts` | shared Sentry options + PII `beforeSend` |
 | `apps/web/lib/supabase/{browser,server,admin}.ts` | Supabase SSR-клиенты |
 | `apps/web/instrumentation.ts` | Sentry server/edge + fail-fast env |
-| `apps/web/app/api/bot/route.ts` | Telegram webhook (grammY) — **будет создан** |
+| `apps/web/app/api/bot/route.ts` | Telegram webhook (grammY, secret-token, runAgentNoTools) |
+| `apps/web/lib/telegram/bot.ts` | grammY Bot singleton (webhook-mode, lazy-init) |
+| `apps/web/lib/telegram/handle-update.ts` | Диспатч `/start` / текст / ignore + split 4096 |
 | `apps/web/app/api/chat/route.ts` | AI streaming для веб-чата — **будет создан** |
 | `apps/web/app/api/payments/yookassa/route.ts` | YooKassa webhook — **будет создан** |
 | `apps/web/app/api/payments/cryptobot/route.ts` | CryptoBot webhook — **будет создан** |
