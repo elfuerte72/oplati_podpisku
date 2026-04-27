@@ -17,9 +17,15 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
-- **Telegram webhook + AI v1** ([Journal 2026-04-27](./.ai-factory/Journal/2026-04-27-telegram-webhook-ai-v1.md))
+- **Vercel deployments — Production + Preview** ([Journal 27-04-2026](./.ai-factory/Journal/telegram-webhook-ai-v1/27-04-2026.md), [docs/deployment.md](./docs/deployment.md))
+  - **Production**: `https://oplati-podpisku-web.vercel.app` (default Vercel-домен; custom-домен — будущий milestone). Telegram-бот `@test_prodipsa_bot`. Деплой автоматически на merge в `main`.
+  - **Preview**: branch-alias `oplati-podpisku-web-git-<branch>-<team>.vercel.app` на каждый PR. Telegram-бот `@dev_test_podpiska_bot` (отдельный, чтобы webhook'и не конфликтовали с prod). Деплой автоматически на push в feature-ветку.
+  - В Vercel env `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` разделены по окружениям; остальные переменные (Supabase, Anthropic, APP_URL, DATABASE_URL*) — общие.
+  - **Vercel Deployment Protection: Disabled** — иначе Telegram-сервера получают `401` от Vercel SSO до нашего кода; защита остаётся через secret-token / HMAC / RLS у соответствующих endpoint'ов.
+  - Smoke прошёл на `@dev_test_podpiska_bot` через preview branch-alias: `/start` → `GREETING`, 4 свободных сообщения → AI Haiku 4.5 (2.3-4.7s, ~950 tokens/msg).
+- **Telegram webhook + AI v1** ([Journal 27-04-2026](./.ai-factory/Journal/telegram-webhook-ai-v1/27-04-2026.md), [PR #2](https://github.com/elfuerte72/oplati_podpisku/pull/2))
   - `POST /api/bot` (grammY, Node runtime) с проверкой `X-Telegram-Bot-Api-Secret-Token`; webhook всегда отвечает `200 OK`, кроме невалидного secret-token (`401`).
-  - Stateless round-trip: `runAgentNoTools()` в `@oplati/agent` — Claude (Opus 4.6) с `SYSTEM_PROMPT` консультанта, без tools.
+  - Stateless round-trip: `runAgentNoTools()` в `@oplati/agent` — Claude **Haiku 4.5** с `SYSTEM_PROMPT` консультанта, без tools (`ANTHROPIC_MODEL=claude-haiku-4-5`; Opus здесь излишен и кратно дороже).
   - `/start` → `GREETING`; обычный текст → ответ AI; длинные ответы (> 4096) режутся по строкам через `splitForTelegram`.
   - `telegramUpdateSchema` в `@oplati/types` — минимальный Zod-slice (`update_id`, `message.{chat, from?, text?}`).
   - `lib/telegram/{bot.ts, handle-update.ts}` — lazy-init Bot + диспатч с verbose-логированием (тексты сообщений в логи не попадают, `*.text` редактируется на уровне pino).
@@ -43,6 +49,8 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Fixed
 
+- **`drizzle-orm` bump до `^0.45.2`** — закрывает CVE [GHSA-gpj5-g38j-94v9](https://github.com/advisories/GHSA-gpj5-g38j-94v9) (SQL injection через improperly escaped identifiers, fix в `>=0.45.2`). `drizzle-kit` bump до `^0.31.10` для совместимости. API drizzle-orm/pg-core (`pgTable`, `pgEnum`, `uuid`, `timestamp`, `index`, ...) стабилен между 0.36 и 0.45 — никаких правок в `packages/db/src/schema.ts` не понадобилось. На момент bump'а БД-миграций ещё нет, эксплуатация не реализуема — но CI security-гейт правильно блокировал merge до фикса.
+- **`APP_URL` failure в Vercel Production env** — `instrumentation.ts` падал с `Invalid url` на cold-start (ошибка обнаружилась через `vercel logs` после первого деплоя). Поправлено указанием `https://oplati-podpisku-web.vercel.app` в Production env-переменной (Zod в `apps/web/lib/env.ts:46` требует валидный URL). Без redeploy исправление не применяется — стандартный Vercel-flow.
 - **`.env.example` schema drift** ([patch 2026-04-22-22.44](./.ai-factory/patches/2026-04-22-22.44.md))
   Добавлено 9 переменных, которые использовались в коде, но отсутствовали в шаблоне
   (`NEXT_PUBLIC_SUPABASE_*`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_APP_URL`, `LOG_LEVEL`,
@@ -56,10 +64,15 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
   Введён helper `optionalEnvString` с preprocess `"" → undefined`. `ANTHROPIC_API_KEY`
   переведён в optional до Sprint 1.5 (Telegram + AI).
 
+### Infrastructure
+
+- **`.gitignore`** — добавлены `Screenshot*.{png,jpg,jpeg}` (macOS-скриншоты в корне) и `.smoke/` (локальные логи туннелей и dev-сервера). `.vercel/` — закрыт после `vercel link` для CLI.
+
 ### Roadmap
 
-- ✅ Closed: `Next.js app apps/web` (см. [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.md)).
-- ➡️ Next: `Telegram webhook + AI v1`, `Базовая схема БД`, `Preview-деплой (Vercel fra1)`.
+- ✅ Closed: `Next.js app apps/web`, `Telegram webhook + AI v1` (см. [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.md)).
+- 🟡 Partially: `Preview-деплой (Vercel fra1)` — деплой-инфра настроена и работает (prod + preview, smoke прошёл на dev-боте); финал milestone — end-to-end smoke с **записью в Supabase**, что требует следующего milestone «Базовая схема БД».
+- ➡️ Next: `Базовая схема БД` (`users`, `conversations`, `messages` через Drizzle).
 
 ---
 
