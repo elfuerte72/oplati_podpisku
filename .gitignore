@@ -10,3 +10,11 @@ dist/
 .DS_Store
 coverage/
 .drizzle/
+
+# macOS screenshots — попадают в корень при Cmd+Shift+4 / 5
+Screenshot*.png
+Screenshot*.jpg
+Screenshot*.jpeg
+
+# Локальные артефакты smoke-тестов (туннели, dev-логи)
+.smoke/
