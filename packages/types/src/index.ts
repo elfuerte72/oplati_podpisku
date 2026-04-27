@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+export {
+  telegramUpdateSchema,
+  type TelegramUpdate,
+  type TelegramMessage,
+  type TelegramChat,
+  type TelegramUser,
+} from './telegram.ts';
+
 // ─── Order status ─────────────────────────────────────────────────────────
 
 export const orderStatus = z.enum([
