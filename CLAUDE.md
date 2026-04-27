@@ -87,6 +87,17 @@ pnpm dlx create-next-app@latest apps/web --ts --app --tailwind --eslint --src-di
 - **Payments** — YooKassa (RUB/СБП) + CryptoBot (USDT) через HMAC-подписанные webhook'и. Детали: [`docs/payments.md`](docs/payments.md).
 - **Фоновые задачи (Trigger.dev v3)** — `poll-payment` (подстраховка от потерянных webhook'ов), `expire-payments`, `alert-slow-fulfillment`, `handoff-request`, `fulfillment-complete`.
 
+## Deployments
+
+Vercel `fra1`. Два окружения с **раздельными Telegram-ботами** (webhook у одного бота один → нельзя шарить):
+
+- **Production** — `https://oplati-podpisku-web.vercel.app` (default Vercel-домен; custom-домен пока не подключён). Бот `@test_prodipsa_bot`. Деплой автоматический на merge в `main`.
+- **Preview** — branch-alias `oplati-podpisku-web-git-<branch>-<team>.vercel.app` на каждый PR. Бот `@dev_test_podpiska_bot`. Деплой автоматический на push в feature-ветку. Используется для smoke-тестов перед merge — webhook dev-бота перерегистрируется на новый URL для каждой новой ветки.
+
+В Vercel env `TELEGRAM_BOT_TOKEN` / `TELEGRAM_WEBHOOK_SECRET` разделены по окружениям; остальные переменные (Supabase, Anthropic, APP_URL) — общие. **Vercel Deployment Protection: Disabled** — иначе Telegram-сервера получают `401` от Vercel-обвязки до нашего кода. Защита остаётся через secret-token / HMAC / Supabase RLS у соответствующих endpoints.
+
+Полный workflow и runbook → [`docs/deployment.md`](docs/deployment.md).
+
 ## Конвенции кода
 
 Полные правила в [`docs/coding-standards.md`](docs/coding-standards.md). Ключевое:

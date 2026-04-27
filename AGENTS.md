@@ -75,7 +75,20 @@ oplati_podpicky/
 └── README.md
 ```
 
-**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Реализован milestone «Telegram webhook + AI v1» — `/api/bot` (grammY, secret-token, Claude без tools, stateless). Следующие milestones — базовая схема БД (`users/conversations/messages`) и preview-деплой.
+**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Реализован milestone «Telegram webhook + AI v1» — `/api/bot` (grammY, secret-token, Claude **Haiku 4.5** без tools, stateless). Vercel Production + Preview настроены и работают. Следующий milestone — базовая схема БД (`users/conversations/messages`).
+
+## Deployments
+
+| Окружение | URL | Telegram-бот | Триггер |
+|---|---|---|---|
+| **Production** | `https://oplati-podpisku-web.vercel.app` (default Vercel-домен; custom-домен — будущий milestone) | `@test_prodipsa_bot` | Auto на каждый merge в `main` |
+| **Preview** | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` (branch alias) | `@dev_test_podpiska_bot` | Auto на каждый push в feature-ветку |
+
+**Раздельные Telegram-боты обязательны:** webhook у конкретного бота один, поэтому prod и preview ходят к разным ботам — иначе каждое переключение деплоя ломает prod. В Vercel `TELEGRAM_BOT_TOKEN` и `TELEGRAM_WEBHOOK_SECRET` разделены по окружениям (Production / Preview), остальные env (Supabase, Anthropic, APP_URL) — общие.
+
+**Vercel Deployment Protection:** Disabled (Settings → Deployment Protection). Иначе Telegram-сервера не могут дотянуться до preview-deployments. Защита остаётся через secret-token в `/api/bot` (single non-200 case → `401`); HMAC у платежных webhook'ов; Supabase Auth + RLS у `/admin`.
+
+**Workflow на каждый новый PR:** push в feature-ветку → Vercel автоматически собирает Preview, GitHub-бот Vercel постит URL в комментарий PR → перерегистрировать webhook **dev-бота** на новый branch-alias URL → тестировать через `@dev_test_podpiska_bot` в Telegram. Полный runbook → [`docs/deployment.md`](docs/deployment.md).
 
 ## Границы пакетов
 
