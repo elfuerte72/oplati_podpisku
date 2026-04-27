@@ -8,7 +8,7 @@
 
 - [x] **Project bootstrap** — pnpm + Turborepo монорепа, каркасы `@oplati/{agent,db,types}`, ENV-шаблон, MCP-конфиг, полная документация в `docs/`
 - [x] **Next.js app `apps/web`** — инициализация приложения, Supabase-клиенты (browser+server), Sentry baseline
-- [ ] **Telegram webhook + AI v1** — `/api/bot` на grammY с проверкой secret-token, Claude без tools, системный промпт консультанта
+- [x] **Telegram webhook + AI v1** — `/api/bot` на grammY с проверкой secret-token, Claude без tools, системный промпт консультанта
 - [ ] **Базовая схема БД** — `users`, `conversations`, `messages` в Drizzle, миграция применена через `db:push`
 - [ ] **Preview-деплой (Vercel fra1)** — end-to-end smoke: `/start` → AI-ответ → запись в Supabase
 - [ ] **Расширение схемы БД** — `services`, `orders`, `payments`, `attachments`, `staff`, `order_events` + seed каталога (Claude, ChatGPT, Netflix, Spotify, Airbnb, YouTube Premium, Discord Nitro, Midjourney, LinkedIn Premium, Apple) с флагом `requires_kyc`
@@ -32,3 +32,4 @@
 |---|---|
 | Project bootstrap | 2026-04-22 |
 | Next.js app `apps/web` | 2026-04-22 |
+| Telegram webhook + AI v1 | 2026-04-27 |
