@@ -18,3 +18,4 @@ Screenshot*.jpeg
 
 # Локальные артефакты smoke-тестов (туннели, dev-логи)
 .smoke/
+.vercel
