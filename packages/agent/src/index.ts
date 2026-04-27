@@ -101,3 +101,41 @@ export async function runAgent(
 
   throw new Error('Agent tool-use loop exceeded 5 iterations');
 }
+
+/**
+ * Один round-trip с Claude БЕЗ tools — для milestone «Telegram webhook + AI v1».
+ *
+ * Используется на Sprint 1.5, когда схема БД (`users`, `conversations`,
+ * `messages`) и ToolHandlers ещё не готовы. История диалога подаётся снаружи
+ * (stateless: серверу не на чем её хранить до появления БД).
+ *
+ * Контракт: `messages` — пользовательско-агентская переписка; `system` —
+ * `SYSTEM_PROMPT` консультанта. Tools НЕ передаются, поэтому модель никогда
+ * не вернёт `stop_reason === 'tool_use'`. Если по какой-то причине вернёт —
+ * это баг провайдера; режем по `end_turn`.
+ */
+export async function runAgentNoTools(
+  history: AgentMessage[],
+): Promise<{ text: string; usage: Anthropic.Usage }> {
+  const client = getClient();
+  const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
+
+  const messages: Anthropic.MessageParam[] = history.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  const response = await client.messages.create({
+    model,
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages,
+  });
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+
+  return { text, usage: response.usage };
+}
