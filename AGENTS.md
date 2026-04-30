@@ -75,7 +75,7 @@ oplati_podpicky/
 └── README.md
 ```
 
-**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Реализован milestone «Telegram webhook + AI v1» — `/api/bot` (grammY, secret-token, Claude **Haiku 4.5** без tools, stateless). Vercel Production + Preview настроены и работают. Следующий milestone — базовая схема БД (`users/conversations/messages`).
+**Статус:** `apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry baseline, Supabase-клиенты, pino logger, Zod env). Реализованы milestones: «Telegram webhook + AI v1» (grammY, secret-token, Claude Haiku 4.5 без tools), «Базовая схема БД» (`users/conversations/messages` в Drizzle + RLS), «Preview-деплой Vercel fra1» (repository-функции в `@oplati/db`, `preferredRegion='fra1'` + `maxDuration` на API routes, `handle-update.ts` пишет диалог в Supabase с graceful degradation; end-to-end smoke на dev-боте подтверждён). Следующий milestone — расширение схемы БД (services/orders/payments/attachments/order_events + seed каталога).
 
 ## Deployments
 
@@ -120,7 +120,11 @@ oplati_podpicky/
 | `apps/web/app/api/payments/yookassa/route.ts` | YooKassa webhook — **будет создан** |
 | `apps/web/app/api/payments/cryptobot/route.ts` | CryptoBot webhook — **будет создан** |
 | `apps/web/app/api/trigger/[...trigger]/route.ts` | Trigger.dev ingest — **будет создан** |
-| `packages/db/src/schema/*.ts` | Drizzle схема БД |
+| `packages/db/src/schema.ts` | Drizzle схема БД (users/staff/conversations/messages, RLS on) |
+| `packages/db/src/repositories/users.ts` | `getOrCreateUserByTelegramId` (raw-SQL upsert по partial unique) |
+| `packages/db/src/repositories/conversations.ts` | `getOrCreateActiveConversation` (`(user_id, channel)` lookup) |
+| `packages/db/src/repositories/messages.ts` | `appendMessage` (append-only INSERT) |
+| `packages/db/src/repositories/logger.ts` | `RepoLogger` интерфейс (pino-shape) для пакета без зависимости от pino |
 | `packages/db/drizzle.config.ts` | drizzle-kit конфиг (generate/push) |
 | `packages/agent/src/index.ts` | AI-агент, промпты, ToolHandlers-интерфейс |
 | `packages/types/src/index.ts` | Zod-схемы (источник правды) |

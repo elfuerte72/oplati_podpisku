@@ -17,6 +17,13 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
+- **Preview-деплой Vercel fra1 + persist Telegram dialog** ([Journal 30-04-2026](./.ai-factory/Journal/preview-deploy-vercel/30-04-2026.md))
+  - Repository-функции в `@oplati/db`: `getOrCreateUserByTelegramId` (raw-SQL upsert через partial unique `WHERE telegram_id IS NOT NULL`, `(xmax = 0)` для отличия INSERT от UPDATE, hash-PII в логах), `getOrCreateActiveConversation` (select-or-insert по `(user_id, channel)`), `appendMessage` (append-only INSERT с warn'ом на `role='operator'` без `staff_id`).
+  - Минимальный `RepoLogger` интерфейс (pino-shape, `debug/info/warn`) — пакет `@oplati/db` остаётся без зависимости от pino.
+  - `/api/bot` и `/api/health` пиннятся к `preferredRegion='fra1'` + `maxDuration` (30s/5s) — закрыт техдолг по `docs/deployment.md`.
+  - `apps/web/lib/telegram/handle-update.ts` синхронно пишет диалог в Supabase до возврата `200 OK`: для `/start` — пара (user `/start` + assistant GREETING с `meta.source='static_greeting'`); для текстовых сообщений — user-msg перед AI-call, assistant-msg после с `meta.usage.{input,output}_tokens`. AI-history НЕ загружается из БД (audit-log only) — отложено на milestone «State machine + AI tools».
+  - Graceful degradation: ошибки БД глотаются с `Sentry.captureException` + structured log; webhook не молчит при падении Postgres.
+  - End-to-end smoke на dev-боте подтверждён: пара probe + реальный диалог дали 6 строк в `messages` (3 пары user/assistant), 1 `conversations`, 1 `users`; meta-поля корректны; latency 1.3-2.0s wall на AI round-trip; региональная резолюция `fra1::iad1` подтверждена через `x-vercel-id`.
 - **Vercel deployments — Production + Preview** ([Journal 27-04-2026](./.ai-factory/Journal/telegram-webhook-ai-v1/27-04-2026.md), [docs/deployment.md](./docs/deployment.md))
   - **Production**: `https://oplati-podpisku-web.vercel.app` (default Vercel-домен; custom-домен — будущий milestone). Telegram-бот `@test_prodipsa_bot`. Деплой автоматически на merge в `main`.
   - **Preview**: branch-alias `oplati-podpisku-web-git-<branch>-<team>.vercel.app` на каждый PR. Telegram-бот `@dev_test_podpiska_bot` (отдельный, чтобы webhook'и не конфликтовали с prod). Деплой автоматически на push в feature-ветку.

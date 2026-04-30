@@ -47,11 +47,7 @@ pnpm --filter <pkg> test -- <pattern>   # один тест (Vitest, появи�
 
 ### Статус репо
 
-`apps/web` **ещё не инициализирован** — первая команда по [`README.md`](README.md#быстрый-старт):
-
-```bash
-pnpm dlx create-next-app@latest apps/web --ts --app --tailwind --eslint --src-dir=false --import-alias="@/*" --use-pnpm
-```
+`apps/web` инициализирован (Next.js 16.2.4, Tailwind v4, Sentry, Supabase-клиенты, pino, Zod env). Закрыты milestones: «Telegram webhook + AI v1», «Базовая схема БД», «Preview-деплой Vercel fra1» (repository-функции `getOrCreateUserByTelegramId` / `getOrCreateActiveConversation` / `appendMessage` в `@oplati/db`; `/api/bot` и `/api/health` пиннятся в `fra1`; `handle-update.ts` синхронно пишет диалог в Supabase с graceful degradation на ошибках БД). Следующий milestone — расширение схемы БД (services/orders/payments/attachments/order_events + seed каталога).
 
 ## Архитектура
 
