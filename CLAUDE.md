@@ -94,6 +94,19 @@ Vercel `fra1`. Два окружения с **раздельными Telegram-б
 
 Полный workflow и runbook → [`docs/deployment.md`](docs/deployment.md).
 
+### Карта Telegram-секретов (где что лежит, без значений)
+
+> Никогда не пастуйте реальные токены ни в этот файл, ни в коммиты, ни в чат. Token'ы — only в Vercel env (Sensitive) или в локальном `.env.local` (gitignored). При компрометации — `/revoke` у `@BotFather` для бота, `openssl rand -hex 32` для нового webhook-secret.
+
+| Бот | Окружение | Vercel env (Preview/Production) | Локальный `.env.local` |
+|---|---|---|---|
+| `@test_prodipsa_bot` (prod) | Production | `TELEGRAM_BOT_TOKEN` (Sensitive, **prod-токен**), `TELEGRAM_WEBHOOK_SECRET` (Sensitive, **prod-secret**) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` |
+| `@dev_test_podpiska_bot` (dev/preview) | Preview | `TELEGRAM_BOT_TOKEN` (Sensitive, **dev-токен**), `TELEGRAM_WEBHOOK_SECRET` (Sensitive, **dev-secret**) | `TELEGRAM_BOT_TOKEN_DEV`, `TELEGRAM_WEBHOOK_SECRET_DEV` |
+
+**Ключевая особенность Vercel `Sensitive`-флага:** значение записывается, но `vercel env pull` отдаёт пустую строку — by design. Для аудита смотрите бейдж «Updated» в Vercel UI, а не локальный pull. После любой смены секрета **обязателен redeploy** соответствующего deployment'а — старые preview/prod деплои держат стейл значение и будут отвечать `401` Telegram'у.
+
+**Webhook у бота — один.** При смене preview-URL на новый PR webhook у dev-бота нужно перерегистрировать на актуальный preview branch-alias (формула в `docs/deployment.md`). После merge feature-ветки webhook у dev-бота снять (`deleteWebhook`), чтобы preview-deployment не оставался висеть на боте после удаления Vercel'ом.
+
 ## Конвенции кода
 
 Полные правила в [`docs/coding-standards.md`](docs/coding-standards.md). Ключевое:

@@ -17,7 +17,7 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
-- **Preview-деплой Vercel fra1 + persist Telegram dialog** ([Journal 30-04-2026](./.ai-factory/Journal/preview-deploy-vercel/30-04-2026.md))
+- **Preview-деплой Vercel fra1 + persist Telegram dialog** ([Journal 30-04-2026](./.ai-factory/Journal/preview-deploy-vercel/30-04-2026.md), [merged](./.ai-factory/Journal/preview-deploy-vercel/merged.md), [PR #7](https://github.com/elfuerte72/oplati_podpisku/pull/7))
   - Repository-функции в `@oplati/db`: `getOrCreateUserByTelegramId` (raw-SQL upsert через partial unique `WHERE telegram_id IS NOT NULL`, `(xmax = 0)` для отличия INSERT от UPDATE, hash-PII в логах), `getOrCreateActiveConversation` (select-or-insert по `(user_id, channel)`), `appendMessage` (append-only INSERT с warn'ом на `role='operator'` без `staff_id`).
   - Минимальный `RepoLogger` интерфейс (pino-shape, `debug/info/warn`) — пакет `@oplati/db` остаётся без зависимости от pino.
   - `/api/bot` и `/api/health` пиннятся к `preferredRegion='fra1'` + `maxDuration` (30s/5s) — закрыт техдолг по `docs/deployment.md`.
