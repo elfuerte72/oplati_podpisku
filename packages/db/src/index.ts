@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import * as schema from './schema.ts';
 
 export * from './schema.ts';
+export * from './repositories/index.ts';
 
 let _client: ReturnType<typeof postgres> | undefined;
 let _db: ReturnType<typeof drizzle<typeof schema>> | undefined;

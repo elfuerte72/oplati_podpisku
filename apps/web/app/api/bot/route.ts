@@ -24,6 +24,8 @@ import { handleTelegramUpdate } from '@/lib/telegram/handle-update';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const preferredRegion = 'fra1';
+export const maxDuration = 30;
 
 const log = childLogger('telegram-bot');
 

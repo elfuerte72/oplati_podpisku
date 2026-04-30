@@ -14,6 +14,8 @@ import { childLogger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const preferredRegion = 'fra1';
+export const maxDuration = 5;
 
 const log = childLogger('api.health');
 
