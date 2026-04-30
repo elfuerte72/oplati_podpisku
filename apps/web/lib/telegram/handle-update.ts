@@ -3,8 +3,14 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { GrammyError, HttpError } from 'grammy';
 
+import {
+  appendMessage,
+  getDb,
+  getOrCreateActiveConversation,
+  getOrCreateUserByTelegramId,
+} from '@oplati/db';
 import { runAgentNoTools, GREETING } from '@oplati/agent';
-import type { TelegramUpdate } from '@oplati/types';
+import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { childLogger } from '@/lib/logger';
 
@@ -15,20 +21,138 @@ import { getBot } from './bot';
  *
  * Поведение:
  *   - `/start` (с любыми deep-link payload'ами после пробела) → отправить
- *     `GREETING` из `@oplati/agent`.
- *   - Любой другой текст → один round-trip через `runAgentNoTools` →
- *     отправить ответ. Если ответ длиннее 4096 символов (лимит Telegram) —
- *     режем по границам строк, при необходимости — посимвольно.
+ *     `GREETING` из `@oplati/agent`. До отправки — upsert пользователя и
+ *     conversation, append двух сообщений (user `/start` + assistant GREETING).
+ *   - Любой другой текст → upsert + append user-сообщения → один round-trip
+ *     `runAgentNoTools` → append assistant-ответа → отправить (с разбивкой 4096).
  *   - Всё остальное (медиа, callback, edited_message, channel_post) — лог
  *     `telegram.update.ignored` и тихо игнорируем (на этом milestone).
  *
- * Stateless: история диалога не хранится. Появится в milestone «Базовая
- * схема БД» (`messages` table).
+ * Запись в БД — синхронная, до возврата 200 OK Telegram'у. Все ошибки БД
+ * перехватываются в `persistInbound` / `appendMessage` (не пробрасываются),
+ * поэтому падение Postgres не ломает webhook: AI-ответ всё равно уходит
+ * (graceful degradation). История диалога в AI-context НЕ загружается из БД —
+ * это аудит-лог; контекст AI расширим в milestone «State machine + AI tools».
  */
 
 const log = childLogger('telegram-bot');
+const dbLog = childLogger('db');
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+type PersistContext = {
+  userId: string;
+  conversationId: string;
+};
+
+/**
+ * Upsert пользователя и активного conversation для входящего Telegram-сообщения.
+ * Возвращает `null` при отсутствии `from.id` (channel post / anonymous) или при
+ * ошибке БД — caller продолжает работу без записи.
+ */
+async function persistInbound(
+  update: TelegramUpdate,
+  message: TelegramMessage,
+): Promise<PersistContext | null> {
+  if (!message.from?.id) {
+    log.warn({
+      event: 'telegram.persist.skipped',
+      updateId: update.update_id,
+      reason: 'no_from_id',
+    });
+    return null;
+  }
+
+  const startedAt = Date.now();
+  const telegramId = String(message.from.id);
+  const displayNameParts = [message.from.first_name, message.from.last_name].filter(
+    (p): p is string => typeof p === 'string' && p.length > 0,
+  );
+  const displayName = displayNameParts.length > 0 ? displayNameParts.join(' ') : null;
+
+  log.info({
+    event: 'telegram.persist.start',
+    updateId: update.update_id,
+    chatId: message.chat.id,
+  });
+
+  try {
+    const db = getDb();
+    const user = await getOrCreateUserByTelegramId(
+      db,
+      {
+        telegramId,
+        displayName,
+        language: message.from.language_code ?? 'ru',
+      },
+      dbLog,
+    );
+    const conversation = await getOrCreateActiveConversation(
+      db,
+      { userId: user.id, channel: 'telegram' },
+      dbLog,
+    );
+
+    log.info({
+      event: 'telegram.persist.done',
+      updateId: update.update_id,
+      userId: user.id,
+      conversationId: conversation.id,
+      userCreated: user.created,
+      conversationCreated: conversation.created,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return { userId: user.id, conversationId: conversation.id };
+  } catch (err) {
+    log.error({
+      event: 'telegram.persist.failed',
+      updateId: update.update_id,
+      durationMs: Date.now() - startedAt,
+      err,
+    });
+    Sentry.captureException(err, { tags: { source: 'telegram.persist' } });
+    return null;
+  }
+}
+
+/**
+ * Добавить строку в `messages`. Ошибки БД глотаются (логируем + Sentry), чтобы
+ * один сбой записи не ломал webhook. Возвращает `true`, если строка записана.
+ */
+async function safeAppendMessage(
+  ctx: PersistContext,
+  role: 'user' | 'assistant',
+  content: string,
+  meta: Record<string, unknown> | null,
+  updateId: number,
+): Promise<boolean> {
+  try {
+    await appendMessage(
+      getDb(),
+      {
+        conversationId: ctx.conversationId,
+        role,
+        content,
+        meta,
+      },
+      dbLog,
+    );
+    return true;
+  } catch (err) {
+    log.error({
+      event: 'telegram.persist.message_failed',
+      updateId,
+      conversationId: ctx.conversationId,
+      role,
+      err,
+    });
+    Sentry.captureException(err, {
+      tags: { source: 'telegram.persist', step: 'appendMessage' },
+    });
+    return false;
+  }
+}
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   const message = update.message;
@@ -48,6 +172,28 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       telegramUserId,
       languageCode: message.from?.language_code,
     });
+
+    const ctx = await persistInbound(update, message);
+    if (ctx) {
+      await safeAppendMessage(
+        ctx,
+        'user',
+        text,
+        {
+          telegram_update_id: update.update_id,
+          telegram_message_id: message.message_id,
+        },
+        update.update_id,
+      );
+      await safeAppendMessage(
+        ctx,
+        'assistant',
+        GREETING,
+        { source: 'static_greeting' },
+        update.update_id,
+      );
+    }
+
     await sendSafely(chatId, GREETING, update.update_id);
     return;
   }
@@ -59,6 +205,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     telegramUserId,
     textLength: text.length,
   });
+
+  const ctx = await persistInbound(update, message);
+  if (ctx) {
+    await safeAppendMessage(
+      ctx,
+      'user',
+      text,
+      {
+        telegram_update_id: update.update_id,
+        telegram_message_id: message.message_id,
+      },
+      update.update_id,
+    );
+  }
 
   const startedAt = Date.now();
   let result: Awaited<ReturnType<typeof runAgentNoTools>>;
@@ -103,6 +263,22 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     totalTokens: result.usage.input_tokens + result.usage.output_tokens,
     replyLength: replyText.length,
   });
+
+  if (ctx) {
+    await safeAppendMessage(
+      ctx,
+      'assistant',
+      replyText,
+      {
+        telegram_update_id: update.update_id,
+        usage: {
+          input_tokens: result.usage.input_tokens,
+          output_tokens: result.usage.output_tokens,
+        },
+      },
+      update.update_id,
+    );
+  }
 
   for (const chunk of splitForTelegram(replyText, TELEGRAM_MESSAGE_LIMIT)) {
     await sendSafely(chatId, chunk, update.update_id);

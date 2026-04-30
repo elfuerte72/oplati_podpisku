@@ -269,11 +269,11 @@ Conventional Commits, ≤72 символа в заголовке (`docs/coding-s
 
 ## Definition of Done (этот milestone)
 
-- [ ] `packages/db/src/repositories/{users,conversations,messages}.ts` существуют, экспортируются из `@oplati/db`.
-- [ ] `apps/web/app/api/bot/route.ts` и `apps/web/app/api/health/route.ts` имеют `preferredRegion='fra1'` и `maxDuration`.
-- [ ] `apps/web/lib/telegram/handle-update.ts` пишет user/conversation/messages при `/start` и при текстовых сообщениях; ошибки БД не ломают webhook (graceful degradation).
+- [x] `packages/db/src/repositories/{users,conversations,messages}.ts` существуют, экспортируются из `@oplati/db`.
+- [x] `apps/web/app/api/bot/route.ts` и `apps/web/app/api/health/route.ts` имеют `preferredRegion='fra1'` и `maxDuration`.
+- [x] `apps/web/lib/telegram/handle-update.ts` пишет user/conversation/messages при `/start` и при текстовых сообщениях; ошибки БД не ломают webhook (graceful degradation).
 - [ ] End-to-end smoke на preview-деплое выполнен: `/start` + текстовое сообщение dev-боту → 4 строки в `messages`, 1 в `conversations`, 1 в `users`. Журнал заполнен в `.ai-factory/Journal/preview-deploy-vercel.md`.
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm build` зелёные.
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm build` зелёные.
 - [ ] `.ai-factory/ROADMAP.md`: `[x] Preview-деплой (Vercel fra1)` + строка в Completed.
 - [ ] AGENTS.md / CLAUDE.md / CHANGELOG.md обновлены.
 
