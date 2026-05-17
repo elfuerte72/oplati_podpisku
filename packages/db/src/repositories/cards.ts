@@ -171,6 +171,35 @@ export async function updateBalance(
   log.info({ event: 'db.cards.balance_updated', cardId, deltaCents });
 }
 
+/**
+ * Массовый recycle для cron `recycle-cards` (раз в сутки).
+ *  - active + last_used_at < now - 90d → idle
+ *  - idle   + created_at  < now - 180d → recycled
+ */
+export async function recycleAgedCards(
+  db: DB,
+  log: RepoLogger = noopLogger,
+): Promise<{ idled: number; recycled: number }> {
+  const idledRows = await db.execute<{ id: string }>(sql`
+    UPDATE cards
+    SET status = 'idle', last_used_at = COALESCE(last_used_at, now())
+    WHERE status = 'active' AND last_used_at < now() - interval '90 days'
+    RETURNING id
+  `);
+
+  const recycledRows = await db.execute<{ id: string }>(sql`
+    UPDATE cards
+    SET status = 'recycled', recycled_at = now()
+    WHERE status = 'idle' AND recycled_at IS NULL AND created_at < now() - interval '180 days'
+    RETURNING id
+  `);
+
+  const idled = idledRows.length;
+  const recycled = recycledRows.length;
+  log.info({ event: 'db.cards.recycled_aged', idled, recycled });
+  return { idled, recycled };
+}
+
 function mapRowToCard(row: typeof cards.$inferSelect): Card {
   return {
     id: row.id,

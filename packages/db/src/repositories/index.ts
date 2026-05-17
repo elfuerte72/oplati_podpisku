@@ -1,5 +1,6 @@
 export {
   getOrCreateUserByTelegramId,
+  getUserTelegramId,
   type GetOrCreateUserByTelegramIdInput,
   type GetOrCreateUserByTelegramIdResult,
 } from './users.ts';
@@ -26,6 +27,7 @@ export {
   markRecycled,
   markActive,
   updateBalance,
+  recycleAgedCards,
   type Card,
   type CreateCardInput,
 } from './cards.ts';

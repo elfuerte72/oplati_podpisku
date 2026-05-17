@@ -97,3 +97,14 @@ export async function getOrCreateUserByTelegramId(
 function hashTelegramId(telegramId: string): string {
   return createHash('sha256').update(telegramId).digest('hex').slice(0, 8);
 }
+
+/**
+ * Резолв `telegram_id` пользователя по `user.id` — нужен для отправки реквизитов
+ * карты после `issue-card` (см. apps/web/lib/jobs/issue-card.ts).
+ */
+export async function getUserTelegramId(db: DB, userId: string): Promise<string | null> {
+  const rows = await db.execute<{ telegram_id: string | null }>(
+    sql`SELECT telegram_id FROM users WHERE id = ${userId} LIMIT 1`,
+  );
+  return rows[0]?.telegram_id ?? null;
+}

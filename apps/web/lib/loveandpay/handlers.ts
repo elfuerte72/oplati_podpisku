@@ -13,6 +13,7 @@ import {
 import type { LoveAndPayInvoiceStatus, LoveAndPayWebhookData } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import { dispatchIssueCard } from '../jobs/dispatcher.ts';
 
 /**
  * Общие хендлеры обработки L&P-событий (как из webhook, так и из cron poll-payment).
@@ -103,6 +104,10 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       err,
     });
   }
+
+  // После успешной оплаты — запускаем issue-card. Sync-fallback через
+  // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.
+  dispatchIssueCard(payment.orderId);
 
   log.info({
     event: 'loveandpay.handlers.invoice_paid_processed',
