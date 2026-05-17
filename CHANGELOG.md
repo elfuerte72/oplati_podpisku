@@ -17,6 +17,18 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
+- **Расширение схемы БД — services / orders / order_events / payments / attachments + seed каталога** ([Journal 17-05-2026](./.ai-factory/Journal/db-extended-schema/17-05-2026.md), план [`feature-db-extended-schema.md`](./.ai-factory/plans/feature-db-extended-schema.md))
+  - `packages/db/src/schema.ts`: добавлены 5 таблиц и 5 enum'ов. `services` (публичный каталог, БЕЗ RLS), `orders` (с CHECK `orders_service_or_custom` — заказ обязан ссылаться либо на услугу из каталога, либо иметь кастомное описание), `order_events` (append-only audit log с FK CASCADE на orders), `payments` (UNIQUE `(provider, provider_ref)` — основа идемпотентности webhook'ов), `attachments` (Supabase Storage refs с FK SET NULL — файлы переживают удаление order/message). Enum'ы: `order_status` (13 значений), `payment_provider`, `payment_status`, `attachment_kind`, `actor_type`. Все суммы — `integer` копейки.
+  - `@oplati/types`: добавлены zod-схемы `paymentProvider`, `paymentStatus`, `attachmentKind`, `actorType` — синхронизированы byte-for-byte с pgEnum'ами в `@oplati/db`. `paymentWebhookEvent.provider` оставлен inline (внешний контракт уже значений, чем внутренний enum).
+  - `@oplati/db` теперь явно зависит от `@oplati/types` (`workspace:*`) — нужен для `import type { PricingPolicy, OrderParameters }` в schema.ts. Это явно разрешено границами пакетов в CLAUDE.md.
+  - Auto-migration `packages/db/migrations/0003_common_richard_fisk.sql` сгенерирована через `db:generate`. Drizzle при `.enableRLS()` сразу эмитит `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` — отдельная RLS-миграция не понадобилась (запланированный `0004_enable_rls_extended.sql` стал no-op).
+  - **DDL применился через Supabase MCP `apply_migration`**, не через `db:push`: drizzle-kit `db:push` падает на DNS-резолве `db.<ref>.supabase.co` (Supabase перевёл free-tier на pooler-only). Это меняет workflow: `db:generate` → закоммитить `.sql` → `apply_migration` через MCP с тем же содержимым. Записывается в `supabase_migrations.schema_migrations` (audit trail на стороне Supabase).
+  - Seed-скрипт `packages/db/scripts/seed-catalog.ts` — 10 услуг (Claude Pro, ChatGPT Plus, Netflix Premium, Spotify Premium, Airbnb, YouTube Premium, Discord Nitro, Midjourney Basic, LinkedIn Premium, Apple One) с правильным `requires_kyc` (true для Airbnb / LinkedIn Premium / Apple One). Идемпотентный UPSERT по `slug` через `onConflictDoUpdate` — повторный запуск безопасен. Перед каждым INSERT — `pricingPolicy.parse()` (Zod на границах, инвариант CLAUDE.md). Placeholder-цены на основе USD-прайса × курс ~95₽ × margin 15% — помечены `TODO: верифицировать с владельцем перед production`.
+  - Airbnb получил dummy tier `{name: 'Booking', priceRub: 1, originalAmount: 1}` — фактическая цена per-booking хранится в `orders.amount_rub`. Альтернатива (ослабить zod до `nonnegative()`) отвергнута; долгосрочно может прийти discriminated union `pricingKind: 'tier' | 'per_booking'`.
+  - `pnpm --filter @oplati/db db:seed` через `tsx --env-file=../../.env` — добавлены `tsx` (devDep) и `pino` (dep) в `@oplati/db`. Использует pooler с `prepare: false`.
+  - **Supabase project был в `INACTIVE` (auto-pause)** — выполнен `restore_project` (~60s). Базовые 4 таблицы + RLS пережили паузу.
+  - Smoke verified: 9 таблиц / 9 enum'ов в `public`; CHECK `orders_service_or_custom` падает с `23514`; повторный INSERT в `payments` с теми же `(provider, provider_ref)` падает с `23505`; FK CASCADE `orders → order_events` работает; `services.relrowsecurity = false`, остальные 4 новые — `true`.
+  - `pnpm typecheck && pnpm lint && pnpm build` — green.
 - **Preview-деплой Vercel fra1 + persist Telegram dialog** ([Journal 30-04-2026](./.ai-factory/Journal/preview-deploy-vercel/30-04-2026.md), [merged](./.ai-factory/Journal/preview-deploy-vercel/merged.md), [PR #7](https://github.com/elfuerte72/oplati_podpisku/pull/7))
   - Repository-функции в `@oplati/db`: `getOrCreateUserByTelegramId` (raw-SQL upsert через partial unique `WHERE telegram_id IS NOT NULL`, `(xmax = 0)` для отличия INSERT от UPDATE, hash-PII в логах), `getOrCreateActiveConversation` (select-or-insert по `(user_id, channel)`), `appendMessage` (append-only INSERT с warn'ом на `role='operator'` без `staff_id`).
   - Минимальный `RepoLogger` интерфейс (pino-shape, `debug/info/warn`) — пакет `@oplati/db` остаётся без зависимости от pino.
@@ -77,9 +89,8 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Roadmap
 
-- ✅ Closed: `Next.js app apps/web`, `Telegram webhook + AI v1` (см. [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.md)).
-- 🟡 Partially: `Preview-деплой (Vercel fra1)` — деплой-инфра настроена и работает (prod + preview, smoke прошёл на dev-боте); финал milestone — end-to-end smoke с **записью в Supabase**, что требует следующего milestone «Базовая схема БД».
-- ➡️ Next: `Базовая схема БД` (`users`, `conversations`, `messages` через Drizzle).
+- ✅ Closed: `Next.js app apps/web`, `Telegram webhook + AI v1`, `Базовая схема БД`, `Preview-деплой (Vercel fra1)`, `Расширение схемы БД` (см. [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.md)).
+- ➡️ Next: `State machine заказа + AI tools` — repository-функции (`createOrder`, `transitionOrder`, `appendOrderEvent`, `recordPayment`, `listActiveServices`), генератор `short_id` (nanoid), AI-tools (`search_catalog`, `propose_order`, `confirm_order`, `request_human`), DB-уровень enforcement append-only `order_events`.
 
 ---
 
