@@ -104,8 +104,37 @@ export const handoffReason = z.enum([
 ]);
 export type HandoffReason = z.infer<typeof handoffReason>;
 
+// ─── Payment / attachment / actor enums (синхронизированы с pgEnum в @oplati/db) ──
+
+export const paymentProvider = z.enum(['yookassa', 'cryptobot', 'sbp', 'manual']);
+export type PaymentProvider = z.infer<typeof paymentProvider>;
+
+export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);
+export type PaymentStatus = z.infer<typeof paymentStatus>;
+
+export const attachmentKind = z.enum([
+  'payment_proof',
+  'kyc',
+  'fulfillment_proof',
+  'other',
+]);
+export type AttachmentKind = z.infer<typeof attachmentKind>;
+
+export const actorType = z.enum([
+  'system',
+  'user',
+  'operator',
+  'supervisor',
+  'ai',
+  'payment_provider',
+]);
+export type ActorType = z.infer<typeof actorType>;
+
 // ─── Payment webhook envelopes ────────────────────────────────────────────
 
+// Внешний контракт webhook'а уже значений (yookassa | cryptobot | sbp) — оставляем
+// inline, чтобы не сужать платежные провайдеры приходящие извне до 'manual'
+// (manual — внутренний путь, webhook'а у него быть не должно).
 export const paymentWebhookEvent = z.object({
   provider: z.enum(['yookassa', 'cryptobot', 'sbp']),
   providerRef: z.string(),

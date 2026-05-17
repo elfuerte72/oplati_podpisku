@@ -12,6 +12,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import type { OrderParameters, PricingPolicy } from '@oplati/types';
 
 // ─── Enums ────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,53 @@ export const messageRoleEnum = pgEnum('message_role', [
   'assistant',
   'operator',
   'system',
+]);
+
+// Литералы должны побайтово совпадать с zod-енумами в @oplati/types.
+export const orderStatusEnum = pgEnum('order_status', [
+  'draft',
+  'clarifying',
+  'kyc_required',
+  'ready_for_payment',
+  'pending_payment',
+  'paid',
+  'in_fulfillment',
+  'completed',
+  'failed',
+  'cancelled',
+  'expired',
+  'refund_requested',
+  'refunded',
+]);
+
+export const paymentProviderEnum = pgEnum('payment_provider', [
+  'yookassa',
+  'cryptobot',
+  'sbp',
+  'manual',
+]);
+
+export const paymentStatusEnum = pgEnum('payment_status', [
+  'pending',
+  'succeeded',
+  'failed',
+  'refunded',
+]);
+
+export const attachmentKindEnum = pgEnum('attachment_kind', [
+  'payment_proof',
+  'kyc',
+  'fulfillment_proof',
+  'other',
+]);
+
+export const actorTypeEnum = pgEnum('actor_type', [
+  'system',
+  'user',
+  'operator',
+  'supervisor',
+  'ai',
+  'payment_provider',
 ]);
 
 // ─── Users (клиенты) ──────────────────────────────────────────────────────
@@ -117,3 +165,124 @@ export const messages = pgTable(
     conversationIdx: index('messages_conversation_id_idx').on(t.conversationId, t.createdAt),
   }),
 ).enableRLS();
+
+// ─── Services (публичный каталог; БЕЗ RLS) ────────────────────────────────
+
+export const services = pgTable('services', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  slug: text('slug').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description'),
+  // 'ai' | 'streaming' | 'travel' | 'productivity' | 'other'
+  category: text('category'),
+  requiresKyc: boolean('requires_kyc').default(false).notNull(),
+  pricingPolicy: jsonb('pricing_policy').$type<PricingPolicy>(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─── Orders ───────────────────────────────────────────────────────────────
+
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    // 'ORD-7KX42'; генерация в repository-слое (следующий milestone)
+    shortId: text('short_id').notNull().unique(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    conversationId: uuid('conversation_id').references(() => conversations.id),
+    serviceId: uuid('service_id').references(() => services.id),
+    customServiceDescription: text('custom_service_description'),
+    status: orderStatusEnum('status').default('draft').notNull(),
+    amountRub: integer('amount_rub'), // копейки
+    originalAmount: integer('original_amount'),
+    originalCurrency: text('original_currency'),
+    requiresKyc: boolean('requires_kyc').default(false).notNull(),
+    kycCompletedAt: timestamp('kyc_completed_at', { withTimezone: true }),
+    assignedOperatorId: uuid('assigned_operator_id').references(() => staff.id),
+    supervisorId: uuid('supervisor_id').references(() => staff.id),
+    parameters: jsonb('parameters').$type<OrderParameters>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    refundedAt: timestamp('refunded_at', { withTimezone: true }),
+  },
+  (t) => ({
+    statusIdx: index('orders_status_idx').on(t.status),
+    userIdx: index('orders_user_id_idx').on(t.userId),
+    operatorIdx: index('orders_operator_id_idx').on(t.assignedOperatorId),
+    serviceOrCustom: check(
+      'orders_service_or_custom',
+      sql`${t.serviceId} IS NOT NULL OR ${t.customServiceDescription} IS NOT NULL`,
+    ),
+  }),
+).enableRLS();
+
+// ─── Order events (append-only audit log) ─────────────────────────────────
+
+export const orderEvents = pgTable(
+  'order_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    actorType: actorTypeEnum('actor_type').notNull(),
+    // полиморфный actor: users.id или staff.id — FK не ставим (см. docs/database.md)
+    actorId: uuid('actor_id'),
+    // 'status_changed' | 'payment_succeeded' | ...
+    eventType: text('event_type').notNull(),
+    fromStatus: orderStatusEnum('from_status'),
+    toStatus: orderStatusEnum('to_status'),
+    payload: jsonb('payload').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orderTimeIdx: index('order_events_order_id_created_at_idx').on(t.orderId, t.createdAt),
+  }),
+).enableRLS();
+
+// ─── Payments ─────────────────────────────────────────────────────────────
+
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'restrict' }),
+    provider: paymentProviderEnum('provider').notNull(),
+    providerRef: text('provider_ref').notNull(),
+    amountRub: integer('amount_rub').notNull(), // копейки
+    status: paymentStatusEnum('status').default('pending').notNull(),
+    rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Инвариант идемпотентности webhook'ов (CLAUDE.md).
+    providerRefIdx: uniqueIndex('payments_provider_provider_ref_idx').on(
+      t.provider,
+      t.providerRef,
+    ),
+    orderIdx: index('payments_order_id_idx').on(t.orderId),
+  }),
+).enableRLS();
+
+// ─── Attachments (Supabase Storage refs) ──────────────────────────────────
+
+export const attachments = pgTable('attachments', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+  messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+  kind: attachmentKindEnum('kind').notNull(),
+  storagePath: text('storage_path').notNull(),
+  mimeType: text('mime_type'),
+  sizeBytes: integer('size_bytes'),
+  // полиморфный uploader: users.id или staff.id
+  uploadedBy: uuid('uploaded_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}).enableRLS();
