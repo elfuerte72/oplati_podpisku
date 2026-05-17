@@ -43,6 +43,13 @@
       "when": 1779019900000,
       "tag": "0005_rls_cards",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779020000000,
+      "tag": "0006_seed_mvp_services",
+      "breakpoints": true
     }
   ]
 }

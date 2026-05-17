@@ -631,6 +631,39 @@ test(mvp): unit + integration tests + smoke runbook
 4. **Юрлицо/реквизиты** — плейсхолдер в FAQ; до prod-релиза нужны реальные данные от L&P-кабинета.
 5. **Geo-ограничения L&P-карт** — уточнить при подключении; если Россия запрещена для L&P-карт (эмитент), это нас не касается — мы используем L&P только как acquiring, карты выдаём через app.pay.space.
 
-## Outcome (заполняется после Task 8.3)
+## Outcome (по итогам реализации 2026-05-17)
 
-_TBD_
+### Что работает
+
+- **Schema:** `cards` + `cardStatusEnum`; `paymentProviderEnum` расширен `loveandpay`/`paypace`; `orders` обогащён `usdtRubRateKopecks` / `rateFixedAt` / `expiresAt` / `commissionPercent` / `cardId`; `payments` обогащён `providerInvoiceNumber` / `recoveredViaPolling` / `expiresAt` / `webhookReceivedAt`. Применено через Supabase MCP (migrations 0004, 0005, 0006).
+- **Repositories (`@oplati/db`):** `cards` (CRUD + `recycleAgedCards`), `orders` (`transitionOrder` с проверкой `allowedTransitions` + append-only `order_events` в той же транзакции, генерация `shortId` через Crockford base32 + retry на UNIQUE-конфликт), `payments` (идемпотентный `upsertPaymentByProviderRef`, `markPaymentSucceeded` с `recoveredViaPolling`, `findPendingPaymentsForPoll`), `services` (`searchActiveServices` с COALESCE по двум формам `pricing_policy`, `getServiceById/BySlug`), `getUserTelegramId`.
+- **State machine (`@oplati/types/order-state-machine.ts`):** обновлены переходы под MVP (paid→failed, pending_payment→failed, refund_requested→completed); `OrderTransitionError`; `isAllowedTransition`.
+- **Zod-схемы L&P + paypace** в `@oplati/types` + маппер `loveAndPayStatusToInternal`.
+- **L&P HTTP-клиент** с HMAC v2 sign (METHOD+PATH+TIMESTAMP+SHA256(body)) + retry 429/5xx + 30s timeout + Zod-парсинг + `LoveAndPayApiError`/`ContractError`.
+- **paypace HTTP-клиент** с Bearer auth + 60s timeout + retry 5xx; никогда не логируем full PAN/CVC.
+- **Endpoints:** `/api/payments/create` (internal, X-Internal-Token) — load order → L&P invoice → upsert payment → transitionOrder pending_payment; `/api/payments/loveandpay` (webhook) — nodejs runtime, rawBody до parse, HMAC verify, Zod parse, всегда 200 OK + Sentry на ошибки.
+- **Handlers (`lib/loveandpay/handlers.ts`):** `processInvoicePaid` / `processInvoiceTerminal` — общий код webhook'а + cron'а, идемпотентны.
+- **AI-tools** (`@oplati/agent`): tools определения (search_catalog/propose_order/confirm_order/request_human); типизированный `ToolHandlers`; max iterations = 6; SYSTEM_PROMPT переписан под MVP-сценарий с tool-driven подтверждением.
+- **Tool-handlers** (`apps/web/lib/tool-handlers/`): реальные реализации; `propose_order` — rate USDT→RUB + 10% комиссия + createDraftOrder→ready_for_payment.
+- **Trigger.dev sync-fallback:** jobs (`issue-card`, `poll-payment`, `expire-payments`, `subscription-renewal-reminder`, `recycle-cards`) реализованы как функции + дернутся через cron-endpoints (`/api/cron/*`) либо `setImmediate` из webhook.
+- **Cron-расписание** прописано в `apps/web/vercel.json` (poll-payment каждые 5 мин, expire каждые 15 мин, renewal 10:00 МСК, recycle 06:30 МСК).
+- **Seed:** 11 AI-сервисов с `pricing_policy.basePriceUsdCents` (chatgpt-plus, claude-pro, gemini-advanced, perplexity-pro, mistral-pro, grok-pro, github-copilot, cursor-pro, claude-code, windsurf-pro, midjourney). Старые non-AI services переведены в `is_active=false`.
+- **Тесты (Vitest):** `sign.test.ts`, `client.test.ts` (L&P retry+contract), `order-state-machine.test.ts`, `handlers.test.ts` (идемпотентность invoice.paid + terminal events). `vitest` добавлен в devDependencies — требует `pnpm install` для запуска.
+- **Runbook:** `docs/runbook-mvp.md` — пошаговый smoke-сценарий на preview, проверки в Supabase, идемпотентность webhook'а.
+
+### Что отложено (после smoke на preview)
+
+- **Подключение Trigger.dev в облако** — сейчас работает sync-fallback. При нагрузке нужен полноценный фоновый worker.
+- **History разговора в AI-контексте** — между turn'ами модель stateless. Это покрывается отдельным milestone «loading conversation history» (план не закрывал).
+- **Custom-домен Production.** Сейчас prod на `https://oplati-podpisku-web.vercel.app` (Vercel default).
+- **Apple Pay path (iCloud / Google One / Unity Asset Store)** — деактивированы в seed.
+- **SMS-верификация в боте** — отдаём ссылку на инструкцию.
+- **Forum-topics handoff** — `request_human` сейчас только пишет `order_events`; реальный handoff — следующая ветка.
+
+### Открытые вопросы
+
+1. **Точный контракт app.pay.space** — sandbox-вызовы покажут реальную форму JSON. Текущая Zod-схема (`paypace.ts`) — минимально достаточный контракт по плану. TODO-комментарий в `pay-space/client.ts`.
+2. **Юрлицо / реквизиты продавца** — плейсхолдер `[РЕКВИЗИТЫ — TODO]` в SYSTEM_PROMPT. До prod-релиза нужны реальные данные.
+3. **Geo-ограничения L&P-карт** — уточнить при подключении (нас как мерчанта не должно касаться, мы используем L&P только для acquiring).
+4. **ADR перед мерджем в `main`** — обязательный шаг. Конфликт TZ ↔ docs (Love & Pay vs YooKassa) разрешается там же.
+5. **RLS-политики для cards** — сейчас deny-by-default (как и users/orders в milestone «Базовая схема БД»). Конкретные политики (operator/supervisor доступ для саппорта) — milestone «Минимальная админка».
