@@ -11,7 +11,7 @@
 - [x] **Telegram webhook + AI v1** — `/api/bot` на grammY с проверкой secret-token, Claude без tools, системный промпт консультанта
 - [x] **Базовая схема БД** — `users`, `conversations`, `messages` в Drizzle, миграция применена через `db:push`
 - [x] **Preview-деплой (Vercel fra1)** — end-to-end smoke: `/start` → AI-ответ → запись в Supabase
-- [ ] **Расширение схемы БД** — `services`, `orders`, `payments`, `attachments`, `staff`, `order_events` + seed каталога (Claude, ChatGPT, Netflix, Spotify, Airbnb, YouTube Premium, Discord Nitro, Midjourney, LinkedIn Premium, Apple) с флагом `requires_kyc`
+- [x] **Расширение схемы БД** — `services`, `orders`, `payments`, `attachments`, `staff`, `order_events` + seed каталога (Claude, ChatGPT, Netflix, Spotify, Airbnb, YouTube Premium, Discord Nitro, Midjourney, LinkedIn Premium, Apple) с флагом `requires_kyc`
 - [ ] **State machine заказа + AI tools** — атомарные переходы с записью в `order_events`; tools `search_catalog`, `propose_order`, `confirm_order`, `request_human`
 - [ ] **Интеграция платежей** — YooKassa (RUB/СБП) + CryptoBot (USDT), HMAC-валидация webhook, идемпотентность по `(provider, provider_ref)`
 - [ ] **Handoff оператору** — Telegram forum-topics (один topic = один заказ), прокси сообщений пользователь ↔ оператор, команда `/ai_back`
@@ -35,3 +35,4 @@
 | Telegram webhook + AI v1 | 2026-04-27 |
 | Базовая схема БД | 2026-04-28 |
 | Preview-деплой (Vercel fra1) | 2026-04-30 |
+| Расширение схемы БД | 2026-05-17 |
