@@ -8,6 +8,46 @@ export {
   type TelegramUser,
 } from './telegram.ts';
 
+export {
+  loveAndPayInvoiceStatus,
+  type LoveAndPayInvoiceStatus,
+  loveAndPayStatusToInternal,
+  loveAndPayStatusToPaymentStatus,
+  loveAndPayInvoiceRequestSchema,
+  type LoveAndPayInvoiceRequest,
+  loveAndPayInvoiceSchema,
+  type LoveAndPayInvoice,
+  loveAndPayInvoiceResponseSchema,
+  type LoveAndPayInvoiceResponse,
+  loveAndPayRatesResponseSchema,
+  type LoveAndPayRatesResponse,
+  loveAndPayWebhookData,
+  type LoveAndPayWebhookData,
+  loveAndPayWebhookEventSchema,
+  type LoveAndPayWebhookEvent,
+  loveAndPayErrorCode,
+  type LoveAndPayErrorCode,
+  loveAndPayErrorSchema,
+  type LoveAndPayError,
+} from './loveandpay.ts';
+
+export {
+  paySpaceCreateCardRequestSchema,
+  type PaySpaceCreateCardRequest,
+  paySpaceCreateCardResponseSchema,
+  type PaySpaceCreateCardResponse,
+  paySpaceTopupRequestSchema,
+  type PaySpaceTopupRequest,
+  paySpaceTopupResponseSchema,
+  type PaySpaceTopupResponse,
+  paySpaceCardStatus,
+  type PaySpaceCardStatus,
+  paySpaceGetCardResponseSchema,
+  type PaySpaceGetCardResponse,
+  paySpaceErrorSchema,
+  type PaySpaceError,
+} from './paypace.ts';
+
 // ─── Order status + state machine ─────────────────────────────────────────
 
 export {
