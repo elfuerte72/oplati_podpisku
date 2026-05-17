@@ -6,14 +6,52 @@ export { SYSTEM_PROMPT, GREETING } from './prompts.ts';
 export { tools } from './tools.ts';
 
 /**
- * Контракт для инструментов — apps/web подставляет реальные реализации
- * (потому что tools требуют доступ к БД/сервисам, которые не должны быть в agent).
+ * Контракт инструментов AI-агента (MVP: Love & Pay + app.pay.space).
+ * Реализация — `apps/web/lib/tool-handlers/`; agent её не импортирует, чтобы
+ * пакет оставался без зависимостей от БД (CLAUDE.md, граница пакетов).
+ *
+ * Результаты сериализуются в `tool_result` и подаются обратно в модель —
+ * структуру держим стабильной.
  */
+export interface CatalogItem {
+  id: string;
+  slug: string;
+  name: string;
+  basePriceUsdCents: number;
+  requiresKyc: boolean;
+}
+
+export interface ProposeOrderResult {
+  orderId: string;
+  shortId: string;
+  amountRubKopecks: number;
+  commissionKopecks: number;
+  totalRubKopecks: number;
+  rateUsdRubKopecks: number;
+  expiresAt: string;
+}
+
+export interface ConfirmOrderResult {
+  paymentUrl: string;
+  qrPayload: string | null;
+  expiresAt: string;
+}
+
 export interface ToolHandlers {
-  search_catalog: (input: { query: string; category?: string }) => Promise<unknown>;
-  propose_order: (input: Record<string, unknown>) => Promise<unknown>;
-  confirm_order: (input: { orderId: string; paymentMethod: string }) => Promise<unknown>;
-  request_human: (input: { reason: string; context: string }) => Promise<unknown>;
+  search_catalog: (input: { query: string }) => Promise<CatalogItem[]>;
+  propose_order: (input: {
+    serviceId: string;
+    amountUsdCents: number;
+    paymentMethod?: 'sbp' | 'card';
+  }) => Promise<ProposeOrderResult>;
+  confirm_order: (input: {
+    orderId: string;
+    paymentMethod?: 'sbp' | 'card';
+  }) => Promise<ConfirmOrderResult>;
+  request_human: (input: {
+    orderId: string | null;
+    reason: string;
+  }) => Promise<{ acknowledged: true }>;
 }
 
 export interface AgentContext {
@@ -55,8 +93,8 @@ export async function runAgent(
     content: m.content,
   }));
 
-  // Максимум 5 итераций tool use, чтобы не зациклиться
-  for (let step = 0; step < 5; step++) {
+  // Максимум 6 итераций tool use (план MVP, раздел 5.3).
+  for (let step = 0; step < 6; step++) {
     const response = await client.messages.create({
       model,
       max_tokens: 1024,
@@ -99,7 +137,7 @@ export async function runAgent(
     return { text, usage: response.usage };
   }
 
-  throw new Error('Agent tool-use loop exceeded 5 iterations');
+  throw new Error('Agent tool-use loop exceeded 6 iterations');
 }
 
 /**

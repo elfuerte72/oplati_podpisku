@@ -1,25 +1,23 @@
 import type Anthropic from '@anthropic-ai/sdk';
 
 /**
- * Описания инструментов в формате Anthropic Tool Use.
- * Реализация — в apps/web, где есть доступ к БД и сервисам.
+ * Описания AI tools под MVP (Love & Pay + app.pay.space).
+ * Реализация — `apps/web/lib/tool-handlers/`.
+ *
+ * Контракт строго совпадает с интерфейсом `ToolHandlers` ниже в `./index.ts`.
  */
 export const tools: Anthropic.Tool[] = [
   {
     name: 'search_catalog',
     description:
-      'Найти сервисы в каталоге по названию или категории. Возвращает сервисы с тарифами и ценами в рублях. Используй ВСЕГДА перед тем как называть цену — никогда не придумывай цены сам.',
+      'Найти AI-сервисы в каталоге по названию. Возвращает массив сервисов с базовой ценой в USD-центах. Используй ВСЕГДА перед тем как называть цену — никогда не придумывай цены сам.',
     input_schema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'Название сервиса или ключевое слово, напр. "claude", "netflix", "stream"',
-        },
-        category: {
-          type: 'string',
-          enum: ['ai', 'streaming', 'travel', 'productivity', 'other'],
-          description: 'Категория сервиса (опционально)',
+          description:
+            'Название сервиса или ключевое слово (claude, chatgpt, perplexity, mistral, copilot, cursor, midjourney).',
         },
       },
       required: ['query'],
@@ -28,65 +26,65 @@ export const tools: Anthropic.Tool[] = [
   {
     name: 'propose_order',
     description:
-      'Сформировать черновик заказа и показать пользователю на подтверждение. Вызывай когда все детали известны: сервис, тариф/период, email аккаунта (если нужен).',
+      'Сформировать черновик заказа и рассчитать итоговую сумму в рублях с учётом текущего курса USDT→RUB и комиссии 10%. Возвращает orderId, shortId, разбивку (subtotal, commission, total) и срок действия. После этого спроси у пользователя подтверждение.',
     input_schema: {
       type: 'object',
       properties: {
-        serviceSlug: {
+        serviceId: {
           type: 'string',
-          description: 'slug сервиса из каталога, например "claude-pro"',
+          description: 'UUID сервиса из search_catalog.',
         },
-        customDescription: {
-          type: 'string',
-          description: 'Свободное описание, если сервиса нет в каталоге',
+        amountUsdCents: {
+          type: 'number',
+          description:
+            'Сумма заказа в USD-центах (например 2000 = 20.00 USD). Бери basePriceUsdCents из search_catalog или умножай на количество месяцев, если пользователь хочет подписку дольше базового периода.',
         },
-        tierName: { type: 'string', description: 'Название тарифа' },
-        period: { type: 'string', enum: ['month', 'year'] },
-        accountEmail: {
+        paymentMethod: {
           type: 'string',
-          description: 'Email клиента на стороне иностранного сервиса',
-        },
-        notes: {
-          type: 'string',
-          description: 'Особые пожелания или доп.параметры',
+          enum: ['sbp', 'card'],
+          description: 'Предпочитаемый способ оплаты (если не задано — провайдер выбирает).',
         },
       },
+      required: ['serviceId', 'amountUsdCents'],
     },
   },
   {
     name: 'confirm_order',
     description:
-      'Подтвердить заказ после явного согласия пользователя. Создаёт платёжную ссылку.',
+      'Подтвердить заказ после ЯВНОГО согласия пользователя. Создаёт счёт в Love & Pay и возвращает paymentUrl, qrPayload и expiresAt. Передай пользователю paymentUrl ссылкой; QR — текстом «отсканируй СБП-плательщиком» (только если qrPayload задан).',
     input_schema: {
       type: 'object',
       properties: {
-        orderId: { type: 'string', description: 'ID черновика заказа из propose_order' },
+        orderId: {
+          type: 'string',
+          description: 'UUID заказа, полученный от propose_order.',
+        },
         paymentMethod: {
           type: 'string',
-          enum: ['yookassa', 'sbp', 'cryptobot'],
-          description: 'Предпочитаемый способ оплаты',
+          enum: ['sbp', 'card'],
+          description: 'Способ оплаты (опционально; если не задан — провайдер сам выберет).',
         },
       },
-      required: ['orderId', 'paymentMethod'],
+      required: ['orderId'],
     },
   },
   {
     name: 'request_human',
     description:
-      'Передать разговор оператору. Вызывай когда пользователь просит, или задача сложнее твоих возможностей (спорные кейсы, KYC, возвраты, проблемы с оплатой).',
+      'Передать разговор оператору. Вызывай когда пользователь явно просит человека, либо ситуация выходит за рамки твоих возможностей (платёжный спор, нестандартный KYC-кейс).',
     input_schema: {
       type: 'object',
       properties: {
+        orderId: {
+          type: ['string', 'null'],
+          description: 'UUID заказа, если разговор привязан к заказу; иначе null.',
+        },
         reason: {
           type: 'string',
-          enum: ['user_requested', 'ai_uncertain', 'kyc_complex', 'payment_issue', 'dispute', 'other'],
-        },
-        context: {
-          type: 'string',
-          description: 'Краткое summary ситуации для оператора (2-3 предложения)',
+          description: 'Краткая причина (2-3 предложения) для оператора.',
         },
       },
-      required: ['reason', 'context'],
+      required: ['reason'],
     },
   },
 ];

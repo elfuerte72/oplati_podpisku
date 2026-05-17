@@ -9,10 +9,11 @@ import {
   getOrCreateActiveConversation,
   getOrCreateUserByTelegramId,
 } from '@oplati/db';
-import { runAgentNoTools, GREETING } from '@oplati/agent';
+import { GREETING, runAgent, runAgentNoTools } from '@oplati/agent';
 import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { childLogger } from '@/lib/logger';
+import { createToolHandlers } from '@/lib/tool-handlers';
 
 import { getBot } from './bot';
 
@@ -221,9 +222,25 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   }
 
   const startedAt = Date.now();
-  let result: Awaited<ReturnType<typeof runAgentNoTools>>;
+  let result: Awaited<ReturnType<typeof runAgent>>;
   try {
-    result = await runAgentNoTools([{ role: 'user', content: text }]);
+    // Если есть persistence-контекст — запускаем агента С tools (MVP-сценарий:
+    // search_catalog → propose_order → confirm_order). Иначе — fallback на
+    // runAgentNoTools (без БД-контекста tools работать не могут).
+    //
+    // История разговора пока НЕ загружается из БД — между turn'ами модель stateless.
+    // Это покрывается отдельным milestone "loading conversation history".
+    if (ctx) {
+      const toolHandlers = createToolHandlers({ userId: ctx.userId, conversationId: ctx.conversationId });
+      result = await runAgent([{ role: 'user', content: text }], {
+        userId: ctx.userId,
+        conversationId: ctx.conversationId,
+        channel: 'telegram',
+        toolHandlers,
+      });
+    } else {
+      result = await runAgentNoTools([{ role: 'user', content: text }]);
+    }
   } catch (err) {
     log.error({
       event: 'telegram.agent.failed',

@@ -54,3 +54,11 @@ export {
   type UpsertResult,
   type MarkPaymentSucceededInput,
 } from './payments.ts';
+
+export {
+  searchActiveServices,
+  getServiceById,
+  getServiceBySlug,
+  type ServiceRow,
+  type CatalogSearchItem,
+} from './services.ts';
