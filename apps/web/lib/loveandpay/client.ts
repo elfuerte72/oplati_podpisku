@@ -40,14 +40,24 @@ export type LoveAndPayClientOptions = {
 export class LoveAndPayClient {
   private readonly apiKey: string;
   private readonly secretKey: string;
-  private readonly baseUrl: string;
+  /** Origin без path (https://loveandpay.io) — для конструирования URL. */
+  private readonly origin: string;
+  /**
+   * Полный API-path с префиксом версии (`/api/v2`), без trailing slash.
+   * КРИТИЧНО для подписи: документация L&P требует, чтобы в HMAC шёл ПОЛНЫЙ
+   * path начиная с `/api/v2/...`, а не короткий `/invoices`. Иначе сервер
+   * возвращает INVALID_SIGNATURE.
+   */
+  private readonly apiPath: string;
   private readonly log: Logger;
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: LoveAndPayClientOptions) {
     this.apiKey = opts.apiKey;
     this.secretKey = opts.secretKey;
-    this.baseUrl = opts.baseUrl.replace(/\/$/, '');
+    const u = new URL(opts.baseUrl);
+    this.origin = `${u.protocol}//${u.host}`;
+    this.apiPath = u.pathname.replace(/\/$/, ''); // '/api/v2'
     this.log = opts.logger;
     this.fetchImpl = opts.fetchImpl ?? fetch.bind(globalThis);
   }
@@ -80,11 +90,14 @@ export class LoveAndPayClient {
   }
 
   async getRates(base: 'USDT', quote: 'RUB'): Promise<LoveAndPayRatesResponse> {
+    // Документация: в подпись query параметры НЕ включаются. signPath остаётся
+    // '/api/v2/rates', а query шлём в URL.
     return await this.requestJson(
       'GET',
-      `/rates?base=${base}&quote=${quote}`,
+      '/rates',
       null,
       loveAndPayRatesResponseSchema.parse,
+      `base=${base}&quote=${quote}`,
     );
   }
 
@@ -95,13 +108,19 @@ export class LoveAndPayClient {
     path: string,
     body: unknown,
     parse: (raw: unknown) => T,
+    queryString?: string,
   ): Promise<T> {
     const bodyText = body === null ? '' : JSON.stringify(body);
-    const url = `${this.baseUrl}${path}`;
+    // signPath = '/api/v2/invoices' — ПОЛНЫЙ путь для HMAC (без query).
+    const signPath = `${this.apiPath}${path}`;
+    // URL для fetch включает query (если есть).
+    const url = queryString
+      ? `${this.origin}${signPath}?${queryString}`
+      : `${this.origin}${signPath}`;
 
     let lastError: unknown;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const { timestamp, signature } = signRequest(method, path, bodyText, this.secretKey);
+      const { timestamp, signature } = signRequest(method, signPath, bodyText, this.secretKey);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -109,7 +128,7 @@ export class LoveAndPayClient {
       this.log.debug({
         event: 'loveandpay.request',
         method,
-        path,
+        path: signPath,
         timestamp,
         attempt,
       });
@@ -119,9 +138,11 @@ export class LoveAndPayClient {
           method,
           headers: {
             'Content-Type': 'application/json',
-            'X-Api-Key': this.apiKey,
-            'X-Timestamp': timestamp,
-            'X-Signature': signature,
+            // Документация L&P использует lowercase — синхронизируем
+            // (HTTP заголовки case-insensitive, но иначе не совпадаем с docs).
+            'x-api-key': this.apiKey,
+            'x-timestamp': timestamp,
+            'x-signature': signature,
           },
           body: method === 'GET' ? undefined : bodyText,
           signal: controller.signal,

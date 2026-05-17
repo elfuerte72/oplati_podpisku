@@ -60,7 +60,8 @@ export async function proposeOrder(input: {
 
   const loveAndPay = getLoveAndPayClient();
   const ratesResp = await loveAndPay.getRates('USDT', 'RUB');
-  const rate = ratesResp.rate;
+  // rate — это объект; число в rate.rate (см. docs/api-reference/v2/rates/current).
+  const rate = ratesResp.rate.rate;
   if (!rate || rate <= 0) {
     throw new Error(`propose_order: некорректный курс от L&P: ${rate}`);
   }

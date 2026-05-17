@@ -660,6 +660,17 @@ test(mvp): unit + integration tests + smoke runbook
 - **SMS-верификация в боте** — отдаём ссылку на инструкцию.
 - **Forum-topics handoff** — `request_human` сейчас только пишет `order_events`; реальный handoff — следующая ветка.
 
+### Уточнения по итогам изучения L&P API v2 docs (2026-05-17)
+
+- **HMAC path:** в подпись идёт ПОЛНЫЙ путь `/api/v2/invoices`, не короткий `/invoices` (баг исправлен в `lib/loveandpay/client.ts` — теперь baseUrl парсится на origin + apiPath, в подпись подаётся `apiPath + path`).
+- **HTTP заголовки lowercase:** `x-api-key`, `x-timestamp`, `x-signature` (синхронизировано с docs; HTTP case-insensitive, но соответствие документации полезно для отладки).
+- **`GET /api/v2/rates` response schema:** `{ success, rate: { id, baseCurrency, quoteCurrency, rate (number), validFrom, validTo, fixedAt }, formatted, requestId }` — `rate` это объект, а число лежит в `rate.rate` (Zod-схема обновлена, propose-order.ts использует `ratesResp.rate.rate`).
+- **Виртуальные карты L&P ≠ подходящее решение для MVP.** docs/guides/virtual-cards.md явно пишет: «Карты для онлайн-оплат не подходят для ИИ-сервисов (ChatGPT, Zoom)» + «Карты Apple Pay возможны блокировки при оплате подписок на ChatGPT, Zoom, Anthropic». Россия в списке географически запрещённых юрисдикций. → **paypace (или другой эмитент с возможностью оплачивать AI) обязателен** — он не дублирует L&P-карты, у нас два разных provider'а: L&P для RUB-acquiring + paypace для выпуска USD-карт для AI-подписок.
+- **Webhook signature алгоритм:** `HMAC-SHA256(webhookSecret, rawBody)` — у меня уже правильно (`verifyWebhookSignature` берёт rawBody, не JSON.parse → stringify).
+- **TTL invoice:** по умолчанию `expiresInHours=1`, мы передаём 24 — это допустимый максимум по плану (документация не ограничивает явно).
+- **API v1 отключается 25.01.2026.** Мы изначально на v2, всё ок.
+- **Rate Limiting:** 100 req/min, 1000 req/hour. Текущий retry с exp backoff в `client.ts` ловит 429, но без учёта `Retry-After` заголовков — это допустимое упрощение для MVP.
+
 ### Открытые вопросы
 
 1. **Точный контракт app.pay.space** — sandbox-вызовы покажут реальную форму JSON. Текущая Zod-схема (`paypace.ts`) — минимально достаточный контракт по плану. TODO-комментарий в `pay-space/client.ts`.

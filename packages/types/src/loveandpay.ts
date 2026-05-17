@@ -72,12 +72,19 @@ export const loveAndPayInvoiceSchema = z.object({
   invoiceNumber: z.string(),
   amount: z.number(),
   currency: z.string(),
+  description: z.string().optional(),
   status: loveAndPayInvoiceStatus,
+  expiresAt: z.string(), // ISO timestamp
+  createdAt: z.string().optional(),
   qrCode: z.string().optional(),
   qrPayload: z.string().optional(),
   paymentLink: z.string().url(),
   originalPaymentUrl: z.string().url().optional(),
-  expiresAt: z.string(), // ISO timestamp
+  externalOrderId: z.string().optional(),
+  kycRequired: z.boolean().optional(),
+  kycVerified: z.boolean().optional(),
+  receiptRequired: z.boolean().optional(),
+  customer: z.unknown().nullable().optional(),
 });
 export type LoveAndPayInvoice = z.infer<typeof loveAndPayInvoiceSchema>;
 
@@ -89,11 +96,32 @@ export type LoveAndPayInvoiceResponse = z.infer<typeof loveAndPayInvoiceResponse
 
 // ─── Rates ────────────────────────────────────────────────────────────────
 
-export const loveAndPayRatesResponseSchema = z.object({
-  base: z.string(),
-  quote: z.string(),
+/**
+ * Ответ `GET /api/v2/rates?base=USDT&quote=RUB` (см. docs.loveandpay.io
+ * → api-reference/v2/rates/current). Реальная структура — `rate` это объект,
+ * а число лежит в `rate.rate`.
+ */
+export const loveAndPayRateSchema = z.object({
+  id: z.string(),
+  baseCurrency: z.string(),
+  quoteCurrency: z.string(),
   rate: z.number().positive(),
-  asOf: z.string().optional(),
+  validFrom: z.string().optional(),
+  validTo: z.string().nullable().optional(),
+  fixedAt: z.string().optional(),
+});
+export type LoveAndPayRate = z.infer<typeof loveAndPayRateSchema>;
+
+export const loveAndPayRatesResponseSchema = z.object({
+  success: z.boolean().optional(),
+  rate: loveAndPayRateSchema,
+  formatted: z
+    .object({
+      pair: z.string().optional(),
+      value: z.string().optional(),
+    })
+    .optional(),
+  requestId: z.string().optional(),
 });
 export type LoveAndPayRatesResponse = z.infer<typeof loveAndPayRatesResponseSchema>;
 
@@ -111,10 +139,12 @@ export const loveAndPayWebhookData = z.object({
   invoiceNumber: z.string(),
   amount: z.number(),
   currency: z.string(),
+  description: z.string().optional(),
   status: loveAndPayInvoiceStatus,
   paidAt: z.string().optional(),
   customerEmail: z.string().email().optional(),
   customerName: z.string().optional(),
+  customerPhone: z.string().optional(),
 });
 export type LoveAndPayWebhookData = z.infer<typeof loveAndPayWebhookData>;
 

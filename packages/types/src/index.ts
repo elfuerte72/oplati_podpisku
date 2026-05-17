@@ -19,6 +19,8 @@ export {
   type LoveAndPayInvoice,
   loveAndPayInvoiceResponseSchema,
   type LoveAndPayInvoiceResponse,
+  loveAndPayRateSchema,
+  type LoveAndPayRate,
   loveAndPayRatesResponseSchema,
   type LoveAndPayRatesResponse,
   loveAndPayWebhookData,
