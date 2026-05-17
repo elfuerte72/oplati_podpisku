@@ -17,3 +17,40 @@ export {
 } from './messages.ts';
 
 export { noopLogger, type RepoLogger } from './logger.ts';
+
+export {
+  createCard,
+  findActiveByUserId,
+  findRecyclableCard,
+  markIdle,
+  markRecycled,
+  markActive,
+  updateBalance,
+  type Card,
+  type CreateCardInput,
+} from './cards.ts';
+
+export {
+  createDraftOrder,
+  getOrderById,
+  getOrderByShortId,
+  transitionOrder,
+  setOrderCardId,
+  findExpiredPendingOrders,
+  findOrdersForRenewalReminder,
+  type OrderRow,
+  type CreateDraftOrderInput,
+  type TransitionOrderInput,
+} from './orders.ts';
+
+export {
+  upsertPaymentByProviderRef,
+  markPaymentSucceeded,
+  markPaymentStatus,
+  findPendingPaymentsForPoll,
+  findPaymentByProviderRef,
+  type PaymentRow,
+  type UpsertPaymentByProviderRefInput,
+  type UpsertResult,
+  type MarkPaymentSucceededInput,
+} from './payments.ts';

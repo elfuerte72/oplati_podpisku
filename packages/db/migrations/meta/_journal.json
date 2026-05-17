@@ -29,6 +29,20 @@
       "when": 1779010435072,
       "tag": "0003_common_richard_fisk",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779019827737,
+      "tag": "0004_cooing_ricochet",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1779019900000,
+      "tag": "0005_rls_cards",
+      "breakpoints": true
     }
   ]
 }

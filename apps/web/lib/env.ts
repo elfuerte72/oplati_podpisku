@@ -68,6 +68,23 @@ const serverEnvSchema = z.object({
   CRYPTOBOT_TOKEN: optionalEnvString(),
   CRYPTOBOT_WEBHOOK_SECRET: optionalEnvString(),
 
+  // Love & Pay (MVP) — RUB-acquiring + USDT rates; preview = pk_test_*, prod = pk_live_*
+  LOVEANDPAY_API_KEY: optionalEnvString(),
+  LOVEANDPAY_SECRET_KEY: optionalEnvString(),
+  LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
+  LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+
+  // app.pay.space (MVP) — выпуск виртуальных USD-карт
+  PAYSPACE_API_KEY: optionalEnvString(),
+  PAYSPACE_ACCOUNT_ID: optionalEnvString(),
+  PAYSPACE_BASE_URL: z.string().url().default('https://app.pay.space/api/v1'),
+
+  // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
+  COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
+
+  // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
+  INTERNAL_API_TOKEN: optionalEnvString(),
+
   // Rate limit (Sprint 3)
   UPSTASH_REDIS_REST_URL: optionalUrl(),
   UPSTASH_REDIS_REST_TOKEN: optionalEnvString(),
