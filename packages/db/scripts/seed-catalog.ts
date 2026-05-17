@@ -10,10 +10,11 @@
  * TODO: верифицировать с владельцем перед production
  * (см. `.ai-factory/plans/feature-db-extended-schema.md`, Task 10).
  *
- * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с priceRub=0,
- * потому что фактическая стоимость бронирования заполняется в orders.amount_rub
- * под каждый заказ. zod-схема `pricingPolicy` требует `tiers.min(1)` —
- * dummy-tier удовлетворяет валидации без правок типов.
+ * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с priceRub=1
+ * (минимальное валидное значение — zod-схема `serviceTier.priceRub` требует
+ * .positive(), поэтому 0 не проходит). Фактическая стоимость бронирования
+ * заполняется в orders.amount_rub под каждый заказ; dummy-tier удовлетворяет
+ * валидации (tiers.min(1) + priceRub.positive()) без правок типов.
  */
 
 import postgres from 'postgres';
