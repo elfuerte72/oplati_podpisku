@@ -95,7 +95,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     await bot.api.setWebhook(parsed.data.url, {
       secret_token: secretToken,
       drop_pending_updates: parsed.data.dropPendingUpdates ?? false,
-      allowed_updates: ['message'],
+      // message — текстовые сообщения; callback_query — нажатия inline-кнопок.
+      allowed_updates: ['message', 'callback_query'],
     });
     const info = await bot.api.getWebhookInfo();
 

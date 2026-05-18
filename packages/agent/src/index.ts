@@ -66,6 +66,18 @@ export interface AgentMessage {
   content: string;
 }
 
+/**
+ * Лог вызова tool'а внутри одного `runAgent()`. Возвращается наружу, чтобы
+ * call-site (handle-update.ts) мог среагировать на конкретный tool — например,
+ * после `propose_order` прикрепить inline-кнопки с orderId к ответному сообщению.
+ */
+export interface ToolCallLog {
+  name: keyof ToolHandlers;
+  input: unknown;
+  output: unknown;
+  isError: boolean;
+}
+
 let _client: Anthropic | undefined;
 function getClient() {
   if (_client) return _client;
@@ -83,7 +95,7 @@ function getClient() {
 export async function runAgent(
   history: AgentMessage[],
   ctx: AgentContext,
-): Promise<{ text: string; usage: Anthropic.Usage }> {
+): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
   const client = getClient();
   const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
 
@@ -92,6 +104,8 @@ export async function runAgent(
     role: m.role,
     content: m.content,
   }));
+
+  const toolCalls: ToolCallLog[] = [];
 
   // Максимум 6 итераций tool use (план MVP, раздел 5.3).
   for (let step = 0; step < 6; step++) {
@@ -110,16 +124,25 @@ export async function runAgent(
       for (const tu of toolUses) {
         const handler = ctx.toolHandlers[tu.name as keyof ToolHandlers];
         let result: unknown;
+        let isError = false;
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           result = await (handler as any)(tu.input);
         } catch (err) {
+          isError = true;
           result = { error: err instanceof Error ? err.message : String(err) };
         }
+        toolCalls.push({
+          name: tu.name as keyof ToolHandlers,
+          input: tu.input,
+          output: result,
+          isError,
+        });
         toolResults.push({
           type: 'tool_result',
           tool_use_id: tu.id,
           content: JSON.stringify(result),
+          ...(isError ? { is_error: true } : {}),
         });
       }
 
@@ -134,7 +157,7 @@ export async function runAgent(
       .map((b) => b.text)
       .join('\n');
 
-    return { text, usage: response.usage };
+    return { text, usage: response.usage, toolCalls };
   }
 
   throw new Error('Agent tool-use loop exceeded 6 iterations');

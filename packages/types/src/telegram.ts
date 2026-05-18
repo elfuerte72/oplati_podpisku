@@ -32,12 +32,27 @@ const telegramMessageSchema = z.object({
   text: z.string().optional(),
 });
 
+/**
+ * callback_query — приходит при нажатии inline-кнопки с `callback_data`.
+ * `message` опциональный (если сообщение слишком старое — Telegram его не
+ * приложит); `from` — обязательное (кто нажал).
+ */
+const telegramCallbackQuerySchema = z.object({
+  id: z.string(),
+  from: telegramUserSchema,
+  message: telegramMessageSchema.optional(),
+  chat_instance: z.string().optional(),
+  data: z.string().optional(),
+});
+
 export const telegramUpdateSchema = z.object({
   update_id: z.number().int(),
   message: telegramMessageSchema.optional(),
+  callback_query: telegramCallbackQuerySchema.optional(),
 });
 
 export type TelegramUpdate = z.infer<typeof telegramUpdateSchema>;
 export type TelegramMessage = z.infer<typeof telegramMessageSchema>;
 export type TelegramChat = z.infer<typeof telegramChatSchema>;
 export type TelegramUser = z.infer<typeof telegramUserSchema>;
+export type TelegramCallbackQuery = z.infer<typeof telegramCallbackQuerySchema>;

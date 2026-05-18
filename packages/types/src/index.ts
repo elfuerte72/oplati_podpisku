@@ -6,6 +6,7 @@ export {
   type TelegramMessage,
   type TelegramChat,
   type TelegramUser,
+  type TelegramCallbackQuery,
 } from './telegram.ts';
 
 export {

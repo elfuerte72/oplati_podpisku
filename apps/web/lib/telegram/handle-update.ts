@@ -8,14 +8,18 @@ import {
   getDb,
   getOrCreateActiveConversation,
   getOrCreateUserByTelegramId,
+  getOrderById,
   loadRecentMessages,
+  transitionOrder,
   type MessageHistoryItem,
 } from '@oplati/db';
-import { GREETING, runAgent, runAgentNoTools } from '@oplati/agent';
-import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
+import { GREETING, runAgent, runAgentNoTools, type ProposeOrderResult, type ToolCallLog } from '@oplati/agent';
+import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@oplati/types';
+import { InlineKeyboard } from 'grammy';
 
 import { childLogger } from '@/lib/logger';
 import { createToolHandlers } from '@/lib/tool-handlers';
+import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
 import { getBot } from './bot';
 
@@ -158,6 +162,12 @@ async function safeAppendMessage(
 }
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
+  // Inline-кнопки приходят как callback_query (не message). Обрабатываем отдельной веткой.
+  if (update.callback_query) {
+    await handleCallbackQuery(update, update.callback_query);
+    return;
+  }
+
   const message = update.message;
   if (!message || message.text === undefined) {
     log.warn({ event: 'telegram.update.ignored', updateId: update.update_id, kind: 'no_text' });
@@ -252,7 +262,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         toolHandlers,
       });
     } else {
-      result = await runAgentNoTools([{ role: 'user', content: text }]);
+      const noToolsResult = await runAgentNoTools([{ role: 'user', content: text }]);
+      result = { ...noToolsResult, toolCalls: [] };
     }
   } catch (err) {
     log.error({
@@ -310,8 +321,160 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     );
   }
 
-  for (const chunk of splitForTelegram(replyText, TELEGRAM_MESSAGE_LIMIT)) {
-    await sendSafely(chatId, chunk, update.update_id);
+  // Если последним tool'ом был успешный propose_order — приклеиваем к ответу
+  // кнопки «Подтвердить»/«Отменить» вместо текстового вопроса.
+  const proposeResult = extractProposeOrderResult(result.toolCalls);
+  const chunks = splitForTelegram(replyText, TELEGRAM_MESSAGE_LIMIT);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i] ?? '';
+    const isLast = i === chunks.length - 1;
+    if (isLast && proposeResult) {
+      await sendSafely(chatId, chunk, update.update_id, buildConfirmKeyboard(proposeResult.orderId));
+    } else {
+      await sendSafely(chatId, chunk, update.update_id);
+    }
+  }
+}
+
+/**
+ * Достаёт результат последнего успешного `propose_order` вызова из лога tool calls
+ * (после propose_order может ещё что-то быть, но кнопки делаем по самому свежему).
+ */
+function extractProposeOrderResult(toolCalls: ToolCallLog[]): ProposeOrderResult | null {
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (!call) continue;
+    if (call.name === 'propose_order' && !call.isError) {
+      const out = call.output;
+      if (
+        typeof out === 'object' && out !== null &&
+        'orderId' in out && typeof (out as { orderId: unknown }).orderId === 'string'
+      ) {
+        return out as ProposeOrderResult;
+      }
+    }
+  }
+  return null;
+}
+
+function buildConfirmKeyboard(orderId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Подтвердить', `confirm:${orderId}`)
+    .text('Отменить', `cancel:${orderId}`);
+}
+
+/**
+ * Обработчик нажатия inline-кнопок «Подтвердить» / «Отменить».
+ *
+ * callback_data:
+ *   - `confirm:<orderId>` → вызывает confirmOrder (создание L&P invoice) и
+ *      отправляет пользователю ссылку оплаты.
+ *   - `cancel:<orderId>`  → transitionOrder → cancelled, шлёт «Заказ отменён».
+ *
+ * Telegram требует ответить на callback_query через `answerCallbackQuery` —
+ * иначе кнопка будет крутиться у пользователя до таймаута (~15s).
+ */
+async function handleCallbackQuery(
+  update: TelegramUpdate,
+  cb: TelegramCallbackQuery,
+): Promise<void> {
+  const chatId = cb.message?.chat.id;
+  const updateId = update.update_id;
+  const data = cb.data ?? '';
+  const [action, orderId] = data.split(':');
+
+  log.info({
+    event: 'telegram.callback.received',
+    updateId,
+    chatId,
+    action,
+    hasOrderId: Boolean(orderId),
+  });
+
+  // Сразу подтверждаем callback (Telegram перестанет крутить кнопку).
+  try {
+    await getBot().api.answerCallbackQuery(cb.id);
+  } catch (err) {
+    log.warn({ event: 'telegram.callback.answer_failed', updateId, err });
+  }
+
+  if (!chatId || !orderId || (action !== 'confirm' && action !== 'cancel')) {
+    log.warn({ event: 'telegram.callback.invalid', updateId, data });
+    return;
+  }
+
+  // Снимем кнопки у исходного сообщения — нельзя нажать дважды.
+  if (cb.message) {
+    try {
+      await getBot().api.editMessageReplyMarkup(chatId, cb.message.message_id);
+    } catch (err) {
+      log.debug({ event: 'telegram.callback.unmark_failed', updateId, err });
+    }
+  }
+
+  if (action === 'confirm') {
+    let confirmResult: Awaited<ReturnType<typeof confirmOrder>>;
+    try {
+      confirmResult = await confirmOrder({ orderId });
+    } catch (err) {
+      log.error({ event: 'telegram.callback.confirm.failed', updateId, orderId, err });
+      Sentry.captureException(err, {
+        tags: { source: 'telegram.callback', step: 'confirm' },
+        extra: { orderId },
+      });
+      await sendSafely(
+        chatId,
+        'Не получилось создать счёт прямо сейчас — техническая проблема на стороне платёжного провайдера. Я уже подключил оператора, он напишет в ближайшее время.',
+        updateId,
+      );
+      return;
+    }
+
+    const replyParts = [`Счёт готов. Оплата:\n${confirmResult.paymentUrl}`];
+    if (confirmResult.qrPayload) {
+      replyParts.push('Или отсканируй QR-код в приложении банка по СБП.');
+    }
+    replyParts.push(`Счёт действует до ${formatExpires(confirmResult.expiresAt)}.`);
+    const reply = replyParts.join('\n\n');
+
+    await sendSafely(chatId, reply, updateId);
+    return;
+  }
+
+  // action === 'cancel'
+  try {
+    const db = getDb();
+    const order = await getOrderById(db, orderId);
+    if (!order) {
+      await sendSafely(chatId, 'Заказ уже не найден. Если хочешь начать заново — напиши /start.', updateId);
+      return;
+    }
+    // cancel валиден только из draft/clarifying/ready_for_payment/pending_payment.
+    // Если order уже paid/in_fulfillment/etc — transitionOrder бросит OrderTransitionError.
+    await transitionOrder(db, {
+      orderId,
+      toStatus: 'cancelled',
+      actorType: 'user',
+      eventType: 'user_cancelled',
+      payload: { source: 'telegram_inline_button' },
+    });
+    await sendSafely(chatId, 'Заказ отменён. Если передумаешь — напиши /start.', updateId);
+  } catch (err) {
+    log.error({ event: 'telegram.callback.cancel.failed', updateId, orderId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'telegram.callback', step: 'cancel' },
+      extra: { orderId },
+    });
+    await sendSafely(chatId, 'Не получилось отменить заказ. Напиши «оператор», подключу человека.', updateId);
+  }
+}
+
+function formatExpires(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'long' });
+  } catch {
+    return iso;
   }
 }
 
@@ -320,9 +483,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
  * request на нашей стороне). Всё остальное — пробрасывается в Sentry, но
  * не пробрасывается дальше: webhook должен ответить 200.
  */
-async function sendSafely(chatId: number, text: string, updateId: number): Promise<void> {
+async function sendSafely(
+  chatId: number,
+  text: string,
+  updateId: number,
+  replyMarkup?: InlineKeyboard,
+): Promise<void> {
   try {
-    await getBot().api.sendMessage(chatId, text);
+    await getBot().api.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);
   } catch (err) {
     if (err instanceof GrammyError) {
       if (err.error_code === 403) {
