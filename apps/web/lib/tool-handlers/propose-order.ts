@@ -1,5 +1,7 @@
 import 'server-only';
 
+import * as Sentry from '@sentry/nextjs';
+
 import {
   createDraftOrder,
   getDb,
@@ -9,7 +11,7 @@ import type { ProposeOrderResult } from '@oplati/agent';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
-import { getLoveAndPayClient } from '../loveandpay/index.ts';
+import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts';
 
 /**
  * Tool `propose_order`. Считает итоговую сумму в RUB:
@@ -58,13 +60,7 @@ export async function proposeOrder(input: {
     throw new Error(`propose_order: service ${serviceId} (${service.slug}) не активен`);
   }
 
-  const loveAndPay = getLoveAndPayClient();
-  const ratesResp = await loveAndPay.getRates('USDT', 'RUB');
-  // rate — это объект; число в rate.rate (см. docs/api-reference/v2/rates/current).
-  const rate = ratesResp.rate.rate;
-  if (!rate || rate <= 0) {
-    throw new Error(`propose_order: некорректный курс от L&P: ${rate}`);
-  }
+  const rate = await resolveUsdtRubRate();
 
   const commissionPercent = serverEnv.COMMISSION_PERCENT;
 
@@ -119,4 +115,40 @@ export async function proposeOrder(input: {
     rateUsdRubKopecks: usdtRubRateKopecks,
     expiresAt: expiresAt.toISOString(),
   };
+}
+
+/**
+ * Пытается получить курс USDT/RUB через L&P `/api/v2/rates`. На любую ошибку
+ * (RATE_NOT_FOUND, network, contract drift) — fallback на константу из env
+ * `RATE_FALLBACK_USDT_RUB` + Sentry warning, чтобы было видно сколько заказов
+ * прошло на fallback'е.
+ *
+ * Когда L&P зафиксирует курс — fallback перестанет срабатывать автоматически.
+ */
+async function resolveUsdtRubRate(): Promise<number> {
+  const fallback = serverEnv.RATE_FALLBACK_USDT_RUB;
+  try {
+    const loveAndPay = getLoveAndPayClient();
+    const ratesResp = await loveAndPay.getRates('USDT', 'RUB');
+    const rate = ratesResp.rate.rate;
+    if (!rate || rate <= 0) {
+      throw new Error(`L&P вернул некорректный курс: ${rate}`);
+    }
+    log.info({ event: 'tool.propose_order.rate.live', rate });
+    return rate;
+  } catch (err) {
+    const code = err instanceof LoveAndPayApiError ? err.code : 'unknown';
+    log.warn({
+      event: 'tool.propose_order.rate.fallback',
+      reason: code,
+      fallback,
+      err,
+    });
+    Sentry.captureMessage('USDT/RUB rate fallback used', {
+      level: 'warning',
+      tags: { source: 'tool.propose_order' },
+      extra: { code, fallback },
+    });
+    return fallback;
+  }
 }
