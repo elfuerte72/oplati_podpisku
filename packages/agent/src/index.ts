@@ -97,7 +97,7 @@ export async function runAgent(
   ctx: AgentContext,
 ): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
+  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 
   // Агентский цикл: модель может запросить tools, мы исполняем, возвращаем
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
@@ -179,7 +179,7 @@ export async function runAgentNoTools(
   history: AgentMessage[],
 ): Promise<{ text: string; usage: Anthropic.Usage }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
+  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
     role: m.role,

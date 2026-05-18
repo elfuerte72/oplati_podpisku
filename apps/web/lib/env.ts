@@ -54,7 +54,7 @@ const serverEnvSchema = z.object({
 
   // AI (Sprint 1.5 — Telegram + AI v1; на Sprint 1 ещё не используется)
   ANTHROPIC_API_KEY: optionalEnvString(),
-  ANTHROPIC_MODEL: z.string().default('claude-opus-4-6'),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
 
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
