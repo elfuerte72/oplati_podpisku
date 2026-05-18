@@ -13,8 +13,10 @@ export {
 
 export {
   appendMessage,
+  loadRecentMessages,
   type AppendMessageInput,
   type AppendMessageResult,
+  type MessageHistoryItem,
 } from './messages.ts';
 
 export { noopLogger, type RepoLogger } from './logger.ts';

@@ -8,6 +8,8 @@ import {
   getDb,
   getOrCreateActiveConversation,
   getOrCreateUserByTelegramId,
+  loadRecentMessages,
+  type MessageHistoryItem,
 } from '@oplati/db';
 import { GREETING, runAgent, runAgentNoTools } from '@oplati/agent';
 import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
@@ -224,15 +226,26 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   const startedAt = Date.now();
   let result: Awaited<ReturnType<typeof runAgent>>;
   try {
-    // Если есть persistence-контекст — запускаем агента С tools (MVP-сценарий:
-    // search_catalog → propose_order → confirm_order). Иначе — fallback на
-    // runAgentNoTools (без БД-контекста tools работать не могут).
-    //
-    // История разговора пока НЕ загружается из БД — между turn'ами модель stateless.
-    // Это покрывается отдельным milestone "loading conversation history".
     if (ctx) {
+      // MVP-сценарий: search_catalog → propose_order → confirm_order. Без истории
+      // AI забывает orderId из propose_order и не сможет вызвать confirm_order.
+      // Подгружаем последние 20 user/assistant сообщений в хронологии. Текущее
+      // user-сообщение уже записано в БД (safeAppendMessage выше), оно последнее.
+      let history: MessageHistoryItem[] = [];
+      try {
+        history = await loadRecentMessages(getDb(), ctx.conversationId, 20, dbLog);
+      } catch (err) {
+        log.warn({
+          event: 'telegram.history.load_failed',
+          updateId: update.update_id,
+          conversationId: ctx.conversationId,
+          err,
+        });
+      }
+
+      const agentHistory = toAgentHistory(history, text);
       const toolHandlers = createToolHandlers({ userId: ctx.userId, conversationId: ctx.conversationId });
-      result = await runAgent([{ role: 'user', content: text }], {
+      result = await runAgent(agentHistory, {
         userId: ctx.userId,
         conversationId: ctx.conversationId,
         channel: 'telegram',
@@ -334,6 +347,53 @@ async function sendSafely(chatId: number, text: string, updateId: number): Promi
     log.error({ event: 'telegram.send.unknown_error', updateId, chatId, err });
     Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
   }
+}
+
+/**
+ * Конвертирует историю из БД в формат Anthropic messages.
+ *
+ * - `user` / `assistant` идут как есть.
+ * - `operator` мапится на `assistant` (для AI оператор = "от имени сервиса").
+ * - `system` отбрасывается (если бы такие были).
+ *
+ * Anthropic требует чередования user/assistant и чтобы последнее сообщение было
+ * user. Текущий вход (`currentUserText`) уже записан в БД через safeAppendMessage
+ * перед этим вызовом, так что он должен быть последним user в `history`.
+ * На всякий случай — если последнее сообщение не user или history пуст, добавляем
+ * currentUserText явно.
+ *
+ * Также сжимаем последовательные одинаковые роли в одно сообщение (объединяем
+ * через \n\n) — Anthropic ругается на consecutive same-role messages.
+ */
+function toAgentHistory(
+  history: MessageHistoryItem[],
+  currentUserText: string,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const mapped = history
+    .filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'operator')
+    .map((m) => ({
+      role: (m.role === 'operator' ? 'assistant' : m.role) as 'user' | 'assistant',
+      content: m.content,
+    }));
+
+  // Сжимаем consecutive same-role.
+  const collapsed: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const m of mapped) {
+    const prev = collapsed[collapsed.length - 1];
+    if (prev && prev.role === m.role) {
+      prev.content = `${prev.content}\n\n${m.content}`;
+    } else {
+      collapsed.push({ ...m });
+    }
+  }
+
+  // Гарантируем что последнее сообщение — user.
+  const last = collapsed[collapsed.length - 1];
+  if (!last || last.role !== 'user') {
+    collapsed.push({ role: 'user', content: currentUserText });
+  }
+
+  return collapsed;
 }
 
 /**
