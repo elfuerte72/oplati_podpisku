@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 
 import {
   orders,
@@ -286,6 +286,31 @@ export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> 
       sql`${orders.status} = 'completed' AND ${orders.fulfilledAt} IS NOT NULL
           AND ${orders.fulfilledAt} BETWEEN now() - interval '26 days' AND now() - interval '23 days'`,
     );
+}
+
+/**
+ * Возвращает `true`, если за последние `withinMs` миллисекунд по этому
+ * `orderId` уже был записан event с указанным `eventType`. Используется для
+ * идемпотентности AI-tool'ов (request_human и т.п.), чтобы повторный вызов
+ * не плодил дубли в `order_events`.
+ */
+export async function hasRecentOrderEvent(
+  db: DB,
+  input: { orderId: string; eventType: string; withinMs: number },
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - input.withinMs);
+  const rows = await db
+    .select({ id: orderEvents.id })
+    .from(orderEvents)
+    .where(
+      and(
+        eq(orderEvents.orderId, input.orderId),
+        eq(orderEvents.eventType, input.eventType),
+        gt(orderEvents.createdAt, cutoff),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 function isUniqueViolation(err: unknown): boolean {

@@ -24,7 +24,7 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
   return {
     search_catalog: (input) => searchCatalog(input),
     propose_order: (input) => proposeOrder({ ...input, userId: ctx.userId, conversationId: ctx.conversationId }),
-    confirm_order: (input) => confirmOrder(input),
+    confirm_order: (input) => confirmOrder({ ...input, userId: ctx.userId }),
     request_human: (input) =>
       requestHuman({ ...input, userId: ctx.userId, conversationId: ctx.conversationId }),
   };

@@ -42,6 +42,7 @@ export {
   setOrderCardId,
   findExpiredPendingOrders,
   findOrdersForRenewalReminder,
+  hasRecentOrderEvent,
   type OrderRow,
   type CreateDraftOrderInput,
   type TransitionOrderInput,

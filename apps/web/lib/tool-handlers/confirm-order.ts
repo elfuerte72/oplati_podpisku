@@ -1,6 +1,9 @@
 import 'server-only';
 
+import * as Sentry from '@sentry/nextjs';
+
 import type { ConfirmOrderResult } from '@oplati/agent';
+import { getDb, getOrderById } from '@oplati/db';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
@@ -9,6 +12,15 @@ import { childLogger } from '../logger.ts';
  * Tool `confirm_order`. Self-call в `/api/payments/create` с `X-Internal-Token`.
  * Возвращает paymentUrl, qrPayload, expiresAt — это то, что AI озвучивает
  * пользователю.
+ *
+ * Ownership-check (P2-14): если передан `userId` (вызов от AI через
+ * createToolHandlers — мы знаем userId из контекста разговора) — проверяем,
+ * что заказ принадлежит этому пользователю. Если нет — отказываем, чтобы
+ * исключить случай галлюцинации/инъекции с чужим orderId.
+ *
+ * При вызове из callback-handler'а (нажатие inline-кнопки) `userId` не
+ * передаётся — там доверие установлено самим Telegram'ом: кнопка прикреплена
+ * к сообщению пользователя, владельца заказа.
  */
 
 const log = childLogger('tool.confirm_order');
@@ -16,7 +28,25 @@ const log = childLogger('tool.confirm_order');
 export async function confirmOrder(input: {
   orderId: string;
   paymentMethod?: 'sbp' | 'card';
+  userId?: string;
 }): Promise<ConfirmOrderResult> {
+  if (input.userId) {
+    const order = await getOrderById(getDb(), input.orderId);
+    if (!order || order.userId !== input.userId) {
+      log.warn({
+        event: 'tool.confirm_order.ownership_mismatch',
+        orderId: input.orderId,
+        userId: input.userId,
+      });
+      Sentry.captureMessage('confirm_order: ownership mismatch', {
+        level: 'warning',
+        tags: { source: 'tool.confirm_order' },
+        extra: { orderId: input.orderId, userId: input.userId },
+      });
+      throw new Error('confirm_order: заказ не найден или принадлежит другому пользователю');
+    }
+  }
+
   const internalToken = serverEnv.INTERNAL_API_TOKEN;
   if (!internalToken) {
     throw new Error('confirm_order: INTERNAL_API_TOKEN не задан');

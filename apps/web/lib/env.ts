@@ -55,6 +55,10 @@ const serverEnvSchema = z.object({
   // AI (Sprint 1.5 — Telegram + AI v1; на Sprint 1 ещё не используется)
   ANTHROPIC_API_KEY: optionalEnvString(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
+  // Для финансовой коммуникации стабильнее низкая температура; max_tokens
+  // увеличен на 2048 (хватает на KYC-инструкции, длинные ссылки и пр.).
+  ANTHROPIC_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.3),
+  ANTHROPIC_MAX_TOKENS: z.coerce.number().int().min(256).max(8192).default(2048),
 
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),

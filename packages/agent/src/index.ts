@@ -51,7 +51,12 @@ export interface ToolHandlers {
   request_human: (input: {
     orderId: string | null;
     reason: string;
-  }) => Promise<{ acknowledged: true }>;
+  }) => Promise<{
+    acknowledged: true;
+    slaHours: number;
+    withinBusinessHours: boolean;
+    duplicate?: true;
+  }>;
 }
 
 export interface AgentContext {
@@ -88,6 +93,19 @@ function getClient() {
 }
 
 /**
+ * Параметры модели — читаются из ENV с дефолтами. Валидация — в apps/web/lib/env.ts
+ * (Zod-схема), здесь только разумные fallback'и на случай standalone-использования.
+ */
+function getModelParams(): { temperature: number; maxTokens: number } {
+  const t = Number.parseFloat(process.env.ANTHROPIC_TEMPERATURE ?? '');
+  const m = Number.parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '', 10);
+  return {
+    temperature: Number.isFinite(t) ? t : 0.3,
+    maxTokens: Number.isFinite(m) && m > 0 ? m : 2048,
+  };
+}
+
+/**
  * Один круг разговора с AI.
  * Возвращает финальный текст для отправки пользователю + сырой ответ Anthropic.
  * Вызов инструментов делается через ctx.toolHandlers — apps/web решает, что там внутри.
@@ -98,6 +116,7 @@ export async function runAgent(
 ): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
   const client = getClient();
   const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  const { temperature, maxTokens } = getModelParams();
 
   // Агентский цикл: модель может запросить tools, мы исполняем, возвращаем
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
@@ -111,7 +130,8 @@ export async function runAgent(
   for (let step = 0; step < 6; step++) {
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
+      temperature,
       system: SYSTEM_PROMPT,
       tools,
       messages,
@@ -180,6 +200,7 @@ export async function runAgentNoTools(
 ): Promise<{ text: string; usage: Anthropic.Usage }> {
   const client = getClient();
   const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  const { temperature, maxTokens } = getModelParams();
 
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
     role: m.role,
@@ -188,7 +209,8 @@ export async function runAgentNoTools(
 
   const response = await client.messages.create({
     model,
-    max_tokens: 1024,
+    max_tokens: maxTokens,
+    temperature,
     system: SYSTEM_PROMPT,
     messages,
   });

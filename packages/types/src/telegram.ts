@@ -1,11 +1,12 @@
 import { z } from 'zod';
 
 /**
- * Минимальный slice Telegram Update для milestone «Telegram webhook + AI v1».
+ * Минимальный slice Telegram Update.
  *
- * Покрывается ТОЛЬКО `message` с текстом — для `/start` и обычных текстовых
- * сообщений. `callback_query`, `edited_message`, `channel_post`, медиа —
- * пропущены до Sprint 2 (когда появятся inline keyboards и заказы).
+ * Покрывается `message` (текст + опциональные медиа-поля для P0-1) и
+ * `callback_query` (для inline-кнопок). Медиа-поля валидируем как `unknown` —
+ * нам важно только их наличие, чтобы ответить шаблоном; разбирать структуру
+ * (file_id и пр.) пока не нужно.
  *
  * Сознательно не описываем все поля Telegram Update — мы валидируем границу,
  * не реплицируем `@types/telegram-bot-api`. Лишние поля Zod пропустит,
@@ -30,6 +31,17 @@ const telegramMessageSchema = z.object({
   chat: telegramChatSchema,
   from: telegramUserSchema.optional(),
   text: z.string().optional(),
+  caption: z.string().optional(),
+  // Медиа-поля: парсим только наличие. Структуру (file_id, mime_type и т.п.)
+  // не разбираем — нам нужно лишь определить тип контента для шаблонного ответа.
+  photo: z.array(z.unknown()).optional(),
+  voice: z.unknown().optional(),
+  video_note: z.unknown().optional(),
+  audio: z.unknown().optional(),
+  document: z.unknown().optional(),
+  sticker: z.unknown().optional(),
+  animation: z.unknown().optional(),
+  video: z.unknown().optional(),
 });
 
 /**

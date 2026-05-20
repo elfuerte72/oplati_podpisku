@@ -22,6 +22,7 @@ import { createToolHandlers } from '@/lib/tool-handlers';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
 import { getBot } from './bot';
+import { MEDIA_REPLY, type MediaKind } from './templates';
 
 /**
  * Диспатч одиночного Telegram update.
@@ -46,6 +47,25 @@ const log = childLogger('telegram-bot');
 const dbLog = childLogger('db');
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
+const TYPING_REFRESH_MS = 4000;
+
+/**
+ * Показывает «печатает…» пользователю на всё время выполнения `fn`.
+ * Telegram сам гасит индикатор через 5 сек, поэтому повторяем каждые 4 сек.
+ * Ошибки sendChatAction не критичны — глотаем, чтобы не валить основной flow.
+ */
+async function withTypingIndicator<T>(chatId: number, fn: () => Promise<T>): Promise<T> {
+  const api = getBot().api;
+  void api.sendChatAction(chatId, 'typing').catch(() => undefined);
+  const interval = setInterval(() => {
+    void api.sendChatAction(chatId, 'typing').catch(() => undefined);
+  }, TYPING_REFRESH_MS);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(interval);
+  }
+}
 
 type PersistContext = {
   userId: string;
@@ -161,6 +181,22 @@ async function safeAppendMessage(
   }
 }
 
+/**
+ * Определяет тип медиа-вложения для шаблонного ответа.
+ * Возвращает `null`, если медиа не найдено (например, edited_message без текста).
+ */
+function detectMediaKind(message: TelegramMessage): MediaKind | null {
+  if (message.photo) return 'photo';
+  if (message.voice) return 'voice';
+  if (message.video_note) return 'video_note';
+  if (message.audio) return 'audio';
+  if (message.video) return 'video';
+  if (message.document) return 'document';
+  if (message.sticker) return 'sticker';
+  if (message.animation) return 'animation';
+  return null;
+}
+
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
   // Inline-кнопки приходят как callback_query (не message). Обрабатываем отдельной веткой.
   if (update.callback_query) {
@@ -169,14 +205,55 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   }
 
   const message = update.message;
-  if (!message || message.text === undefined) {
-    log.warn({ event: 'telegram.update.ignored', updateId: update.update_id, kind: 'no_text' });
+  if (!message) {
+    log.warn({ event: 'telegram.update.ignored', updateId: update.update_id, kind: 'no_message' });
     return;
   }
 
   const chatId = message.chat.id;
   const telegramUserId = message.from?.id;
-  const text = message.text;
+
+  // Если есть text — нормальный путь. Caption приравниваем к text (фото со
+  // словами «нужен ChatGPT» — нормальный продуктовый кейс).
+  const rawText =
+    typeof message.text === 'string' && message.text.length > 0
+      ? message.text
+      : typeof message.caption === 'string' && message.caption.trim().length > 0
+        ? message.caption
+        : null;
+
+  if (rawText === null) {
+    const mediaKind = detectMediaKind(message);
+    if (mediaKind) {
+      log.info({
+        event: 'telegram.update.handled',
+        updateId: update.update_id,
+        chatId,
+        telegramUserId,
+        kind: 'media',
+        mediaType: mediaKind,
+      });
+      await sendSafely(chatId, MEDIA_REPLY[mediaKind], update.update_id);
+      return;
+    }
+    // edited_message без текста, system-сообщения и т.п. — тихо игнорируем.
+    log.warn({ event: 'telegram.update.ignored', updateId: update.update_id, kind: 'no_text' });
+    return;
+  }
+
+  const text = rawText;
+  const isFromCaption = !message.text && message.caption !== undefined;
+  if (isFromCaption) {
+    const mediaKind = detectMediaKind(message);
+    log.info({
+      event: 'telegram.update.handled',
+      updateId: update.update_id,
+      chatId,
+      telegramUserId,
+      kind: 'media_with_caption',
+      mediaType: mediaKind,
+    });
+  }
 
   if (text === '/start' || text.startsWith('/start ')) {
     log.info({
@@ -236,35 +313,39 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   const startedAt = Date.now();
   let result: Awaited<ReturnType<typeof runAgent>>;
   try {
-    if (ctx) {
-      // MVP-сценарий: search_catalog → propose_order → confirm_order. Без истории
-      // AI забывает orderId из propose_order и не сможет вызвать confirm_order.
-      // Подгружаем последние 20 user/assistant сообщений в хронологии. Текущее
-      // user-сообщение уже записано в БД (safeAppendMessage выше), оно последнее.
-      let history: MessageHistoryItem[] = [];
-      try {
-        history = await loadRecentMessages(getDb(), ctx.conversationId, 20, dbLog);
-      } catch (err) {
-        log.warn({
-          event: 'telegram.history.load_failed',
-          updateId: update.update_id,
+    result = await withTypingIndicator(chatId, async () => {
+      if (ctx) {
+        // MVP-сценарий: search_catalog → propose_order → confirm_order. Без истории
+        // AI забывает orderId из propose_order и не сможет вызвать confirm_order.
+        // Подгружаем последние 20 user/assistant сообщений в хронологии. Текущее
+        // user-сообщение уже записано в БД (safeAppendMessage выше), оно последнее.
+        let history: MessageHistoryItem[] = [];
+        try {
+          history = await loadRecentMessages(getDb(), ctx.conversationId, 20, dbLog);
+        } catch (err) {
+          log.warn({
+            event: 'telegram.history.load_failed',
+            updateId: update.update_id,
+            conversationId: ctx.conversationId,
+            err,
+          });
+        }
+
+        const agentHistory = toAgentHistory(history, text);
+        const toolHandlers = createToolHandlers({
+          userId: ctx.userId,
           conversationId: ctx.conversationId,
-          err,
+        });
+        return runAgent(agentHistory, {
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+          channel: 'telegram',
+          toolHandlers,
         });
       }
-
-      const agentHistory = toAgentHistory(history, text);
-      const toolHandlers = createToolHandlers({ userId: ctx.userId, conversationId: ctx.conversationId });
-      result = await runAgent(agentHistory, {
-        userId: ctx.userId,
-        conversationId: ctx.conversationId,
-        channel: 'telegram',
-        toolHandlers,
-      });
-    } else {
       const noToolsResult = await runAgentNoTools([{ role: 'user', content: text }]);
-      result = { ...noToolsResult, toolCalls: [] };
-    }
+      return { ...noToolsResult, toolCalls: [] };
+    });
   } catch (err) {
     log.error({
       event: 'telegram.agent.failed',
@@ -415,7 +496,7 @@ async function handleCallbackQuery(
   if (action === 'confirm') {
     let confirmResult: Awaited<ReturnType<typeof confirmOrder>>;
     try {
-      confirmResult = await confirmOrder({ orderId });
+      confirmResult = await withTypingIndicator(chatId, () => confirmOrder({ orderId }));
     } catch (err) {
       log.error({ event: 'telegram.callback.confirm.failed', updateId, orderId, err });
       Sentry.captureException(err, {
@@ -565,9 +646,46 @@ function toAgentHistory(
 }
 
 /**
+ * Разбивает текст на атомы для splitForTelegram:
+ *   - каждая обычная строка — отдельный атом;
+ *   - блок кода между парой строк ```...``` — один атом целиком,
+ *     чтобы граница чанка не прошла внутри кода.
+ *
+ * Незакрытый ```-блок отдаётся как один большой атом (защита от моделей,
+ * забывших закрыть fence).
+ */
+function tokenizeForSplit(text: string): string[] {
+  const tokens: string[] = [];
+  let inCode = false;
+  let buf: string[] = [];
+  for (const line of text.split('\n')) {
+    const isFence = line.startsWith('```');
+    if (isFence) {
+      if (!inCode) {
+        inCode = true;
+        buf = [line];
+      } else {
+        buf.push(line);
+        tokens.push(buf.join('\n'));
+        buf = [];
+        inCode = false;
+      }
+      continue;
+    }
+    if (inCode) {
+      buf.push(line);
+    } else {
+      tokens.push(line);
+    }
+  }
+  if (buf.length > 0) tokens.push(buf.join('\n'));
+  return tokens;
+}
+
+/**
  * Режем длинный ответ AI на куски ≤ `limit`. Сначала пытаемся по границам
- * абзацев и строк, чтобы не разрывать смысл; если кусок всё равно слишком
- * большой — режем по символам.
+ * строк и code-блоков, чтобы не разрывать смысл; если атом всё равно слишком
+ * большой (длинный код или строка без \n) — режем по символам.
  */
 export function splitForTelegram(text: string, limit: number): string[] {
   if (text.length <= limit) return [text];
@@ -575,8 +693,8 @@ export function splitForTelegram(text: string, limit: number): string[] {
   const result: string[] = [];
   let buffer = '';
 
-  for (const line of text.split('\n')) {
-    const candidate = buffer ? `${buffer}\n${line}` : line;
+  for (const token of tokenizeForSplit(text)) {
+    const candidate = buffer ? `${buffer}\n${token}` : token;
     if (candidate.length <= limit) {
       buffer = candidate;
       continue;
@@ -585,12 +703,12 @@ export function splitForTelegram(text: string, limit: number): string[] {
       result.push(buffer);
       buffer = '';
     }
-    if (line.length <= limit) {
-      buffer = line;
+    if (token.length <= limit) {
+      buffer = token;
       continue;
     }
-    for (let i = 0; i < line.length; i += limit) {
-      result.push(line.slice(i, i + limit));
+    for (let i = 0; i < token.length; i += limit) {
+      result.push(token.slice(i, i + limit));
     }
   }
   if (buffer) result.push(buffer);
