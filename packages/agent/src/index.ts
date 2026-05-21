@@ -17,7 +17,6 @@ export interface CatalogItem {
   id: string;
   slug: string;
   name: string;
-  basePriceUsdCents: number;
   requiresKyc: boolean;
 }
 

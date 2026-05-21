@@ -8,6 +8,11 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * Репозиторий каталога. Сервисы — публичные данные, RLS на таблице не включён
  * (см. schema.ts → таблица services без `.enableRLS()`). Поэтому функции тут
  * можно дёргать от любого роли; в продакшене это будет supabase-server / admin.
+ *
+ * Цены НЕ возвращаются — каталог хранит только реестр поддерживаемых сервисов
+ * (slug, name, requiresKyc). Актуальную цену AI достаёт через web_search tool
+ * перед propose_order. Поле `pricing_policy` в БД остаётся как legacy данные;
+ * search-результат его не использует и не возвращает.
  */
 
 export type ServiceRow = typeof services.$inferSelect;
@@ -16,19 +21,12 @@ export type CatalogSearchItem = {
   id: string;
   slug: string;
   name: string;
-  basePriceUsdCents: number;
   requiresKyc: boolean;
 };
 
 /**
  * Поиск активных сервисов по ILIKE на slug/name. Возвращает не более 10.
- *
- * Цена в USD-центах вытаскивается из `pricing_policy` jsonb по двум возможным
- * формам:
- *   - MVP-формат:   { type: 'fixed_usd', basePriceUsdCents: 2000 }
- *   - Текущий seed: { tiers: [{ originalAmount: 2000, currency: 'USD', ... }] }
- *
- * COALESCE даёт приоритет MVP-формату. Записи без цены отфильтровываются.
+ * Цена не возвращается — её AI достаёт web_search'ем.
  */
 export async function searchActiveServices(
   db: DB,
@@ -44,19 +42,10 @@ export async function searchActiveServices(
     slug: string;
     name: string;
     requires_kyc: boolean;
-    base_price_usd_cents: number | null;
   };
 
   const rows = await db.execute<Row>(sql`
-    SELECT
-      id,
-      slug,
-      name,
-      requires_kyc,
-      COALESCE(
-        (pricing_policy ->> 'basePriceUsdCents')::int,
-        ((pricing_policy -> 'tiers' -> 0) ->> 'originalAmount')::int
-      ) AS base_price_usd_cents
+    SELECT id, slug, name, requires_kyc
     FROM services
     WHERE is_active = true
       AND (name ILIKE ${pattern} OR slug ILIKE ${pattern})
@@ -64,15 +53,12 @@ export async function searchActiveServices(
     LIMIT 10
   `);
 
-  const items: CatalogSearchItem[] = rows
-    .filter((r): r is Row & { base_price_usd_cents: number } => typeof r.base_price_usd_cents === 'number')
-    .map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      name: r.name,
-      basePriceUsdCents: r.base_price_usd_cents,
-      requiresKyc: r.requires_kyc,
-    }));
+  const items: CatalogSearchItem[] = rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    name: r.name,
+    requiresKyc: r.requires_kyc,
+  }));
 
   log.info({ event: 'db.services.search', query: q, count: items.length });
   return items;
