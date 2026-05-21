@@ -29,6 +29,11 @@ export interface ProposeOrderResult {
   totalRubKopecks: number;
   rateUsdRubKopecks: number;
   expiresAt: string;
+  /**
+   * true — заказ создан без `serviceId` (через `customDescription`).
+   * Используется промптом, чтобы упомянуть «оператор перепроверит цену».
+   */
+  isCustom: boolean;
 }
 
 export interface ConfirmOrderResult {
@@ -40,7 +45,9 @@ export interface ConfirmOrderResult {
 export interface ToolHandlers {
   search_catalog: (input: { query: string }) => Promise<CatalogItem[]>;
   propose_order: (input: {
-    serviceId: string;
+    serviceId?: string;
+    customDescription?: string;
+    serviceName?: string;
     amountUsdCents: number;
     paymentMethod?: 'sbp' | 'card';
   }) => Promise<ProposeOrderResult>;

@@ -26,18 +26,31 @@ export const tools: Anthropic.Tool[] = [
   {
     name: 'propose_order',
     description:
-      'Сформировать черновик заказа и рассчитать итоговую сумму в рублях с учётом текущего курса USDT→RUB и комиссии 10%. Возвращает orderId, shortId, разбивку (subtotal, commission, total) и срок действия. После этого спроси у пользователя подтверждение.',
+      'Сформировать черновик заказа и рассчитать итоговую сумму в рублях с учётом текущего курса USDT→RUB и комиссии 10%. Возвращает orderId, shortId, разбивку (subtotal, commission, total), expiresAt и флаг isCustom. Передай ровно одно из: serviceId (для сервисов из search_catalog) ИЛИ customDescription (для сервисов вне каталога). После создания заказа спроси у пользователя подтверждение.',
     input_schema: {
       type: 'object',
       properties: {
         serviceId: {
           type: 'string',
-          description: 'UUID сервиса из search_catalog.',
+          description:
+            'UUID сервиса из search_catalog. Указывай ТОЛЬКО если сервис найден в каталоге. Взаимоисключающее с customDescription.',
+        },
+        customDescription: {
+          type: 'string',
+          maxLength: 500,
+          description:
+            'Свободное описание сервиса для заказов вне каталога. Формат: "Название Тариф, период". Примеры: "iCloud+ 200GB, 1 месяц", "Patreon Creator Pro, 12 месяцев". Используй ТОЛЬКО если search_catalog не нашёл подходящего сервиса. Взаимоисключающее с serviceId.',
+        },
+        serviceName: {
+          type: 'string',
+          maxLength: 100,
+          description:
+            'Человекочитаемое короткое название сервиса (без тарифа и срока). Примеры: "iCloud+", "Patreon Creator". Используй ВМЕСТЕ с customDescription для удобного отображения оператору. Игнорируется, если задан serviceId.',
         },
         amountUsdCents: {
           type: 'number',
           description:
-            'Сумма заказа в USD-центах (например 2000 = 20.00 USD). Бери basePriceUsdCents из search_catalog или умножай на количество месяцев, если пользователь хочет подписку дольше базового периода.',
+            'Сумма заказа в USD-центах за весь срок (например 2000 = 20.00 USD). Для каталога: basePriceUsdCents из search_catalog × количество месяцев. Для custom: ровно та сумма, которую назвал пользователь.',
         },
         paymentMethod: {
           type: 'string',
@@ -45,7 +58,7 @@ export const tools: Anthropic.Tool[] = [
           description: 'Предпочитаемый способ оплаты (если не задано — провайдер выбирает).',
         },
       },
-      required: ['serviceId', 'amountUsdCents'],
+      required: ['amountUsdCents'],
     },
   },
   {

@@ -20,6 +20,18 @@ import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts'
  *   3. commission = round(subtotal * COMMISSION_PERCENT / 100)
  *   4. total = subtotal + commission
  *
+ * Поддерживает два режима:
+ *  - **Каталог:** `serviceId` указан → lookup в `services`, `requiresKyc` берётся
+ *    из строки сервиса. Цена — со слов AI (`basePriceUsdCents × period`).
+ *  - **Custom (вне каталога):** задан `customDescription` (свободный текст вида
+ *    "iCloud+ 200GB, 6 мес") и опционально `serviceName` — заказ создаётся
+ *    без FK на `services` (`serviceId IS NULL`, заполняется
+ *    `customServiceDescription`). Цена со слов пользователя; оператор
+ *    перепроверяет её перед оформлением (этот шаг — вне tool'а).
+ *
+ * XOR-валидация: должен быть задан ровно один из (`serviceId`,
+ * `customDescription`); оба или ни один → throw.
+ *
  * Создаёт draft order сразу в статусе `ready_for_payment` (план MVP — пропускаем
  * `clarifying`; AI сам ведёт уточнения внутри диалога до tool-call).
  *
@@ -31,33 +43,69 @@ const log = childLogger('tool.propose_order');
 const TTL_HOURS = 24;
 
 export async function proposeOrder(input: {
-  serviceId: string;
+  serviceId?: string;
+  customDescription?: string;
+  serviceName?: string;
   amountUsdCents: number;
   paymentMethod?: 'sbp' | 'card';
   userId: string;
   conversationId: string;
 }): Promise<ProposeOrderResult> {
-  const { serviceId, amountUsdCents, userId, conversationId } = input;
+  const {
+    serviceId,
+    customDescription,
+    serviceName,
+    amountUsdCents,
+    userId,
+    conversationId,
+  } = input;
 
   if (amountUsdCents <= 0) {
     throw new Error('propose_order: amountUsdCents должен быть положительным');
   }
 
+  const hasServiceId = typeof serviceId === 'string' && serviceId.length > 0;
+  const hasCustomDescription =
+    typeof customDescription === 'string' && customDescription.trim().length > 0;
+
+  if (hasServiceId && hasCustomDescription) {
+    throw new Error(
+      'propose_order: задайте либо serviceId, либо customDescription, не оба',
+    );
+  }
+  if (!hasServiceId && !hasCustomDescription) {
+    throw new Error(
+      'propose_order: нужен serviceId (для каталога) или customDescription (для сервисов вне каталога)',
+    );
+  }
+
+  const isCustom = !hasServiceId;
+
   log.info({
     event: 'tool.propose_order.start',
     userId,
-    serviceId,
+    serviceId: serviceId ?? null,
+    customDescription: customDescription ?? null,
+    serviceName: serviceName ?? null,
     amountUsdCents,
+    isCustom,
   });
 
   const db = getDb();
 
-  const service = await getServiceById(db, serviceId);
-  if (!service) {
-    throw new Error(`propose_order: service ${serviceId} не найден`);
-  }
-  if (!service.isActive) {
-    throw new Error(`propose_order: service ${serviceId} (${service.slug}) не активен`);
+  let resolvedServiceId: string | null = null;
+  let serviceRequiresKyc = false;
+
+  if (hasServiceId) {
+    const service = await getServiceById(db, serviceId);
+    if (!service) {
+      throw new Error(`propose_order: service ${serviceId} не найден`);
+    }
+    if (!service.isActive) {
+      throw new Error(`propose_order: service ${serviceId} (${service.slug}) не активен`);
+    }
+    resolvedServiceId = service.id;
+    serviceRequiresKyc = service.requiresKyc;
   }
 
   const rate = await resolveUsdtRubRate();
@@ -81,7 +129,8 @@ export async function proposeOrder(input: {
     {
       userId,
       conversationId,
-      serviceId,
+      serviceId: resolvedServiceId,
+      customServiceDescription: isCustom ? customDescription : null,
       status: 'ready_for_payment',
       amountRub: totalKopecks,
       originalAmount: amountUsdCents,
@@ -90,15 +139,36 @@ export async function proposeOrder(input: {
       rateFixedAt: new Date(),
       expiresAt,
       commissionPercent,
-      requiresKyc: service.requiresKyc,
+      requiresKyc: serviceRequiresKyc,
+      parameters: isCustom
+        ? {
+            extra: {
+              source: 'custom',
+              ...(serviceName ? { serviceName } : {}),
+            },
+          }
+        : null,
     },
     log,
   );
+
+  if (isCustom) {
+    log.info({
+      event: 'tool.propose_order.custom',
+      orderId: order.id,
+      shortId: order.shortId,
+      customDescription,
+      serviceName: serviceName ?? null,
+      amountUsdCents,
+      totalRubKopecks: totalKopecks,
+    });
+  }
 
   log.info({
     event: 'tool.propose_order.ok',
     orderId: order.id,
     shortId: order.shortId,
+    isCustom,
     amountUsdCents,
     rate,
     subtotalKopecks,
@@ -114,6 +184,7 @@ export async function proposeOrder(input: {
     totalRubKopecks: totalKopecks,
     rateUsdRubKopecks: usdtRubRateKopecks,
     expiresAt: expiresAt.toISOString(),
+    isCustom,
   };
 }
 

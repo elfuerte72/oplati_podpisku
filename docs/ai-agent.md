@@ -128,6 +128,10 @@
 
 Handler создаёт `orders(status='draft')`, сразу переводит в `clarifying` или `ready_for_payment` в зависимости от полноты данных.
 
+**Текущая реализация (MVP, 2026-05-21).** Поддерживаются `serviceId` (UUID — временно вместо `serviceSlug`, до закрытия ADR P2-12 из `fixbot.md`), `customDescription` (свободный текст для сервисов вне каталога, max 500 символов), опциональный `serviceName` (короткое название для отображения оператору), `amountUsdCents`, `paymentMethod`. XOR-инвариант форсится в handler'е: ровно одно из (`serviceId`, `customDescription`) обязательно. Output дополнительно содержит флаг `isCustom: boolean` — `true` для custom-заказов; AI использует его в шаблоне ответа («оператор перепроверит цену перед оформлением»). Поля `tierName`, `period`, `accountEmail`, `notes` из спецификации выше — задел Спринта 2 (требует расширения схемы `orders`, см. fixbot.md P0-3).
+
+**Сервисы вне каталога.** Каталог не исчерпывающий — покрывает популярные подписки с фиксированной ценой. Любой другой сервис (Patreon, Substack, нишевые стриминги, нестандартные тарифы) принимается через `customDescription`: AI собирает у пользователя название/тариф/цену, заказ создаётся без FK на `services` (`orders.service_id IS NULL`, `orders.custom_service_description = "..."`, `orders.parameters.extra.source = 'custom'`). Оператор перепроверяет цену перед оформлением.
+
 ### `confirm_order`
 
 Подтвердить заказ после явного «да» от пользователя — создать платёжную ссылку.

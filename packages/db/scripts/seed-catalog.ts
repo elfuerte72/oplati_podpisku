@@ -226,6 +226,196 @@ const CATALOG: readonly CatalogEntry[] = [
       margin: 0.15,
     },
   },
+  {
+    slug: 'icloud-plus-200gb',
+    name: 'iCloud+ 200GB',
+    description: 'iCloud+ 200GB — облачное хранилище Apple',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: '200GB',
+          period: 'month',
+          priceRub: 37973,
+          originalAmount: 299,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'apple-music',
+    name: 'Apple Music',
+    description: 'Apple Music — Individual',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Individual',
+          period: 'month',
+          priceRub: 139573,
+          originalAmount: 1099,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'notion-plus',
+    name: 'Notion Plus',
+    description: 'Notion Plus — индивидуальный тариф',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Plus',
+          period: 'month',
+          priceRub: 127000,
+          originalAmount: 1000,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'figma-professional',
+    name: 'Figma Professional',
+    description: 'Figma Professional — Editor seat',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Professional',
+          period: 'month',
+          priceRub: 190500,
+          originalAmount: 1500,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'github-copilot',
+    name: 'GitHub Copilot',
+    description: 'GitHub Copilot Individual',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Individual',
+          period: 'month',
+          priceRub: 127000,
+          originalAmount: 1000,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'adobe-creative-cloud',
+    name: 'Adobe Creative Cloud',
+    description: 'Adobe Creative Cloud (All Apps)',
+    category: 'productivity',
+    requiresKyc: true,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'All Apps',
+          period: 'month',
+          priceRub: 761873,
+          originalAmount: 5999,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'disney-plus',
+    name: 'Disney+',
+    description: 'Disney+ — стриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Standard',
+          period: 'month',
+          priceRub: 126873,
+          originalAmount: 999,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'hbo-max',
+    name: 'HBO Max',
+    description: 'Max (HBO) — стриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Standard',
+          period: 'month',
+          priceRub: 126873,
+          originalAmount: 999,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'crunchyroll-mega-fan',
+    name: 'Crunchyroll Mega Fan',
+    description: 'Crunchyroll Mega Fan — аниме-стриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Mega Fan',
+          period: 'month',
+          priceRub: 152273,
+          originalAmount: 1199,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
+  {
+    slug: 'cursor-pro',
+    name: 'Cursor Pro',
+    description: 'Cursor Pro — AI code editor',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: {
+      tiers: [
+        {
+          name: 'Pro',
+          period: 'month',
+          priceRub: 254000,
+          originalAmount: 2000,
+          currency: 'USD',
+        },
+      ],
+      margin: 0.15,
+    },
+  },
 ];
 
 async function main(): Promise<void> {
