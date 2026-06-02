@@ -21,6 +21,8 @@ export {
 
 export { noopLogger, type RepoLogger } from './logger.ts';
 
+export { pingDb } from './health.ts';
+
 export {
   createCard,
   findActiveByUserId,
