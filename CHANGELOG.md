@@ -15,7 +15,19 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 Изменения в `main`, ещё не задеплоенные в production.
 
+### Fixed
+
+- **Бот «потерял память» — пустая БД + молчаливая деградация в амнезию** ([post-mortem 2026-06-02](./.ai-factory/patches/2026-06-02-14.30.md))
+  - Симптом: бот переспрашивает уже сказанное и не создаёт заказы (амнезия), при этом логи Vercel — зелёные `200 OK`. Память в коде (`loadRecentMessages` перед `runAgent`) реализована корректно — ломала её пустая БД.
+  - Root cause: боевая Supabase `nyxijwpuvctmvemaemqn` (общая для preview и prod) имела пустую `public`-схему (0 таблиц). Любой DB-вызов падал → `persistInbound` возвращал `null` → `ctx === null` → fallback `runAgentNoTools([только текущее сообщение])` (без истории и без tools). Изначально миграции накатывались через Supabase MCP `apply_migration` (трекинг в `supabase_migrations`, не в drizzle); после потери таблиц на free-tier их никто не накатил заново — **не было команды `db:migrate`**.
+  - Fix: `restore_project` из `INACTIVE` → применены 7 миграций через `drizzle-kit migrate` (10 таблиц + 27 services) → проверен конвейер памяти на живой БД реальными repo-функциями → тестовые строки удалены.
+  - `LoveAndPay` протестирован (read-only `GET /api/v2/rates`): связность + HMAC-подпись + API-ключ валидны (404 `RATE_NOT_FOUND`, не 401); фикс. курс USDT/RUB на аккаунте не задан → штатный `RATE_FALLBACK_USDT_RUB`.
+
 ### Added
+
+- **`db:migrate` — недостающая команда применения миграций** ([post-mortem 2026-06-02](./.ai-factory/patches/2026-06-02-14.30.md))
+  - `packages/db/package.json`: `db:migrate` = `node --env-file=../../.env node_modules/drizzle-kit/bin.cjs migrate`. Применяет ВЕСЬ набор миграций по журналу (включая hand-written RLS `0001`/`0005` и seed `0006`) — в отличие от `db:push`, который диффит только `schema.ts`. Forward-only, идемпотентно. drizzle-kit сам `.env` не читает, а `.bin/drizzle-kit` — shell-shim (не запускается через `node`), отсюда явный путь к `bin.cjs`.
+  - Сверён трекинг `drizzle.__drizzle_migrations` (7 строк, `hash = sha256(.sql)`, `created_at = journal.when`) — чтобы `db:migrate` был чистым no-op на уже накатанной БД и применял только новые миграции.
 
 - **Расширение схемы БД — services / orders / order_events / payments / attachments + seed каталога** ([Journal 17-05-2026](./.ai-factory/Journal/db-extended-schema/17-05-2026.md), план [`feature-db-extended-schema.md`](./.ai-factory/plans/feature-db-extended-schema.md))
   - `packages/db/src/schema.ts`: добавлены 5 таблиц и 5 enum'ов. `services` (публичный каталог, БЕЗ RLS), `orders` (с CHECK `orders_service_or_custom` — заказ обязан ссылаться либо на услугу из каталога, либо иметь кастомное описание), `order_events` (append-only audit log с FK CASCADE на orders), `payments` (UNIQUE `(provider, provider_ref)` — основа идемпотентности webhook'ов), `attachments` (Supabase Storage refs с FK SET NULL — файлы переживают удаление order/message). Enum'ы: `order_status` (13 значений), `payment_provider`, `payment_status`, `attachment_kind`, `actor_type`. Все суммы — `integer` копейки.
