@@ -56,4 +56,10 @@ jobs:
       - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+          # Гейтим только production (runtime) зависимости — консистентно с
+          # job'ом dependency-audit выше (`pnpm audit --prod`). Dev-инструменты
+          # (vitest, drizzle-kit и т.п.) не попадают в прод-бандл; их advisory
+          # отслеживаем, но они не блокируют merge. Прод-уязвимости по-прежнему
+          # валят PR (fail-on-severity: high).
+          fail-on-scope: runtime
           comment-summary-in-pr: on-failure
