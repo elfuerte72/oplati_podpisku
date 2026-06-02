@@ -25,6 +25,11 @@ Roadmap и milestone'ы — в [`.ai-factory/ROADMAP.md`](./.ai-factory/ROADMAP.
 
 ### Added
 
+- **Keep-alive cron — анти-автопауза Supabase + health-heartbeat** ([post-mortem 2026-06-02](./.ai-factory/patches/2026-06-02-14.30.md), [docs/background-jobs.md](./docs/background-jobs.md))
+  - `/api/cron/keepalive` (Vercel Cron, `0 */6 * * *`): `pingDb()` (`SELECT 1`) держит free-tier Supabase «тёплым», чтобы он не уходил в auto-pause (`INACTIVE`) — первопричина амнезии бота 2026-06-02. На недоступность БД — Sentry-алерт (`cron.keepalive` / `db_unreachable`) + 500.
+  - `@oplati/db`: repository-функция `pingDb` (raw `SELECT 1`) — без протечки `drizzle-orm` в `apps/web`.
+  - ⚠️ Vercel Cron запускается ТОЛЬКО на production-деплое и требует `CRON_SECRET` в env, иначе `authorizeCron` отдаёт 401 — это касается ВСЕХ cron'ов проекта (сейчас `CRON_SECRET` не задан → на проде cron'ы не отрабатывают).
+
 - **`db:migrate` — недостающая команда применения миграций** ([post-mortem 2026-06-02](./.ai-factory/patches/2026-06-02-14.30.md))
   - `packages/db/package.json`: `db:migrate` = `node --env-file=../../.env node_modules/drizzle-kit/bin.cjs migrate`. Применяет ВЕСЬ набор миграций по журналу (включая hand-written RLS `0001`/`0005` и seed `0006`) — в отличие от `db:push`, который диффит только `schema.ts`. Forward-only, идемпотентно. drizzle-kit сам `.env` не читает, а `.bin/drizzle-kit` — shell-shim (не запускается через `node`), отсюда явный путь к `bin.cjs`.
   - Сверён трекинг `drizzle.__drizzle_migrations` (7 строк, `hash = sha256(.sql)`, `created_at = journal.when`) — чтобы `db:migrate` был чистым no-op на уже накатанной БД и применял только новые миграции.

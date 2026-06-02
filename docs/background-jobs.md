@@ -100,6 +100,26 @@
 
 Обновляет `staff.telegram_id` если кто-то заходил в группу операторов (чтобы привязать идентичность). Детали — по мере необходимости.
 
+### 7. `keepalive`
+
+**Type:** scheduled task (реализовано как **Vercel Cron**, не Trigger.dev — как и весь `apps/web/app/api/cron/*`)
+**Schedule:** каждые 6 часов (`0 */6 * * *`, `apps/web/vercel.json`)
+**Назначение:** не давать Supabase free-tier уходить в auto-pause (`INACTIVE`) + health-heartbeat БД.
+
+**Логика:**
+```
+1. pingDb(): SELECT 1 (@oplati/db repositories/health.ts)
+2. ok    → 200 { ok: true, latencyMs }
+3. fail  → Sentry alert (tags: cron.keepalive / db_unreachable) + 500 { ok: false }
+```
+
+**Контекст:** первопричина инцидента 2026-06-02 — пауза БД молча превращала бота
+в амнезика (`persistInbound` падал → `runAgentNoTools` без истории/tools). Любой
+из cron'ов уже греет БД, но keepalive — явный single-purpose heartbeat с алертом.
+
+> ⚠️ Vercel Cron запускается ТОЛЬКО на production-деплое и требует `CRON_SECRET`
+> в env (иначе `authorizeCron` вернёт 401 на проде — справедливо для ВСЕХ cron'ов).
+
 ## Event system
 
 Переходы в `state-machine.md` публикуют события:
