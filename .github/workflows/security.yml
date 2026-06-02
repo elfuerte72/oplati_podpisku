@@ -61,5 +61,5 @@ jobs:
           # (vitest, drizzle-kit и т.п.) не попадают в прод-бандл; их advisory
           # отслеживаем, но они не блокируют merge. Прод-уязвимости по-прежнему
           # валят PR (fail-on-severity: high).
-          fail-on-scope: runtime
+          fail-on-scopes: runtime
           comment-summary-in-pr: on-failure
