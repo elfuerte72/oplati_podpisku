@@ -56,10 +56,15 @@ jobs:
       - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
-          # Гейтим только production (runtime) зависимости — консистентно с
-          # job'ом dependency-audit выше (`pnpm audit --prod`). Dev-инструменты
-          # (vitest, drizzle-kit и т.п.) не попадают в прод-бандл; их advisory
-          # отслеживаем, но они не блокируют merge. Прод-уязвимости по-прежнему
-          # валят PR (fail-on-severity: high).
+          # Намерение — гейтить только production (runtime) зависимости,
+          # консистентно с job'ом dependency-audit выше (`pnpm audit --prod`).
+          # ВАЖНО: GitHub dependency-graph для pnpm-lock.yaml не различает
+          # dev/prod надёжно и помечает почти всё как `runtime`, поэтому одного
+          # fail-on-scopes мало.
           fail-on-scopes: runtime
+          # Точечное исключение: GHSA-5xrq-8626-4rwp — vitest <4.1.0, critical,
+          # но это DEV-инструмент (нет в прод-бандле; стреляет только при
+          # запущенном Vitest UI server). Для задеплоенного бота риск нулевой.
+          # Убрать это исключение после апгрейда vitest до >=4.1.0 (follow-up).
+          allow-ghsas: GHSA-5xrq-8626-4rwp
           comment-summary-in-pr: on-failure
