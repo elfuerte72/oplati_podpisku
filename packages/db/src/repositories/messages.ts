@@ -1,3 +1,5 @@
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+
 import { messages } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
@@ -65,3 +67,65 @@ export async function appendMessage(
 
   return { id: row.id };
 }
+
+export type MessageHistoryItem = {
+  id: string;
+  role: 'user' | 'assistant' | 'operator' | 'system';
+  content: string;
+  createdAt: Date;
+};
+
+/**
+ * Возвращает последние N user/assistant сообщений диалога в **chronological**
+ * порядке (старое → новое) — формат под Anthropic messages API.
+ *
+ * Operator-сообщения подаются в AI как `assistant`-роль (оператор пишет от
+ * имени сервиса). System-сообщения и tool_use/tool_result в текущем milestone
+ * не подгружаются — между turn'ами agent stateless относительно tool calls
+ * (они есть только внутри одного turn'а).
+ */
+export async function loadRecentMessages(
+  db: DB,
+  conversationId: string,
+  limit = 20,
+  log: RepoLogger = noopLogger,
+): Promise<MessageHistoryItem[]> {
+  const rows = await db
+    .select({
+      id: messages.id,
+      role: messages.role,
+      content: messages.content,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.conversationId, conversationId),
+        inArray(messages.role, ['user', 'assistant', 'operator']),
+      ),
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(limit);
+
+  // SELECT с DESC + LIMIT даёт нам последние N. Разворачиваем в хронологию.
+  const history: MessageHistoryItem[] = rows
+    .map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      createdAt: r.createdAt,
+    }))
+    .reverse();
+
+  log.debug({
+    event: 'db.messages.history_loaded',
+    conversationId,
+    count: history.length,
+  });
+
+  return history;
+}
+
+// keep these imports referenced so tsc with verbatimModuleSyntax doesn't drop them
+void asc;
+void sql;

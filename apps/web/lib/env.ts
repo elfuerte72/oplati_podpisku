@@ -54,7 +54,11 @@ const serverEnvSchema = z.object({
 
   // AI (Sprint 1.5 — Telegram + AI v1; на Sprint 1 ещё не используется)
   ANTHROPIC_API_KEY: optionalEnvString(),
-  ANTHROPIC_MODEL: z.string().default('claude-opus-4-6'),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
+  // Для финансовой коммуникации стабильнее низкая температура; max_tokens
+  // увеличен на 2048 (хватает на KYC-инструкции, длинные ссылки и пр.).
+  ANTHROPIC_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.3),
+  ANTHROPIC_MAX_TOKENS: z.coerce.number().int().min(256).max(8192).default(2048),
 
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
@@ -67,6 +71,28 @@ const serverEnvSchema = z.object({
   YOOKASSA_WEBHOOK_SECRET: optionalEnvString(),
   CRYPTOBOT_TOKEN: optionalEnvString(),
   CRYPTOBOT_WEBHOOK_SECRET: optionalEnvString(),
+
+  // Love & Pay (MVP) — RUB-acquiring + USDT rates; preview = pk_test_*, prod = pk_live_*
+  LOVEANDPAY_API_KEY: optionalEnvString(),
+  LOVEANDPAY_SECRET_KEY: optionalEnvString(),
+  LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
+  LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+
+  // app.pay.space (MVP) — выпуск виртуальных USD-карт
+  PAYSPACE_API_KEY: optionalEnvString(),
+  PAYSPACE_ACCOUNT_ID: optionalEnvString(),
+  PAYSPACE_BASE_URL: z.string().url().default('https://app.pay.space/api/v1'),
+
+  // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
+  COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
+
+  // Fallback USDT→RUB курс, если L&P /rates временно недоступен (например, пока
+  // не подписан договор и RATE_NOT_FOUND). Когда L&P оживёт, fallback перестанет
+  // срабатывать сам. Значение в рублях за 1 USDT (например 95.0).
+  RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(95),
+
+  // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
+  INTERNAL_API_TOKEN: optionalEnvString(),
 
   // Rate limit (Sprint 3)
   UPSTASH_REDIS_REST_URL: optionalUrl(),

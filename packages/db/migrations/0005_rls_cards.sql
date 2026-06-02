@@ -1,0 +1,14 @@
+-- RLS для cards.
+--
+-- Таблица cards содержит данные виртуальных USD-карт (app.pay.space): маскированный PAN,
+-- баланс, привязка к пользователю. Доступ ограничиваем по тому же паттерну, что и users/orders
+-- (см. 0001_enable_rls.sql): RLS включён без позитивных политик → deny-by-default для anon
+-- и authenticated. service_role обходит RLS (используется во всём server-коде через
+-- supabaseAdmin / postgres-js с прямым подключением).
+--
+-- Политики операторов (operator/supervisor/admin читают чужие карты для саппорта) появятся
+-- в milestone "Минимальная админка" вместе с auth.users → public.staff линковкой.
+--
+-- RLS уже включён через drizzle .enableRLS() в schema.ts → миграция 0004; здесь
+-- закрепляем это идемпотентным NO-OP'ом, чтобы файл не оставался пустым и попал в _journal.
+ALTER TABLE "cards" ENABLE ROW LEVEL SECURITY;

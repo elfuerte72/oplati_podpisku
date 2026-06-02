@@ -6,50 +6,61 @@ export {
   type TelegramMessage,
   type TelegramChat,
   type TelegramUser,
+  type TelegramCallbackQuery,
 } from './telegram.ts';
 
-// ─── Order status ─────────────────────────────────────────────────────────
+export {
+  loveAndPayInvoiceStatus,
+  type LoveAndPayInvoiceStatus,
+  loveAndPayStatusToInternal,
+  loveAndPayStatusToPaymentStatus,
+  loveAndPayInvoiceRequestSchema,
+  type LoveAndPayInvoiceRequest,
+  loveAndPayInvoiceSchema,
+  type LoveAndPayInvoice,
+  loveAndPayInvoiceResponseSchema,
+  type LoveAndPayInvoiceResponse,
+  loveAndPayRateSchema,
+  type LoveAndPayRate,
+  loveAndPayRatesResponseSchema,
+  type LoveAndPayRatesResponse,
+  loveAndPayWebhookData,
+  type LoveAndPayWebhookData,
+  loveAndPayWebhookEventSchema,
+  type LoveAndPayWebhookEvent,
+  loveAndPayErrorCode,
+  type LoveAndPayErrorCode,
+  loveAndPayErrorSchema,
+  type LoveAndPayError,
+} from './loveandpay.ts';
 
-export const orderStatus = z.enum([
-  'draft',
-  'clarifying',
-  'kyc_required',
-  'ready_for_payment',
-  'pending_payment',
-  'paid',
-  'in_fulfillment',
-  'completed',
-  'failed',
-  'cancelled',
-  'expired',
-  'refund_requested',
-  'refunded',
-]);
-export type OrderStatus = z.infer<typeof orderStatus>;
+export {
+  paySpaceCreateCardRequestSchema,
+  type PaySpaceCreateCardRequest,
+  paySpaceCreateCardResponseSchema,
+  type PaySpaceCreateCardResponse,
+  paySpaceTopupRequestSchema,
+  type PaySpaceTopupRequest,
+  paySpaceTopupResponseSchema,
+  type PaySpaceTopupResponse,
+  paySpaceCardStatus,
+  type PaySpaceCardStatus,
+  paySpaceGetCardResponseSchema,
+  type PaySpaceGetCardResponse,
+  paySpaceErrorSchema,
+  type PaySpaceError,
+} from './paypace.ts';
 
-/**
- * Допустимые переходы state machine заказа.
- * Любой переход, не перечисленный здесь, — баг.
- */
-export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
-  draft: ['clarifying', 'cancelled'],
-  clarifying: ['kyc_required', 'ready_for_payment', 'cancelled'],
-  kyc_required: ['clarifying', 'cancelled'],
-  ready_for_payment: ['pending_payment', 'cancelled'],
-  pending_payment: ['paid', 'expired', 'cancelled'],
-  paid: ['in_fulfillment', 'refund_requested'],
-  in_fulfillment: ['completed', 'failed'],
-  completed: ['refund_requested'],
-  failed: ['refund_requested'],
-  refund_requested: ['refunded', 'cancelled'],
-  refunded: [],
-  cancelled: [],
-  expired: [],
-};
+// ─── Order status + state machine ─────────────────────────────────────────
 
-export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
-  return (allowedTransitions[from] as readonly OrderStatus[]).includes(to);
-}
+export {
+  orderStatus,
+  type OrderStatus,
+  allowedTransitions,
+  isAllowedTransition,
+  canTransition,
+  OrderTransitionError,
+} from './order-state-machine.ts';
 
 // ─── Order parameters (гибкая структура) ──────────────────────────────────
 
@@ -106,8 +117,18 @@ export type HandoffReason = z.infer<typeof handoffReason>;
 
 // ─── Payment / attachment / actor enums (синхронизированы с pgEnum в @oplati/db) ──
 
-export const paymentProvider = z.enum(['yookassa', 'cryptobot', 'sbp', 'manual']);
+export const paymentProvider = z.enum([
+  'yookassa',
+  'cryptobot',
+  'sbp',
+  'manual',
+  'loveandpay',
+  'paypace',
+]);
 export type PaymentProvider = z.infer<typeof paymentProvider>;
+
+export const cardStatus = z.enum(['active', 'idle', 'recycled']);
+export type CardStatus = z.infer<typeof cardStatus>;
 
 export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);
 export type PaymentStatus = z.infer<typeof paymentStatus>;

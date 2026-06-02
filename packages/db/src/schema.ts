@@ -55,7 +55,11 @@ export const paymentProviderEnum = pgEnum('payment_provider', [
   'cryptobot',
   'sbp',
   'manual',
+  'loveandpay',
+  'paypace',
 ]);
+
+export const cardStatusEnum = pgEnum('card_status', ['active', 'idle', 'recycled']);
 
 export const paymentStatusEnum = pgEnum('payment_status', [
   'pending',
@@ -204,6 +208,16 @@ export const orders = pgTable(
     assignedOperatorId: uuid('assigned_operator_id').references(() => staff.id),
     supervisorId: uuid('supervisor_id').references(() => staff.id),
     parameters: jsonb('parameters').$type<OrderParameters>(),
+    // MVP: курс USDT→RUB (как RUB-копейки за 1 USDT × 10000, например 9523456 = 95.23456 RUB/USDT)
+    usdtRubRateKopecks: integer('usdt_rub_rate_kopecks'),
+    rateFixedAt: timestamp('rate_fixed_at', { withTimezone: true }),
+    // TTL счёта L&P (по умолчанию 24h)
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // Снапшот процента комиссии на момент создания заказа (10 = 10%)
+    commissionPercent: integer('commission_percent'),
+    // FK на cards.id — выставляется issue-card job-ом после успешной оплаты.
+    // Lazy reference: cards объявлена ниже в этом же файле, стрелочная функция спасает от hoisting.
+    cardId: uuid('card_id').references(() => cards.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     paidAt: timestamp('paid_at', { withTimezone: true }),
     fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
@@ -256,9 +270,16 @@ export const payments = pgTable(
       .references(() => orders.id, { onDelete: 'restrict' }),
     provider: paymentProviderEnum('provider').notNull(),
     providerRef: text('provider_ref').notNull(),
+    // L&P invoice number (например INV-1234) — отображаемое значение, не идентификатор
+    providerInvoiceNumber: text('provider_invoice_number'),
     amountRub: integer('amount_rub').notNull(), // копейки
     status: paymentStatusEnum('status').default('pending').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>(),
+    // Платёж был восстановлен через cron-поллинг, а не webhook — Sentry warning при true
+    recoveredViaPolling: boolean('recovered_via_polling').default(false).notNull(),
+    // TTL счёта L&P
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    webhookReceivedAt: timestamp('webhook_received_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
@@ -269,6 +290,33 @@ export const payments = pgTable(
       t.providerRef,
     ),
     orderIdx: index('payments_order_id_idx').on(t.orderId),
+  }),
+).enableRLS();
+
+// ─── Cards (app.pay.space виртуальные USD-карты) ──────────────────────────
+
+export const cards = pgTable(
+  'cards',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // 'paypace' (по умолчанию); строка а не enum — чтобы не плодить отдельный card_provider enum,
+    // карты у нас всегда выпускает paypace, но текстовое поле упрощает расширение.
+    provider: text('provider').notNull().default('paypace'),
+    providerCardId: text('provider_card_id').notNull().unique(),
+    panMasked: text('pan_masked').notNull(),
+    status: cardStatusEnum('status').default('active').notNull(),
+    balanceUsdCents: integer('balance_usd_cents').default(0).notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    recycledAt: timestamp('recycled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('cards_user_id_idx').on(t.userId),
+    // Частичный индекс — ускоряет findRecyclableCard / recycle cron.
+    idleIdx: index('cards_idle_idx').on(t.status).where(sql`${t.status} = 'idle'`),
   }),
 ).enableRLS();
 

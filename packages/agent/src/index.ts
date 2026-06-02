@@ -6,14 +6,63 @@ export { SYSTEM_PROMPT, GREETING } from './prompts.ts';
 export { tools } from './tools.ts';
 
 /**
- * Контракт для инструментов — apps/web подставляет реальные реализации
- * (потому что tools требуют доступ к БД/сервисам, которые не должны быть в agent).
+ * Контракт инструментов AI-агента (MVP: Love & Pay + app.pay.space).
+ * Реализация — `apps/web/lib/tool-handlers/`; agent её не импортирует, чтобы
+ * пакет оставался без зависимостей от БД (CLAUDE.md, граница пакетов).
+ *
+ * Результаты сериализуются в `tool_result` и подаются обратно в модель —
+ * структуру держим стабильной.
  */
+export interface CatalogItem {
+  id: string;
+  slug: string;
+  name: string;
+  requiresKyc: boolean;
+}
+
+export interface ProposeOrderResult {
+  orderId: string;
+  shortId: string;
+  amountRubKopecks: number;
+  commissionKopecks: number;
+  totalRubKopecks: number;
+  rateUsdRubKopecks: number;
+  expiresAt: string;
+  /**
+   * true — заказ создан без `serviceId` (через `customDescription`).
+   * Используется промптом, чтобы упомянуть «оператор перепроверит цену».
+   */
+  isCustom: boolean;
+}
+
+export interface ConfirmOrderResult {
+  paymentUrl: string;
+  qrPayload: string | null;
+  expiresAt: string;
+}
+
 export interface ToolHandlers {
-  search_catalog: (input: { query: string; category?: string }) => Promise<unknown>;
-  propose_order: (input: Record<string, unknown>) => Promise<unknown>;
-  confirm_order: (input: { orderId: string; paymentMethod: string }) => Promise<unknown>;
-  request_human: (input: { reason: string; context: string }) => Promise<unknown>;
+  search_catalog: (input: { query: string }) => Promise<CatalogItem[]>;
+  propose_order: (input: {
+    serviceId?: string;
+    customDescription?: string;
+    serviceName?: string;
+    amountUsdCents: number;
+    paymentMethod?: 'sbp' | 'card';
+  }) => Promise<ProposeOrderResult>;
+  confirm_order: (input: {
+    orderId: string;
+    paymentMethod?: 'sbp' | 'card';
+  }) => Promise<ConfirmOrderResult>;
+  request_human: (input: {
+    orderId: string | null;
+    reason: string;
+  }) => Promise<{
+    acknowledged: true;
+    slaHours: number;
+    withinBusinessHours: boolean;
+    duplicate?: true;
+  }>;
 }
 
 export interface AgentContext {
@@ -28,6 +77,18 @@ export interface AgentMessage {
   content: string;
 }
 
+/**
+ * Лог вызова tool'а внутри одного `runAgent()`. Возвращается наружу, чтобы
+ * call-site (handle-update.ts) мог среагировать на конкретный tool — например,
+ * после `propose_order` прикрепить inline-кнопки с orderId к ответному сообщению.
+ */
+export interface ToolCallLog {
+  name: keyof ToolHandlers;
+  input: unknown;
+  output: unknown;
+  isError: boolean;
+}
+
 let _client: Anthropic | undefined;
 function getClient() {
   if (_client) return _client;
@@ -38,6 +99,19 @@ function getClient() {
 }
 
 /**
+ * Параметры модели — читаются из ENV с дефолтами. Валидация — в apps/web/lib/env.ts
+ * (Zod-схема), здесь только разумные fallback'и на случай standalone-использования.
+ */
+function getModelParams(): { temperature: number; maxTokens: number } {
+  const t = Number.parseFloat(process.env.ANTHROPIC_TEMPERATURE ?? '');
+  const m = Number.parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? '', 10);
+  return {
+    temperature: Number.isFinite(t) ? t : 0.3,
+    maxTokens: Number.isFinite(m) && m > 0 ? m : 2048,
+  };
+}
+
+/**
  * Один круг разговора с AI.
  * Возвращает финальный текст для отправки пользователю + сырой ответ Anthropic.
  * Вызов инструментов делается через ctx.toolHandlers — apps/web решает, что там внутри.
@@ -45,9 +119,10 @@ function getClient() {
 export async function runAgent(
   history: AgentMessage[],
   ctx: AgentContext,
-): Promise<{ text: string; usage: Anthropic.Usage }> {
+): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
+  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  const { temperature, maxTokens } = getModelParams();
 
   // Агентский цикл: модель может запросить tools, мы исполняем, возвращаем
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
@@ -55,11 +130,14 @@ export async function runAgent(
     content: m.content,
   }));
 
-  // Максимум 5 итераций tool use, чтобы не зациклиться
-  for (let step = 0; step < 5; step++) {
+  const toolCalls: ToolCallLog[] = [];
+
+  // Максимум 6 итераций tool use (план MVP, раздел 5.3).
+  for (let step = 0; step < 6; step++) {
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: maxTokens,
+      temperature,
       system: SYSTEM_PROMPT,
       tools,
       messages,
@@ -72,16 +150,25 @@ export async function runAgent(
       for (const tu of toolUses) {
         const handler = ctx.toolHandlers[tu.name as keyof ToolHandlers];
         let result: unknown;
+        let isError = false;
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           result = await (handler as any)(tu.input);
         } catch (err) {
+          isError = true;
           result = { error: err instanceof Error ? err.message : String(err) };
         }
+        toolCalls.push({
+          name: tu.name as keyof ToolHandlers,
+          input: tu.input,
+          output: result,
+          isError,
+        });
         toolResults.push({
           type: 'tool_result',
           tool_use_id: tu.id,
           content: JSON.stringify(result),
+          ...(isError ? { is_error: true } : {}),
         });
       }
 
@@ -96,10 +183,10 @@ export async function runAgent(
       .map((b) => b.text)
       .join('\n');
 
-    return { text, usage: response.usage };
+    return { text, usage: response.usage, toolCalls };
   }
 
-  throw new Error('Agent tool-use loop exceeded 5 iterations');
+  throw new Error('Agent tool-use loop exceeded 6 iterations');
 }
 
 /**
@@ -118,7 +205,8 @@ export async function runAgentNoTools(
   history: AgentMessage[],
 ): Promise<{ text: string; usage: Anthropic.Usage }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-opus-4-6';
+  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  const { temperature, maxTokens } = getModelParams();
 
   const messages: Anthropic.MessageParam[] = history.map((m) => ({
     role: m.role,
@@ -127,7 +215,8 @@ export async function runAgentNoTools(
 
   const response = await client.messages.create({
     model,
-    max_tokens: 1024,
+    max_tokens: maxTokens,
+    temperature,
     system: SYSTEM_PROMPT,
     messages,
   });
