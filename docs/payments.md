@@ -1,197 +1,242 @@
 # Платежи
 
-На MVP поддерживаются **YooKassa** (RUB/СБП/карты) и **CryptoBot** (USDT и др.). Архитектура расширяемая — добавить провайдера = имплементировать адаптер.
+> **Изменение от 2026-06-08 (источник правды).** Ранее этот документ описывал
+> YooKassa + CryptoBot. Фактическая реализация MVP использует **Love & Pay**
+> (RUB/СБП/карта) как единственный платёжный провайдер и **app.pay.space** для
+> выпуска виртуальных USD-карт (фаза fulfillment, вне этого документа). Документ
+> приведён в соответствие с кодом в `apps/web/lib/loveandpay/` и
+> `apps/web/app/api/payments/`. ENUM `payment_provider` в БД сохраняет
+> `yookassa`/`cryptobot` для обратной совместимости, но в коде они не задействованы;
+> Love & Pay пишется как `provider = 'loveandpay'`.
 
-## Общий контракт провайдера
+На MVP поддерживается один провайдер — **Love & Pay** (`https://loveandpay.io/api/v2`):
+приём RUB через СБП и карты + котировки USDT→RUB. Архитектура адаптеров сохранена:
+добавить провайдера = реализовать клиент в `apps/web/lib/<provider>/` и webhook-роут.
 
-```typescript
-interface PaymentProvider {
-  slug: 'yookassa' | 'cryptobot' | 'sbp';
-  createPayment(args: {
-    orderId: string;
-    amountRub: number;              // копейки
-    description: string;
-    returnUrl: string;
-    metadata: { orderId: string; shortId: string };
-  }): Promise<{ providerRef: string; paymentUrl: string; expiresAt: Date }>;
+## Карта файлов
 
-  verifyWebhook(req: Request): Promise<{ ok: boolean; event?: PaymentEvent }>;
+| Файл | Назначение |
+|---|---|
+| `apps/web/lib/loveandpay/client.ts` | HTTP-клиент: HMAC-подпись, retry, Zod-парсинг ответов |
+| `apps/web/lib/loveandpay/sign.ts` | `signRequest` (исходящие) + `verifyWebhookSignature` (входящие) |
+| `apps/web/lib/loveandpay/handlers.ts` | `processInvoicePaid` / `processInvoiceTerminal` (общие для webhook и cron) |
+| `apps/web/lib/loveandpay/errors.ts` | `LoveAndPayApiError` / `LoveAndPayContractError` |
+| `packages/types/src/loveandpay.ts` | Zod-схемы запросов/ответов/webhook'ов (источник правды контракта) |
+| `apps/web/app/api/payments/create/route.ts` | Внутренний endpoint создания счёта (self-call из `confirm_order`) |
+| `apps/web/app/api/payments/loveandpay/route.ts` | Webhook L&P (входящие события) |
+| `apps/web/lib/jobs/poll-payment.ts` | Cron-подстраховка от потерянных webhook'ов |
+| `apps/web/lib/tool-handlers/{propose,confirm}-order.ts` | AI-tools: расчёт суммы + запуск оплаты |
 
-  // Для poll-payment job
-  fetchStatus(providerRef: string): Promise<'pending' | 'succeeded' | 'failed'>;
-}
+## Деньги и единицы
+
+- В БД суммы хранятся **в копейках** (`integer`): `orders.amount_rub`, `payments.amount_rub`.
+  Никогда `numeric`/`float` (CLAUDE.md, инвариант 3).
+- Love & Pay принимает сумму **в рублях** (не копейках): `amount = order.amountRub / 100`.
+- `orders.original_amount` — цена сервиса в минимальных единицах исходной валюты
+  (центы USD); используется на фазе выпуска карты (top-up в USD).
+- **Минимум счёта — 500 ₽** (терминал KANYON). Ниже — гард в `/api/payments/create`
+  (`LOVEANDPAY_MIN_AMOUNT_RUB`, дефолт 500) вернёт `below_min_amount` (422) ДО
+  вызова L&P, иначе провайдер отвечает `INTERNAL_ERROR` с непрозрачным телом.
+
+## Исходящая подпись (HMAC v2)
+
+```
+signature = HMAC-SHA256(secretKey, METHOD + PATH + TIMESTAMP_MS + SHA256(body)) → hex
 ```
 
-Адаптеры живут в `apps/web/lib/payments/{yookassa,cryptobot}.ts`.
+Заголовки исходящих запросов (`apps/web/lib/loveandpay/sign.ts`):
+
+- `x-api-key: pk_test_* | pk_live_*`
+- `x-timestamp: <unix ms>`
+- `x-signature: <hex>`
+
+**Критично:** в HMAC идёт **полный** path с префиксом версии — `/api/v2/invoices`, а не
+короткий `/invoices`. Иначе L&P возвращает `INVALID_SIGNATURE`. Query-параметры
+(`/rates?base=...`) в подпись **не** включаются — подписывается только path.
 
 ## Идемпотентность (критично)
 
-`payments.UNIQUE(provider, provider_ref)` — БД гарантирует, что второй webhook с тем же `provider_ref` **не создаст дубликат**.
+`payments.UNIQUE(provider, provider_ref)` — БД гарантирует, что второй вызов с тем же
+`provider_ref` (= L&P `invoice.id`) не создаст дубликат.
 
-Схема обработки webhook'а:
-1. Распарсить и проверить подпись
-2. `INSERT ... ON CONFLICT (provider, provider_ref) DO UPDATE SET raw_payload = EXCLUDED.raw_payload RETURNING *`
-3. Проверить — если текущий `status` уже `succeeded`/`failed` и новый событие такое же — вернуть `200 OK`, не трогать order
-4. Если статус реально меняется (напр. pending → succeeded) — вызвать `transitionOrder(orderId, 'paid', ...)`
+1. **Создание счёта** — `upsertPaymentByProviderRef` (`INSERT ... ON CONFLICT
+   (provider, provider_ref) DO UPDATE ... RETURNING *` + флаг `isNew`). Только при
+   `isNew=true` двигаем order `ready_for_payment → pending_payment`; повторный
+   `confirm_order` отдаёт ссылку на уже созданный invoice без второго перехода.
+2. **Обработка webhook** — в `processInvoicePaid` перед переходом проверяем
+   `payment.status`: если уже `succeeded` → `idempotent_skip`. Дополнительно
+   `transitionOrder` форсит `allowedTransitions` (повторный `paid → paid` = noop).
 
-## YooKassa
+## Создание счёта (исходящий поток)
 
-Документация: https://yookassa.ru/developers
+`POST /api/v2/invoices` (через `LoveAndPayClient.createInvoice`). Тело
+(`loveAndPayInvoiceRequestSchema`):
 
-### Создание платежа
-
-`POST https://api.yookassa.ru/v3/payments`
-
-Headers:
-- `Authorization: Basic base64(SHOP_ID:SECRET_KEY)`
-- `Idempotence-Key: <uuid v4>` — обязательно! Генерить нов. UUID на каждый запрос, сохранять в `payments.raw_payload.idempotence_key`
-
-Body:
 ```json
 {
-  "amount": { "value": "2499.00", "currency": "RUB" },
-  "capture": true,
-  "confirmation": { "type": "redirect", "return_url": "https://oplati.example.com/chat?order=ORD-7KX42" },
+  "amount": 999.0,
+  "currency": "RUB",
   "description": "Оплата заказа ORD-7KX42",
-  "metadata": { "orderId": "uuid", "shortId": "ORD-7KX42" },
-  "payment_method_data": { "type": "bank_card" }
+  "customer": {},
+  "expiresInHours": 24,
+  "successUrl": "https://<app>/payment-success?order=ORD-7KX42",
+  "kycRequired": false,
+  "paymentMethod": "sbp"
 }
 ```
 
-Для СБП — `payment_method_data.type = "sbp"`.
+Ответ (`loveAndPayInvoiceResponseSchema`): `{ success, invoice: { id, invoiceNumber,
+amount, currency, status, expiresAt, paymentLink, qrPayload?, ... } }`.
 
-Response: `{ id, status: "pending", confirmation: { confirmation_url } }`.
+> В теле запроса **нет** поля `callbackUrl`/`webhookUrl` — webhook у L&P
+> **глобальный на аккаунт** (один URL на весь аккаунт). См. раздел «Webhook».
 
-### Webhook
+Внутренний endpoint `/api/payments/create` (защита `X-Internal-Token`):
 
-YooKassa отправляет на `POST /api/payments/yookassa`. События: `payment.succeeded`, `payment.canceled`, `refund.succeeded`.
+1. Проверяет `X-Internal-Token` (защита от внешнего вызова).
+2. Грузит order; status должен быть `ready_for_payment`, иначе `409`.
+3. Гард суммы: `< LOVEANDPAY_MIN_AMOUNT_RUB` → `422 below_min_amount`.
+4. Создаёт invoice в L&P (внешний вызов **до** транзакции БД — не держим lock).
+5. Идемпотентный upsert payment по `(provider, provider_ref)`.
+6. Только если `isNew` — атомарный `transitionOrder → pending_payment`.
+7. Возвращает `{ ok, paymentUrl, qrPayload, expiresAt, invoiceId, invoiceNumber }`.
 
-**Проверка подлинности:**
-- IP источника: диапазоны YooKassa (https://yookassa.ru/developers/using-api/webhooks#ip)
-- HMAC: если подпись настроена в кабинете (опционально)
+Self-call идёт на **собственный** deployment (`VERCEL_URL`), а не на `APP_URL` —
+иначе preview бьёт в production, где нет L&P-ключей и `INTERNAL_API_TOKEN`
+(см. комментарий в `confirm-order.ts`).
 
-**Event shape:**
-```json
-{
-  "event": "payment.succeeded",
-  "object": {
-    "id": "2c8a2dd7-000f-5000-9000-145f2c34e7b8",
-    "status": "succeeded",
-    "amount": { "value": "2499.00", "currency": "RUB" },
-    "metadata": { "orderId": "..." }
-  }
-}
-```
+## Webhook (входящие события)
 
-### Валюты и округление
+Endpoint: `POST /api/payments/loveandpay`. Инвариант — **всегда `200 OK`**
+(CLAUDE.md, инвариант 6): любая ошибка возвращается в теле (`skipped: <reason>`) +
+Sentry, никогда не HTTP-кодом, иначе L&P будет ретраить и забьёт очередь.
 
-- YooKassa принимает сумму **в рублях с копейками** (`"2499.00"`)
-- Конверсия: `amountRub (integer копейки) / 100` → `"X.XX"`
-- Округление: не нужно, копейки всегда точные
+**Заголовки** (контракт — см. ниже про discovery):
 
-### Refund
+- `X-Webhook-Event` — тип события (диспатч).
+- `X-Webhook-Signature` — `HMAC-SHA256(webhookSecret, rawBody)` → hex.
 
-`POST https://api.yookassa.ru/v3/refunds` с `payment_id` и `amount`. Идемпотентность — `Idempotence-Key`.
+`rawBody` читается `await req.text()` **до** `JSON.parse` — пересериализация
+(`parse → stringify`) меняет порядок ключей/пробелы и инвалидирует HMAC. Сравнение
+подписи — через `timingSafeEqual` (anti-timing-attack).
 
-## CryptoBot
+**События** (`loveAndPayWebhookEventSchema`, discriminated union по `event`):
 
-Документация: https://help.crypt.bot/crypto-pay-api
+| Событие | Действие |
+|---|---|
+| `invoice.created` | игнор (`200`, `skipped: created_ignored`) |
+| `invoice.paid` | `processInvoicePaid` → payment `succeeded`, order `→ paid`, `dispatchIssueCard` |
+| `invoice.expired` | `processInvoiceTerminal` → payment `failed`, order `→ expired` |
+| `invoice.cancelled` | `processInvoiceTerminal` → payment `failed`, order `→ cancelled` |
 
-### Создание invoice
+Payload (`loveAndPayWebhookData`): `{ id, invoiceNumber, amount, currency, status,
+paidAt?, customer*? }`.
 
-`POST https://pay.crypt.bot/api/createInvoice`
+### Webhook глобальный на аккаунт (как у Telegram-бота)
 
-Headers: `Crypto-Pay-API-Token: <CRYPTOBOT_TOKEN>`
+У L&P один webhook-URL на весь аккаунт. Значит preview и production **конкурируют**
+за него — одновременно работает только один. Процедура перенаправления —
+в [`deployment.md`](deployment.md): при тесте на preview указываем URL на
+dev-deployment; при выводе на prod — перенаправляем на prod-URL.
 
-Body:
-```json
-{
-  "currency_type": "fiat",
-  "fiat": "RUB",
-  "amount": "2499",
-  "accepted_assets": "USDT,TON",
-  "description": "Оплата заказа ORD-7KX42",
-  "hidden_message": "Спасибо!",
-  "payload": "order:uuid",
-  "expires_in": 3600
-}
-```
+### Discovery контракта (важно)
 
-Response: `{ invoice_id, pay_url, status: "active" }`.
+Имена заголовков, алгоритм/кодировка подписи и имена событий выше — **предполагаемые**
+(подтверждаются первым живым вызовом, см. комментарий в `packages/types/src/loveandpay.ts`).
+Пока контракт не сверен байт-в-байт, при расхождении `verifyWebhookSignature` вернёт
+`false` или Zod не распарсит — и роут тихо ответит `200 skipped`.
 
-### Webhook
-
-Endpoint `POST /api/payments/cryptobot`.
-
-**Подпись:** заголовок `crypto-pay-api-signature` = HMAC-SHA256 от body с ключом = SHA256(`CRYPTOBOT_TOKEN`). Проверять обязательно.
-
-**Event shape:**
-```json
-{
-  "update_id": 1,
-  "update_type": "invoice_paid",
-  "payload": {
-    "invoice_id": 123,
-    "status": "paid",
-    "amount": "2499",
-    "asset": "USDT",
-    "payload": "order:uuid"
-  }
-}
-```
-
-`payload` кодируем как `order:{{orderId}}` при создании, парсим на webhook.
+Чтобы снять реальный контракт: выставить `LOVEANDPAY_WEBHOOK_DEBUG=1` в env →
+webhook залогирует реальные заголовки + `rawBody` (событие
+`loveandpay.webhook.debug_contract`) **до** любых проверок → провести один реальный
+платёж → сверить лог с Zod-схемами/`verifyWebhookSignature` → поправить расхождения →
+**снять флаг**.
 
 ## State flow оплаты
 
 ```
 ready_for_payment
-      │
-      │ confirm_order → createPayment()
+      │ confirm_order → /api/payments/create → L&P createInvoice
       ↓
-pending_payment  ─────┬──── webhook succeeded ──→ paid
-  (payments:pending)  │
-                      ├──── timeout 60min (cron) ──→ expired
-                      │
-                      └──── user cancel ──→ cancelled
+pending_payment ──── invoice.paid (webhook / poll-payment) ──→ paid
+  (payments: pending)│
+                     ├──── invoice.expired ──→ expired   (payments: failed)
+                     └──── invoice.cancelled ─→ cancelled (payments: failed)
+
+paid ──── issue-card (PaySpace настроен) ──→ in_fulfillment ──→ completed
+   └────── PaySpace НЕ настроен ──→ остаётся в paid (ручной fulfillment)
 ```
 
-## Reconciliation (poll-payment job)
+### Граница с выпуском карты
 
-Webhook может не прийти (сеть, баг провайдера). Cron задача `poll-payment` каждые 30 сек:
+После `paid` `processInvoicePaid` синхронно вызывает `dispatchIssueCard → issueCard`.
+Если PaySpace не сконфигурирован (`isPaySpaceConfigured()` = false), `issueCard`
+**не** валит заказ в `failed`, а оставляет в `paid` (событие
+`job.issue_card.skipped_no_paypace` + Sentry warning) — оператор доводит выпуск
+вручную. Иначе успешная оплата выглядела бы как провал. Сам выпуск карты —
+отдельная фаза (см. `background-jobs.md`).
 
-1. Найти все `payments(status='pending')` старше 2 минут
-2. Для каждого вызвать `provider.fetchStatus(providerRef)`
-3. Если статус отличается — применить тот же flow, что и webhook (через `INSERT ... ON CONFLICT`, идемпотентно)
+## Reconciliation (poll-payment)
+
+Webhook может не прийти (сеть, баг провайдера, разрегистрированный URL). Cron
+`poll-payment` (`apps/web/lib/jobs/poll-payment.ts`, расписание `*/5 * * * *` в
+`vercel.json`):
+
+1. `findPendingPaymentsForPoll` — pending-платежи старше 10 мин и не древнее 25 ч.
+2. Для каждого `getInvoice(providerRef)` в L&P.
+3. `PAID` → `processInvoicePaid({ recoveredViaPolling: true })` + Sentry warning
+   («webhook потерян»). Терминальные → `processInvoiceTerminal`.
+
+> **Vercel Cron'ы выполняются только на production.** На preview `poll-payment`
+> сам не запускается. Поэтому подстраховку нужно тестировать там, где cron реально
+> крутится, и обеспечить наличие `LOVEANDPAY_*` ключей на production.
+
+Авторизация cron-endpoint'ов — `authorizeCron`: `Authorization: Bearer <CRON_SECRET>`
+(Vercel Cron шлёт сам) либо `X-Cron-Token: <CRON_SECRET|CRON_TOKEN>` для ручных
+вызовов. Без токена на production → `401`; на preview/dev без токена — разрешено.
 
 ## Expire
 
-Cron `expire-payments` раз в 10 мин:
-1. `SELECT orders WHERE status='pending_payment' AND created_at < now() - interval '60 minutes'`
-2. Для каждого — `transitionOrder(id, 'expired', {type: 'system'})`
-3. Уведомить пользователя
+Cron `expire-payments` (расписание `*/15 * * * *`): заказы в `pending_payment`,
+у которых истёк TTL invoice'а, переводятся в `expired`, платёж — в `failed`,
+пользователь уведомляется.
+
+## Обработка ошибок L&P
+
+`LoveAndPayClient` парсит и вложенный (`{ success:false, error:{ code, message } }`),
+и плоский (`{ error, message?, hint?, code? }`) формат ошибок в `LoveAndPayApiError`
+с читаемыми `code`/`message`. Retry — для `429`/`5xx` (max 3, backoff 500ms→1s→2s);
+`400`/`401`/`403` — без retry. Контракт-дрифт ответа (Zod fail) →
+`LoveAndPayContractError`. Все `fetch` — с `AbortController` (timeout 30s).
+
+## Переменные окружения
+
+| Переменная | Назначение |
+|---|---|
+| `LOVEANDPAY_API_KEY` | `x-api-key` (pk_test_*/pk_live_*) |
+| `LOVEANDPAY_SECRET_KEY` | ключ HMAC исходящих |
+| `LOVEANDPAY_WEBHOOK_SECRET` | ключ HMAC входящих webhook'ов |
+| `LOVEANDPAY_BASE_URL` | дефолт `https://loveandpay.io/api/v2` |
+| `LOVEANDPAY_MIN_AMOUNT_RUB` | минимум счёта (дефолт 500) |
+| `LOVEANDPAY_WEBHOOK_DEBUG` | `1` → discovery-лог контракта webhook'а |
+| `INTERNAL_API_TOKEN` | защита self-call `confirm_order → /api/payments/create` |
+| `CRON_SECRET` | авторизация cron-endpoint'ов |
+| `COMMISSION_PERCENT` / `RATE_FALLBACK_USDT_RUB` | расчёт суммы в `propose_order` |
 
 ## Тестирование
 
-### YooKassa
-
-Тестовый магазин: https://yookassa.ru/my/shop-settings → Тестовый магазин.
-Тестовые карты: `5555 5555 5555 4477` (успех), `5555 5555 5555 4444` (отказ).
-Webhook URL задаётся в кабинете.
-
-### CryptoBot
-
-Testnet: @CryptoTestnetBot, https://testnet-pay.crypt.bot/api/.
-Отдельные `CRYPTOBOT_TEST_TOKEN`.
-
-### Локальная разработка
-
-- Tunnel через ngrok / Cloudflare Tunnel, передать HTTPS URL в настройки webhook у провайдера
-- `APP_URL` в `.env.local` = tunnel URL
+- **Unit:** `apps/web/lib/loveandpay/*.test.ts` (sign, client, handlers) — Vitest.
+- **E2E на dev:** заказ через `@dev_test_podpiska_bot` на сумму ≥ 500 ₽ → оплата →
+  проверка `payments.status=succeeded`, `orders.status=paid`, строки
+  `payment_succeeded` в `order_events`.
+- Webhook L&P **глобальный**: перед E2E зарегистрировать URL на актуальный
+  preview branch-alias (формула в `deployment.md`), после — снять/перенаправить.
 
 ## Что ЗАПРЕЩЕНО
 
-- Хранить полные номера карт, CVV — никогда
-- Принимать оплату без предварительного `orders(status='ready_for_payment')`
-- Возвращать пользователю `paymentUrl` без записи в `payments` (потеря трассируемости)
-- Делать внешний запрос на провайдера внутри транзакции БД — только после commit'а черновика
+- Хранить полные номера карт / CVV.
+- Принимать оплату без `orders(status='ready_for_payment')`.
+- Возвращать пользователю `paymentUrl` без записи в `payments` (потеря трассируемости).
+- Делать внешний запрос к провайдеру внутри транзакции БД — только до commit'а.
+- Возвращать с webhook-endpoint не-`200` (CLAUDE.md, инвариант 6).
+- Пересериализовывать `rawBody` до проверки HMAC.

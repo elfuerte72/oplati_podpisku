@@ -38,12 +38,7 @@ const ok = (extra: Record<string, unknown> = {}) =>
   NextResponse.json({ ok: true, ...extra }, { status: 200 });
 
 export async function POST(req: Request): Promise<NextResponse> {
-  const webhookSecret = serverEnv.LOVEANDPAY_WEBHOOK_SECRET;
-  if (!webhookSecret) {
-    log.warn({ event: 'loveandpay.webhook.disabled', missing: 'LOVEANDPAY_WEBHOOK_SECRET' });
-    return ok({ skipped: 'not_configured' });
-  }
-
+  // rawBody читаем СРАЗУ и один раз — он нужен и для HMAC, и для discovery-лога.
   let rawBody: string;
   try {
     rawBody = await req.text();
@@ -51,6 +46,24 @@ export async function POST(req: Request): Promise<NextResponse> {
     log.error({ event: 'loveandpay.webhook.read_body_failed', err });
     Sentry.captureException(err, { tags: { source: 'loveandpay.webhook' } });
     return ok({ skipped: 'read_failed' });
+  }
+
+  // Discovery (Задача 1 плана): при LOVEANDPAY_WEBHOOK_DEBUG логируем реальные
+  // заголовки + rawBody ДО любых проверок — чтобы снять контракт L&P с живого
+  // вызова и сверить с Zod-схемами. Подпись (X-Webhook-Signature) — это HMAC,
+  // не секрет, логировать безопасно. Снять флаг после подтверждения контракта.
+  if (serverEnv.LOVEANDPAY_WEBHOOK_DEBUG) {
+    log.info({
+      event: 'loveandpay.webhook.debug_contract',
+      headers: Object.fromEntries(req.headers),
+      rawBody: rawBody.slice(0, 4000),
+    });
+  }
+
+  const webhookSecret = serverEnv.LOVEANDPAY_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    log.warn({ event: 'loveandpay.webhook.disabled', missing: 'LOVEANDPAY_WEBHOOK_SECRET' });
+    return ok({ skipped: 'not_configured' });
   }
 
   const eventHeader = req.headers.get('x-webhook-event');

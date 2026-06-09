@@ -77,6 +77,16 @@ const serverEnvSchema = z.object({
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
   LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
   LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+  // Минимальная сумма счёта L&P в рублях (терминал KANYON не принимает < 500 ₽).
+  // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
+  // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
+  LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(0).default(500),
+  // Discovery-флаг: при '1'/'true' webhook логирует реальные заголовки + rawBody
+  // ДО любых проверок — чтобы снять контракт L&P с живого вызова и сверить с
+  // Zod-схемами. Снять (удалить env) после подтверждения контракта.
+  LOVEANDPAY_WEBHOOK_DEBUG: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),

@@ -115,6 +115,24 @@ describe('processInvoiceTerminal', () => {
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
   });
 
+  it('переводит pending → cancelled', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+
+    const res = await processInvoiceTerminal({
+      data: { ...data, status: 'CANCELLED' },
+      reason: 'cancelled',
+    });
+
+    expect(res.kind).toBe('processed');
+    expect(db.markPaymentStatus).toHaveBeenCalledWith(expect.anything(), 'pay-1', 'failed');
+    expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+  });
+
   it('идемпотентен — повторный expired skip', async () => {
     (db as unknown as MockedDb).__setPayment({
       id: 'pay-1',
