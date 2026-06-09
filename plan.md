@@ -26,15 +26,27 @@
 - ✅ **Задача 6 (код)** — подтверждено: `authorizeCron` читает `CRON_SECRET ?? CRON_TOKEN`
   напрямую из `process.env` (Vercel Cron шлёт `Bearer` сам). Задокументировано в `.env.example`.
 
-**Осталось на твои ручные действия** (кабинет L&P / Vercel / реальный платёж):
+**Сделано 2026-06-09 — webhook работает E2E на dev:**
 
-- ⬜ **Задача 2** — задать `LOVEANDPAY_WEBHOOK_SECRET` в Vercel Preview + redeploy.
-- ⬜ **Задача 3** — зарегистрировать webhook-URL в кабинете L&P.
-- ⬜ **Задача 1 (discovery)** — выставить `LOVEANDPAY_WEBHOOK_DEBUG=1`, провести
-  реальный платёж 500 ₽, снять контракт по логам, сверить со схемами, снять флаг.
-- ⬜ **Задача 5** — E2E на dev (реальная оплата → `paid`).
-- ⬜ **Задача 6 (prod)** — `CRON_SECRET` + `LOVEANDPAY_*` на Production + smoke.
+- ✅ **Задача 3** — webhook зарегистрирован в кабинете L&P (Разработчики → Вебхуки).
+- ✅ **Задача 2** — `LOVEANDPAY_WEBHOOK_SECRET` в Vercel Preview (dev, Sensitive).
+- ✅ **Задача 1 (discovery + фикс)** — РЕАЛЬНЫЙ контракт (с настоящего платежа, не с
+  тестовой панели — она шлёт другой формат!): `event:"invoice.paid"`, `data.id`,
+  подпись `sha256=<hex>` HMAC(secret, rawBody), без заголовка `X-Webhook-Event`.
+  Схема принимает оба формата (прод + тестовая панель). Коммиты bc50033/1231fd7/1ac5f68.
+- ✅ **Задача 5 (E2E)** — заказ ORD-P8S1F: реальная оплата 2090 ₽ → webhook → `paid`.
+  Подтверждено в БД (order paid, payment succeeded, order_events чистые без `failed`).
+  Идемпотентность: повторный webhook → `idempotent_skip`. PaySpace-guard: остался в `paid`.
+- ✅ Снят `LOVEANDPAY_WEBHOOK_DEBUG` + передеплой.
+
+**Осталось:**
+
+- ⬜ **Ротировать webhook-секрет** — светился в чате (перегенерировать в кабинете →
+  обновить `LOVEANDPAY_WEBHOOK_SECRET` в Vercel → redeploy).
+- ⬜ **Задача 6 (prod)** — `LOVEANDPAY_*` + `LOVEANDPAY_WEBHOOK_SECRET` + `INTERNAL_API_TOKEN`
+  на Production, регистрация webhook на prod-URL, redeploy. (`CRON_SECRET` уже есть на prod.)
 - ⬜ **Задача 8 (Vercel)** — починить «все Preview» override `LOVEANDPAY_SECRET_KEY`.
+- ⬜ Следующая фаза fulfillment: `PAYSPACE_*` (выпуск карт) — сейчас заказ замирает на `paid`.
 
 ---
 
