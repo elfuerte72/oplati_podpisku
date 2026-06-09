@@ -41,8 +41,8 @@
 
 **Осталось:**
 
-- ⬜ **Ротировать webhook-секрет** — светился в чате (перегенерировать в кабинете →
-  обновить `LOVEANDPAY_WEBHOOK_SECRET` в Vercel → redeploy).
+- ☑️ Ротация webhook-секрета — **решено НЕ делать** (владелец, 2026-06-09): ключ был
+  только в этом диалоге, доверенный контекст. Оставляем как есть.
 - ⬜ **Задача 6 (prod)** — `LOVEANDPAY_*` + `LOVEANDPAY_WEBHOOK_SECRET` + `INTERNAL_API_TOKEN`
   на Production, регистрация webhook на prod-URL, redeploy. (`CRON_SECRET` уже есть на prod.)
 - ⬜ **Задача 8 (Vercel)** — починить «все Preview» override `LOVEANDPAY_SECRET_KEY`.
