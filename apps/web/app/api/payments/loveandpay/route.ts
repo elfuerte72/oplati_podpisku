@@ -17,13 +17,14 @@ import {
  * Контракт (CLAUDE.md инвариант 6 — webhook всегда 200 OK):
  *   1. rawBody читаем `request.text()` ДО JSON.parse — критично для HMAC
  *      (см. `lib/loveandpay/sign.ts`).
- *   2. Заголовки: `X-Webhook-Event` (диспатч), `X-Webhook-Signature` (HMAC).
- *   3. Невалидная подпись / отсутствие заголовков → 200 OK + Sentry warning.
+ *   2. Заголовок `X-Webhook-Signature` (`sha256=<hex>`); тип события — в теле (`event`),
+ *      отдельного `X-Webhook-Event` у реального webhook'а нет.
+ *   3. Невалидная подпись / отсутствие подписи → 200 OK + Sentry warning.
  *   4. Невалидный Zod → 200 OK + Sentry warning.
  *   5. Любой throw внутри handler'ов → 200 OK + Sentry.
  *
  * Идемпотентность — на уровне `processInvoicePaid` / `processInvoiceTerminal`:
- *   повторный INVOICE_PAID с тем же id не приведёт к повторному переходу
+ *   повторный invoice.paid с тем же id не приведёт к повторному переходу
  *   статуса (см. `lib/loveandpay/handlers.ts` + `transitionOrder` noop).
  */
 
@@ -66,20 +67,17 @@ export async function POST(req: Request): Promise<NextResponse> {
     return ok({ skipped: 'not_configured' });
   }
 
-  const eventHeader = req.headers.get('x-webhook-event');
+  // Реальный webhook L&P шлёт ТОЛЬКО `X-Webhook-Signature` — заголовка
+  // `X-Webhook-Event` нет, тип события берём из тела (`event`). Требуем подпись.
   const signatureHeader = req.headers.get('x-webhook-signature');
 
-  if (!eventHeader || !signatureHeader) {
-    log.warn({
-      event: 'loveandpay.webhook.missing_headers',
-      hasEvent: Boolean(eventHeader),
-      hasSignature: Boolean(signatureHeader),
-    });
-    Sentry.captureMessage('L&P webhook без обязательных заголовков', {
+  if (!signatureHeader) {
+    log.warn({ event: 'loveandpay.webhook.missing_signature' });
+    Sentry.captureMessage('L&P webhook без X-Webhook-Signature', {
       level: 'warning',
       tags: { source: 'loveandpay.webhook' },
     });
-    return ok({ skipped: 'missing_headers' });
+    return ok({ skipped: 'missing_signature' });
   }
 
   if (!verifyWebhookSignature(rawBody, signatureHeader, webhookSecret)) {
@@ -124,7 +122,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   });
 
   try {
-    if (event === 'INVOICE_PAID') {
+    if (event === 'invoice.paid') {
       const result = await processInvoicePaid({
         data,
         rawPayload: parsed.data as unknown as Record<string, unknown>,
@@ -132,13 +130,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       return ok({ event, result: result.kind });
     }
 
-    if (event === 'INVOICE_EXPIRED' || event === 'INVOICE_CANCELLED') {
-      const reason = event === 'INVOICE_EXPIRED' ? 'expired' : 'cancelled';
+    if (event === 'invoice.expired' || event === 'invoice.cancelled') {
+      const reason = event === 'invoice.expired' ? 'expired' : 'cancelled';
       const result = await processInvoiceTerminal({ data, reason });
       return ok({ event, result: result.kind });
     }
 
-    if (event === 'INVOICE_CREATED') {
+    if (event === 'invoice.created') {
       log.debug({ event: 'loveandpay.webhook.created_ignored', invoiceId: data.id });
       return ok({ event, skipped: 'created_ignored' });
     }

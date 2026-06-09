@@ -111,30 +111,33 @@ Endpoint: `POST /api/payments/loveandpay`. Инвариант — **всегда
 (CLAUDE.md, инвариант 6): любая ошибка возвращается в теле (`skipped: <reason>`) +
 Sentry, никогда не HTTP-кодом, иначе L&P будет ретраить и забьёт очередь.
 
-**Заголовки** (контракт подтверждён живым вызовом 2026-06-09):
+**Заголовки** (контракт снят с РЕАЛЬНОГО платежа 2026-06-09):
 
-- `X-Webhook-Event` — тип события UPPER_SNAKE (`INVOICE_PAID` и т.д.), для диспатча.
 - `X-Webhook-Signature` — **`sha256=<hex>`**, где hex = `HMAC-SHA256(webhookSecret, rawBody)`.
   Префикс `sha256=` снимается в `verifyWebhookSignature` (`lib/loveandpay/sign.ts`).
-- `X-Webhook-Timestamp`, `X-Webhook-Id` — присутствуют; в подпись **не** входят.
+- Заголовка `X-Webhook-Event` у реального webhook'а **нет** — тип события только в теле (`event`).
 
 `rawBody` читается `await req.text()` **до** `JSON.parse` — пересериализация
 (`parse → stringify`) меняет порядок ключей/пробелы и инвалидирует HMAC. Сравнение
 подписи — через `timingSafeEqual` (anti-timing-attack).
 
-**События** (`loveAndPayWebhookEventSchema`, discriminated union по `event`):
+**События** (`loveAndPayWebhookEventSchema`, диспатч по полю `event` тела):
 
 | Событие | Действие |
 |---|---|
-| `INVOICE_CREATED` | игнор (`200`, `skipped: created_ignored`) |
-| `INVOICE_PAID` | `processInvoicePaid` → payment `succeeded`, order `→ paid`, `dispatchIssueCard` |
-| `INVOICE_EXPIRED` | `processInvoiceTerminal` → payment `failed`, order `→ expired` |
-| `INVOICE_CANCELLED` | `processInvoiceTerminal` → payment `failed`, order `→ cancelled` |
+| `invoice.created` | игнор (`200`, `skipped: created_ignored`) |
+| `invoice.paid` | `processInvoicePaid` → payment `succeeded`, order `→ paid`, `dispatchIssueCard` |
+| `invoice.expired` | `processInvoiceTerminal` → payment `failed`, order `→ expired` |
+| `invoice.cancelled` | `processInvoiceTerminal` → payment `failed`, order `→ cancelled` |
 
-Тело: `{ event, timestamp, data: { invoiceId, invoiceNumber, amount, status } }` —
-id приходит как **`invoiceId`** (не `id`), поле `currency` **отсутствует**. Схема
-нормализует `data` к `{ id, invoiceNumber, amount, currency, status }`
-(`invoiceId → id`, `currency = RUB` по умолчанию).
+Тело прода: `{ id, event: "invoice.paid", timestamp, data: { id, invoiceNumber, amount,
+currency, status, paidAt, transactionId }, partnerId, retryCount }`. `data.id` = invoice
+id = `provider_ref`.
+
+> **Осторожно:** вкладка «Тестирование» в кабинете L&P шлёт **не продовый** формат —
+> `event: "INVOICE_PAID"` (UPPER_SNAKE), `data.invoiceId` (без `currency`). Схема
+> нормализует оба (UPPER_SNAKE → lowercase, `invoiceId → id`, `currency = RUB`), но
+> верить тестовой панели как образцу контракта нельзя — авторитетен реальный платёж.
 
 ### Регистрация и перенаправление webhook'а
 
@@ -161,10 +164,10 @@ L&P поменяет формат — `verifyWebhookSignature` вернёт `fal
 ready_for_payment
       │ confirm_order → /api/payments/create → L&P createInvoice
       ↓
-pending_payment ──── INVOICE_PAID (webhook / poll-payment) ──→ paid
+pending_payment ──── invoice.paid (webhook / poll-payment) ──→ paid
   (payments: pending)│
-                     ├──── INVOICE_EXPIRED ──→ expired   (payments: failed)
-                     └──── INVOICE_CANCELLED ─→ cancelled (payments: failed)
+                     ├──── invoice.expired ──→ expired   (payments: failed)
+                     └──── invoice.cancelled ─→ cancelled (payments: failed)
 
 paid ──── issue-card (PaySpace настроен) ──→ in_fulfillment ──→ completed
    └────── PaySpace НЕ настроен ──→ остаётся в paid (ручной fulfillment)
