@@ -111,10 +111,12 @@ Endpoint: `POST /api/payments/loveandpay`. Инвариант — **всегда
 (CLAUDE.md, инвариант 6): любая ошибка возвращается в теле (`skipped: <reason>`) +
 Sentry, никогда не HTTP-кодом, иначе L&P будет ретраить и забьёт очередь.
 
-**Заголовки** (контракт — см. ниже про discovery):
+**Заголовки** (контракт подтверждён живым вызовом 2026-06-09):
 
-- `X-Webhook-Event` — тип события (диспатч).
-- `X-Webhook-Signature` — `HMAC-SHA256(webhookSecret, rawBody)` → hex.
+- `X-Webhook-Event` — тип события UPPER_SNAKE (`INVOICE_PAID` и т.д.), для диспатча.
+- `X-Webhook-Signature` — **`sha256=<hex>`**, где hex = `HMAC-SHA256(webhookSecret, rawBody)`.
+  Префикс `sha256=` снимается в `verifyWebhookSignature` (`lib/loveandpay/sign.ts`).
+- `X-Webhook-Timestamp`, `X-Webhook-Id` — присутствуют; в подпись **не** входят.
 
 `rawBody` читается `await req.text()` **до** `JSON.parse` — пересериализация
 (`parse → stringify`) меняет порядок ключей/пробелы и инвалидирует HMAC. Сравнение
@@ -124,33 +126,34 @@ Sentry, никогда не HTTP-кодом, иначе L&P будет ретр�
 
 | Событие | Действие |
 |---|---|
-| `invoice.created` | игнор (`200`, `skipped: created_ignored`) |
-| `invoice.paid` | `processInvoicePaid` → payment `succeeded`, order `→ paid`, `dispatchIssueCard` |
-| `invoice.expired` | `processInvoiceTerminal` → payment `failed`, order `→ expired` |
-| `invoice.cancelled` | `processInvoiceTerminal` → payment `failed`, order `→ cancelled` |
+| `INVOICE_CREATED` | игнор (`200`, `skipped: created_ignored`) |
+| `INVOICE_PAID` | `processInvoicePaid` → payment `succeeded`, order `→ paid`, `dispatchIssueCard` |
+| `INVOICE_EXPIRED` | `processInvoiceTerminal` → payment `failed`, order `→ expired` |
+| `INVOICE_CANCELLED` | `processInvoiceTerminal` → payment `failed`, order `→ cancelled` |
 
-Payload (`loveAndPayWebhookData`): `{ id, invoiceNumber, amount, currency, status,
-paidAt?, customer*? }`.
+Тело: `{ event, timestamp, data: { invoiceId, invoiceNumber, amount, status } }` —
+id приходит как **`invoiceId`** (не `id`), поле `currency` **отсутствует**. Схема
+нормализует `data` к `{ id, invoiceNumber, amount, currency, status }`
+(`invoiceId → id`, `currency = RUB` по умолчанию).
 
-### Webhook глобальный на аккаунт (как у Telegram-бота)
+### Регистрация и перенаправление webhook'а
 
-У L&P один webhook-URL на весь аккаунт. Значит preview и production **конкурируют**
-за него — одновременно работает только один. Процедура перенаправления —
-в [`deployment.md`](deployment.md): при тесте на preview указываем URL на
-dev-deployment; при выводе на prod — перенаправляем на prod-URL.
+Webhook регистрируется в кабинете L&P: **Разработчикам → Вебхуки → Создать вебхук**
+(URL эндпоинта + список событий `INVOICE_PAID/EXPIRED/CANCELLED`). На каждый вебхук
+выдаётся **свой** signing-секрет (`LOVEANDPAY_WEBHOOK_SECRET`). L&P поддерживает
+**несколько** вебхуков, поэтому preview и production держат **отдельные** записи
+(разные URL + разные секреты) — без конфликта за единый URL. Скрипт-помощник для
+управления через API — `scripts/loveandpay-webhook.mts` (`list`/`create`/`delete`).
 
-### Discovery контракта (важно)
+### Re-discovery контракта (если L&P изменит формат)
 
-Имена заголовков, алгоритм/кодировка подписи и имена событий выше — **предполагаемые**
-(подтверждаются первым живым вызовом, см. комментарий в `packages/types/src/loveandpay.ts`).
-Пока контракт не сверен байт-в-байт, при расхождении `verifyWebhookSignature` вернёт
-`false` или Zod не распарсит — и роут тихо ответит `200 skipped`.
-
-Чтобы снять реальный контракт: выставить `LOVEANDPAY_WEBHOOK_DEBUG=1` в env →
-webhook залогирует реальные заголовки + `rawBody` (событие
-`loveandpay.webhook.debug_contract`) **до** любых проверок → провести один реальный
-платёж → сверить лог с Zod-схемами/`verifyWebhookSignature` → поправить расхождения →
-**снять флаг**.
+Контракт зашит в `loveAndPayWebhookEventSchema` + `verifyWebhookSignature`. Если
+L&P поменяет формат — `verifyWebhookSignature` вернёт `false` или Zod не распарсит,
+и роут ответит `200 skipped` (видно в логах/Sentry). Чтобы снять актуальный контракт:
+`LOVEANDPAY_WEBHOOK_DEBUG=1` → webhook залогирует реальные заголовки + `rawBody`
+(событие `loveandpay.webhook.debug_contract`) **до** любых проверок → вкладка
+«Тестирование» в кабинете L&P шлёт тестовое событие без оплаты → сверить лог со
+схемами → поправить → **снять флаг**.
 
 ## State flow оплаты
 
@@ -158,10 +161,10 @@ webhook залогирует реальные заголовки + `rawBody` (с
 ready_for_payment
       │ confirm_order → /api/payments/create → L&P createInvoice
       ↓
-pending_payment ──── invoice.paid (webhook / poll-payment) ──→ paid
+pending_payment ──── INVOICE_PAID (webhook / poll-payment) ──→ paid
   (payments: pending)│
-                     ├──── invoice.expired ──→ expired   (payments: failed)
-                     └──── invoice.cancelled ─→ cancelled (payments: failed)
+                     ├──── INVOICE_EXPIRED ──→ expired   (payments: failed)
+                     └──── INVOICE_CANCELLED ─→ cancelled (payments: failed)
 
 paid ──── issue-card (PaySpace настроен) ──→ in_fulfillment ──→ completed
    └────── PaySpace НЕ настроен ──→ остаётся в paid (ручной fulfillment)

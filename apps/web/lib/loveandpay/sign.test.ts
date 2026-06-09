@@ -41,6 +41,14 @@ describe('verifyWebhookSignature', () => {
     expect(verifyWebhookSignature(body, sig, secret)).toBe(true);
   });
 
+  it('принимает подпись с префиксом sha256= (реальный формат L&P)', () => {
+    expect(verifyWebhookSignature(body, `sha256=${sig}`, secret)).toBe(true);
+  });
+
+  it('возвращает false для префикса sha256= с неверным hex', () => {
+    expect(verifyWebhookSignature(body, `sha256=${'a'.repeat(64)}`, secret)).toBe(false);
+  });
+
   it('возвращает false для другой подписи', () => {
     expect(verifyWebhookSignature(body, 'a'.repeat(64), secret)).toBe(false);
   });

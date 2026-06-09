@@ -23,7 +23,7 @@ import {
  *   5. Любой throw внутри handler'ов → 200 OK + Sentry.
  *
  * Идемпотентность — на уровне `processInvoicePaid` / `processInvoiceTerminal`:
- *   повторный invoice.paid с тем же id не приведёт к повторному переходу
+ *   повторный INVOICE_PAID с тем же id не приведёт к повторному переходу
  *   статуса (см. `lib/loveandpay/handlers.ts` + `transitionOrder` noop).
  */
 
@@ -124,7 +124,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   });
 
   try {
-    if (event === 'invoice.paid') {
+    if (event === 'INVOICE_PAID') {
       const result = await processInvoicePaid({
         data,
         rawPayload: parsed.data as unknown as Record<string, unknown>,
@@ -132,13 +132,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       return ok({ event, result: result.kind });
     }
 
-    if (event === 'invoice.expired' || event === 'invoice.cancelled') {
-      const reason = event === 'invoice.expired' ? 'expired' : 'cancelled';
+    if (event === 'INVOICE_EXPIRED' || event === 'INVOICE_CANCELLED') {
+      const reason = event === 'INVOICE_EXPIRED' ? 'expired' : 'cancelled';
       const result = await processInvoiceTerminal({ data, reason });
       return ok({ event, result: result.kind });
     }
 
-    if (event === 'invoice.created') {
+    if (event === 'INVOICE_CREATED') {
       log.debug({ event: 'loveandpay.webhook.created_ignored', invoiceId: data.id });
       return ok({ event, skipped: 'created_ignored' });
     }

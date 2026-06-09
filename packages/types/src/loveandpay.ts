@@ -128,31 +128,43 @@ export type LoveAndPayRatesResponse = z.infer<typeof loveAndPayRatesResponseSche
 // ─── Webhook events ───────────────────────────────────────────────────────
 
 /**
- * Webhook L&P. Заголовки: `X-Webhook-Event`, `X-Webhook-Signature` (HMAC-SHA256
- * по rawBody, см. `apps/web/lib/loveandpay/sign.ts`).
+ * Webhook L&P. Контракт подтверждён живым вызовом (discovery 2026-06-09):
  *
- * Discriminated union по `event`. Поля `data.*` повторяются у всех событий —
- * выносим их в общий объект `loveAndPayWebhookData`.
+ *   Заголовки:
+ *     - `X-Webhook-Event`     — тип события UPPER_SNAKE (`INVOICE_PAID` и т.д.)
+ *     - `X-Webhook-Signature` — `sha256=<hex>`, где hex = HMAC-SHA256(secret, rawBody);
+ *       префикс `sha256=` снимается в `apps/web/lib/loveandpay/sign.ts`
+ *     - `X-Webhook-Timestamp`, `X-Webhook-Id` — присутствуют, в подпись НЕ входят
+ *   Тело: `{ event, timestamp, data: { invoiceId, invoiceNumber, amount, status } }`
+ *     — id приходит как `invoiceId`, поле `currency` отсутствует.
+ *
+ * Схема нормализует `data` к внутренней форме (`invoiceId -> id`, `currency` по
+ * умолчанию `RUB`), чтобы хендлеры и cron `poll-payment` работали с единым типом
+ * `LoveAndPayWebhookData` ({ id, invoiceNumber, amount, currency, status }).
  */
-export const loveAndPayWebhookData = z.object({
-  id: z.string(),
-  invoiceNumber: z.string(),
-  amount: z.number(),
-  currency: z.string(),
-  description: z.string().optional(),
-  status: loveAndPayInvoiceStatus,
-  paidAt: z.string().optional(),
-  customerEmail: z.string().email().optional(),
-  customerName: z.string().optional(),
-  customerPhone: z.string().optional(),
-});
+export const loveAndPayWebhookData = z
+  .object({
+    invoiceId: z.string(),
+    invoiceNumber: z.string(),
+    amount: z.number().optional(),
+    currency: z.string().optional(),
+    status: loveAndPayInvoiceStatus,
+    paidAt: z.string().optional(),
+  })
+  .transform((d) => ({
+    id: d.invoiceId,
+    invoiceNumber: d.invoiceNumber,
+    amount: d.amount ?? 0,
+    currency: d.currency ?? 'RUB',
+    status: d.status,
+  }));
 export type LoveAndPayWebhookData = z.infer<typeof loveAndPayWebhookData>;
 
 export const loveAndPayWebhookEventSchema = z.discriminatedUnion('event', [
-  z.object({ event: z.literal('invoice.created'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.paid'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.expired'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.cancelled'), data: loveAndPayWebhookData }),
+  z.object({ event: z.literal('INVOICE_CREATED'), timestamp: z.string().optional(), data: loveAndPayWebhookData }),
+  z.object({ event: z.literal('INVOICE_PAID'), timestamp: z.string().optional(), data: loveAndPayWebhookData }),
+  z.object({ event: z.literal('INVOICE_EXPIRED'), timestamp: z.string().optional(), data: loveAndPayWebhookData }),
+  z.object({ event: z.literal('INVOICE_CANCELLED'), timestamp: z.string().optional(), data: loveAndPayWebhookData }),
 ]);
 export type LoveAndPayWebhookEvent = z.infer<typeof loveAndPayWebhookEventSchema>;
 
