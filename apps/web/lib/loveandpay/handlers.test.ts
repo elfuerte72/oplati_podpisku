@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Мокаем тяжёлые внешние зависимости ДО импорта handlers.
 vi.mock('../jobs/dispatcher.ts', () => ({
   dispatchIssueCard: vi.fn(),
+  dispatchPaymentConfirmed: vi.fn(),
 }));
 
 vi.mock('@oplati/db', () => {
@@ -28,7 +29,7 @@ vi.mock('@sentry/nextjs', () => ({
 
 import * as db from '@oplati/db';
 import { processInvoicePaid, processInvoiceTerminal } from './handlers.ts';
-import { dispatchIssueCard } from '../jobs/dispatcher.ts';
+import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 
 type MockedDb = typeof db & {
   __setPayment: (
@@ -63,6 +64,7 @@ describe('processInvoicePaid', () => {
     expect(db.markPaymentSucceeded).toHaveBeenCalledTimes(1);
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
     expect(dispatchIssueCard).toHaveBeenCalledWith('order-1');
+    expect(dispatchPaymentConfirmed).toHaveBeenCalledWith('order-1');
   });
 
   it('идемпотентен — повторный paid skip', async () => {
@@ -79,6 +81,7 @@ describe('processInvoicePaid', () => {
     expect(db.markPaymentSucceeded).not.toHaveBeenCalled();
     expect(db.transitionOrder).not.toHaveBeenCalled();
     expect(dispatchIssueCard).not.toHaveBeenCalled();
+    expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
   });
 
   it('не найден payment — возвращает not_found, ничего не пишет', async () => {
