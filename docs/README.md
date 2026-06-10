@@ -25,6 +25,7 @@
 - [api.md](api.md) — спецификация всех HTTP endpoints
 - [telegram-integration.md](telegram-integration.md) — бот, webhook, команды, handoff операторам
 - [web-chat.md](web-chat.md) — веб-чат, идентификация, anti-abuse
+- [web-design.md](web-design.md) — дизайн и креативный план сайта (комикс-компаньон), дизайн-система, фазы
 - [payments.md](payments.md) — YooKassa, CryptoBot, идемпотентность, reconciliation
 - [supabase-setup.md](supabase-setup.md) — создание проекта, Storage, Auth, RLS
 - [background-jobs.md](background-jobs.md) — Trigger.dev задачи, cron

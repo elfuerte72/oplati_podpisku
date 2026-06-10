@@ -1,5 +1,22 @@
 import type { Metadata } from 'next';
+import { Balsamiq_Sans, Rubik } from 'next/font/google';
+import Script from 'next/script';
 import './globals.css';
+
+// Display: рисованный «комиксовый» гротеск с кириллицей — заголовки, кнопки.
+const display = Balsamiq_Sans({
+  subsets: ['cyrillic', 'latin'],
+  weight: ['400', '700'],
+  variable: '--font-display-src',
+  display: 'swap',
+});
+
+// Body/UI: округлый дружелюбный гротеск с кириллицей — текст диалога.
+const body = Rubik({
+  subsets: ['cyrillic', 'latin'],
+  variable: '--font-body-src',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Оплати подписки',
@@ -14,8 +31,18 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru" className="h-full antialiased">
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-50">
+    <html
+      lang="ru"
+      className={`h-full ${display.variable} ${body.variable}`}
+      data-theme="dark"
+    >
+      <body className="min-h-full flex flex-col">
+        {/* Применяем сохранённую тему до пейнта (анти-FOUC). beforeInteractive —
+            валидный для App Router способ раннего инлайна (вместо raw <script>,
+            на который ругается React). */}
+        <Script id="theme-init" strategy="beforeInteractive">
+          {`try{var t=localStorage.getItem('oplatishka-theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}`}
+        </Script>
         {children}
       </body>
     </html>

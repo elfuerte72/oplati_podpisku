@@ -1,12 +1,18 @@
 export {
   getOrCreateUserByTelegramId,
+  getOrCreateUserByWebSessionId,
   getUserTelegramId,
+  findUserIdByWebSessionId,
   type GetOrCreateUserByTelegramIdInput,
   type GetOrCreateUserByTelegramIdResult,
+  type GetOrCreateUserByWebSessionIdInput,
+  type GetOrCreateUserByWebSessionIdResult,
 } from './users.ts';
 
 export {
   getOrCreateActiveConversation,
+  findActiveConversation,
+  createConversation,
   type GetOrCreateActiveConversationInput,
   type GetOrCreateActiveConversationResult,
 } from './conversations.ts';

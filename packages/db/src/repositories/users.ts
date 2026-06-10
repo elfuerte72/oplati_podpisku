@@ -108,3 +108,84 @@ export async function getUserTelegramId(db: DB, userId: string): Promise<string 
   );
   return rows[0]?.telegram_id ?? null;
 }
+
+/**
+ * Upsert пользователя по `web_session_id` (веб-чат без регистрации).
+ *
+ * Зеркало `getOrCreateUserByTelegramId`: один INSERT с
+ * `ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL DO UPDATE`
+ * против partial-unique индекса `users_web_session_id_idx`. `web_session_id`
+ * приходит из httpOnly-cookie `session` (UUID v4, см. docs/web-chat.md).
+ *
+ * PII в логах: `web_session_id` хэшируется (sha256, первые 8 hex).
+ */
+
+export type GetOrCreateUserByWebSessionIdInput = {
+  webSessionId: string;
+  language?: string;
+};
+
+export type GetOrCreateUserByWebSessionIdResult = {
+  id: string;
+  created: boolean;
+};
+
+export async function getOrCreateUserByWebSessionId(
+  db: DB,
+  input: GetOrCreateUserByWebSessionIdInput,
+  log: RepoLogger = noopLogger,
+): Promise<GetOrCreateUserByWebSessionIdResult> {
+  const { webSessionId, language } = input;
+  const sessionHash = hashSessionId(webSessionId);
+  const startedAt = Date.now();
+
+  log.debug({ event: 'db.users.web.upsert.start', sessionHash, language: language ?? 'ru' });
+
+  const rows = await db.execute<{ id: string; created: boolean }>(sql`
+    INSERT INTO users (web_session_id, language)
+    VALUES (${webSessionId}, ${language ?? 'ru'})
+    ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL
+    DO UPDATE SET updated_at = now()
+    RETURNING id, (xmax = 0) AS created
+  `);
+
+  const row = rows[0];
+  if (!row) {
+    throw new Error('getOrCreateUserByWebSessionId: empty RETURNING — INSERT/UPSERT не вернул строку');
+  }
+
+  const result: GetOrCreateUserByWebSessionIdResult = { id: row.id, created: row.created };
+
+  if (result.created) {
+    log.info({ event: 'db.users.web.created', sessionHash, userId: result.id });
+  }
+
+  log.debug({
+    event: 'db.users.web.upsert.done',
+    sessionHash,
+    userId: result.id,
+    created: result.created,
+    durationMs: Date.now() - startedAt,
+  });
+
+  return result;
+}
+
+function hashSessionId(sessionId: string): string {
+  return createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
+}
+
+/**
+ * Read-only поиск пользователя по `web_session_id` — для GET-эндпоинтов
+ * (восстановление истории веб-чата), где создавать user нельзя
+ * (инвариант: запись появляется только при первом сообщении).
+ */
+export async function findUserIdByWebSessionId(
+  db: DB,
+  webSessionId: string,
+): Promise<string | null> {
+  const rows = await db.execute<{ id: string }>(
+    sql`SELECT id FROM users WHERE web_session_id = ${webSessionId} LIMIT 1`,
+  );
+  return rows[0]?.id ?? null;
+}

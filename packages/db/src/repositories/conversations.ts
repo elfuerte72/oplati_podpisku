@@ -75,3 +75,55 @@ export async function getOrCreateActiveConversation(
 
   return { id: row.id, created: true };
 }
+
+/**
+ * Принудительно создать НОВЫЙ conversation (кнопка «Очистить диалог» в
+ * веб-чате). Старый разговор не трогаем (append-only дух) — он просто
+ * перестаёт быть активным: `getOrCreateActiveConversation` выбирает
+ * последний по `created_at`.
+ */
+export async function createConversation(
+  db: DB,
+  input: GetOrCreateActiveConversationInput,
+  log: RepoLogger = noopLogger,
+): Promise<{ id: string }> {
+  const { userId, channel } = input;
+  const inserted = await db
+    .insert(conversations)
+    .values({ userId, channel })
+    .returning({ id: conversations.id });
+
+  const row = inserted[0];
+  if (!row) {
+    throw new Error('createConversation: INSERT не вернул строку (RETURNING пуст)');
+  }
+
+  log.info({
+    event: 'db.conversations.created',
+    conversationId: row.id,
+    userId,
+    channel,
+    reason: 'manual_clear',
+  });
+
+  return { id: row.id };
+}
+
+/**
+ * Read-only вариант: найти активный conversation без создания. Для
+ * GET-эндпоинтов (история веб-чата) — открытие страницы не должно
+ * порождать записи в БД.
+ */
+export async function findActiveConversation(
+  db: DB,
+  input: GetOrCreateActiveConversationInput,
+): Promise<string | null> {
+  const { userId, channel } = input;
+  const existing = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(and(eq(conversations.userId, userId), eq(conversations.channel, channel)))
+    .orderBy(desc(conversations.createdAt))
+    .limit(1);
+  return existing[0]?.id ?? null;
+}
