@@ -1,6 +1,6 @@
 # Компоненты — Оплатишка comic UI
 
-Анатомия ключевых элементов чата. Все используют сигнатуру: контур `--border-comic` + жёсткая тень `--shadow-comic`. Маппинг tool-call → UI согласован с `docs/web-chat.md` §«Tool calls в UI».
+Анатомия ключевых элементов чата. Все используют сигнатуру: контур `--border-comic` + жёсткая тень `--shadow-comic`. Маппинг tool-call → UI описан здесь; фактический контракт ответа агента (toolCalls в JSON) — `apps/web/app/api/chat/route.ts`.
 
 ## 1. Комикс-облако (speech bubble)
 

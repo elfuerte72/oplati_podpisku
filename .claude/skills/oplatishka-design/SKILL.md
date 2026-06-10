@@ -1,5 +1,5 @@
 ---
-version: 0.1.0
+version: 0.1.1
 name: oplatishka-design
 description: >
   Design system and brand rules for the "Оплатишка" website — a comic-companion
@@ -10,15 +10,16 @@ description: >
   backgrounds, card frames, favicon/OG) via Higgsfield. Triggers on: "стиль сайта",
   "дизайн чата", "брендовые цвета/токены", "оживить маскота", "комикс-карточки",
   "сгенерировать ассет Оплатишки", "halftone", "speech bubble". NOT for: backend
-  contracts / streaming / anti-abuse (see docs/web-chat.md), AI prompt behavior
-  (docs/ai-agent.md), or generic Higgsfield jobs unrelated to this brand.
+  contracts / anti-abuse (see apps/web/app/api/chat/ + CLAUDE.md), AI prompt
+  behavior (packages/agent/src/prompts.ts), or generic Higgsfield jobs unrelated
+  to this brand.
 argument-hint: "[what to design or generate] (e.g. 'order card', 'mascot thinking pose')"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
 # Оплатишка — Design System
 
-Реализационные правила бренда для сайта (`apps/web`). Это **как делать**; полная концепция и фазы — в [`docs/web-design.md`](../../../docs/web-design.md), функциональные контракты — в [`docs/web-chat.md`](../../../docs/web-chat.md). При конфликте по поведению/контрактам побеждает `web-chat.md`.
+Реализационные правила бренда для сайта (`apps/web`). Этот скилл — **единственный источник дизайн-правды** (старая спека `docs/web-design.md` / `docs/web-chat.md` удалена 2026-06-10, история в git). Функциональные контракты чата определяет код: `apps/web/app/api/chat/` + общие правила в `CLAUDE.md`. При конфликте «дизайн ↔ поведение/контракт» побеждает код.
 
 ## Суть бренда за 20 секунд
 
@@ -55,7 +56,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 
 ## Маскот — состояния
 
-Персонаж реагирует на ход диалога: `idle/wave` → `thinking` (стрим) → `presenting` (каталог) → `celebrate` (оплата). Таблица состояний и ассетов — в `docs/web-design.md` §6 и [`references/brand.md`](references/brand.md).
+Персонаж реагирует на ход диалога: `idle/wave` → `thinking` (ожидание ответа агента — стриминга нет, ответ приходит целиком) → `presenting` (каталог) → `celebrate` (оплата). Полная таблица состояний и ассетов — в [`references/brand.md`](references/brand.md).
 
 ## Генерация ассетов (Higgsfield)
 
