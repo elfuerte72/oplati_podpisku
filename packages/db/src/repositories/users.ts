@@ -108,3 +108,150 @@ export async function getUserTelegramId(db: DB, userId: string): Promise<string 
   );
   return rows[0]?.telegram_id ?? null;
 }
+
+/**
+ * Upsert пользователя по `web_session_id` (веб-чат без регистрации).
+ *
+ * Зеркало `getOrCreateUserByTelegramId`: один INSERT с
+ * `ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL DO UPDATE`
+ * против partial-unique индекса `users_web_session_id_idx`. `web_session_id`
+ * приходит из httpOnly-cookie `session` (UUID v4, см. docs/web-chat.md).
+ *
+ * PII в логах: `web_session_id` хэшируется (sha256, первые 8 hex).
+ */
+
+export type GetOrCreateUserByWebSessionIdInput = {
+  webSessionId: string;
+  language?: string;
+};
+
+export type GetOrCreateUserByWebSessionIdResult = {
+  id: string;
+  created: boolean;
+};
+
+export async function getOrCreateUserByWebSessionId(
+  db: DB,
+  input: GetOrCreateUserByWebSessionIdInput,
+  log: RepoLogger = noopLogger,
+): Promise<GetOrCreateUserByWebSessionIdResult> {
+  const { webSessionId, language } = input;
+  const sessionHash = hashSessionId(webSessionId);
+  const startedAt = Date.now();
+
+  log.debug({ event: 'db.users.web.upsert.start', sessionHash, language: language ?? 'ru' });
+
+  const rows = await db.execute<{ id: string; created: boolean }>(sql`
+    INSERT INTO users (web_session_id, language)
+    VALUES (${webSessionId}, ${language ?? 'ru'})
+    ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL
+    DO UPDATE SET updated_at = now()
+    RETURNING id, (xmax = 0) AS created
+  `);
+
+  const row = rows[0];
+  if (!row) {
+    throw new Error('getOrCreateUserByWebSessionId: empty RETURNING — INSERT/UPSERT не вернул строку');
+  }
+
+  const result: GetOrCreateUserByWebSessionIdResult = { id: row.id, created: row.created };
+
+  if (result.created) {
+    log.info({ event: 'db.users.web.created', sessionHash, userId: result.id });
+  }
+
+  log.debug({
+    event: 'db.users.web.upsert.done',
+    sessionHash,
+    userId: result.id,
+    created: result.created,
+    durationMs: Date.now() - startedAt,
+  });
+
+  return result;
+}
+
+function hashSessionId(sessionId: string): string {
+  return createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
+}
+
+/**
+ * Привязана ли веб-сессия к Telegram — для поллинга статуса привязки
+ * (`GET /api/auth/telegram/link/status`) и гейта перед оплатой.
+ * Read-only: пользователя не создаёт.
+ */
+export async function isWebSessionLinkedToTelegram(
+  db: DB,
+  webSessionId: string,
+): Promise<boolean> {
+  const rows = await db.execute<{ telegram_id: string | null }>(
+    sql`SELECT telegram_id FROM users WHERE web_session_id = ${webSessionId} LIMIT 1`,
+  );
+  return (rows[0]?.telegram_id ?? null) !== null;
+}
+
+/**
+ * Профиль веб-сессии для правой панели сайта: имя (из Telegram после
+ * привязки), статус привязки и реальная статистика покупок из `orders`.
+ * «Покупка» = заказ, дошедший до оплаты: paid / in_fulfillment / completed.
+ * Read-only: пользователя не создаёт; для незнакомой сессии — нули.
+ */
+
+export type WebSessionProfile = {
+  displayName: string | null;
+  telegramLinked: boolean;
+  ordersCount: number;
+  totalSpentKopecks: number;
+};
+
+export async function getWebSessionProfile(
+  db: DB,
+  webSessionId: string,
+): Promise<WebSessionProfile> {
+  const rows = await db.execute<{
+    display_name: string | null;
+    telegram_id: string | null;
+    orders_count: number;
+    total_spent_kopecks: number;
+  }>(sql`
+    SELECT
+      u.display_name,
+      u.telegram_id,
+      COUNT(o.id) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed'))::int
+        AS orders_count,
+      COALESCE(
+        SUM(o.amount_rub) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed')),
+        0
+      )::int AS total_spent_kopecks
+    FROM users u
+    LEFT JOIN orders o ON o.user_id = u.id
+    WHERE u.web_session_id = ${webSessionId}
+    GROUP BY u.id
+  `);
+
+  const row = rows[0];
+  if (!row) {
+    return { displayName: null, telegramLinked: false, ordersCount: 0, totalSpentKopecks: 0 };
+  }
+  return {
+    displayName: row.display_name,
+    telegramLinked: row.telegram_id !== null,
+    ordersCount: row.orders_count,
+    totalSpentKopecks: row.total_spent_kopecks,
+  };
+}
+
+/**
+ * Read-only поиск пользователя по `web_session_id` — для GET-эндпоинтов
+ * (восстановление истории веб-чата), где создавать user нельзя
+ * (инвариант: запись появляется только при первом сообщении).
+ */
+export async function findUserIdByWebSessionId(
+  db: DB,
+  webSessionId: string,
+): Promise<string | null> {
+  const rows = await db.execute<{ id: string }>(
+    sql`SELECT id FROM users WHERE web_session_id = ${webSessionId} LIMIT 1`,
+  );
+  return rows[0]?.id ?? null;
+}

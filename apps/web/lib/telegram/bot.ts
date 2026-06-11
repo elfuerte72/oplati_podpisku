@@ -18,6 +18,7 @@ import { childLogger } from '@/lib/logger';
  */
 
 let _bot: Bot | undefined;
+let _botUsername: string | undefined;
 const log = childLogger('telegram-bot');
 
 export function getBot(): Bot {
@@ -29,4 +30,18 @@ export function getBot(): Bot {
   _bot = new Bot(token);
   log.debug({ event: 'telegram.bot.initialized' });
   return _bot;
+}
+
+/**
+ * Username бота для deep-link `t.me/<username>?start=...` (привязка Telegram
+ * к веб-сессии). Берётся через `getMe` и кэшируется на жизнь инстанса —
+ * env-переменной с username нет, а токен на prod/preview принадлежит разным
+ * ботам, так что getMe всегда отдаёт правильного.
+ */
+export async function getBotUsername(): Promise<string> {
+  if (_botUsername) return _botUsername;
+  const me = await getBot().api.getMe();
+  _botUsername = me.username;
+  log.debug({ event: 'telegram.bot.username_resolved' });
+  return _botUsername;
 }

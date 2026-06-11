@@ -189,15 +189,38 @@ export class LoveAndPayClient {
           message: respText.slice(0, 500),
         };
         try {
-          const parsed = loveAndPayErrorSchema.safeParse(JSON.parse(respText));
-          if (parsed.success) {
+          const json: unknown = JSON.parse(respText);
+          const nested = loveAndPayErrorSchema.safeParse(json);
+          if (nested.success) {
+            // Вложенный контракт: { success: false, error: { code, message } }.
             errBody = {
-              code: typeof parsed.data.error.code === 'string' ? parsed.data.error.code : `HTTP_${resp.status}`,
-              message: parsed.data.error.message,
+              code:
+                typeof nested.data.error.code === 'string'
+                  ? nested.data.error.code
+                  : `HTTP_${resp.status}`,
+              message: nested.data.error.message,
             };
+          } else if (json !== null && typeof json === 'object') {
+            // Плоский контракт L&P: { error, message?, hint?, code? }. Раньше он
+            // терялся как HTTP_4xx с сырым телом — теперь даём читаемый code/message.
+            const flat = json as Record<string, unknown>;
+            const code =
+              typeof flat.code === 'string'
+                ? flat.code
+                : typeof flat.error === 'string'
+                  ? flat.error
+                  : `HTTP_${resp.status}`;
+            const baseMessage =
+              typeof flat.message === 'string'
+                ? flat.message
+                : typeof flat.error === 'string'
+                  ? flat.error
+                  : respText.slice(0, 500);
+            const hint = typeof flat.hint === 'string' ? ` (${flat.hint})` : '';
+            errBody = { code, message: `${baseMessage}${hint}` };
           }
         } catch {
-          // оставляем дефолтный errBody с обрезанным телом.
+          // не-JSON тело — оставляем дефолтный errBody с обрезанным текстом.
         }
 
         const retryable = resp.status === 429 || resp.status >= 500;

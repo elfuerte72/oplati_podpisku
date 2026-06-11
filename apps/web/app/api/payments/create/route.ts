@@ -98,6 +98,27 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: false, error: 'invalid_amount' }, { status: 400 });
     }
 
+    // Гард минимума терминала (KANYON не принимает < 500 ₽). Ловим ДО вызова
+    // L&P, иначе провайдер вернёт INTERNAL_ERROR с непрозрачным телом.
+    const minAmountRubKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
+    if (order.amountRub < minAmountRubKopecks) {
+      log.warn({
+        event: 'payments.create.below_min',
+        orderId,
+        amountRubKopecks: order.amountRub,
+        minAmountRubKopecks,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'below_min_amount',
+          minAmountRub: serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB,
+          message: `Минимальная сумма оплаты — ${serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB} ₽`,
+        },
+        { status: 422 },
+      );
+    }
+
     const amountRubFull = order.amountRub / 100;
     const successUrl = buildTelegramDeepLink(order.shortId);
     const description = `Оплата заказа ${order.shortId}`;

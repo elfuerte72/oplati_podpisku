@@ -1,17 +1,22 @@
+import { GREETING } from '@oplati/agent';
+
+import { ChatClient } from '@/components/chat/ChatClient';
+import { IntroOverlay } from '@/components/intro/IntroOverlay';
+
+/**
+ * Chat-first главная: full-screen shell (навбар · диалог с Оплатишкой · профиль).
+ * GREETING берётся из @oplati/agent — единый голос с Telegram-ботом.
+ * IntroOverlay — комикс-знакомство при первом визите (localStorage-флаг).
+ */
 export default function HomePage() {
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-6 py-24">
-      <div className="max-w-xl text-center space-y-6">
-        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-          Оплати подписки
-        </h1>
-        <p className="text-lg text-zinc-600 dark:text-zinc-400">
-          Сервис оплаты иностранных подписок для русскоязычных пользователей. Скоро.
-        </p>
-        <p className="text-sm text-zinc-500 dark:text-zinc-500">
-          Пока сайт в разработке — напишите нашему боту в Telegram.
-        </p>
-      </div>
-    </main>
+    <>
+      <h1 className="sr-only">
+        Оплати подписки — оплата иностранных подписок (Claude, Netflix, Spotify,
+        ChatGPT) рублями, СБП и криптой
+      </h1>
+      <ChatClient greeting={GREETING} />
+      <IntroOverlay />
+    </>
   );
 }

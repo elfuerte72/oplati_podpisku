@@ -16,7 +16,7 @@ import {
 } from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
-import { getPaySpaceClient } from '../pay-space/index.ts';
+import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
 
 /**
@@ -65,6 +65,22 @@ export async function issueCard(orderId: string): Promise<void> {
   if (!order.originalAmount || order.originalAmount <= 0) {
     log.error({ event: 'job.issue_card.invalid_amount', orderId });
     await markOrderFailed(orderId, 'invalid_amount');
+    return;
+  }
+
+  // Граница платёжной фазы: пока PaySpace не подключён, не валим успешно
+  // оплаченный заказ в `failed` — оставляем в `paid`, оператор доведёт выпуск
+  // вручную. `failed` здесь означал бы «оплата провалилась», что неверно.
+  if (!isPaySpaceConfigured()) {
+    log.warn({ event: 'job.issue_card.skipped_no_paypace', orderId });
+    Sentry.captureMessage(
+      'issue-card: PaySpace не настроен — заказ оставлен в paid для ручного fulfillment',
+      {
+        level: 'warning',
+        tags: { source: 'job.issue-card' },
+        extra: { orderId },
+      },
+    );
     return;
   }
 

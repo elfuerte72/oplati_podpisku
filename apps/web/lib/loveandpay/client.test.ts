@@ -98,6 +98,32 @@ describe('LoveAndPayClient.createInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('парсит плоский error-shape L&P в code/message', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        makeResp(400, { error: 'NO_TERMINAL', hint: 'terminal not assigned', code: 'NO_TERMINAL' }),
+      );
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+    await expect(
+      c.createInvoice({
+        amount: 1,
+        currency: 'RUB',
+        description: 't',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toMatchObject({ code: 'NO_TERMINAL', message: expect.stringContaining('terminal not assigned') });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('бросает LoveAndPayContractError на невалидный JSON', async () => {
     const fetchMock = vi.fn().mockResolvedValue(makeResp(200, 'not-json'));
     const c = new LoveAndPayClient({

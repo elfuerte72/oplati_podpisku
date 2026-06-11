@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  countRecentOrdersByUser,
   createDraftOrder,
   getDb,
   getServiceById,
@@ -42,6 +43,23 @@ import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts'
 const log = childLogger('tool.propose_order');
 const TTL_HOURS = 24;
 
+/**
+ * Серверные границы суммы заказа. Промпт-правила («цена только из web_search»)
+ * — advisory: модель можно уговорить инъекцией. Реальная защита — здесь.
+ * Заказы дороже MAX оформляет оператор (текст ошибки направляет модель к
+ * request_human), дешевле MIN — не имеют экономического смысла.
+ */
+const MIN_AMOUNT_USD_CENTS = 100; // $1
+const MAX_AMOUNT_USD_CENTS = 50_000; // $500
+
+/**
+ * Анти-абьюз: потолок созданных заказов на пользователя за скользящее окно.
+ * Реальному клиенту хватает с запасом; спамер/инъекция не завалит `orders`
+ * черновиками и не сожжёт L&P-вызовы курса.
+ */
+const MAX_ORDERS_PER_WINDOW = 10;
+const ORDERS_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export async function proposeOrder(input: {
   serviceId?: string;
   customDescription?: string;
@@ -55,13 +73,28 @@ export async function proposeOrder(input: {
     serviceId,
     customDescription,
     serviceName,
-    amountUsdCents,
     userId,
     conversationId,
   } = input;
 
-  if (amountUsdCents <= 0) {
-    throw new Error('propose_order: amountUsdCents должен быть положительным');
+  // Модель может прислать дробные центы ($19.99 × 100 → 1998.9999…) — округляем.
+  const amountUsdCents = Math.round(input.amountUsdCents);
+
+  if (
+    !Number.isFinite(amountUsdCents) ||
+    amountUsdCents < MIN_AMOUNT_USD_CENTS ||
+    amountUsdCents > MAX_AMOUNT_USD_CENTS
+  ) {
+    log.warn({
+      event: 'tool.propose_order.amount_out_of_bounds',
+      userId,
+      amountUsdCents: input.amountUsdCents,
+    });
+    throw new Error(
+      'propose_order: сумма вне допустимого диапазона $1–$500 за заказ. ' +
+        'Через бота такой заказ оформить нельзя — не пытайся создать его повторно ' +
+        'и не подгоняй сумму под лимит; предложи пользователю оператора (request_human).',
+    );
   }
 
   const hasServiceId = typeof serviceId === 'string' && serviceId.length > 0;
@@ -92,6 +125,26 @@ export async function proposeOrder(input: {
   });
 
   const db = getDb();
+
+  // Лимит заказов на пользователя — проверяем ДО lookup'а сервиса и запроса
+  // курса в L&P, чтобы абьюз не сжигал внешние вызовы.
+  const recentOrders = await countRecentOrdersByUser(db, {
+    userId,
+    withinMs: ORDERS_WINDOW_MS,
+  });
+  if (recentOrders >= MAX_ORDERS_PER_WINDOW) {
+    log.warn({ event: 'tool.propose_order.user_order_cap', userId, recentOrders });
+    Sentry.captureMessage('propose_order: per-user order cap hit', {
+      level: 'warning',
+      tags: { source: 'tool.propose_order' },
+      extra: { userId, recentOrders },
+    });
+    throw new Error(
+      'propose_order: лимит новых заказов за сутки исчерпан. Не создавай заказ ' +
+        'повторно; объясни пользователю, что сегодня заказы закончились, и предложи ' +
+        'продолжить с оператором (request_human).',
+    );
+  }
 
   let resolvedServiceId: string | null = null;
   let serviceRequiresKyc = false;

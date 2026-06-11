@@ -1,12 +1,21 @@
 export {
   getOrCreateUserByTelegramId,
+  getOrCreateUserByWebSessionId,
   getUserTelegramId,
+  findUserIdByWebSessionId,
+  isWebSessionLinkedToTelegram,
+  getWebSessionProfile,
+  type WebSessionProfile,
   type GetOrCreateUserByTelegramIdInput,
   type GetOrCreateUserByTelegramIdResult,
+  type GetOrCreateUserByWebSessionIdInput,
+  type GetOrCreateUserByWebSessionIdResult,
 } from './users.ts';
 
 export {
   getOrCreateActiveConversation,
+  findActiveConversation,
+  createConversation,
   type GetOrCreateActiveConversationInput,
   type GetOrCreateActiveConversationResult,
 } from './conversations.ts';
@@ -18,6 +27,16 @@ export {
   type AppendMessageResult,
   type MessageHistoryItem,
 } from './messages.ts';
+
+export {
+  createLinkToken,
+  consumeLinkToken,
+  LINK_TOKEN_PREFIX,
+  type CreateLinkTokenInput,
+  type CreateLinkTokenResult,
+  type ConsumeLinkTokenInput,
+  type ConsumeLinkTokenResult,
+} from './link-tokens.ts';
 
 export { noopLogger, type RepoLogger } from './logger.ts';
 
@@ -45,6 +64,7 @@ export {
   findExpiredPendingOrders,
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
+  countRecentOrdersByUser,
   type OrderRow,
   type CreateDraftOrderInput,
   type TransitionOrderInput,

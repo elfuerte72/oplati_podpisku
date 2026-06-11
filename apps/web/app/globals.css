@@ -1,1 +1,232 @@
 @import "tailwindcss";
+
+/*
+ * Оплатишка — comic-companion design tokens.
+ * Палитра снята из ассетов (content_site/) — см.
+ * .claude/skills/oplatishka-design/references/design-tokens.md
+ */
+@theme {
+  /* brand raw */
+  --color-teal-primary: #268b89;
+  --color-teal-light: #5b9c99;
+  --color-teal-deep: #306874;
+  --color-ink: #16151a;
+  --color-paper: #fbfcf7;
+  --color-noir: #0f0d11;
+  --color-brown: #6e4e4c;
+  --color-glasses: #2e3a8c;
+  --color-skin: #e7c1a9;
+  --color-stamp: #c2362f;
+
+  --font-display: var(--font-display-src), system-ui, sans-serif;
+  --font-body: var(--font-body-src), system-ui, sans-serif;
+
+  --radius-card: 18px;
+  --radius-bubble: 22px;
+
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.25, 1.3);
+}
+
+/* dark = default ("комикс-нуар") */
+:root {
+  --bg: #0f0d11;
+  --surface: #1a1a20;
+  --surface-2: #23232b;
+  --text: #fbfcf7;
+  --text-muted: #a9a7ae;
+  --accent: #5b9c99;
+  --bubble-bot: #1f2a2a;
+  --bubble-user: #268b89;
+  --shadow-ink: #0b0a0d;
+  --link: #7e8be0;
+
+  --shadow-comic: 4px 4px 0 var(--shadow-ink);
+  --shadow-comic-lg: 6px 6px 0 var(--shadow-ink);
+  --border-comic: 2.5px solid var(--shadow-ink);
+}
+
+[data-theme="light"] {
+  --bg: #fbfcf7;
+  --surface: #ffffff;
+  --surface-2: #f1f2ec;
+  --text: #16151a;
+  --text-muted: #5b5a60;
+  --accent: #306874;
+  --bubble-bot: #ffffff;
+  --bubble-user: #5b9c99;
+  --shadow-ink: #16151a;
+  --link: #2e3a8c;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Иконки тумблера темы — показываем по текущей теме (без JS-state). */
+.theme-icon-dark,
+.theme-icon-light {
+  display: none;
+}
+[data-theme='dark'] .theme-icon-dark {
+  display: block;
+}
+[data-theme='light'] .theme-icon-light {
+  display: block;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Комикс-скроллбар: teal-ползунок «таблеткой» с чернильным контуром, без
+   стандартной серой дорожки. Webkit-ветка — Chromium/Safari; стандартные
+   свойства — фолбэк для Firefox (Chrome 121+ игнорирует ::-webkit-scrollbar,
+   если задан scrollbar-color, поэтому они разнесены через @supports). */
+.comic-scroll::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+.comic-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.comic-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border: 3px solid var(--bg);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px var(--shadow-ink);
+}
+.comic-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-teal-primary);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .comic-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) transparent;
+  }
+}
+
+/* Сигнатурная halftone-фактура поверх крупных зон. */
+.halftone {
+  background-image: radial-gradient(
+    var(--halftone-dot-color, rgba(255, 255, 255, 0.07)) 2px,
+    transparent 2px
+  );
+  background-size: 7px 7px;
+}
+
+/* "Впечатывание" штампа ОПЛАЧЕНО. */
+@keyframes stamp-slam {
+  0% {
+    transform: scale(2.4) rotate(-18deg);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(0.92) rotate(-12deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(-12deg);
+    opacity: 1;
+  }
+}
+
+/* Pop-появление облаков/карточек. */
+@keyframes comic-pop {
+  0% {
+    transform: translateY(8px) scale(0.96);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Маскот: «дыхание» в покое. */
+@keyframes mascot-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+/* Маскот: качается, пока думает над ответом. */
+@keyframes mascot-think {
+  0%,
+  100% {
+    transform: rotate(-3deg) translateY(0);
+  }
+  50% {
+    transform: rotate(3deg) translateY(-2px);
+  }
+}
+
+/* Маскот: подпрыгивает на успешной оплате. */
+@keyframes mascot-cheer {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  40% {
+    transform: translateY(-8px) scale(1.05);
+  }
+}
+
+/* Падение конфетти при успешной оплате. */
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-16px) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(680deg);
+    opacity: 0.9;
+  }
+}
+
+/* Интро: маскот «нарисовывается» — чернильный набросок, потом цвет. */
+@keyframes intro-draw-in {
+  0% {
+    transform: scale(0.3) rotate(-12deg);
+    opacity: 0;
+    filter: grayscale(1) contrast(1.6);
+  }
+  55% {
+    transform: scale(1.07) rotate(2.5deg);
+    opacity: 1;
+    filter: grayscale(1) contrast(1.35);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+    filter: none;
+  }
+}
+
+/* Интро: построчное появление текста/чипов (со stagger через animation-delay). */
+@keyframes intro-rise {
+  0% {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

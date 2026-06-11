@@ -12,8 +12,9 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
  *   X-Signature: <hex>
  *
  * Webhook (входящие): другой контракт — заголовок `X-Webhook-Signature` содержит
- * HMAC-SHA256(webhookSecret, rawBody) без timestamp. Поэтому verify — отдельная
- * функция с её собственным контрактом.
+ * `sha256=<hex>`, где hex = HMAC-SHA256(webhookSecret, rawBody) без timestamp
+ * (подтверждено discovery 2026-06-09). Префикс `sha256=` снимается в verify.
+ * Поэтому verify — отдельная функция с её собственным контрактом.
  */
 
 export type SignedRequest = {
@@ -52,9 +53,13 @@ export function verifyWebhookSignature(
   webhookSecret: string,
 ): boolean {
   if (!headerSignature) return false;
+  // L&P шлёт подпись с префиксом схемы: `sha256=<hex>`. Снимаем его, если есть.
+  const provided = headerSignature.startsWith('sha256=')
+    ? headerSignature.slice('sha256='.length)
+    : headerSignature;
   const expected = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
   const a = Buffer.from(expected, 'utf8');
-  const b = Buffer.from(headerSignature, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
   // Длины должны совпадать — иначе timingSafeEqual бросит.
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);

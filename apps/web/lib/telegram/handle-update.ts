@@ -5,10 +5,12 @@ import { GrammyError, HttpError } from 'grammy';
 
 import {
   appendMessage,
+  consumeLinkToken,
   getDb,
   getOrCreateActiveConversation,
   getOrCreateUserByTelegramId,
   getOrderById,
+  LINK_TOKEN_PREFIX,
   loadRecentMessages,
   transitionOrder,
   type MessageHistoryItem,
@@ -263,6 +265,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       languageCode: message.from?.language_code,
     });
 
+    // Deep-link привязки веб-сессии: /start link_<token> (кнопка «Связать
+    // Telegram» на сайте). Обрабатываем ДО обычного приветствия.
+    const startPayload = text.startsWith('/start ') ? text.slice('/start '.length).trim() : '';
+    if (startPayload.startsWith(LINK_TOKEN_PREFIX)) {
+      await handleLinkDeepLink(update, message, startPayload);
+      return;
+    }
+
     const ctx = await persistInbound(update, message);
     if (ctx) {
       await safeAppendMessage(
@@ -383,6 +393,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     inputTokens: result.usage.input_tokens,
     outputTokens: result.usage.output_tokens,
     totalTokens: result.usage.input_tokens + result.usage.output_tokens,
+    // Prompt caching: read > 0 — префикс tools+system пришёл из кэша (~0.1x цены)
+    cacheReadTokens: result.usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: result.usage.cache_creation_input_tokens ?? 0,
     replyLength: replyText.length,
   });
 
@@ -415,6 +428,88 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       await sendSafely(chatId, chunk, update.update_id);
     }
   }
+}
+
+const LINK_SUCCESS_TEXT =
+  'Готово, Telegram привязан! Теперь чеки об оплате и доступы по заказам с сайта будут приходить сюда. Возвращайся на сайт — Оплатишка уже в курсе.';
+const LINK_INVALID_TEXT =
+  'Эта ссылка привязки устарела или уже использована. Вернись на сайт и нажми «Связать Telegram» ещё раз — пришлю свежую.';
+const LINK_FAIL_TEXT =
+  'Не получилось привязать прямо сейчас — что-то на нашей стороне. Попробуй ещё раз через минуту.';
+
+/**
+ * Завершение привязки веб-сессии: пользователь пришёл по deep-link
+ * `t.me/<bot>?start=link_<token>` с сайта. Токен выпущен
+ * `POST /api/auth/telegram/link`, потребление одноразовое (consumeLinkToken).
+ *
+ * Если у пользователя уже была история и в боте, и на сайте — consumeLinkToken
+ * сольёт две users-строки в одну (выживает telegram-строка). Сообщения
+ * персистим как обычный диалог, чтобы привязка была видна в истории.
+ */
+async function handleLinkDeepLink(
+  update: TelegramUpdate,
+  message: TelegramMessage,
+  startPayload: string,
+): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramUserId = message.from?.id;
+
+  if (!telegramUserId) {
+    log.warn({ event: 'telegram.link.skipped', updateId: update.update_id, reason: 'no_from_id' });
+    await sendSafely(chatId, LINK_FAIL_TEXT, update.update_id);
+    return;
+  }
+
+  const token = startPayload.slice(LINK_TOKEN_PREFIX.length);
+  const displayNameParts = [message.from?.first_name, message.from?.last_name].filter(
+    (p): p is string => typeof p === 'string' && p.length > 0,
+  );
+
+  let replyText: string;
+  try {
+    const result = await consumeLinkToken(
+      getDb(),
+      {
+        token,
+        telegramId: String(telegramUserId),
+        displayName: displayNameParts.length > 0 ? displayNameParts.join(' ') : null,
+      },
+      dbLog,
+    );
+    if (result.ok) {
+      log.info({
+        event: 'telegram.link.ok',
+        updateId: update.update_id,
+        userId: result.userId,
+        merged: result.merged,
+        alreadyLinked: result.alreadyLinked,
+      });
+      replyText = LINK_SUCCESS_TEXT;
+    } else {
+      log.info({ event: 'telegram.link.rejected', updateId: update.update_id, reason: result.reason });
+      replyText = LINK_INVALID_TEXT;
+    }
+  } catch (err) {
+    log.error({ event: 'telegram.link.failed', updateId: update.update_id, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.link' } });
+    replyText = LINK_FAIL_TEXT;
+  }
+
+  // Персист диалога — обычный путь (после consumeLinkToken, чтобы upsert
+  // пользователя не создал telegram-строку до merge без необходимости).
+  const ctx = await persistInbound(update, message);
+  if (ctx) {
+    await safeAppendMessage(
+      ctx,
+      'user',
+      '/start (привязка Telegram с сайта)',
+      { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
+      update.update_id,
+    );
+    await safeAppendMessage(ctx, 'assistant', replyText, { source: 'telegram_link' }, update.update_id);
+  }
+
+  await sendSafely(chatId, replyText, update.update_id);
 }
 
 /**

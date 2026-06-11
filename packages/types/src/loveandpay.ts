@@ -128,32 +128,66 @@ export type LoveAndPayRatesResponse = z.infer<typeof loveAndPayRatesResponseSche
 // ─── Webhook events ───────────────────────────────────────────────────────
 
 /**
- * Webhook L&P. Заголовки: `X-Webhook-Event`, `X-Webhook-Signature` (HMAC-SHA256
- * по rawBody, см. `apps/web/lib/loveandpay/sign.ts`).
+ * Webhook L&P. Контракт снят с РЕАЛЬНОГО платежа (discovery 2026-06-09):
  *
- * Discriminated union по `event`. Поля `data.*` повторяются у всех событий —
- * выносим их в общий объект `loveAndPayWebhookData`.
+ *   Заголовки:
+ *     - `X-Webhook-Signature` — `sha256=<hex>`, где hex = HMAC-SHA256(secret, rawBody);
+ *       префикс `sha256=` снимается в `apps/web/lib/loveandpay/sign.ts`.
+ *     - Заголовка `X-Webhook-Event` у реального webhook'а НЕТ — тип события только в теле.
+ *   Тело прода: `{ id, event: "invoice.paid", timestamp, data: { id, invoiceNumber,
+ *     amount, currency, status, paidAt, ... }, partnerId, retryCount }`.
+ *
+ * ВАЖНО: вкладка «Тестирование» в кабинете L&P шлёт ДРУГОЙ (не продовый) формат —
+ * `event: "INVOICE_PAID"`, `data.invoiceId` (без `currency`). Чтобы и тестовая панель,
+ * и реальные webhook'и парсились, схема принимает оба:
+ *   - событие: `INVOICE_PAID` нормализуется в `invoice.paid` (и т.д.);
+ *   - id: `invoiceId` нормализуется в `id`; `currency` по умолчанию `RUB`.
+ *
+ * Хендлеры и cron `poll-payment` работают с единым типом `LoveAndPayWebhookData`
+ * ({ id, invoiceNumber, amount, currency, status }).
  */
-export const loveAndPayWebhookData = z.object({
-  id: z.string(),
-  invoiceNumber: z.string(),
-  amount: z.number(),
-  currency: z.string(),
-  description: z.string().optional(),
-  status: loveAndPayInvoiceStatus,
-  paidAt: z.string().optional(),
-  customerEmail: z.string().email().optional(),
-  customerName: z.string().optional(),
-  customerPhone: z.string().optional(),
-});
+export const loveAndPayWebhookData = z
+  .object({
+    id: z.string().optional(),
+    invoiceId: z.string().optional(),
+    invoiceNumber: z.string(),
+    amount: z.number().optional(),
+    currency: z.string().optional(),
+    status: loveAndPayInvoiceStatus,
+    paidAt: z.string().optional(),
+  })
+  // Без хотя бы одного id дальше работать нельзя: пустой `id` сломал бы
+  // идемпотентность платежей (provider_ref = ''). Падаем на границе парсинга.
+  .refine((d) => Boolean(d.id ?? d.invoiceId), {
+    message: 'either id or invoiceId must be provided',
+  })
+  .transform((d) => ({
+    id: d.id ?? d.invoiceId ?? '',
+    invoiceNumber: d.invoiceNumber,
+    amount: d.amount ?? 0,
+    currency: d.currency ?? 'RUB',
+    status: d.status,
+  }));
 export type LoveAndPayWebhookData = z.infer<typeof loveAndPayWebhookData>;
 
-export const loveAndPayWebhookEventSchema = z.discriminatedUnion('event', [
-  z.object({ event: z.literal('invoice.created'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.paid'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.expired'), data: loveAndPayWebhookData }),
-  z.object({ event: z.literal('invoice.cancelled'), data: loveAndPayWebhookData }),
-]);
+/** Канонические имена событий (прод). Тестовая панель шлёт UPPER_SNAKE — алиасим. */
+const loveAndPayEventAliases: Record<string, string> = {
+  INVOICE_CREATED: 'invoice.created',
+  INVOICE_PAID: 'invoice.paid',
+  INVOICE_EXPIRED: 'invoice.expired',
+  INVOICE_CANCELLED: 'invoice.cancelled',
+};
+
+const loveAndPayWebhookEventName = z.preprocess(
+  (v) => (typeof v === 'string' && v in loveAndPayEventAliases ? loveAndPayEventAliases[v] : v),
+  z.enum(['invoice.created', 'invoice.paid', 'invoice.expired', 'invoice.cancelled']),
+);
+
+export const loveAndPayWebhookEventSchema = z.object({
+  event: loveAndPayWebhookEventName,
+  timestamp: z.string().optional(),
+  data: loveAndPayWebhookData,
+});
 export type LoveAndPayWebhookEvent = z.infer<typeof loveAndPayWebhookEventSchema>;
 
 // ─── Errors ───────────────────────────────────────────────────────────────

@@ -99,6 +99,62 @@ function getClient() {
 }
 
 /**
+ * System prompt как блок с cache_control — включает prompt caching Anthropic.
+ * Брейкпоинт на последнем system-блоке кэширует префикс tools + system целиком
+ * (порядок рендера: tools → system → messages): повторные вызовы — и итерации
+ * tool-loop внутри одного runAgent, и следующие сообщения диалога в пределах
+ * TTL 5 минут — читают его по ~0.1x цены input-токенов и обрабатываются быстрее.
+ * ВАЖНО: ничего динамического (дата, имя, id) в SYSTEM_PROMPT не вставлять —
+ * любое изменение префикса инвалидирует кэш. Проверка хитов:
+ * usage.cache_read_input_tokens в ответе (логируется в web-chat/telegram).
+ */
+const CACHED_SYSTEM: Anthropic.TextBlockParam[] = [
+  { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+];
+
+/**
+ * Второй cache-брейкпоинт — на истории диалога (первый — CACHED_SYSTEM выше).
+ * Возвращает копию `messages`, где последний content-блок последнего сообщения
+ * помечен `cache_control` — кэшируется весь префикс разговора целиком.
+ *
+ * Брейкпоинт «едет» вперёд с каждым вызовом: предыдущие позиции Anthropic
+ * находит сам (автоматический lookup по ~20 последним блокам), поэтому держим
+ * ровно один маркер в messages и не упираемся в лимит 4 брейкпоинтов на запрос.
+ *
+ * Экономия двойная: итерации tool-loop внутри одного runAgent не платят
+ * повторно за историю и результаты web_search (самая «толстая» часть input),
+ * а следующие ходы активного диалога в пределах TTL 5 минут читают весь
+ * префикс по ~0.1x цены.
+ *
+ * Последним сообщением здесь бывает только user-текст (string) или наш
+ * tool_result — оба типа поддерживают cache_control. assistant-блоки из
+ * response.content последними не бывают (после них всегда пушится tool_result).
+ */
+function withHistoryCacheBreakpoint(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+
+  const blocks: Anthropic.ContentBlockParam[] =
+    typeof last.content === 'string'
+      ? [{ type: 'text', text: last.content }]
+      : [...last.content];
+
+  const lastBlock = blocks[blocks.length - 1];
+  if (!lastBlock) return messages;
+
+  // Спред union-типа + опциональное поле cache_control есть у всех param-блоков,
+  // которые реально оказываются последними (text / tool_result) — каст безопасен.
+  blocks[blocks.length - 1] = {
+    ...lastBlock,
+    cache_control: { type: 'ephemeral' },
+  } as Anthropic.ContentBlockParam;
+
+  return [...messages.slice(0, -1), { role: last.role, content: blocks }];
+}
+
+/**
  * Параметры модели — читаются из ENV с дефолтами. Валидация — в apps/web/lib/env.ts
  * (Zod-схема), здесь только разумные fallback'и на случай standalone-использования.
  */
@@ -138,9 +194,9 @@ export async function runAgent(
       model,
       max_tokens: maxTokens,
       temperature,
-      system: SYSTEM_PROMPT,
+      system: CACHED_SYSTEM,
       tools,
-      messages,
+      messages: withHistoryCacheBreakpoint(messages),
     });
 
     if (response.stop_reason === 'tool_use') {
@@ -217,7 +273,7 @@ export async function runAgentNoTools(
     model,
     max_tokens: maxTokens,
     temperature,
-    system: SYSTEM_PROMPT,
+    system: CACHED_SYSTEM,
     messages,
   });
 

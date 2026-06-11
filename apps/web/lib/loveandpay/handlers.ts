@@ -13,7 +13,7 @@ import {
 import type { LoveAndPayInvoiceStatus, LoveAndPayWebhookData } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
-import { dispatchIssueCard } from '../jobs/dispatcher.ts';
+import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 
 /**
  * Общие хендлеры обработки L&P-событий (как из webhook, так и из cron poll-payment).
@@ -104,6 +104,10 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       err,
     });
   }
+
+  // Уведомляем пользователя в Telegram, что оплата получена — срабатывает всегда
+  // при переходе в `paid` (даже если PaySpace не настроен и карта не выпускается).
+  dispatchPaymentConfirmed(payment.orderId);
 
   // После успешной оплаты — запускаем issue-card. Sync-fallback через
   // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.

@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Как работают базы данных — на примере «Оплати подписки»</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel2: #1e2230;
+    --ink: #e7eaf0;
+    --muted: #98a0b3;
+    --line: #2a2f3d;
+    --accent: #5b8def;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --violet: #a78bfa;
+    --pink: #f472b6;
+    --cyan: #22d3ee;
+    --radius: 14px;
+    --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 80% -10%, #1b2030 0%, var(--bg) 55%);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.65;
+    font-size: 16px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 22px 120px; }
+
+  header.hero {
+    padding: 64px 0 40px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 40px;
+  }
+  .kicker {
+    display: inline-block;
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin-bottom: 14px;
+  }
+  h1 { font-size: 38px; line-height: 1.15; margin: 0 0 16px; letter-spacing: -.02em; }
+  .lead { font-size: 18px; color: var(--muted); max-width: 720px; }
+
+  nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    margin: 32px 0 48px;
+  }
+  nav.toc h4 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  nav.toc ol { margin: 0; padding-left: 20px; columns: 2; column-gap: 40px; }
+  nav.toc li { margin: 6px 0; }
+  nav.toc a { color: var(--ink); text-decoration: none; border-bottom: 1px dashed transparent; }
+  nav.toc a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  section { margin: 56px 0; scroll-margin-top: 24px; }
+  h2 {
+    font-size: 27px; letter-spacing: -.01em; margin: 0 0 8px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  h2 .num {
+    flex: 0 0 auto;
+    display: inline-grid; place-items: center;
+    width: 38px; height: 38px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--violet));
+    color: #fff; font-size: 17px; font-weight: 800;
+  }
+  h3 { font-size: 19px; margin: 32px 0 10px; color: var(--ink); }
+  p { margin: 14px 0; }
+  .sub { color: var(--muted); margin-top: -2px; margin-bottom: 18px; padding-left: 50px; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px 24px;
+    margin: 20px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } nav.toc ol { columns: 1; } h1 { font-size: 30px; } }
+
+  .analogy {
+    border-left: 3px solid var(--violet);
+    background: linear-gradient(90deg, rgba(167,139,250,.10), transparent 70%);
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px; margin: 18px 0;
+  }
+  .analogy b { color: var(--violet); }
+  .pyicon { color: var(--violet); font-weight: 700; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: rgba(91,141,239,.08);
+    padding: 12px 18px; border-radius: 0 10px 10px 0; margin: 18px 0;
+  }
+  .warn {
+    border-left: 3px solid var(--amber);
+    background: rgba(251,191,36,.08);
+    padding: 12px 18px; border-radius: 0 10px 10px 0; margin: 18px 0;
+  }
+
+  code {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--panel2); padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--line); color: #cbd3e6;
+  }
+  pre {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.55;
+    background: #0b0d13; border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; overflow-x: auto; color: #cbd3e6;
+  }
+  pre .k { color: var(--pink); }
+  pre .s { color: var(--green); }
+  pre .c { color: var(--muted); font-style: italic; }
+  pre .n { color: var(--amber); }
+
+  table.data { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14.5px; }
+  table.data th, table.data td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  table.data th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
+  table.data tr:hover td { background: rgba(255,255,255,.02); }
+  .pk { color: var(--amber); font-weight: 700; }
+  .fk { color: var(--cyan); font-weight: 700; }
+  .tag { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 20px; border: 1px solid var(--line); }
+
+  /* Excel-like illustration */
+  .sheet { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 16px 0; }
+  .sheet table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+  .sheet th { background: var(--panel2); color: var(--muted); padding: 8px 10px; text-align: left; font-weight: 600; }
+  .sheet td { padding: 8px 10px; border-top: 1px solid var(--line); }
+  .sheet .colhdr { background: #11141c; color: #6b7280; }
+  .cell-pk { color: var(--amber); }
+  .cell-fk { color: var(--cyan); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px 22px; margin: 14px 0; font-size: 14px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  .pipeline { display: flex; flex-direction: column; gap: 0; margin: 20px 0; }
+  .step { display: flex; gap: 16px; }
+  .step .rail { display: flex; flex-direction: column; align-items: center; }
+  .step .bullet {
+    width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+    display: grid; place-items: center; font-weight: 800; font-size: 13px;
+    background: var(--panel2); border: 2px solid var(--accent); color: var(--accent);
+  }
+  .step .stem { width: 2px; flex: 1; background: var(--line); min-height: 14px; }
+  .step:last-child .stem { display: none; }
+  .step .body { padding-bottom: 22px; }
+  .step .body b { color: var(--ink); }
+  .step .tables { margin-top: 6px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .chip { display:inline-block; font-family: var(--mono); font-size: 12px; background: var(--panel2); border:1px solid var(--line); border-radius: 6px; padding: 1px 7px; margin: 2px 4px 2px 0; color:#cbd3e6;}
+
+  .bench { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+  .bench .b { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .bench .big { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
+  .bench .lbl { color: var(--muted); font-size: 13px; }
+  .bar { height: 10px; border-radius: 6px; background: var(--panel2); overflow: hidden; margin-top: 10px; }
+  .bar > i { display: block; height: 100%; border-radius: 6px; }
+
+  footer { border-top: 1px solid var(--line); margin-top: 70px; padding-top: 24px; color: var(--muted); font-size: 14px; }
+  .pill { display:inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+  .pill.ok { background: rgba(52,211,153,.14); color: var(--green); }
+  .pill.no { background: rgba(248,113,113,.14); color: var(--red); }
+
+  svg text { font-family: var(--sans); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <span class="kicker">Объяснение с нуля · проект «Оплати подписки»</span>
+    <h1>Как работают базы данных</h1>
+    <p class="lead">Без жаргона, с аналогиями под Python, и сразу на твоей реальной схеме из 10 таблиц.
+    Прочитав это, ты будешь понимать, что происходит с данными на каждом шаге заказа.</p>
+  </header>
+
+  <nav class="toc">
+    <h4>Содержание</h4>
+    <ol>
+      <li><a href="#what">Что такое БД на самом деле</a></li>
+      <li><a href="#bricks">Кирпичики: таблица, строка, колонка</a></li>
+      <li><a href="#pk">Первичный ключ (id строки)</a></li>
+      <li><a href="#fk">Внешний ключ — сердце реляционных БД</a></li>
+      <li><a href="#rel">Типы связей: 1:1, 1:∞, ∞:∞</a></li>
+      <li><a href="#index">Индексы — почему поиск быстрый</a></li>
+      <li><a href="#tx">Транзакции — «всё или ничего»</a></li>
+      <li><a href="#er">Карта вашей БД (диаграмма)</a></li>
+      <li><a href="#tour">Тур по 10 таблицам</a></li>
+      <li><a href="#flow">Жизнь одного заказа в данных</a></li>
+      <li><a href="#rules">Особые правила вашей схемы</a></li>
+      <li><a href="#perf">Выдержит ли 1000 оплат в день</a></li>
+    </ol>
+  </nav>
+
+  <!-- 1 -->
+  <section id="what">
+    <h2><span class="num">1</span> Что такое БД на самом деле</h2>
+    <p class="sub">Не «магия в облаке», а очень дисциплинированный Excel.</p>
+
+    <p>База данных — это <b>набор таблиц</b>. Каждая таблица хранит один тип сущностей:
+    одна таблица — про клиентов, другая — про заказы, третья — про платежи. Внутри таблицы данные
+    лежат строками, как в Excel-листе. Разница с Excel в трёх вещах, и именно они делают БД базой:</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-top:0">1. Строгие правила</h3>
+        <p style="margin-bottom:0">Колонка «сумма» <b>обязана</b> быть целым числом. Нельзя случайно вписать туда текст.
+        БД отказывает в записи, которая нарушает правила. В Excel — пиши что хочешь.</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">2. Связи между таблицами</h3>
+        <p style="margin-bottom:0">Заказ <b>ссылается</b> на клиента, а не копирует его имя. Поменял имя в одном месте —
+        оно верное везде. Это называется «реляционность».</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">3. Быстрый поиск</h3>
+        <p style="margin-bottom:0">Найти заказ среди миллиона строк — миллисекунды, а не «прокрутить весь лист».
+        За это отвечают индексы.</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">4. Надёжность изменений</h3>
+        <p style="margin-bottom:0">Несколько изменений выполняются как одно неделимое целое: либо всё, либо ничего.
+        Это транзакции — про них ниже.</p>
+      </div>
+    </div>
+
+    <div class="analogy">
+      <b>Аналогия с Python.</b> <span class="pyicon">Таблица</span> — это <code>list[dict]</code>
+      (или <code>DataFrame</code>): список одинаково устроенных записей.
+      <span class="pyicon">Строка</span> — один <code>dict</code>.
+      <span class="pyicon">Колонка</span> — ключ словаря с зафиксированным типом значения.
+      БД — это такой <code>list[dict]</code>, который сам следит за типами, умеет мгновенно искать
+      и не даёт двум процессам испортить данные одновременно.
+    </div>
+
+    <p>Конкретно у вас — <b>PostgreSQL 17</b>, который крутится на <b>Supabase</b> (это хостинг, который берёт
+    обычный PostgreSQL и добавляет к нему авторизацию, хранилище файлов и удобную панель). Схему таблиц вы описываете
+    в коде через <b>Drizzle</b> (файл <code>packages/db/src/schema.ts</code>), а он превращает это в реальные таблицы.</p>
+  </section>
+
+  <!-- 2 -->
+  <section id="bricks">
+    <h2><span class="num">2</span> Кирпичики: таблица, строка, колонка</h2>
+    <p class="sub">Возьмём вашу таблицу <code>users</code> (клиенты) и посмотрим вживую.</p>
+
+    <p>Вот как реально выглядит таблица <code>users</code> — это «лист» с колонками сверху и строками-записями:</p>
+
+    <div class="sheet">
+      <table>
+        <tr>
+          <th style="width:34px">#</th>
+          <th>id <span style="color:var(--amber)">(PK)</span></th>
+          <th>telegram_id</th>
+          <th>display_name</th>
+          <th>language</th>
+          <th>created_at</th>
+        </tr>
+        <tr>
+          <td>1</td>
+          <td class="cell-pk">7f3a…b21c</td>
+          <td>584213907</td>
+          <td>Игорь</td>
+          <td>ru</td>
+          <td>2026-06-01 10:14</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td class="cell-pk">a91e…0f4d</td>
+          <td>219874550</td>
+          <td>Мария</td>
+          <td>ru</td>
+          <td>2026-06-02 18:02</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td class="cell-pk">c52b…77a9</td>
+          <td>901233476</td>
+          <td>Алекс</td>
+          <td>en</td>
+          <td>2026-06-03 09:41</td>
+        </tr>
+      </table>
+    </div>
+
+    <ul>
+      <li><b>Колонка</b> — это поле с именем и <b>типом</b>. <code>display_name</code> — текст, <code>created_at</code> — момент времени.</li>
+      <li><b>Строка</b> — один клиент целиком (всё, что в одной горизонтали).</li>
+      <li><b>Тип</b> — обещание БД: в <code>created_at</code> всегда лежит дата-со-временем, никогда «вчера вечером».</li>
+    </ul>
+
+    <p>Главные типы, которые встречаются в вашей схеме:</p>
+    <table class="data">
+      <tr><th>Тип</th><th>Что хранит</th><th>Пример у вас</th></tr>
+      <tr><td><code>uuid</code></td><td>Уникальный 128-битный идентификатор</td><td><code>id</code> у всех таблиц</td></tr>
+      <tr><td><code>text</code></td><td>Строку любой длины</td><td><code>display_name</code>, <code>short_id</code></td></tr>
+      <tr><td><code>integer</code></td><td>Целое число</td><td><code>amount_rub</code> (сумма в копейках)</td></tr>
+      <tr><td><code>boolean</code></td><td>да/нет</td><td><code>is_active</code>, <code>requires_kyc</code></td></tr>
+      <tr><td><code>timestamptz</code></td><td>Момент времени с часовым поясом</td><td><code>created_at</code>, <code>paid_at</code></td></tr>
+      <tr><td><code>jsonb</code></td><td>Вложенный JSON (гибкое поле)</td><td><code>parameters</code>, <code>raw_payload</code></td></tr>
+      <tr><td><code>enum</code></td><td>Значение из фиксированного списка</td><td><code>status</code> заказа (13 вариантов)</td></tr>
+    </table>
+
+    <div class="note">
+      <b>Про <code>enum</code>.</b> Это «выпадающий список» на уровне БД. У заказа <code>status</code> может быть
+      только одним из 13 заранее объявленных значений (<code>draft</code>, <code>paid</code>, <code>completed</code>…).
+      Попытка записать <code>status = 'оплачено'</code> будет отклонена — опечатки в статусах невозможны by design.
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section id="pk">
+    <h2><span class="num">3</span> Первичный ключ — паспорт строки</h2>
+    <p class="sub">Как отличить одну строку от другой, даже если все поля совпадают.</p>
+
+    <p>У каждой строки есть <b class="pk">первичный ключ (PRIMARY KEY, PK)</b> — уникальный идентификатор.
+    У вас это всегда колонка <code>id</code> типа <code>uuid</code>, например <code>7f3a8c10-…-b21c</code>.
+    Двух строк с одинаковым <code>id</code> в таблице быть не может — БД это гарантирует.</p>
+
+    <div class="analogy">
+      <b>Зачем UUID, а не <code>1, 2, 3</code>?</b> Обычный счётчик (<code>1, 2, 3…</code>) требует, чтобы БД знала
+      «какой был последний номер». В распределённой системе это узкое место. UUID — случайное 128-битное число,
+      его можно сгенерировать где угодно (хоть в коде до записи), и совпадения практически невероятны.
+      Минус — он длинный и нечитаемый человеком.
+    </div>
+
+    <p>Поэтому у заказов есть <b>две</b> «личности»:</p>
+    <table class="data">
+      <tr><th>Поле</th><th>Пример</th><th>Для кого</th></tr>
+      <tr><td><code class="pk">id</code> (PK)</td><td><code>946a3a0f-7883-…-5078</code></td><td>для машины: связи, индексы, точность</td></tr>
+      <tr><td><code>short_id</code></td><td><code>ORD-2KB9X</code></td><td>для человека: сказать оператору, вставить в чек</td></tr>
+    </table>
+    <p>Оба уникальны, но <code>short_id</code> короткий и его не стыдно показать в Telegram.</p>
+  </section>
+
+  <!-- 4 -->
+  <section id="fk">
+    <h2><span class="num">4</span> Внешний ключ — сердце реляционных БД</h2>
+    <p class="sub">Это самая важная идея. Если поймёшь её — поймёшь 80% всего.</p>
+
+    <p>Представь, что заказ должен «знать» своего клиента. Есть два пути:</p>
+
+    <div class="grid2">
+      <div class="card" style="border-color: var(--red)">
+        <h3 style="margin-top:0; color:var(--red)">Плохо: всё в одной куче</h3>
+        <pre style="margin:0"><span class="c"># заказ копирует данные клиента</span>
+{
+  <span class="k">"short_id"</span>: <span class="s">"ORD-2KB9X"</span>,
+  <span class="k">"client_name"</span>: <span class="s">"Игорь"</span>,
+  <span class="k">"client_tg"</span>: <span class="s">"584213907"</span>,
+  <span class="k">"amount"</span>: <span class="n">209000</span>
+}</pre>
+        <p style="margin-bottom:0; margin-top:12px; font-size:14px; color:var(--muted)">
+        Игорь сделал 10 заказов → его имя записано 10 раз. Сменил имя — надо править в 10 местах. Забыл одно — рассинхрон.</p>
+      </div>
+      <div class="card" style="border-color: var(--green)">
+        <h3 style="margin-top:0; color:var(--green)">Хорошо: ссылка по id</h3>
+        <pre style="margin:0"><span class="c"># заказ хранит id клиента, а не копию</span>
+{
+  <span class="k">"short_id"</span>: <span class="s">"ORD-2KB9X"</span>,
+  <span class="k">"user_id"</span>: <span class="s">"7f3a…b21c"</span>,  <span class="c">← ссылка</span>
+  <span class="k">"amount_rub"</span>: <span class="n">209000</span>
+}</pre>
+        <p style="margin-bottom:0; margin-top:12px; font-size:14px; color:var(--muted)">
+        Имя клиента живёт в <b>одной</b> строке таблицы <code>users</code>. Заказ хранит только её <code>id</code>.
+        Сменил имя — поменялось везде сразу.</p>
+      </div>
+    </div>
+
+    <p>Колонка <code class="fk">user_id</code> в заказе — это <b class="fk">внешний ключ (FOREIGN KEY, FK)</b>.
+    Она содержит <code>id</code> строки из <b>другой</b> таблицы. «Внешний» = «указывает наружу, в чужую таблицу».</p>
+
+    <div class="analogy">
+      <b>Аналогия с Python.</b> Вместо того чтобы вкладывать целый объект клиента внутрь объекта заказа
+      (<code>order["client"] = {...}</code>), ты хранишь только ссылку (<code>order["user_id"] = "7f3a…"</code>),
+      а сам клиент лежит в общем словаре <code>users["7f3a…"]</code>. Это ровно нормализация: один факт — в одном месте.
+    </div>
+
+    <h3>БД охраняет эти ссылки</h3>
+    <p>Внешний ключ — не просто текст. БД <b>проверяет</b>, что такой <code>user_id</code> реально существует в <code>users</code>.
+    Нельзя создать заказ на несуществующего клиента. А ещё можно задать, что делать при удалении клиента:</p>
+
+    <table class="data">
+      <tr><th>Правило</th><th>Что значит</th><th>Где у вас</th></tr>
+      <tr><td><code>ON DELETE CASCADE</code></td><td>Удалил клиента — удалились и его диалоги/сообщения</td><td><code>conversations</code>, <code>messages</code></td></tr>
+      <tr><td><code>ON DELETE RESTRICT</code></td><td>Нельзя удалить клиента, пока есть его заказы (заказы — святое)</td><td><code>orders.user_id</code>, <code>payments.order_id</code></td></tr>
+      <tr><td><code>ON DELETE SET NULL</code></td><td>Удалили заказ — у вложения просто обнулилась ссылка, файл остался</td><td><code>attachments</code></td></tr>
+    </table>
+    <p>Видишь логику: <b>деньги и заказы защищены жёстко</b> (RESTRICT — их физически нельзя осиротить или удалить),
+    а вспомогательные данные удаляются каскадом или просто отвязываются.</p>
+
+    <h3>Как ссылку «разворачивают» обратно — JOIN</h3>
+    <p>Когда нужно показать заказ <i>вместе</i> с именем клиента, БД делает <b>JOIN</b>: берёт <code>user_id</code> из заказа,
+    находит строку в <code>users</code> с таким <code>id</code> и склеивает их. <code>JOIN</code> — это «иди по ссылке и подтяни данные».</p>
+    <pre><span class="c">-- "дай заказы вместе с именами клиентов"</span>
+<span class="k">SELECT</span> orders.short_id, users.display_name, orders.amount_rub
+<span class="k">FROM</span> orders
+<span class="k">JOIN</span> users <span class="k">ON</span> users.id = orders.user_id;   <span class="c">← идём по FK</span></pre>
+  </section>
+
+  <!-- 5 -->
+  <section id="rel">
+    <h2><span class="num">5</span> Типы связей: 1:1, 1:∞, ∞:∞</h2>
+    <p class="sub">Сколько строк одной таблицы соответствует строкам другой.</p>
+
+    <div class="card">
+      <h3 style="margin-top:0">Один-ко-многим (1 : ∞) — самая частая</h3>
+      <p>У <b>одного</b> клиента — <b>много</b> заказов. У одного заказа — много платёжных попыток.
+      Признак: внешний ключ стоит на стороне «многих».</p>
+      <pre style="margin-bottom:0">users (1)  ──────►  orders (∞)        <span class="c">один клиент → много заказов</span>
+orders (1) ──────►  payments (∞)      <span class="c">один заказ → много попыток оплаты</span>
+orders (1) ──────►  order_events (∞)  <span class="c">один заказ → много событий в журнале</span></pre>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Один-к-одному (1 : 1) — редко</h3>
+      <p>Одной строке соответствует ровно одна строка в другой таблице. У вас, по сути, нет жёстких 1:1 —
+      но близко связь <code>staff.auth_user_id</code> → запись авторизации Supabase (один оператор = один аккаунт входа).</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0">Многие-ко-многим (∞ : ∞) — через таблицу-посредник</h3>
+      <p>Например, «много заказов могут использовать много карт за время жизни». Прямой такой связи в SQL не бывает —
+      её всегда разбивают на две связи «один-ко-многим» через промежуточную таблицу.
+      У вас это решено проще: <code>orders.card_id</code> ссылается на текущую карту, а карта переиспользуется
+      между заказами (статусы <code>active/idle/recycled</code>).</p>
+    </div>
+
+    <div class="note">
+      <b>Как читать диаграмму ниже.</b> Линия между таблицами = связь. Метка <code>1 : ∞</code> показывает направление:
+      со стороны «1» — таблица-родитель (на неё ссылаются), со стороны «∞» — таблица-ребёнок (она хранит внешний ключ).
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section id="index">
+    <h2><span class="num">6</span> Индексы — почему поиск мгновенный</h2>
+    <p class="sub">Главный секрет скорости БД. И ответ на твой вопрос «выдержит ли нагрузку».</p>
+
+    <p>Допустим, в <code>orders</code> миллион строк, и тебе нужны все со статусом <code>pending_payment</code>.
+    Без индекса БД честно просматривает <b>все</b> миллион строк — это «полное сканирование», медленно.</p>
+
+    <div class="analogy">
+      <b>Аналогия — указатель в конце книги.</b> Чтобы найти все упоминания слова «транзакция» в учебнике,
+      ты не читаешь его целиком. Открываешь предметный указатель — там сразу «транзакция: с. 45, 88, 203».
+      <b>Индекс в БД — ровно такой указатель</b>: отдельная отсортированная структура «значение → где лежат строки».
+      БД заглядывает в неё и прыгает сразу к нужным строкам.
+    </div>
+
+    <p>Индексы не бесплатны: каждый занимает место и чуть замедляет запись (при вставке надо обновить и указатель).
+    Поэтому их ставят <b>точечно</b> — на те колонки, по которым часто ищут. Посмотри, что уже стоит у вас (из <code>schema.ts</code>):</p>
+
+    <table class="data">
+      <tr><th>Индекс</th><th>На таблице</th><th>Ускоряет запрос</th></tr>
+      <tr><td><code>orders_status_idx</code></td><td>orders</td><td>«все заказы в статусе X» (очереди операторов)</td></tr>
+      <tr><td><code>orders_user_id_idx</code></td><td>orders</td><td>«все заказы клиента X»</td></tr>
+      <tr><td><code>payments_provider_provider_ref_idx</code> (UNIQUE)</td><td>payments</td><td>«найти платёж по id у провайдера» + защита от дублей</td></tr>
+      <tr><td><code>messages_conversation_id_idx (… , created_at)</code></td><td>messages</td><td>«сообщения диалога по порядку времени»</td></tr>
+      <tr><td><code>order_events_order_id_created_at_idx</code></td><td>order_events</td><td>«история заказа в хронологии»</td></tr>
+      <tr><td><code>cards_idle_idx</code> (частичный)</td><td>cards</td><td>«найти свободную карту для переиспользования»</td></tr>
+    </table>
+
+    <p>Все «горячие» запросы вашего приложения уже покрыты индексами. Именно поэтому количество строк (хоть миллионы)
+    почти не влияет на скорость — БД не сканирует всё, а прыгает по указателю.</p>
+
+    <div class="note">
+      <b>UNIQUE-индекс</b> делает две работы сразу: ускоряет поиск <i>и</i> запрещает дубликаты.
+      <code>UNIQUE(provider, provider_ref)</code> на платежах — это и быстрый поиск платежа, и гарантия,
+      что один и тот же счёт L&P не запишется дважды (важно для идемпотентности — см. ниже).
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section id="tx">
+    <h2><span class="num">7</span> Транзакции — «всё или ничего»</h2>
+    <p class="sub">Что защищает деньги от рассинхрона при сбое посреди операции.</p>
+
+    <p>Когда оплата проходит, надо сделать <b>несколько</b> изменений сразу:</p>
+    <ol>
+      <li>пометить платёж как <code>succeeded</code> в таблице <code>payments</code>;</li>
+      <li>перевести заказ в статус <code>paid</code> в таблице <code>orders</code>;</li>
+      <li>записать строку «оплата прошла» в журнал <code>order_events</code>.</li>
+    </ol>
+
+    <p>Что если сервер упадёт <b>между</b> шагами 2 и 3? Заказ оплачен, но в журнале нет следа — рассинхрон, расследовать невозможно.
+    Чтобы такого не было, эти изменения оборачивают в <b>транзакцию</b>: БД применяет их как одно неделимое целое.
+    Либо проходят <b>все три</b>, либо <b>ни одного</b> (откат к состоянию «до»). Третьего не дано.</p>
+
+    <div class="analogy">
+      <b>Аналогия с Python.</b> Транзакция — как <code>with</code>-блок: если внутри случилось исключение,
+      <code>__exit__</code> откатывает всё, что блок успел натворить, к началу. Никаких «полусделанных» состояний.
+      <pre style="margin:12px 0 0"><span class="k">with</span> db.transaction():
+    mark_payment_succeeded(...)   <span class="c"># шаг 1</span>
+    transition_order(<span class="s">"paid"</span>)        <span class="c"># шаг 2</span>
+    append_order_event(...)       <span class="c"># шаг 3</span>
+<span class="c"># вышли без ошибки → COMMIT (всё сохранилось)</span>
+<span class="c"># упали посреди       → ROLLBACK (как будто ничего не было)</span></pre>
+    </div>
+
+    <p>Это свойство называют <b>атомарность</b> (от «атом» — неделимый). Вместе с правилами типов, внешними ключами
+    и UNIQUE-ограничениями оно даёт главное обещание БД: <b>данные никогда не бывают в противоречивом состоянии</b>.
+    В вашем коде за переход заказа отвечает функция <code>transitionOrder()</code> — она и меняет <code>orders.status</code>,
+    и пишет строку в <code>order_events</code> внутри одной транзакции.</p>
+  </section>
+
+  <!-- 8 -->
+  <section id="er">
+    <h2><span class="num">8</span> Карта вашей БД</h2>
+    <p class="sub">Все 10 таблиц и связи между ними. В центре — заказы, к ним сходится всё.</p>
+
+    <div class="legend">
+      <span><i class="dot" style="background:var(--accent)"></i> ядро заказа</span>
+      <span><i class="dot" style="background:var(--violet)"></i> клиенты и диалоги</span>
+      <span><i class="dot" style="background:var(--green)"></i> деньги и карты</span>
+      <span><i class="dot" style="background:var(--amber)"></i> справочники / люди</span>
+    </div>
+
+    <div class="card" style="padding: 10px">
+    <svg viewBox="0 0 940 600" width="100%" role="img" aria-label="ER-диаграмма базы данных">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L8,3 L0,6 Z" fill="#5b6478"/>
+        </marker>
+        <style>
+          .box { rx: 10; }
+          .tname { font-size: 14px; font-weight: 700; fill: #fff; }
+          .tdesc { font-size: 10.5px; fill: #aab2c5; }
+          .edge { stroke: #3a4255; stroke-width: 1.6; fill: none; }
+          .card-label { font-size: 11px; fill: #8b93a7; }
+        </style>
+      </defs>
+
+      <!-- EDGES (draw first, under boxes) -->
+      <g stroke="#5b6478" stroke-width="1.6" fill="none">
+        <!-- users -> orders -->
+        <line x1="200" y1="97" x2="410" y2="217" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- services -> orders -->
+        <line x1="480" y1="94" x2="480" y2="190" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- users -> conversations -->
+        <line x1="130" y1="124" x2="130" y2="210" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- conversations -> messages -->
+        <line x1="130" y1="264" x2="130" y2="350" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- conversations -> orders -->
+        <line x1="200" y1="237" x2="410" y2="224" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- orders -> payments -->
+        <line x1="480" y1="271" x2="480" y2="350" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- orders -> order_events -->
+        <line x1="550" y1="244" x2="630" y2="354" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- orders -> cards -->
+        <line x1="550" y1="210" x2="760" y2="110" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- orders -> staff -->
+        <line x1="550" y1="230" x2="760" y2="244" stroke="#5b6478" marker-end="url(#arrow)"/>
+        <!-- orders -> attachments -->
+        <line x1="520" y1="271" x2="650" y2="500" stroke="#5b6478" marker-end="url(#arrow)"/>
+      </g>
+
+      <!-- cardinality labels -->
+      <g font-size="11" fill="#8b93a7" >
+        <text x="285" y="150" fill="#8b93a7">1 : ∞</text>
+        <text x="488" y="150" fill="#8b93a7">1 : ∞</text>
+        <text x="138" y="172" fill="#8b93a7">1 : ∞</text>
+        <text x="138" y="312" fill="#8b93a7">1 : ∞</text>
+        <text x="300" y="222" fill="#8b93a7">1 : ∞</text>
+        <text x="488" y="315" fill="#8b93a7">1 : ∞</text>
+        <text x="585" y="305" fill="#8b93a7">1 : ∞</text>
+        <text x="650" y="150" fill="#8b93a7">∞ : 1</text>
+        <text x="640" y="232" fill="#8b93a7">∞ : 1</text>
+        <text x="560" y="410" fill="#8b93a7">1 : ∞</text>
+      </g>
+
+      <!-- BOXES -->
+      <!-- users -->
+      <g>
+        <rect x="60" y="70" width="140" height="54" rx="10" fill="#1e2230" stroke="#a78bfa" stroke-width="1.5"/>
+        <text class="tname" x="74" y="93">users</text>
+        <text class="tdesc" x="74" y="111">клиенты (TG + веб)</text>
+      </g>
+      <!-- conversations -->
+      <g>
+        <rect x="60" y="210" width="140" height="54" rx="10" fill="#1e2230" stroke="#a78bfa" stroke-width="1.5"/>
+        <text class="tname" x="74" y="233">conversations</text>
+        <text class="tdesc" x="74" y="251">диалоги (треды)</text>
+      </g>
+      <!-- messages -->
+      <g>
+        <rect x="60" y="350" width="140" height="54" rx="10" fill="#1e2230" stroke="#a78bfa" stroke-width="1.5"/>
+        <text class="tname" x="74" y="373">messages</text>
+        <text class="tdesc" x="74" y="391">сообщения</text>
+      </g>
+      <!-- services -->
+      <g>
+        <rect x="410" y="40" width="140" height="54" rx="10" fill="#1e2230" stroke="#fbbf24" stroke-width="1.5"/>
+        <text class="tname" x="424" y="63">services</text>
+        <text class="tdesc" x="424" y="81">каталог подписок</text>
+      </g>
+      <!-- orders (HUB) -->
+      <g>
+        <rect x="410" y="190" width="140" height="81" rx="10" fill="#1b2942" stroke="#5b8def" stroke-width="2.4"/>
+        <text class="tname" x="424" y="218" font-size="16">orders</text>
+        <text class="tdesc" x="424" y="237">ЗАКАЗЫ</text>
+        <text class="tdesc" x="424" y="254">центр всей схемы</text>
+      </g>
+      <!-- payments -->
+      <g>
+        <rect x="410" y="350" width="140" height="54" rx="10" fill="#1e2230" stroke="#34d399" stroke-width="1.5"/>
+        <text class="tname" x="424" y="373">payments</text>
+        <text class="tdesc" x="424" y="391">платёжные попытки</text>
+      </g>
+      <!-- order_events -->
+      <g>
+        <rect x="630" y="350" width="150" height="54" rx="10" fill="#1e2230" stroke="#5b8def" stroke-width="1.5"/>
+        <text class="tname" x="644" y="373">order_events</text>
+        <text class="tdesc" x="644" y="391">журнал (append-only)</text>
+      </g>
+      <!-- cards -->
+      <g>
+        <rect x="760" y="70" width="140" height="54" rx="10" fill="#1e2230" stroke="#34d399" stroke-width="1.5"/>
+        <text class="tname" x="774" y="93">cards</text>
+        <text class="tdesc" x="774" y="111">USD-карты</text>
+      </g>
+      <!-- staff -->
+      <g>
+        <rect x="760" y="210" width="140" height="54" rx="10" fill="#1e2230" stroke="#fbbf24" stroke-width="1.5"/>
+        <text class="tname" x="774" y="233">staff</text>
+        <text class="tdesc" x="774" y="251">операторы</text>
+      </g>
+      <!-- attachments -->
+      <g>
+        <rect x="630" y="500" width="150" height="54" rx="10" fill="#1e2230" stroke="#34d399" stroke-width="1.5"/>
+        <text class="tname" x="644" y="523">attachments</text>
+        <text class="tdesc" x="644" y="541">файлы (чеки, KYC)</text>
+      </g>
+    </svg>
+    </div>
+    <p style="font-size:14px; color:var(--muted)">
+      Несколько второстепенных связей (карта → владелец-клиент, оператор/супервизор у заказа, вложение → сообщение)
+      на схеме опущены, чтобы не было паутины. Полный список — в таблице ниже.
+    </p>
+  </section>
+
+  <!-- 9 -->
+  <section id="tour">
+    <h2><span class="num">9</span> Тур по 10 таблицам</h2>
+    <p class="sub">Что хранит каждая и на кого ссылается.</p>
+
+    <table class="data">
+      <tr><th>Таблица</th><th>Хранит</th><th>Ссылается на (FK)</th><th>Особенность</th></tr>
+      <tr>
+        <td><b style="color:var(--violet)">users</b></td>
+        <td>клиентов из Telegram и веба</td>
+        <td>—</td>
+        <td>уникален по <code>telegram_id</code> <b>или</b> <code>web_session_id</code></td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--amber)">staff</b></td>
+        <td>операторов, супервизоров, админов</td>
+        <td>Supabase Auth</td>
+        <td>люди «по ту сторону», обрабатывают заказы</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--amber)">services</b></td>
+        <td>каталог подписок (Spotify, ChatGPT…)</td>
+        <td>—</td>
+        <td>единственная таблица <b>без RLS</b> (публичный каталог)</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--violet)">conversations</b></td>
+        <td>диалоговые треды</td>
+        <td>users, staff</td>
+        <td><code>handoff_mode</code>: с кем говорит клиент — AI или оператор</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--violet)">messages</b></td>
+        <td>каждое сообщение в диалоге</td>
+        <td>conversations, staff</td>
+        <td><code>role</code>: user / assistant / operator / system</td>
+      </tr>
+      <tr style="background:rgba(91,141,239,.06)">
+        <td><b style="color:var(--accent)">orders</b></td>
+        <td><b>заказы — центр всего</b></td>
+        <td>users, services, conversations, cards, staff×2</td>
+        <td><code>status</code> из 13 значений; деньги в копейках</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--accent)">order_events</b></td>
+        <td>журнал всех изменений заказа</td>
+        <td>orders</td>
+        <td><b>только добавление</b>, никогда не меняется (аудит)</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--green)">payments</b></td>
+        <td>попытки оплаты через провайдера</td>
+        <td>orders</td>
+        <td><code>UNIQUE(provider, provider_ref)</code> = защита от дублей</td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--green)">cards</b></td>
+        <td>виртуальные USD-карты PaySpace</td>
+        <td>users</td>
+        <td>переиспользуются: <code>active → idle → recycled</code></td>
+      </tr>
+      <tr>
+        <td><b style="color:var(--green)">attachments</b></td>
+        <td>ссылки на файлы в хранилище</td>
+        <td>orders, messages</td>
+        <td>чеки, KYC-документы, пруфы выдачи</td>
+      </tr>
+    </table>
+
+    <div class="note">
+      <b>RLS (Row Level Security)</b> — это правила «кто какие строки имеет право видеть/менять», прямо в БД.
+      Например, оператор видит только <i>свои</i> заказы, супервизор — все. Включён на всех таблицах с данными
+      пользователей, выключен только на публичном каталоге <code>services</code>.
+    </div>
+  </section>
+
+  <!-- 10 -->
+  <section id="flow">
+    <h2><span class="num">10</span> Жизнь одного заказа в данных</h2>
+    <p class="sub">Как одна покупка «течёт» по таблицам — от первого сообщения до выданной карты.</p>
+
+    <div class="pipeline">
+      <div class="step">
+        <div class="rail"><div class="bullet">1</div><div class="stem"></div></div>
+        <div class="body">
+          <b>Клиент пишет боту первый раз</b>
+          <div>Создаётся клиент, диалог и первое сообщение.</div>
+          <div class="tables">
+            <span class="chip">users +1</span><span class="chip">conversations +1</span><span class="chip">messages +1</span>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="bullet">2</div><div class="stem"></div></div>
+        <div class="body">
+          <b>AI собрал заказ</b>
+          <div>Появляется строка заказа, статус идёт <code>draft → clarifying → ready_for_payment</code>.
+          Каждый переход = строка в журнале.</div>
+          <div class="tables">
+            <span class="chip">orders +1</span><span class="chip">order_events +2…3</span><span class="chip">messages +N</span>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="bullet">3</div><div class="stem"></div></div>
+        <div class="body">
+          <b>Клиент жмёт «оплатить» (confirm_order)</b>
+          <div>Создаётся счёт в L&P, записывается платёж, заказ переходит в <code>pending_payment</code>.</div>
+          <div class="tables">
+            <span class="chip">payments +1 (pending)</span><span class="chip">orders → pending_payment</span><span class="chip">order_events +1</span>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="bullet">4</div><div class="stem"></div></div>
+        <div class="body">
+          <b>Оплата прошла (webhook от L&P)</b>
+          <div>Платёж → <code>succeeded</code>, заказ → <code>paid</code>. Всё в одной транзакции.</div>
+          <div class="tables">
+            <span class="chip">payments → succeeded</span><span class="chip">orders → paid</span><span class="chip">order_events +1</span>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="bullet">5</div><div class="stem"></div></div>
+        <div class="body">
+          <b>Выпуск карты и выдача клиенту</b>
+          <div>Создаётся (или переиспользуется) карта, привязывается к заказу, статус идёт <code>in_fulfillment → completed</code>.</div>
+          <div class="tables">
+            <span class="chip">cards +1</span><span class="chip">orders → completed</span><span class="chip">order_events +2</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p>Обрати внимание: <b>сам заказ — это одна строка</b>, которая просто меняет <code>status</code>. А <code>order_events</code>
+    накапливает историю всех её изменений — как лента «что произошло и когда». Поэтому в любой момент можно восстановить
+    полную хронологию заказа, даже если текущий статус — <code>completed</code>.</p>
+  </section>
+
+  <!-- 11 -->
+  <section id="rules">
+    <h2><span class="num">11</span> Особые правила вашей схемы</h2>
+    <p class="sub">Четыре инварианта, которые держат систему честной. Их нельзя нарушать.</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-top:0">💰 Деньги — в копейках (целым числом)</h3>
+        <p>2090 ₽ хранятся как <code>amount_rub = 209000</code> (копейки), тип <code>integer</code>.
+        <b>Никогда не дробным числом.</b> Дробные числа (<code>float</code>) в компьютере неточны:
+        <code>0.1 + 0.2 ≠ 0.3</code>. На деньгах это недопустимо — копейки «утекают». Целое число копеек точно всегда.</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">📜 order_events — только добавление</h3>
+        <p>Журнал событий заказа <b>никогда не редактируется и не удаляется</b> — только новые строки.
+        Это даёт неподделываемый аудит: «кто, когда, с какого статуса на какой перевёл заказ». Форсится правилами RLS в БД.</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">🔁 Идемпотентность платежей</h3>
+        <p>L&P может прислать webhook об оплате <b>дважды</b> (сеть ретраит). <code>UNIQUE(provider, provider_ref)</code>
+        гарантирует: второй такой же платёж просто не запишется, заказ не «оплатится дважды». «Идемпотентность» =
+        «повтори хоть 10 раз — результат тот же, что после одного раза».</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">🚦 Статус заказа — только через transitionOrder()</h3>
+        <p>Менять <code>orders.status</code> напрямую запрещено. Только через функцию, которая проверяет,
+        что переход разрешён (нельзя из <code>draft</code> прыгнуть в <code>completed</code>), и в той же транзакции
+        пишет событие. Это и есть «машина состояний».</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12 -->
+  <section id="perf">
+    <h2><span class="num">12</span> Выдержит ли БД 1000 оплат в день?</h2>
+    <p class="sub">Короткий ответ: да, с огромным запасом. БД здесь вообще не узкое место.</p>
+
+    <p>1000 оплат в день — это в среднем <b>меньше одной оплаты в минуту</b>. Для PostgreSQL это смешная нагрузка.
+    Посчитаем, сколько строк рождается:</p>
+
+    <table class="data">
+      <tr><th>Таблица</th><th>Строк в день</th><th>Накопится за год</th></tr>
+      <tr><td>orders</td><td>~1 000–1 500</td><td>~0,5 млн</td></tr>
+      <tr><td>order_events</td><td>~5 000–8 000</td><td>~2,5 млн</td></tr>
+      <tr><td>payments</td><td>~1 000–2 000</td><td>~0,5 млн</td></tr>
+      <tr><td>messages</td><td>~15 000–30 000</td><td>~8 млн</td></tr>
+      <tr><td>cards</td><td>~1 000 (минус переиспользование)</td><td>&lt;0,4 млн</td></tr>
+    </table>
+
+    <p>Таблица в 8–10 млн строк <b>с индексами</b> — для Postgres «маленькая». Благодаря индексам (раздел 6)
+    запросы не сканируют всё подряд, а прыгают по указателю — скорость почти не зависит от размера.</p>
+
+    <div class="bench">
+      <div class="b">
+        <div class="lbl">Нагрузка на запись</div>
+        <div class="big" style="color:var(--green)">&lt; 1 / мин</div>
+        <div class="lbl">Postgres тянет тысячи в секунду</div>
+        <div class="bar"><i style="width:3%; background:var(--green)"></i></div>
+      </div>
+      <div class="b">
+        <div class="lbl">Запас по нагрузке</div>
+        <div class="big" style="color:var(--green)">×1000+</div>
+        <div class="lbl">до того, как БД станет узким местом</div>
+        <div class="bar"><i style="width:97%; background:linear-gradient(90deg,var(--green),var(--cyan))"></i></div>
+      </div>
+    </div>
+
+    <h3>Где реальные узкие места (не в самой БД)</h3>
+    <table class="data">
+      <tr><th>Что</th><th>Почему важно при 1000/день</th></tr>
+      <tr><td><b>Тариф/размер Supabase + пулер соединений</b></td>
+        <td>Не строки, а лимит одновременных подключений. Serverless-функции плодят коннекты — ходить надо
+        через пулер Supabase (порт 6543), а не напрямую. Это стоит проверить.</td></tr>
+      <tr><td><b>Авто-пауза Supabase (free-тариф)</b></td>
+        <td>БД засыпает без активности. Уже закрыто cron-ом <code>keepalive</code>, но для боевой нагрузки — переход на Pro.</td></tr>
+      <tr><td><b>Внешние API: L&P, Anthropic, PaySpace</b></td>
+        <td>Вот настоящий потолок. 1000 выпусков карт/день упрутся в лимиты PaySpace раньше, чем в Postgres.</td></tr>
+      <tr><td><b>Пропускная способность операторов</b></td>
+        <td>Если часть заказов обрабатывается вручную — людей надо больше, чем строк в БД.</td></tr>
+    </table>
+
+    <div class="note">
+      <b>Вывод.</b> Про схему БД при 1000/день думать не надо — она спроектирована с запасом и проиндексирована.
+      Думать надо про <b>тариф Supabase (Pro + пулер соединений)</b> и про <b>лимиты внешних провайдеров</b>.
+    </div>
+  </section>
+
+  <footer>
+    <p><b>Это учебная страница</b>, сгенерированная для понимания — не часть приложения. Лежит в корне репозитория как
+    <code>db-explained.html</code>. Можешь удалить её или не коммитить (по желанию).</p>
+    <p>Всё описанное взято из реального кода: <code>packages/db/src/schema.ts</code> (схема),
+    <code>docs/database.md</code> (спецификация), <code>apps/web/lib/loveandpay/</code> (платежи).
+    Если что-то осталось мутным — спрашивай по любому разделу.</p>
+  </footer>
+
+</div>
+</body>
+</html>
