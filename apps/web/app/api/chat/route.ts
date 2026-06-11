@@ -121,7 +121,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });
 
   const startedAt = Date.now();
-  let result: { text: string; toolCalls: unknown[] };
+  let result: {
+    text: string;
+    toolCalls: unknown[];
+    usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null };
+  };
   try {
     if (ctx) {
       let history: MessageHistoryItem[] = [];
@@ -142,10 +146,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         channel: 'web',
         toolHandlers,
       });
-      result = { text: r.text, toolCalls: r.toolCalls };
+      result = { text: r.text, toolCalls: r.toolCalls, usage: r.usage };
     } else {
       const r = await runAgentNoTools([{ role: 'user', content: text }]);
-      result = { text: r.text, toolCalls: [] };
+      result = { text: r.text, toolCalls: [], usage: r.usage };
     }
   } catch (err) {
     log.error({ event: 'web-chat.agent.failed', err });
@@ -159,6 +163,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     durationMs: Date.now() - startedAt,
     replyLength: replyText.length,
     persisted: ctx !== null,
+    inputTokens: result.usage?.input_tokens,
+    outputTokens: result.usage?.output_tokens,
+    // Prompt caching: read > 0 — префикс tools+system пришёл из кэша (~0.1x цены)
+    cacheReadTokens: result.usage?.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: result.usage?.cache_creation_input_tokens ?? 0,
   });
 
   if (ctx && replyText) await safeAppend(ctx, 'assistant', replyText, { channel: 'web' });

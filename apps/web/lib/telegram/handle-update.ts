@@ -393,6 +393,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     inputTokens: result.usage.input_tokens,
     outputTokens: result.usage.output_tokens,
     totalTokens: result.usage.input_tokens + result.usage.output_tokens,
+    // Prompt caching: read > 0 — префикс tools+system пришёл из кэша (~0.1x цены)
+    cacheReadTokens: result.usage.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: result.usage.cache_creation_input_tokens ?? 0,
     replyLength: replyText.length,
   });
 

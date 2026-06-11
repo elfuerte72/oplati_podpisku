@@ -99,6 +99,20 @@ function getClient() {
 }
 
 /**
+ * System prompt как блок с cache_control — включает prompt caching Anthropic.
+ * Брейкпоинт на последнем system-блоке кэширует префикс tools + system целиком
+ * (порядок рендера: tools → system → messages): повторные вызовы — и итерации
+ * tool-loop внутри одного runAgent, и следующие сообщения диалога в пределах
+ * TTL 5 минут — читают его по ~0.1x цены input-токенов и обрабатываются быстрее.
+ * ВАЖНО: ничего динамического (дата, имя, id) в SYSTEM_PROMPT не вставлять —
+ * любое изменение префикса инвалидирует кэш. Проверка хитов:
+ * usage.cache_read_input_tokens в ответе (логируется в web-chat/telegram).
+ */
+const CACHED_SYSTEM: Anthropic.TextBlockParam[] = [
+  { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+];
+
+/**
  * Параметры модели — читаются из ENV с дефолтами. Валидация — в apps/web/lib/env.ts
  * (Zod-схема), здесь только разумные fallback'и на случай standalone-использования.
  */
@@ -138,7 +152,7 @@ export async function runAgent(
       model,
       max_tokens: maxTokens,
       temperature,
-      system: SYSTEM_PROMPT,
+      system: CACHED_SYSTEM,
       tools,
       messages,
     });
@@ -217,7 +231,7 @@ export async function runAgentNoTools(
     model,
     max_tokens: maxTokens,
     temperature,
-    system: SYSTEM_PROMPT,
+    system: CACHED_SYSTEM,
     messages,
   });
 
