@@ -9,6 +9,7 @@ import {
   jsonb,
   boolean,
   check,
+  date,
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
@@ -341,6 +342,23 @@ export const cards = pgTable(
     idleIdx: index('cards_idle_idx').on(t.status).where(sql`${t.status} = 'idle'`),
   }),
 ).enableRLS();
+
+// ─── AI usage (дневной счётчик токенов для глобального бюджета) ───────────
+// Одна строка = один UTC-день. Атомарный инкремент через
+// INSERT ... ON CONFLICT (day) DO UPDATE (repositories/ai-usage.ts).
+// Проверка порога и веса стоимости — apps/web/lib/ai/budget.ts.
+
+export const aiUsageDaily = pgTable('ai_usage_daily', {
+  // 'YYYY-MM-DD' по UTC — сутки бюджета сбрасываются в полночь UTC (03:00 МСК)
+  day: date('day').primaryKey(),
+  requests: integer('requests').default(0).notNull(),
+  inputTokens: integer('input_tokens').default(0).notNull(),
+  outputTokens: integer('output_tokens').default(0).notNull(),
+  cacheReadTokens: integer('cache_read_tokens').default(0).notNull(),
+  cacheWriteTokens: integer('cache_write_tokens').default(0).notNull(),
+  webSearchRequests: integer('web_search_requests').default(0).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}).enableRLS();
 
 // ─── Attachments (Supabase Storage refs) ──────────────────────────────────
 

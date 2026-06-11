@@ -57,6 +57,13 @@
       "when": 1781078222812,
       "tag": "0007_serious_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781201517760,
+      "tag": "0008_calm_franklin_storm",
+      "breakpoints": true
     }
   ]
 }

@@ -40,6 +40,14 @@ export {
 
 export { noopLogger, type RepoLogger } from './logger.ts';
 
+export {
+  recordAiUsageDelta,
+  getAiUsageForDay,
+  utcDayKey,
+  type AiUsageDelta,
+  type AiUsageTotals,
+} from './ai-usage.ts';
+
 export { pingDb } from './health.ts';
 
 export {

@@ -59,6 +59,16 @@ const serverEnvSchema = z.object({
   // увеличен на 2048 (хватает на KYC-инструкции, длинные ссылки и пр.).
   ANTHROPIC_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.3),
   ANTHROPIC_MAX_TOKENS: z.coerce.number().int().min(256).max(8192).default(2048),
+  // Haiku-роутер перед основным агентом (packages/agent/src/router.ts).
+  // Модель читается агентом напрямую из process.env (как ANTHROPIC_MODEL).
+  ANTHROPIC_ROUTER_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+  // Аварийный выключатель роутера: '1'/'true' — все сообщения идут сразу в агент.
+  AI_ROUTER_DISABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
+  // Дневной глобальный бюджет AI во «взвешенных» токенах (эквивалент input-цены
+  // Sonnet; веса и формула — apps/web/lib/ai/budget.ts). 3M ≈ $9/день.
+  AI_DAILY_TOKEN_BUDGET: z.coerce.number().int().positive().default(3_000_000),
 
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
