@@ -5,7 +5,11 @@ import { z } from 'zod';
 import { getDb, getOrCreateUserByWebSessionId } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
-import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
+import {
+  confirmOrder,
+  TELEGRAM_LINK_REQUIRED,
+  TelegramLinkRequiredError,
+} from '@/lib/tool-handlers/confirm-order';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 
 /**
@@ -69,6 +73,19 @@ export async function POST(req: Request): Promise<NextResponse> {
       { status: 200 },
     );
   } catch (err) {
+    // Ожидаемый отказ, не сбой: веб-пользователь ещё не привязал Telegram —
+    // клиент покажет кнопку привязки и повторит подтверждение после неё.
+    if (err instanceof TelegramLinkRequiredError) {
+      log.info({ event: 'web-chat.confirm.telegram_link_required', orderId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: TELEGRAM_LINK_REQUIRED,
+          text: 'Чтобы оплатить, сначала привяжи Telegram — туда придёт чек и доступы по заказу.',
+        },
+        { status: 200 },
+      );
+    }
     log.error({ event: 'web-chat.confirm.failed', orderId, err });
     Sentry.captureException(err, { tags: { source: 'web-chat.confirm' } });
     return NextResponse.json({ ok: false, error: 'confirm_failed', text: FAIL_TEXT }, { status: 200 });

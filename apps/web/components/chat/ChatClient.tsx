@@ -17,6 +17,7 @@ import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
 import { ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
+import { TelegramLinkCard } from './TelegramLink';
 import { ThemeToggle } from './ThemeToggle';
 import { parseToolCards, type ChatCard } from './toolCards';
 
@@ -31,6 +32,7 @@ type ConfirmResponse = {
   qrPayload?: string | null;
   expiresAt?: string;
   text?: string;
+  error?: string;
 };
 type StatusResponse = { ok: boolean; status?: string; paid?: boolean };
 type HistoryResponse = {
@@ -251,6 +253,13 @@ export function ChatClient({ greeting }: { greeting: string }) {
           ]);
           setPoseSettling('celebrate', 4000);
           startPoll(orderId);
+        } else if (data.error === 'telegram_link_required') {
+          // Гейт привязки: вместо ошибки — карточка «Связать Telegram»;
+          // после привязки она сама повторит подтверждение этого заказа.
+          setItems((prev) => [
+            ...prev,
+            { kind: 'cards', id: nextId(), cards: [{ type: 'telegram_link', orderId }] },
+          ]);
         } else {
           setError(data.text ?? 'Не получилось создать счёт. Попробуйте ещё раз или позовите оператора.');
         }
@@ -369,6 +378,17 @@ export function ChatClient({ greeting }: { greeting: string }) {
             expiresAt={card.expiresAt}
           />
         );
+      case 'telegram_link': {
+        const linkedOrderId = card.orderId;
+        return (
+          <TelegramLinkCard
+            key={key}
+            {...(linkedOrderId
+              ? { onLinked: () => void confirmOrder(linkedOrderId) }
+              : {})}
+          />
+        );
+      }
       case 'operator':
         return (
           <p

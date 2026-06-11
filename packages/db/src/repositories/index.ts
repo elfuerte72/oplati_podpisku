@@ -3,6 +3,7 @@ export {
   getOrCreateUserByWebSessionId,
   getUserTelegramId,
   findUserIdByWebSessionId,
+  isWebSessionLinkedToTelegram,
   type GetOrCreateUserByTelegramIdInput,
   type GetOrCreateUserByTelegramIdResult,
   type GetOrCreateUserByWebSessionIdInput,
@@ -24,6 +25,16 @@ export {
   type AppendMessageResult,
   type MessageHistoryItem,
 } from './messages.ts';
+
+export {
+  createLinkToken,
+  consumeLinkToken,
+  LINK_TOKEN_PREFIX,
+  type CreateLinkTokenInput,
+  type CreateLinkTokenResult,
+  type ConsumeLinkTokenInput,
+  type ConsumeLinkTokenResult,
+} from './link-tokens.ts';
 
 export { noopLogger, type RepoLogger } from './logger.ts';
 

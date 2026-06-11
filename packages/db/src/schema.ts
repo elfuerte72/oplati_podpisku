@@ -114,6 +114,28 @@ export const users = pgTable(
   }),
 ).enableRLS();
 
+// ─── Link tokens (привязка Telegram к веб-сессии) ─────────────────────────
+// Одноразовый короткоживущий токен: создаётся по web_session_id на сайте,
+// потребляется ботом из deep-link `/start link_<token>`. Полный flow —
+// apps/web/app/api/auth/telegram/link + apps/web/lib/telegram/handle-update.ts.
+
+export const linkTokens = pgTable(
+  'link_tokens',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    token: text('token').notNull().unique(),
+    webSessionId: text('web_session_id').notNull(),
+    // кто потребил токен — заполняется при использовании (аудит)
+    telegramId: text('telegram_id'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    webSessionIdx: index('link_tokens_web_session_id_idx').on(t.webSessionId),
+  }),
+).enableRLS();
+
 // ─── Staff (операторы, супервизоры, админы) ───────────────────────────────
 
 export const staff = pgTable('staff', {

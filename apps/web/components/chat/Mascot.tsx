@@ -13,8 +13,13 @@ const LABELS: Record<MascotPose, string> = {
 // Микро-анимация по состоянию: дышит в покое, качается когда думает,
 // подпрыгивает на празднике. Всё гасится prefers-reduced-motion.
 // Версия ассетов: bump при замене PNG — пробивает кэш браузера и next/image
-// (URL входит в ключ кэша оптимизатора).
-const ASSET_VERSION = '2';
+// (URL входит в ключ кэша оптимизатора). Экспорт — для IntroOverlay (рисует
+// маскота напрямую через next/image со своей анимацией «нарисовывания»).
+export const ASSET_VERSION = '2';
+
+export function mascotSrc(pose: MascotPose): string {
+  return `/mascot/${pose}.png?v=${ASSET_VERSION}`;
+}
 
 const POSE_ANIM: Record<MascotPose, string> = {
   idle: 'motion-safe:animate-[mascot-bob_3.4s_ease-in-out_infinite]',
@@ -42,7 +47,7 @@ export function Mascot({
   const img = (
     <Image
       key={pose}
-      src={`/mascot/${pose}.png?v=${ASSET_VERSION}`}
+      src={mascotSrc(pose)}
       alt={LABELS[pose]}
       width={size}
       height={size}

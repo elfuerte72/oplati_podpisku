@@ -191,6 +191,37 @@ body {
   }
 }
 
+/* Интро: маскот «нарисовывается» — чернильный набросок, потом цвет. */
+@keyframes intro-draw-in {
+  0% {
+    transform: scale(0.3) rotate(-12deg);
+    opacity: 0;
+    filter: grayscale(1) contrast(1.6);
+  }
+  55% {
+    transform: scale(1.07) rotate(2.5deg);
+    opacity: 1;
+    filter: grayscale(1) contrast(1.35);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+    filter: none;
+  }
+}
+
+/* Интро: построчное появление текста/чипов (со stagger через animation-delay). */
+@keyframes intro-rise {
+  0% {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

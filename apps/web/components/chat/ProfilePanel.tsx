@@ -1,4 +1,7 @@
+'use client';
+
 import { Mascot, type MascotPose } from './Mascot';
+import { useTelegramLink } from './TelegramLink';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -13,7 +16,8 @@ function Row({ label, value }: { label: string; value: string }) {
  * Правая панель: крупный Оплатишка — единственный маскот на десктопе.
  * Свободно стоит на фоне панели (ассет с прозрачным фоном, без рамок),
  * анимируется по состоянию диалога: думает / показывает / радуется.
- * Ниже — mock личного профиля (реальный кабинет позже).
+ * Ниже — профиль: привязка Telegram настоящая (useTelegramLink),
+ * заказы/траты — пока mock (реальный кабинет позже).
  */
 export function ProfilePanel({
   pose,
@@ -26,6 +30,8 @@ export function ProfilePanel({
   quip?: string | null;
   typing?: boolean;
 }) {
+  const { phase: linkPhase, start: startLink } = useTelegramLink({ checkOnMount: true });
+
   return (
     <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-4 lg:flex">
       {/* Маскот — свободно, без плашки */}
@@ -57,17 +63,31 @@ export function ProfilePanel({
         <div className="space-y-1.5 border-t-2 border-[var(--shadow-ink)] pt-3">
           <Row label="Заказов" value="0" />
           <Row label="Потрачено" value="0 ₽" />
-          <Row label="Telegram" value="не привязан" />
+          <Row
+            label="Telegram"
+            value={
+              linkPhase === 'linked' ? 'привязан' : linkPhase === 'unknown' ? '…' : 'не привязан'
+            }
+          />
         </div>
-        <button
-          type="button"
-          disabled
-          className="w-full cursor-not-allowed rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-2 font-display font-bold text-[var(--text-muted)] opacity-80"
-        >
-          Привязать Telegram
-        </button>
+        {linkPhase !== 'linked' && (
+          <button
+            type="button"
+            onClick={() => void startLink()}
+            disabled={linkPhase === 'unknown' || linkPhase === 'starting' || linkPhase === 'waiting'}
+            className="w-full rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-2 font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {linkPhase === 'starting'
+              ? 'Открываю Telegram…'
+              : linkPhase === 'waiting'
+                ? 'Жду подтверждения…'
+                : linkPhase === 'error'
+                  ? 'Не вышло — ещё раз'
+                  : 'Привязать Telegram'}
+          </button>
+        )}
         <p className="font-body text-xs text-[var(--text-muted)]">
-          Mock-данные — личный кабинет появится позже.
+          Заказы и траты — mock, личный кабинет появится позже.
         </p>
       </div>
     </aside>

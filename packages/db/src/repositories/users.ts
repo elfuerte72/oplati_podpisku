@@ -176,6 +176,21 @@ function hashSessionId(sessionId: string): string {
 }
 
 /**
+ * Привязана ли веб-сессия к Telegram — для поллинга статуса привязки
+ * (`GET /api/auth/telegram/link/status`) и гейта перед оплатой.
+ * Read-only: пользователя не создаёт.
+ */
+export async function isWebSessionLinkedToTelegram(
+  db: DB,
+  webSessionId: string,
+): Promise<boolean> {
+  const rows = await db.execute<{ telegram_id: string | null }>(
+    sql`SELECT telegram_id FROM users WHERE web_session_id = ${webSessionId} LIMIT 1`,
+  );
+  return (rows[0]?.telegram_id ?? null) !== null;
+}
+
+/**
  * Read-only поиск пользователя по `web_session_id` — для GET-эндпоинтов
  * (восстановление истории веб-чата), где создавать user нельзя
  * (инвариант: запись появляется только при первом сообщении).

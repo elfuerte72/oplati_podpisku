@@ -3,7 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import type { ConfirmOrderResult } from '@oplati/agent';
-import { getDb, getOrderById } from '@oplati/db';
+import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
@@ -25,6 +25,21 @@ import { childLogger } from '../logger.ts';
 
 const log = childLogger('tool.confirm_order');
 
+/**
+ * Маркер «нужно привязать Telegram» — по нему /api/orders/confirm и веб-UI
+ * отличают этот кейс от прочих ошибок (и parseToolCards рисует кнопку привязки).
+ */
+export const TELEGRAM_LINK_REQUIRED = 'telegram_link_required';
+
+export class TelegramLinkRequiredError extends Error {
+  constructor() {
+    super(
+      `${TELEGRAM_LINK_REQUIRED}: у пользователя не привязан Telegram. Подтверждение оплаты, чек и доступы доставляются только сообщением в Telegram, поэтому счёт не создан. Объясни это пользователю одной фразой и попроси нажать кнопку «Связать Telegram» под сообщением.`,
+    );
+    this.name = 'TelegramLinkRequiredError';
+  }
+}
+
 export async function confirmOrder(input: {
   orderId: string;
   paymentMethod?: 'sbp' | 'card';
@@ -44,6 +59,16 @@ export async function confirmOrder(input: {
         extra: { orderId: input.orderId, userId: input.userId },
       });
       throw new Error('confirm_order: заказ не найден или принадлежит другому пользователю');
+    }
+
+    // Гейт привязки (только веб-канал: из Telegram userId либо не передаётся,
+    // либо у пользователя по определению есть telegram_id). Результат заказа —
+    // уведомление об оплате и, в фазе 2, реквизиты карты — уходит ТОЛЬКО
+    // сообщением в Telegram, поэтому без привязки счёт не выставляем.
+    const telegramId = await getUserTelegramId(getDb(), input.userId);
+    if (telegramId === null) {
+      log.info({ event: 'tool.confirm_order.telegram_link_required', orderId: input.orderId });
+      throw new TelegramLinkRequiredError();
     }
   }
 

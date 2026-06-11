@@ -19,7 +19,9 @@ export type ChatCard =
       isCustom: boolean;
     }
   | { type: 'payment'; paymentUrl: string; qrPayload: string | null; expiresAt: string }
-  | { type: 'operator'; slaHours: number };
+  | { type: 'operator'; slaHours: number }
+  // Гейт привязки: confirm_order отклонён, у веб-пользователя нет Telegram.
+  | { type: 'telegram_link'; orderId: string | null };
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
@@ -36,7 +38,24 @@ export function parseToolCards(toolCalls: unknown): ChatCard[] {
   const cards: ChatCard[] = [];
 
   for (const tc of toolCalls) {
-    if (!isObj(tc) || tc.isError === true) continue;
+    if (!isObj(tc)) continue;
+
+    // Единственная «полезная» ошибка tool'а: confirm_order отклонён гейтом
+    // привязки Telegram (см. TelegramLinkRequiredError) — рисуем кнопку привязки.
+    if (tc.isError === true) {
+      const errName = asStr(tc.name);
+      const errOut = tc.output;
+      if (
+        errName === 'confirm_order' &&
+        isObj(errOut) &&
+        (asStr(errOut.error) ?? '').includes('telegram_link_required')
+      ) {
+        const input = isObj(tc.input) ? tc.input : {};
+        cards.push({ type: 'telegram_link', orderId: asStr(input.orderId) ?? null });
+      }
+      continue;
+    }
+
     const name = asStr(tc.name);
     const output = tc.output;
 

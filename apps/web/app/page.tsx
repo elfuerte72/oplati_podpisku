@@ -1,10 +1,12 @@
 import { GREETING } from '@oplati/agent';
 
 import { ChatClient } from '@/components/chat/ChatClient';
+import { IntroOverlay } from '@/components/intro/IntroOverlay';
 
 /**
  * Chat-first главная: full-screen shell (навбар · диалог с Оплатишкой · профиль).
  * GREETING берётся из @oplati/agent — единый голос с Telegram-ботом.
+ * IntroOverlay — комикс-знакомство при первом визите (localStorage-флаг).
  */
 export default function HomePage() {
   return (
@@ -14,6 +16,7 @@ export default function HomePage() {
         ChatGPT) рублями, СБП и криптой
       </h1>
       <ChatClient greeting={GREETING} />
+      <IntroOverlay />
     </>
   );
 }
