@@ -40,14 +40,6 @@ type HistoryResponse = {
   messages?: { id: string; role: 'user' | 'assistant' | 'operator'; content: string }[];
 };
 
-const QUIPS = [
-  'Я на связи!',
-  'Что оплатим?',
-  'Подписки — моя стихия.',
-  'Жми и спрашивай.',
-  'Готов помочь!',
-];
-
 const POLL_INTERVAL_MS = 4000;
 const POLL_MAX_ATTEMPTS = 75; // ~5 минут
 
@@ -70,13 +62,11 @@ export function ChatClient({ greeting }: { greeting: string }) {
   const [paidOrders, setPaidOrders] = useState<string[]>([]);
   const [celebrating, setCelebrating] = useState(false);
   const [pose, setPose] = useState<MascotPose>('wave');
-  const [quip, setQuip] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
-  const quipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadedRef = useRef(false);
 
   // Поза маскота: ставим pose, опционально откатываемся в idle через settleMs.
@@ -88,15 +78,6 @@ export function ChatClient({ greeting }: { greeting: string }) {
       settleRef.current = setTimeout(() => setPose('idle'), settleMs);
     }
   }, []);
-
-  // Пасхалка: тык по маскоту → машет + случайная реплика на пару секунд.
-  const poke = useCallback(() => {
-    const q = QUIPS[Math.floor(Math.random() * QUIPS.length)] ?? 'Готов помочь!';
-    setQuip(q);
-    setPoseSettling('wave', 1600);
-    if (quipTimerRef.current) clearTimeout(quipTimerRef.current);
-    quipTimerRef.current = setTimeout(() => setQuip(null), 2200);
-  }, [setPoseSettling]);
 
   // Кульминация оплаты: штамп на заказе + конфетти + ликование маскота.
   const markPaid = useCallback(
@@ -147,7 +128,6 @@ export function ChatClient({ greeting }: { greeting: string }) {
     const polls = pollsRef.current;
     return () => {
       if (settleRef.current) clearTimeout(settleRef.current);
-      if (quipTimerRef.current) clearTimeout(quipTimerRef.current);
       polls.forEach((iv) => clearInterval(iv));
       polls.clear();
     };
@@ -314,7 +294,13 @@ export function ChatClient({ greeting }: { greeting: string }) {
   };
 
   const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
+    const value = e.target.value;
+    setInput(value);
+    // Пока пользователь набирает текст — Оплатишка внимательно «читает».
+    // Не вмешиваемся, если идёт генерация ответа (там поза thinking).
+    if (!sending) {
+      setPoseSettling(value.trim().length > 0 ? 'attentive' : 'idle');
+    }
     const ta = taRef.current;
     if (ta) {
       ta.style.height = 'auto';
@@ -418,7 +404,7 @@ export function ChatClient({ greeting }: { greeting: string }) {
             <div className="relative flex items-center gap-3">
               {/* Маскот в шапке — только когда правая панель скрыта (один видимый маскот). */}
               <span className="lg:hidden">
-                <Mascot pose={pose} size={44} onPoke={poke} />
+                <Mascot pose={pose} size={44} />
               </span>
               <div className="leading-tight">
                 <span className="block font-display text-lg font-bold text-[var(--text)]">
@@ -429,11 +415,6 @@ export function ChatClient({ greeting }: { greeting: string }) {
                   online
                 </span>
               </div>
-              {quip && (
-                <span className="absolute left-0 top-full z-10 mt-2 whitespace-nowrap rounded-[14px] rounded-tl-[4px] border-2 border-[var(--shadow-ink)] bg-[var(--bubble-bot)] px-3 py-1.5 font-body text-sm text-[var(--text)] shadow-[var(--shadow-comic)] motion-safe:animate-[comic-pop_180ms_var(--ease-pop)_both] lg:hidden">
-                  {quip}
-                </span>
-              )}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -522,7 +503,7 @@ export function ChatClient({ greeting }: { greeting: string }) {
         </div>
       </section>
 
-      <ProfilePanel pose={pose} onPoke={poke} quip={quip} typing={sending} />
+      <ProfilePanel pose={pose} typing={sending} />
     </div>
   );
 }
