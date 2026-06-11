@@ -37,15 +37,19 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
       return;
     }
 
-    const amountRub = (order.amountRub ?? 0) / 100;
-    const amountStr = amountRub.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-
-    const message = [
-      `Оплата по заказу ${order.shortId} получена. Спасибо!`,
-      '',
-      `Сумма: ${amountStr} ₽`,
-      'Мы уже обрабатываем заказ — как только всё будет готово, пришлём всё в этот чат.',
-    ].join('\n');
+    // У оплаченного заказа amountRub обязан быть; если его нет — не пишем
+    // клиенту «Сумма: 0 ₽», а шлём уведомление без строки суммы + warning.
+    const lines = [`Оплата по заказу ${order.shortId} получена. Спасибо!`, ''];
+    if (order.amountRub != null) {
+      const amountStr = (order.amountRub / 100).toLocaleString('ru-RU', {
+        maximumFractionDigits: 2,
+      });
+      lines.push(`Сумма: ${amountStr} ₽`);
+    } else {
+      log.warn({ event: 'job.notify_payment.missing_amount', orderId, shortId: order.shortId });
+    }
+    lines.push('Мы уже обрабатываем заказ — как только всё будет готово, пришлём всё в этот чат.');
+    const message = lines.join('\n');
 
     await getBot().api.sendMessage(Number(telegramId), message);
     log.info({ event: 'job.notify_payment.sent', orderId, shortId: order.shortId });

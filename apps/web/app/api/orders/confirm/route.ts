@@ -57,7 +57,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   } catch (err) {
     log.error({ event: 'web-chat.confirm.session_failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat.confirm' } });
-    return NextResponse.json({ ok: false, error: 'unavailable', text: FAIL_TEXT }, { status: 200 });
+    // Браузерный endpoint: клиент читает тело, статус — для мониторинга
+    // (конвенция «всегда 200» относится только к webhook'ам).
+    return NextResponse.json({ ok: false, error: 'unavailable', text: FAIL_TEXT }, { status: 503 });
   }
 
   try {
@@ -83,11 +85,13 @@ export async function POST(req: Request): Promise<NextResponse> {
           error: TELEGRAM_LINK_REQUIRED,
           text: 'Чтобы оплатить, сначала привяжи Telegram — туда придёт чек и доступы по заказу.',
         },
-        { status: 200 },
+        // 409: ожидаемый бизнес-отказ (нет привязки), не сбой — клиент рисует
+        // карточку привязки по error-полю, статус различает кейс в метриках.
+        { status: 409 },
       );
     }
     log.error({ event: 'web-chat.confirm.failed', orderId, err });
     Sentry.captureException(err, { tags: { source: 'web-chat.confirm' } });
-    return NextResponse.json({ ok: false, error: 'confirm_failed', text: FAIL_TEXT }, { status: 200 });
+    return NextResponse.json({ ok: false, error: 'confirm_failed', text: FAIL_TEXT }, { status: 500 });
   }
 }

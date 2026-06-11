@@ -53,6 +53,9 @@ export async function GET(req: Request): Promise<NextResponse> {
   } catch (err) {
     log.error({ event: 'web-chat.status.failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat.status' } });
-    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 200 });
+    // 503, а не 200: это браузерный endpoint (клиент читает только тело),
+    // честный статус нужен мониторингу. Конвенция «всегда 200» — только
+    // для webhook'ов с ретраями (Telegram/L&P).
+    return NextResponse.json({ ok: false, error: 'unavailable' }, { status: 503 });
   }
 }

@@ -156,6 +156,11 @@ export const loveAndPayWebhookData = z
     status: loveAndPayInvoiceStatus,
     paidAt: z.string().optional(),
   })
+  // Без хотя бы одного id дальше работать нельзя: пустой `id` сломал бы
+  // идемпотентность платежей (provider_ref = ''). Падаем на границе парсинга.
+  .refine((d) => Boolean(d.id ?? d.invoiceId), {
+    message: 'either id or invoiceId must be provided',
+  })
   .transform((d) => ({
     id: d.id ?? d.invoiceId ?? '',
     invoiceNumber: d.invoiceNumber,

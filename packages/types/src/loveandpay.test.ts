@@ -63,6 +63,14 @@ describe('loveAndPayWebhookEventSchema', () => {
     expect(cancelled.event).toBe('invoice.cancelled');
   });
 
+  it('отклоняет data без id и invoiceId (пустой id сломал бы идемпотентность)', () => {
+    const res = loveAndPayWebhookEventSchema.safeParse({
+      event: 'invoice.paid',
+      data: { invoiceNumber: 'INV-3', status: 'PAID' },
+    });
+    expect(res.success).toBe(false);
+  });
+
   it('отклоняет неизвестное событие', () => {
     const res = loveAndPayWebhookEventSchema.safeParse({
       event: 'invoice.refunded',
