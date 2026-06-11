@@ -26,11 +26,21 @@ export type TelegramLinkPhase = 'unknown' | 'idle' | 'starting' | 'waiting' | 'l
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_ATTEMPTS = 240; // ~10 минут — дальше токен всё равно истёк
 
+/**
+ * Кнопок привязки на странице несколько (интро, профиль, гейт в чате) — у
+ * каждой свой экземпляр хука. Чтобы привязка, завершённая в одном месте,
+ * мгновенно отражалась во всех, успешный экземпляр бродкастит это событие,
+ * остальные слушают. Плюс recheck при возврате фокуса на вкладку — ловит
+ * случай «привязался из закрытого интро / другого окна».
+ */
+const LINKED_EVENT = 'oplatishka:telegram-linked';
+
 export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: boolean }) {
   const checkOnMount = opts?.checkOnMount ?? false;
   const [phase, setPhase] = useState<TelegramLinkPhase>(checkOnMount ? 'unknown' : 'idle');
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const linkedRef = useRef(false);
   const onLinkedRef = useRef(opts?.onLinked);
   const onLinked = opts?.onLinked;
   useEffect(() => {
@@ -46,14 +56,62 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
 
   useEffect(() => stopPoll, [stopPoll]);
 
-  // При монтировании (интро): если сессия уже привязана — кнопку не показываем.
+  const markLinked = useCallback(
+    (o: { notify: boolean; broadcast: boolean }) => {
+      if (linkedRef.current) return;
+      linkedRef.current = true;
+      stopPoll();
+      setPhase('linked');
+      if (o.notify) onLinkedRef.current?.();
+      if (o.broadcast) window.dispatchEvent(new Event(LINKED_EVENT));
+    },
+    [stopPoll],
+  );
+
+  // Привязка завершилась в другом экземпляре хука (интро/профиль/гейт).
+  useEffect(() => {
+    const onLinkedEvent = () => markLinked({ notify: true, broadcast: false });
+    window.addEventListener(LINKED_EVENT, onLinkedEvent);
+    return () => window.removeEventListener(LINKED_EVENT, onLinkedEvent);
+  }, [markLinked]);
+
+  // Возврат на вкладку (например, из Telegram) — перепроверить статус, даже
+  // если активного поллинга нет (его источник мог размонтироваться).
+  useEffect(() => {
+    const recheck = () => {
+      if (document.visibilityState !== 'visible' || linkedRef.current) return;
+      void fetch('/api/auth/telegram/link/status')
+        .then((res) => res.json() as Promise<StatusResponse>)
+        .then((data) => {
+          if (data.linked === true) markLinked({ notify: true, broadcast: true });
+        })
+        .catch(() => {
+          // транзиентная ошибка — не критично, поймаем в следующий раз
+        });
+    };
+    window.addEventListener('focus', recheck);
+    document.addEventListener('visibilitychange', recheck);
+    return () => {
+      window.removeEventListener('focus', recheck);
+      document.removeEventListener('visibilitychange', recheck);
+    };
+  }, [markLinked]);
+
+  // При монтировании (интро/профиль): если сессия уже привязана — кнопку не показываем.
   useEffect(() => {
     if (!checkOnMount) return;
     let cancelled = false;
     void fetch('/api/auth/telegram/link/status')
       .then((res) => res.json() as Promise<StatusResponse>)
       .then((data) => {
-        if (!cancelled) setPhase(data.linked === true ? 'linked' : 'idle');
+        if (cancelled) return;
+        if (data.linked === true) {
+          // Без notify: привязка случилась раньше, авто-действия не нужны.
+          linkedRef.current = true;
+          setPhase('linked');
+        } else {
+          setPhase('idle');
+        }
       })
       .catch(() => {
         if (!cancelled) setPhase('idle');
@@ -76,17 +134,13 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
       void fetch('/api/auth/telegram/link/status')
         .then((res) => res.json() as Promise<StatusResponse>)
         .then((data) => {
-          if (data.linked === true) {
-            stopPoll();
-            setPhase('linked');
-            onLinkedRef.current?.();
-          }
+          if (data.linked === true) markLinked({ notify: true, broadcast: true });
         })
         .catch(() => {
           // транзиентная ошибка поллинга — следующий тик повторит
         });
     }, POLL_INTERVAL_MS);
-  }, [stopPoll]);
+  }, [stopPoll, markLinked]);
 
   const start = useCallback(async () => {
     setPhase('starting');

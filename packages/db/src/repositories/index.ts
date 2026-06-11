@@ -4,6 +4,8 @@ export {
   getUserTelegramId,
   findUserIdByWebSessionId,
   isWebSessionLinkedToTelegram,
+  getWebSessionProfile,
+  type WebSessionProfile,
   type GetOrCreateUserByTelegramIdInput,
   type GetOrCreateUserByTelegramIdResult,
   type GetOrCreateUserByWebSessionIdInput,

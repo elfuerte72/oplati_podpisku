@@ -191,6 +191,57 @@ export async function isWebSessionLinkedToTelegram(
 }
 
 /**
+ * Профиль веб-сессии для правой панели сайта: имя (из Telegram после
+ * привязки), статус привязки и реальная статистика покупок из `orders`.
+ * «Покупка» = заказ, дошедший до оплаты: paid / in_fulfillment / completed.
+ * Read-only: пользователя не создаёт; для незнакомой сессии — нули.
+ */
+
+export type WebSessionProfile = {
+  displayName: string | null;
+  telegramLinked: boolean;
+  ordersCount: number;
+  totalSpentKopecks: number;
+};
+
+export async function getWebSessionProfile(
+  db: DB,
+  webSessionId: string,
+): Promise<WebSessionProfile> {
+  const rows = await db.execute<{
+    display_name: string | null;
+    telegram_id: string | null;
+    orders_count: number;
+    total_spent_kopecks: number;
+  }>(sql`
+    SELECT
+      u.display_name,
+      u.telegram_id,
+      COUNT(o.id) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed'))::int
+        AS orders_count,
+      COALESCE(
+        SUM(o.amount_rub) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed')),
+        0
+      )::int AS total_spent_kopecks
+    FROM users u
+    LEFT JOIN orders o ON o.user_id = u.id
+    WHERE u.web_session_id = ${webSessionId}
+    GROUP BY u.id
+  `);
+
+  const row = rows[0];
+  if (!row) {
+    return { displayName: null, telegramLinked: false, ordersCount: 0, totalSpentKopecks: 0 };
+  }
+  return {
+    displayName: row.display_name,
+    telegramLinked: row.telegram_id !== null,
+    ordersCount: row.orders_count,
+    totalSpentKopecks: row.total_spent_kopecks,
+  };
+}
+
+/**
  * Read-only поиск пользователя по `web_session_id` — для GET-эндпоинтов
  * (восстановление истории веб-чата), где создавать user нельзя
  * (инвариант: запись появляется только при первом сообщении).

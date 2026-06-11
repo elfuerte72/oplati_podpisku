@@ -1,7 +1,25 @@
 'use client';
 
+import { useCallback, useEffect, useState } from 'react';
+
+import { formatRub } from '@/components/comic';
 import { Mascot, type MascotPose } from './Mascot';
 import { useTelegramLink } from './TelegramLink';
+
+/**
+ * Событие «статистика могла измениться» (оплата заказа в ChatClient) —
+ * панель профиля перезагружает данные из /api/profile.
+ */
+export const PROFILE_REFRESH_EVENT = 'oplatishka:profile-refresh';
+
+type Profile = {
+  displayName: string | null;
+  telegramLinked: boolean;
+  ordersCount: number;
+  totalSpentKopecks: number;
+};
+
+type ProfileResponse = { ok: boolean; profile?: Profile };
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -16,8 +34,9 @@ function Row({ label, value }: { label: string; value: string }) {
  * Правая панель: крупный Оплатишка — единственный маскот на десктопе.
  * Свободно стоит на фоне панели (ассет с прозрачным фоном, без рамок),
  * анимируется по состоянию диалога: думает / показывает / радуется.
- * Ниже — профиль: привязка Telegram настоящая (useTelegramLink),
- * заказы/траты — пока mock (реальный кабинет позже).
+ * Ниже — профиль из БД (/api/profile): имя из Telegram, привязка,
+ * число оплаченных заказов и сумма трат. Обновляется после привязки
+ * (linkPhase) и после оплаты (PROFILE_REFRESH_EVENT из ChatClient).
  */
 export function ProfilePanel({
   pose,
@@ -31,6 +50,31 @@ export function ProfilePanel({
   typing?: boolean;
 }) {
   const { phase: linkPhase, start: startLink } = useTelegramLink({ checkOnMount: true });
+  const [profile, setProfile] = useState<Profile | null>(null);
+
+  const loadProfile = useCallback(() => {
+    void fetch('/api/profile')
+      .then((res) => res.json() as Promise<ProfileResponse>)
+      .then((data) => {
+        if (data.ok && data.profile) setProfile(data.profile);
+      })
+      .catch(() => {
+        // профиль не критичен — останутся значения по умолчанию
+      });
+  }, []);
+
+  useEffect(() => {
+    loadProfile();
+    window.addEventListener(PROFILE_REFRESH_EVENT, loadProfile);
+    return () => window.removeEventListener(PROFILE_REFRESH_EVENT, loadProfile);
+  }, [loadProfile]);
+
+  // После привязки в БД появляется имя из Telegram — перечитываем профиль.
+  useEffect(() => {
+    if (linkPhase === 'linked') loadProfile();
+  }, [linkPhase, loadProfile]);
+
+  const displayName = profile?.displayName ?? null;
 
   return (
     <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-4 lg:flex">
@@ -53,16 +97,20 @@ export function ProfilePanel({
         <h3 className="font-display font-bold text-[var(--text)]">Личный профиль</h3>
         <div className="flex items-center gap-3">
           <span className="grid h-11 w-11 place-items-center rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--bg)] font-display text-lg font-bold text-[var(--text)]">
-            Г
+            {(displayName ?? 'Гость').slice(0, 1).toUpperCase()}
           </span>
           <div className="leading-tight">
-            <span className="block font-display font-bold text-[var(--text)]">Гость</span>
-            <span className="font-body text-xs text-[var(--text-muted)]">без регистрации</span>
+            <span className="block font-display font-bold text-[var(--text)]">
+              {displayName ?? 'Гость'}
+            </span>
+            <span className="font-body text-xs text-[var(--text-muted)]">
+              {linkPhase === 'linked' ? 'аккаунт привязан к Telegram' : 'без регистрации'}
+            </span>
           </div>
         </div>
         <div className="space-y-1.5 border-t-2 border-[var(--shadow-ink)] pt-3">
-          <Row label="Заказов" value="0" />
-          <Row label="Потрачено" value="0 ₽" />
+          <Row label="Заказов" value={String(profile?.ordersCount ?? 0)} />
+          <Row label="Потрачено" value={formatRub(profile?.totalSpentKopecks ?? 0)} />
           <Row
             label="Telegram"
             value={
@@ -86,9 +134,6 @@ export function ProfilePanel({
                   : 'Привязать Telegram'}
           </button>
         )}
-        <p className="font-body text-xs text-[var(--text-muted)]">
-          Заказы и траты — mock, личный кабинет появится позже.
-        </p>
       </div>
     </aside>
   );

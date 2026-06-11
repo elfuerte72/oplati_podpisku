@@ -15,7 +15,7 @@ import {
 } from '@/components/comic';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
-import { ProfilePanel } from './ProfilePanel';
+import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
 import { ThemeToggle } from './ThemeToggle';
@@ -105,6 +105,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
       setCelebrating(true);
       setPoseSettling('celebrate', 4000);
       setTimeout(() => setCelebrating(false), 3500);
+      // Статистика в панели профиля изменилась — пусть перечитает /api/profile.
+      window.dispatchEvent(new Event(PROFILE_REFRESH_EVENT));
     },
     [setPoseSettling],
   );
