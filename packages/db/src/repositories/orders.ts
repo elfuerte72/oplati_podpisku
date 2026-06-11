@@ -313,6 +313,24 @@ export async function hasRecentOrderEvent(
   return rows.length > 0;
 }
 
+/**
+ * Сколько заказов пользователь создал за последние `withinMs` миллисекунд
+ * (любой статус — считаем сам факт создания строки). Анти-абьюз лимит для
+ * `propose_order`: jailbreak-нутая модель или спамер не должны заваливать
+ * `orders` черновиками.
+ */
+export async function countRecentOrdersByUser(
+  db: DB,
+  input: { userId: string; withinMs: number },
+): Promise<number> {
+  const cutoff = new Date(Date.now() - input.withinMs);
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(orders)
+    .where(and(eq(orders.userId, input.userId), gt(orders.createdAt, cutoff)));
+  return rows[0]?.count ?? 0;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const code = (err as { code?: string }).code;

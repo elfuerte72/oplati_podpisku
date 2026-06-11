@@ -64,6 +64,7 @@ export {
   findExpiredPendingOrders,
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
+  countRecentOrdersByUser,
   type OrderRow,
   type CreateDraftOrderInput,
   type TransitionOrderInput,
