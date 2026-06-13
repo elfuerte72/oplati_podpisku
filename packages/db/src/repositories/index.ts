@@ -92,6 +92,7 @@ export {
 
 export {
   searchActiveServices,
+  listActiveServices,
   getServiceById,
   getServiceBySlug,
   type ServiceRow,

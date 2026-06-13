@@ -19,9 +19,11 @@ import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
 import { ThemeToggle } from './ThemeToggle';
+import { StartScreen } from './StartScreen';
 import { parseToolCards, type ChatCard } from './toolCards';
 
 type ChatItem =
+  | { kind: 'start'; id: string }
   | { kind: 'msg'; id: string; from: 'bot' | 'user'; text: string }
   | { kind: 'cards'; id: string; cards: ChatCard[] };
 
@@ -49,12 +51,13 @@ function nextId(): string {
   return `m${_idSeq}`;
 }
 
-export function ChatClient({ greeting }: { greeting: string }) {
-  const [items, setItems] = useState<ChatItem[]>(() => [
-    { kind: 'msg', id: nextId(), from: 'bot', text: greeting },
-  ]);
+export function ChatClient() {
+  const [items, setItems] = useState<ChatItem[]>(() => [{ kind: 'start', id: nextId() }]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // Поле ввода на стартовом экране скрыто — раскрывается «Своим вариантом»
+  // или само, как только начался диалог/появился заказ.
+  const [inputRevealed, setInputRevealed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -152,8 +155,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
         setItems((prev) => {
           // Пользователь уже успел написать, пока грузилась история — не затираем.
           if (prev.some((it) => it.kind === 'msg' && it.from === 'user')) return prev;
-          const greetingItem = prev[0];
-          return greetingItem ? [greetingItem, ...restored] : restored;
+          // Диалог уже был — стартовый экран не нужен, сразу обычный чат.
+          return restored;
         });
       })
       .catch(() => {
@@ -172,7 +175,11 @@ export function ChatClient({ greeting }: { greeting: string }) {
       if (!trimmed || sending) return;
 
       setError(null);
-      setItems((prev) => [...prev, { kind: 'msg', id: nextId(), from: 'user', text: trimmed }]);
+      setItems((prev) => [
+        // Первое сообщение закрывает стартовый экран — дальше обычная лента.
+        ...prev.filter((it) => it.kind !== 'start'),
+        { kind: 'msg', id: nextId(), from: 'user', text: trimmed },
+      ]);
       setInput('');
       setSending(true);
       setPoseSettling('thinking');
@@ -255,7 +262,7 @@ export function ChatClient({ greeting }: { greeting: string }) {
   );
 
   // «Очистить диалог»: сервер открывает новый conversation (история остаётся
-  // в БД), клиент сбрасывается к приветствию.
+  // в БД), клиент сбрасывается к стартовому экрану.
   const clearChat = useCallback(async () => {
     if (clearing || sending) return;
     setClearing(true);
@@ -266,7 +273,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
       if (data.ok) {
         pollsRef.current.forEach((iv) => clearInterval(iv));
         pollsRef.current.clear();
-        setItems([{ kind: 'msg', id: nextId(), from: 'bot', text: greeting }]);
+        setItems([{ kind: 'start', id: nextId() }]);
+        setInputRevealed(false);
         setConfirmed([]);
         setPaidOrders([]);
         setCelebrating(false);
@@ -279,7 +287,34 @@ export function ChatClient({ greeting }: { greeting: string }) {
     } finally {
       setClearing(false);
     }
-  }, [clearing, sending, greeting, setPoseSettling]);
+  }, [clearing, sending, setPoseSettling]);
+
+  // Кнопочный флоу стартового экрана: заказ создан без AI — карточка в ленту,
+  // дальше обычный чат (подтверждение/оплата — существующий confirmOrder).
+  const handleOrderCreated = useCallback(
+    (card: ChatCard) => {
+      setItems((prev) => [
+        ...prev.filter((it) => it.kind !== 'start'),
+        { kind: 'cards', id: nextId(), cards: [card] },
+      ]);
+      setInputRevealed(true);
+      setPoseSettling('presenting', 2800);
+    },
+    [setPoseSettling],
+  );
+
+  // «Свой вариант»: раскрыть поле ввода и поставить фокус (textarea
+  // монтируется этим же рендером — фокус после коммита).
+  const revealInput = useCallback(() => {
+    setInputRevealed(true);
+    setTimeout(() => taRef.current?.focus(), 50);
+  }, []);
+
+  // Ошибки кнопочного флоу зовут «написать в чат» — раскрываем ввод сразу.
+  const handleStartError = useCallback((text: string) => {
+    setError(text);
+    setInputRevealed(true);
+  }, []);
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -438,6 +473,17 @@ export function ChatClient({ greeting }: { greeting: string }) {
         <div ref={scrollRef} className="halftone comic-scroll flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-3xl space-y-3 px-4 py-5">
             {items.map((item) => {
+              if (item.kind === 'start') {
+                return (
+                  <StartScreen
+                    key={item.id}
+                    onOrderCreated={handleOrderCreated}
+                    onOwnVariant={revealInput}
+                    onError={handleStartError}
+                    onListOpen={() => setPoseSettling('presenting', 2800)}
+                  />
+                );
+              }
               if (item.kind === 'cards') {
                 return (
                   <div key={item.id} className="space-y-3">
@@ -466,7 +512,9 @@ export function ChatClient({ greeting }: { greeting: string }) {
           </div>
         </div>
 
-        {/* Низ: ошибка, ввод */}
+        {/* Низ: ошибка, ввод. На стартовом экране скрыт до «Своего варианта»
+            или первого заказа/сообщения. */}
+        {(inputRevealed || items.some((it) => it.kind !== 'start')) && (
         <div className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
           <div className="mx-auto w-full max-w-3xl px-4 py-3">
             {error && (
@@ -501,6 +549,7 @@ export function ChatClient({ greeting }: { greeting: string }) {
             </form>
           </div>
         </div>
+        )}
       </section>
 
       <ProfilePanel pose={pose} typing={sending} />

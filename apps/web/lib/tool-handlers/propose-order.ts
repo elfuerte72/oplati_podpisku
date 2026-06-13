@@ -12,7 +12,7 @@ import type { ProposeOrderResult } from '@oplati/agent';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
-import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts';
+import { resolveUsdtRubRate } from '../loveandpay/rates.ts';
 
 /**
  * Tool `propose_order`. Считает итоговую сумму в RUB:
@@ -42,6 +42,15 @@ import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts'
 
 const log = childLogger('tool.propose_order');
 const TTL_HOURS = 24;
+
+/**
+ * Типизированные ошибки бизнес-границ. Агентский tool-loop передаёт модели
+ * `message` (текст содержит инструкции для модели — это намеренно);
+ * UI-endpoint `/api/orders/propose` различает их по instanceof и показывает
+ * пользователю человеческий текст вместо инструкций.
+ */
+export class OrderAmountOutOfBoundsError extends Error {}
+export class OrderCapExceededError extends Error {}
 
 /**
  * Серверные границы суммы заказа. Промпт-правила («цена только из web_search»)
@@ -90,7 +99,7 @@ export async function proposeOrder(input: {
       userId,
       amountUsdCents: input.amountUsdCents,
     });
-    throw new Error(
+    throw new OrderAmountOutOfBoundsError(
       'propose_order: сумма вне допустимого диапазона $1–$500 за заказ. ' +
         'Через бота такой заказ оформить нельзя — не пытайся создать его повторно ' +
         'и не подгоняй сумму под лимит; предложи пользователю оператора (request_human).',
@@ -139,7 +148,7 @@ export async function proposeOrder(input: {
       tags: { source: 'tool.propose_order' },
       extra: { userId, recentOrders },
     });
-    throw new Error(
+    throw new OrderCapExceededError(
       'propose_order: лимит новых заказов за сутки исчерпан. Не создавай заказ ' +
         'повторно; объясни пользователю, что сегодня заказы закончились, и предложи ' +
         'продолжить с оператором (request_human).',
@@ -239,40 +248,4 @@ export async function proposeOrder(input: {
     expiresAt: expiresAt.toISOString(),
     isCustom,
   };
-}
-
-/**
- * Пытается получить курс USDT/RUB через L&P `/api/v2/rates`. На любую ошибку
- * (RATE_NOT_FOUND, network, contract drift) — fallback на константу из env
- * `RATE_FALLBACK_USDT_RUB` + Sentry warning, чтобы было видно сколько заказов
- * прошло на fallback'е.
- *
- * Когда L&P зафиксирует курс — fallback перестанет срабатывать автоматически.
- */
-async function resolveUsdtRubRate(): Promise<number> {
-  const fallback = serverEnv.RATE_FALLBACK_USDT_RUB;
-  try {
-    const loveAndPay = getLoveAndPayClient();
-    const ratesResp = await loveAndPay.getRates('USDT', 'RUB');
-    const rate = ratesResp.rate.rate;
-    if (!rate || rate <= 0) {
-      throw new Error(`L&P вернул некорректный курс: ${rate}`);
-    }
-    log.info({ event: 'tool.propose_order.rate.live', rate });
-    return rate;
-  } catch (err) {
-    const code = err instanceof LoveAndPayApiError ? err.code : 'unknown';
-    log.warn({
-      event: 'tool.propose_order.rate.fallback',
-      reason: code,
-      fallback,
-      err,
-    });
-    Sentry.captureMessage('USDT/RUB rate fallback used', {
-      level: 'warning',
-      tags: { source: 'tool.propose_order' },
-      extra: { code, fallback },
-    });
-    return fallback;
-  }
 }
