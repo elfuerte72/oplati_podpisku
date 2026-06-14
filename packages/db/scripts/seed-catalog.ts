@@ -31,11 +31,22 @@
 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
+import { inArray } from 'drizzle-orm';
 import { pricingPolicy, type PricingPolicy, type ServiceTier } from '@oplati/types';
 import pino from 'pino';
 import { services } from '../src/schema.ts';
 
 const logger = pino({ name: 'seed-catalog' });
+
+/**
+ * Сервисы-дубли/без собственной подписки — деактивируем (is_active=false),
+ * чтобы не висели в каталоге без цен и не путали AI-поиск:
+ *   - `midjourney`  — пустой дубль `midjourney-basic` (тот с тарифами);
+ *   - `claude-code` — НЕ отдельная подписка: доступ даёт `claude-pro`
+ *                     (Claude Pro/Max), иначе была бы дублирующая карточка.
+ * Список идемпотентен: если slug нет — no-op.
+ */
+const DEPRECATED_SLUGS: readonly string[] = ['midjourney', 'claude-code'];
 
 /** Справочный курс и маржа — только для placeholder `priceRub` (не витрина). */
 const RATE_HINT = 95.5;
@@ -130,6 +141,50 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 10), usd('Pro+', 39)]),
+  },
+  {
+    slug: 'gemini-advanced',
+    name: 'Google Gemini',
+    description: 'AI-ассистент от Google',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Plus', 7.99), usd('Pro', 19.99), usd('Ultra', 99.99)]),
+  },
+  {
+    slug: 'grok-pro',
+    name: 'Grok',
+    description: 'AI-ассистент от xAI',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('SuperGrok Lite', 10),
+      usd('SuperGrok', 30),
+      usd('SuperGrok Heavy', 300),
+    ]),
+  },
+  {
+    slug: 'mistral-pro',
+    name: 'Mistral Le Chat',
+    description: 'AI-ассистент от Mistral',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 14.99)]),
+  },
+  {
+    slug: 'perplexity-pro',
+    name: 'Perplexity',
+    description: 'AI-поиск',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
+  },
+  {
+    slug: 'windsurf-pro',
+    name: 'Windsurf',
+    description: 'AI code editor',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
   },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
@@ -356,6 +411,18 @@ async function main(): Promise<void> {
           requiresKyc: entry.requiresKyc,
         },
         'service seeded',
+      );
+    }
+
+    if (DEPRECATED_SLUGS.length > 0) {
+      const deactivated = await db
+        .update(services)
+        .set({ isActive: false })
+        .where(inArray(services.slug, [...DEPRECATED_SLUGS]))
+        .returning({ slug: services.slug });
+      logger.info(
+        { slugs: deactivated.map((r) => r.slug) },
+        'deprecated services deactivated',
       );
     }
 
