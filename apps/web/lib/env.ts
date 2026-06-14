@@ -90,7 +90,7 @@ const serverEnvSchema = z.object({
   // Минимальная сумма счёта L&P в рублях (терминал KANYON не принимает < 500 ₽).
   // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
-  LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(0).default(500),
+  LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(500).default(500),
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
