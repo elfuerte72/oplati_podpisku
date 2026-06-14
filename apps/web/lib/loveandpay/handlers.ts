@@ -3,10 +3,10 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  claimPaymentSucceeded,
   findPaymentByProviderRef,
   getDb,
   markPaymentStatus,
-  markPaymentSucceeded,
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
@@ -63,21 +63,24 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     return { kind: 'not_found', providerRef: data.id };
   }
 
-  if (payment.status === 'succeeded') {
-    log.info({
-      event: 'loveandpay.handlers.idempotent_skip',
-      paymentId: payment.id,
-      reason: 'already_succeeded',
-    });
-    return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'already_succeeded' };
-  }
-
-  await markPaymentSucceeded(db, {
+  // Атомарный claim `pending → succeeded`: строку получит ровно ОДИН из
+  // конкурентных вызовов (webhook vs poll-payment, повторные ретраи L&P).
+  // Второй увидит null и обязан остановиться ДО любых побочных эффектов —
+  // иначе issue-card и топ-ап карты выполнятся дважды (двойная трата денег).
+  const claimed = await claimPaymentSucceeded(db, {
     paymentId: payment.id,
     webhookReceivedAt: new Date(),
     rawPayload,
     recoveredViaPolling,
   });
+  if (!claimed) {
+    log.info({
+      event: 'loveandpay.handlers.idempotent_skip',
+      paymentId: payment.id,
+      reason: 'already_processed',
+    });
+    return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'already_processed' };
+  }
 
   // Переход pending_payment → paid. Если order уже paid (race с другим путём) —
   // transitionOrder вернёт noop (так как from === to). Если status в `in_fulfillment`
@@ -98,10 +101,19 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       },
     });
   } catch (err) {
-    log.warn({
-      event: 'loveandpay.handlers.transition_skip',
+    // Сюда попадаем ТОЛЬКО при запрещённом переходе (noop from===to не бросает).
+    // Платёж уже claimed-succeeded, но заказ нельзя двинуть в `paid` — например,
+    // он cancelled/expired (клиент оплатил по «мёртвому» счёту). Деньги получены,
+    // fulfillment не пойдёт — это аномалия, алертим (не глотаем как warn).
+    log.error({
+      event: 'loveandpay.handlers.paid_transition_failed',
       orderId: payment.orderId,
       err,
+    });
+    Sentry.captureException(err, {
+      level: 'error',
+      tags: { source: 'loveandpay.handlers', step: 'transition_paid' },
+      extra: { orderId: payment.orderId, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
     });
   }
 
@@ -164,10 +176,19 @@ export async function processInvoiceTerminal(input: InvoiceTerminalInput): Promi
       payload: { paymentId: payment.id, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
     });
   } catch (err) {
+    // Терминальный переход (expired/cancelled) запрещён — обычно безобидная
+    // гонка (заказ уже оплачен/отменён иным путём). Логируем + Sentry warning
+    // для видимости, но без error-алерта.
     log.warn({
-      event: 'loveandpay.handlers.transition_skip',
+      event: 'loveandpay.handlers.terminal_transition_skip',
       orderId: payment.orderId,
+      reason,
       err,
+    });
+    Sentry.captureException(err, {
+      level: 'warning',
+      tags: { source: 'loveandpay.handlers', step: 'transition_terminal' },
+      extra: { orderId: payment.orderId, invoiceId: data.id, reason },
     });
   }
 

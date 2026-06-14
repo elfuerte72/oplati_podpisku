@@ -32,6 +32,11 @@ export interface CatalogItem {
 export interface ProposeOrderResult {
   orderId: string;
   shortId: string;
+  /**
+   * Субтотал в копейках RUB — БЕЗ комиссии (цена сервиса по курсу). К оплате
+   * идёт `totalRubKopecks` (= subtotal + commission). Имя историческое; не путать
+   * с суммой счёта L&P, которая равна `totalRubKopecks`.
+   */
   amountRubKopecks: number;
   commissionKopecks: number;
   totalRubKopecks: number;
@@ -111,6 +116,9 @@ export interface ToolCallLog {
 const CACHED_SYSTEM: Anthropic.TextBlockParam[] = [
   { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
 ];
+
+/** Сквозной потолок web_search-запросов на один runAgent (см. использование). */
+const MAX_WEB_SEARCH_PER_RUN = 3;
 
 /**
  * Второй cache-брейкпоинт — на истории диалога (первый — CACHED_SYSTEM выше).
@@ -217,18 +225,28 @@ export async function runAgent(
 
   const toolCalls: ToolCallLog[] = [];
   let totalUsage: Anthropic.Usage | null = null;
+  // Сквозной потолок web_search на ОДИН runAgent. `max_uses: 2` в tools.ts —
+  // это лимит на один вызов API, а tool-loop делает до 6 итераций, поэтому без
+  // этого счётчика дорогой web_search мог бы сработать до 12 раз за разговор.
+  // По достижении лимита убираем web_search из набора tools на следующих шагах.
+  let webSearchUsed = 0;
 
   // Максимум 6 итераций tool use (план MVP, раздел 5.3).
   for (let step = 0; step < 6; step++) {
+    const toolsForStep =
+      webSearchUsed >= MAX_WEB_SEARCH_PER_RUN
+        ? tools.filter((t) => t.name !== 'web_search')
+        : tools;
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
       temperature,
       system: CACHED_SYSTEM,
-      tools,
+      tools: toolsForStep,
       messages: withHistoryCacheBreakpoint(messages),
     });
     totalUsage = addUsage(totalUsage, response.usage);
+    webSearchUsed += response.usage.server_tool_use?.web_search_requests ?? 0;
 
     if (response.stop_reason === 'tool_use') {
       const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');

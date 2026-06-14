@@ -107,6 +107,8 @@ pnpm --filter @oplati/db db:studio      # Drizzle Studio
 
 **Forward-only через Drizzle.** Схема — `packages/db/src/schema.ts`. Правка схемы → `db:generate` → `.sql` в `packages/db/migrations/` → `db:push` (или `db:migrate`, если push не видит `DATABASE_URL`). Никогда не редактировать применённую миграцию и не править БД через Supabase Dashboard в обход Drizzle. Destructive-изменения — только backwards-compatible (nullable-колонки, два деплоя на удаление).
 
+**Enum-расширения — отдельной миграцией.** `ALTER TYPE ... ADD VALUE` в Postgres нельзя использовать в той же транзакции, где добавленное значение применяется (migrator оборачивает миграцию в транзакцию). Поэтому добавление значения в enum держим отдельной миграцией, не смешивая с DDL/DML, которые это значение используют (иначе `db:migrate` упадёт).
+
 ## Deployments
 
 Vercel `fra1`. Два окружения с **раздельными Telegram-ботами** (webhook у бота один → шарить нельзя):

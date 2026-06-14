@@ -91,12 +91,6 @@ const serverEnvSchema = z.object({
   // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
   LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(0).default(500),
-  // Discovery-флаг: при '1'/'true' webhook логирует реальные заголовки + rawBody
-  // ДО любых проверок — чтобы снять контракт L&P с живого вызова и сверить с
-  // Zod-схемами. Снять (удалить env) после подтверждения контракта.
-  LOVEANDPAY_WEBHOOK_DEBUG: z
-    .preprocess((v) => v === '1' || v === 'true', z.boolean())
-    .default(false),
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
@@ -114,9 +108,24 @@ const serverEnvSchema = z.object({
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
   INTERNAL_API_TOKEN: optionalEnvString(),
 
-  // Rate limit (Sprint 3)
+  // Секрет cron-endpoint'ов. Vercel Cron шлёт его как `Authorization: Bearer`.
+  // Без него `authorizeCron` пускает только NODE_ENV=development (fail-closed
+  // на preview/production). На проде задавать ОБЯЗАТЕЛЬНО.
+  CRON_SECRET: optionalEnvString(),
+  CRON_TOKEN: optionalEnvString(),
+
+  // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
+  // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —
+  // RATE_LIMIT_DISABLED='1'/'true' (читается в lib/ratelimit.ts).
+  // Имена UPSTASH_* — ручная конвенция; KV_REST_API_* — то, что инжектит
+  // интеграция Upstash через Vercel Marketplace. Поддерживаем оба (lib/ratelimit.ts).
   UPSTASH_REDIS_REST_URL: optionalUrl(),
   UPSTASH_REDIS_REST_TOKEN: optionalEnvString(),
+  KV_REST_API_URL: optionalUrl(),
+  KV_REST_API_TOKEN: optionalEnvString(),
+  RATE_LIMIT_DISABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
 
   // Trigger.dev (Sprint 3)
   TRIGGER_API_KEY: optionalEnvString(),

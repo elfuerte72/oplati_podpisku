@@ -27,6 +27,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { toAgentHistory } from '@/lib/chat/history';
@@ -65,6 +66,19 @@ const bodySchema = z.object({
 
 const AI_DOWN_TEXT =
   'Сейчас не получается ответить — что-то на нашей стороне. Попробуй ещё раз через минуту или напиши «оператор», и я подключу человека.';
+
+const RATE_LIMITED_TEXT =
+  'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.';
+
+/** Клиентский IP для rate-limit. На Vercel приходит в `x-forwarded-for`. */
+function getClientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
 
 type WebChatContext = { userId: string; conversationId: string };
 
@@ -127,6 +141,17 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!process.env.ANTHROPIC_API_KEY) {
     log.warn({ event: 'web-chat.disabled', reason: 'no_anthropic_key' });
     return NextResponse.json({ ok: false, error: 'ai_unavailable', text: AI_DOWN_TEXT }, { status: 200 });
+  }
+
+  // Per-IP rate-limit ДО роутера/агента: режет DoS-на-бюджет от одного источника.
+  // Работает независимо от Supabase (Upstash), fail-open если не сконфигурирован.
+  const rl = await checkRateLimit('web-chat', getClientIp(req));
+  if (!rl.allowed) {
+    log.warn({ event: 'web-chat.rate_limited' });
+    return NextResponse.json(
+      { ok: false, error: 'rate_limited', text: RATE_LIMITED_TEXT },
+      { status: 429 },
+    );
   }
 
   const webSessionId = await getOrCreateWebSessionId();

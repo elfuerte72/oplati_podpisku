@@ -12,6 +12,7 @@ import {
   markActive,
   setOrderCardId,
   transitionOrder,
+  transitionOrderDetailed,
   updateBalance,
 } from '@oplati/db';
 
@@ -25,17 +26,22 @@ import { getBot } from '../telegram/bot.ts';
  *
  * Алгоритм:
  *   1. Загрузить order; status должен быть `paid`. Иначе abort.
- *   2. Найти активную карту пользователя (findActiveByUserId) → если есть,
- *      пополняем её топ-ап'ом.
- *   3. Если нет — поискать recycled-карту (findRecyclableCard) → если есть,
- *      переписать userId на текущего пользователя, активировать, пополнить.
- *   4. Если нет — createCard в paypace + сохранить в БД.
- *   5. Привязать карту к order (setOrderCardId).
- *   6. transitionOrder paid → in_fulfillment → completed (две транзакции).
- *   7. Отправить пользователю в TG карточку с маскированным PAN + срок + CVC.
+ *   2. **Атомарный claim** `paid → in_fulfillment` (transitionOrderDetailed):
+ *      продолжает ТОЛЬКО вызов, который реально сделал переход. Гонка/повтор
+ *      (webhook + recovery cron, double-dispatch) → второй вызов видит
+ *      `transitioned=false` и выходит ДО топ-апа. Это «at-most-once»: без
+ *      idempotency-ключа провайдера мы предпочитаем «не пополнить дважды»
+ *      риску «пополнить дважды» (двойная трата денег недопустима).
+ *   3. Найти активную карту пользователя (findActiveByUserId) → топ-ап;
+ *      иначе recycled-карта; иначе createCard в paypace + сохранить в БД.
+ *   4. Привязать карту к order (setOrderCardId).
+ *   5. transitionOrder in_fulfillment → completed.
+ *   6. Отправить пользователю в TG карточку с маскированным PAN + срок + CVC.
  *
- * На любой фейл → transitionOrder paid → failed + Sentry critical + сообщение
- * пользователю.
+ * На любой фейл после claim → transitionOrder in_fulfillment → failed + Sentry.
+ * Редкий случай «claim сделан, но инстанс умер до топ-апа» оставляет заказ в
+ * `in_fulfillment` без карты (без двойной траты) — добивает оператор; recovery
+ * cron такие НЕ переотрабатывает (claim уже не вернёт transitioned).
  *
  * Этот код вызывается:
  *   - sync-fallback из webhook (см. `lib/loveandpay/handlers.ts` → dispatcher).
@@ -85,6 +91,20 @@ export async function issueCard(orderId: string): Promise<void> {
   }
 
   const amountUsdCents = order.originalAmount;
+
+  // Атомарный claim paid → in_fulfillment. Только этот вызов продолжит к топ-апу;
+  // параллельный/повторный (webhook + recovery cron, double-dispatch) увидит
+  // transitioned=false и выйдет, не пополняя карту повторно.
+  const claim = await transitionOrderDetailed(db, {
+    orderId,
+    toStatus: 'in_fulfillment',
+    actorType: 'system',
+    eventType: 'fulfillment_started',
+  });
+  if (!claim.transitioned) {
+    log.info({ event: 'job.issue_card.already_claimed', orderId, status: claim.order.status });
+    return;
+  }
 
   try {
     const paypace = getPaySpaceClient();
@@ -156,20 +176,14 @@ export async function issueCard(orderId: string): Promise<void> {
       await setOrderCardId(db, orderId, card.id, log);
     }
 
-    // 5. Переход paid → in_fulfillment → completed.
-    await transitionOrder(db, {
-      orderId,
-      toStatus: 'in_fulfillment',
-      actorType: 'system',
-      eventType: 'card_assigned',
-      payload: card ? { cardId: card.id, panMasked: card.panMasked } : null,
-    });
+    // 5. Завершаем fulfillment: in_fulfillment → completed (claim уже перевёл
+    // заказ в in_fulfillment выше).
     await transitionOrder(db, {
       orderId,
       toStatus: 'completed',
       actorType: 'system',
       eventType: 'fulfillment_completed',
-      payload: card ? { cardId: card.id } : null,
+      payload: card ? { cardId: card.id, panMasked: card.panMasked } : null,
     });
 
     log.info({ event: 'job.issue_card.completed', orderId });

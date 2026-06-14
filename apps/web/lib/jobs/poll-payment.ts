@@ -2,30 +2,42 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { findPendingPaymentsForPoll, getDb } from '@oplati/db';
+import { findPendingPaymentsForPoll, findStuckPaidOrders, getDb } from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
+import { isPaySpaceConfigured } from '../pay-space/index.ts';
 import { getLoveAndPayClient } from '../loveandpay/index.ts';
 import {
   loveAndPayTerminalReason,
   processInvoicePaid,
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
+import { issueCard } from './issue-card.ts';
 
 /**
- * Cron `poll-payment` — подстраховка от потерянных L&P-webhook'ов.
+ * Cron `poll-payment` — подстраховка от потерянных L&P-webhook'ов И от
+ * потерянного issue-card (fire-and-forget через setImmediate не переживает
+ * cold-shutdown инстанса).
  *
- * Каждые 5 минут (см. vercel.ts → crons) проверяем все pending платежи,
- * старше 10 минут и не древнее 25 часов (TTL invoice'а — 24h).
- * Если статус сменился в L&P — повторно вызываем те же handler'ы, что webhook,
- * с `recoveredViaPolling=true` для трассировки и Sentry warning.
+ * Каждые 5 минут (см. apps/web/vercel.json → crons):
+ *   1. Проверяем pending платежи (старше 10 мин, не древнее 25 ч): если статус
+ *      сменился в L&P — повторяем handler'ы (recoveredViaPolling=true).
+ *   2. Recovery fulfillment: заказы, зависшие в `paid` дольше порога, повторно
+ *      прогоняем через issue-card (идемпотентно — claim защищает от двойного
+ *      топ-апа). Только когда PaySpace настроен: иначе `paid` — это намеренное
+ *      состояние для ручного fulfillment, дёргать нечего.
  */
 
 const log = childLogger('cron.poll-payment');
 
+// Заказ в `paid` дольше этого порога считаем «issue-card потерян» (нормальный
+// выпуск стартует через setImmediate в пределах секунд после оплаты).
+const STUCK_PAID_THRESHOLD_MS = 10 * 60 * 1000;
+
 export async function pollPayments(): Promise<{
   processed: number;
   recovered: number;
+  refulfilled: number;
   errors: number;
 }> {
   log.info({ event: 'cron.poll_payment.start' });
@@ -87,12 +99,50 @@ export async function pollPayments(): Promise<{
     }
   }
 
+  // Recovery потерянного issue-card: заказы, зависшие в `paid`. Идемпотентно —
+  // issueCard claim'ит paid → in_fulfillment атомарно, повторный прогон не
+  // пополняет карту дважды. Только при настроенном PaySpace.
+  let refulfilled = 0;
+  if (isPaySpaceConfigured()) {
+    try {
+      const stuck = await findStuckPaidOrders(db, { olderThanMs: STUCK_PAID_THRESHOLD_MS });
+      if (stuck.length > 0) {
+        log.warn({ event: 'cron.poll_payment.stuck_paid_found', count: stuck.length });
+        Sentry.captureMessage('Заказы зависли в paid — повторный issue-card', {
+          level: 'warning',
+          tags: { source: 'cron.poll-payment' },
+          extra: { count: stuck.length },
+        });
+        for (const order of stuck) {
+          try {
+            // Внутри cron (maxDuration=300) ждём завершения — детерминированнее
+            // fire-and-forget. issueCard сам ловит свои ошибки (markOrderFailed).
+            await issueCard(order.id);
+            refulfilled++;
+          } catch (err) {
+            errors++;
+            log.error({ event: 'cron.poll_payment.refulfill_error', orderId: order.id, err });
+            Sentry.captureException(err, {
+              tags: { source: 'cron.poll-payment', step: 'refulfill' },
+              extra: { orderId: order.id },
+            });
+          }
+        }
+      }
+    } catch (err) {
+      errors++;
+      log.error({ event: 'cron.poll_payment.stuck_query_error', err });
+      Sentry.captureException(err, { tags: { source: 'cron.poll-payment', step: 'stuck_query' } });
+    }
+  }
+
   log.info({
     event: 'cron.poll_payment.done',
     processed: pending.length,
     recovered,
+    refulfilled,
     errors,
   });
 
-  return { processed: pending.length, recovered, errors };
+  return { processed: pending.length, recovered, refulfilled, errors };
 }

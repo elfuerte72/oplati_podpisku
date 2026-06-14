@@ -68,19 +68,23 @@ export {
   getOrderById,
   getOrderByShortId,
   transitionOrder,
+  transitionOrderDetailed,
   setOrderCardId,
   findExpiredPendingOrders,
+  findStuckPaidOrders,
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   type OrderRow,
   type CreateDraftOrderInput,
   type TransitionOrderInput,
+  type TransitionOrderResult,
 } from './orders.ts';
 
 export {
   upsertPaymentByProviderRef,
   markPaymentSucceeded,
+  claimPaymentSucceeded,
   markPaymentStatus,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,

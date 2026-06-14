@@ -155,6 +155,60 @@ export async function markPaymentSucceeded(
   return row;
 }
 
+/**
+ * Атомарный claim платежа: переводит `pending → succeeded` ОДНИМ условным
+ * UPDATE и возвращает строку только тому вызову, который реально сделал переход.
+ *
+ * Зачем: webhook L&P и cron `poll-payment` могут обработать один и тот же invoice
+ * почти одновременно. `markPaymentSucceeded` (безусловный UPDATE by id) пропустил
+ * бы оба вызова дальше — к двойному `dispatchIssueCard` и двойному топ-апу карты
+ * (реальная двойная трата). Здесь `WHERE id=? AND status='pending'` гарантирует,
+ * что строку получит ровно один параллельный вызов; второй увидит `null` и должен
+ * остановиться ДО любых побочных эффектов (issue-card, уведомление).
+ *
+ * Возвращает `null`, если платёж уже не `pending` (повтор/гонка) или не найден.
+ */
+export async function claimPaymentSucceeded(
+  db: DB,
+  input: MarkPaymentSucceededInput,
+  log: RepoLogger = noopLogger,
+): Promise<PaymentRow | null> {
+  const {
+    paymentId,
+    webhookReceivedAt = new Date(),
+    rawPayload = null,
+    recoveredViaPolling = false,
+  } = input;
+
+  const updated = await db
+    .update(payments)
+    .set({
+      status: 'succeeded',
+      completedAt: new Date(),
+      webhookReceivedAt,
+      recoveredViaPolling,
+      ...(rawPayload !== null ? { rawPayload } : {}),
+    })
+    .where(and(eq(payments.id, paymentId), eq(payments.status, 'pending')))
+    .returning();
+
+  const row = updated[0];
+  if (!row) {
+    log.info({ event: 'db.payments.claim_skipped', paymentId, reason: 'not_pending' });
+    return null;
+  }
+
+  log.info({
+    event: 'db.payments.claimed_succeeded',
+    paymentId,
+    orderId: row.orderId,
+    provider: row.provider,
+    recoveredViaPolling,
+  });
+
+  return row;
+}
+
 export async function markPaymentStatus(
   db: DB,
   paymentId: string,

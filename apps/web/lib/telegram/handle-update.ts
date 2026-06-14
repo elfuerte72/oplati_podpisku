@@ -37,6 +37,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
@@ -312,6 +313,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     }
 
     await sendSafely(chatId, GREETING, update.update_id);
+    return;
+  }
+
+  // Per-identity rate-limit ДО persist/роутера/агента: режет DoS-на-бюджет от
+  // одного пользователя. `/start` и привязка обрабатываются выше и не затронуты.
+  const rlIdentity = String(telegramUserId ?? chatId);
+  const rl = await checkRateLimit('telegram', rlIdentity);
+  if (!rl.allowed) {
+    log.warn({ event: 'telegram.rate_limited', updateId: update.update_id, chatId });
+    await sendSafely(
+      chatId,
+      'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.',
+      update.update_id,
+    );
     return;
   }
 
@@ -642,6 +657,31 @@ async function handleCallbackQuery(
     return;
   }
 
+  // Ownership: callback_data можно подделать через клиентский Bot API — нельзя
+  // доверять orderId без проверки владельца. Резолвим userId по нажавшему
+  // (cb.from обязателен по схеме) и передаём в confirmOrder / сверяем перед
+  // cancel. Если БД недоступна (userId не резолвится) — отказываем: весь flow
+  // всё равно требует БД, проводить платёж по непроверенному заказу нельзя.
+  let userId: string | null = null;
+  try {
+    const user = await getOrCreateUserByTelegramId(
+      getDb(),
+      { telegramId: String(cb.from.id), displayName: null, language: cb.from.language_code ?? 'ru' },
+      dbLog,
+    );
+    userId = user.id;
+  } catch (err) {
+    log.error({ event: 'telegram.callback.resolve_user_failed', updateId, orderId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'telegram.callback', step: 'resolve_user' },
+      extra: { orderId },
+    });
+  }
+  if (!userId) {
+    await sendSafely(chatId, 'Не получилось обработать действие — попробуй ещё раз через минуту.', updateId);
+    return;
+  }
+
   // Снимем кнопки у исходного сообщения — нельзя нажать дважды.
   if (cb.message) {
     try {
@@ -654,7 +694,7 @@ async function handleCallbackQuery(
   if (action === 'confirm') {
     let confirmResult: Awaited<ReturnType<typeof confirmOrder>>;
     try {
-      confirmResult = await withTypingIndicator(chatId, () => confirmOrder({ orderId }));
+      confirmResult = await withTypingIndicator(chatId, () => confirmOrder({ orderId, userId }));
     } catch (err) {
       log.error({ event: 'telegram.callback.confirm.failed', updateId, orderId, err });
       Sentry.captureException(err, {
@@ -684,7 +724,16 @@ async function handleCallbackQuery(
   try {
     const db = getDb();
     const order = await getOrderById(db, orderId);
-    if (!order) {
+    // Не раскрываем существование чужого заказа — тот же ответ, что и not-found.
+    if (!order || order.userId !== userId) {
+      if (order && order.userId !== userId) {
+        log.warn({ event: 'telegram.callback.cancel.ownership_mismatch', updateId, orderId });
+        Sentry.captureMessage('cancel callback: ownership mismatch', {
+          level: 'warning',
+          tags: { source: 'telegram.callback', step: 'cancel' },
+          extra: { orderId },
+        });
+      }
       await sendSafely(chatId, 'Заказ уже не найден. Если хочешь начать заново — напиши /start.', updateId);
       return;
     }

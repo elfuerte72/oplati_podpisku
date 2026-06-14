@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { getBot } from '@/lib/telegram/bot';
 
 /**
@@ -36,7 +37,7 @@ const postBodySchema = z.object({
 function authorize(req: Request): boolean {
   const expected = serverEnv.INTERNAL_API_TOKEN;
   if (!expected) return false;
-  return req.headers.get('x-internal-token') === expected;
+  return timingSafeEqualStr(req.headers.get('x-internal-token') ?? '', expected);
 }
 
 export async function GET(req: Request): Promise<NextResponse> {

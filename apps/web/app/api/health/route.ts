@@ -20,12 +20,9 @@ export const maxDuration = 5;
 const log = childLogger('api.health');
 
 export function GET(): NextResponse {
+  // Окружение (VERCEL_ENV) держим только в логах — наружу не отдаём, чтобы
+  // публичный healthcheck не раскрывал метаданные деплоя.
   const env = process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'development';
-  const body = {
-    status: 'ok',
-    env,
-    timestamp: new Date().toISOString(),
-  };
   log.debug({ event: 'api.health.hit', env });
-  return NextResponse.json(body, { status: 200 });
+  return NextResponse.json({ status: 'ok', timestamp: new Date().toISOString() }, { status: 200 });
 }
