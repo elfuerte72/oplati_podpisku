@@ -22,6 +22,7 @@ export {
 
 export {
   appendMessage,
+  getLastAssistantMessageMeta,
   loadRecentMessages,
   type AppendMessageInput,
   type AppendMessageResult,

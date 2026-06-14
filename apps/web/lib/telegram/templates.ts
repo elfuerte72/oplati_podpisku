@@ -1,5 +1,8 @@
 import 'server-only';
 
+import { formatExpires, formatRub } from '@/components/comic/format';
+import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
+
 /**
  * Централизованные текстовые шаблоны для Telegram-бота.
  *
@@ -39,6 +42,73 @@ export const MEDIA_REPLY: Record<MediaKind, string> = {
   sticker: 'Не понял. Напиши, какую подписку нужно оплатить.',
   animation: 'Не понял. Напиши, какую подписку нужно оплатить.',
 };
+
+/**
+ * Кнопочный каталог в Telegram — зеркало happy-path сайта (сервис → тариф →
+ * заказ → оплата), целиком мимо AI. Тексты и форматтеры лейблов кнопок здесь.
+ */
+
+/** Подпись inline-кнопки «Выбрать сервис» (под /start, в /menu). */
+export const CATALOG_OPEN_BUTTON = 'Выбрать сервис';
+
+/** Заголовок сообщения со списком сервисов. */
+export const CATALOG_LIST_PROMPT = 'Что оплатить? Выбери сервис из списка:';
+
+/** Подпись кнопки «Свой вариант» (уводит в чат с агентом). */
+export const CATALOG_OWN_VARIANT_BUTTON = 'Свой вариант';
+
+/** Подпись кнопки «Назад» к списку сервисов. */
+export const CATALOG_BACK_BUTTON = '<< Назад к списку';
+
+/** Подсказка под кнопкой «Свой вариант». */
+export const CATALOG_OWN_VARIANT_TEXT =
+  'Напиши, что нужно оплатить — название сервиса и тариф. Найду цену и оформлю заказ.';
+
+/** Каталог не открылся (БД/курс недоступны). */
+export const CATALOG_UNAVAILABLE_TEXT =
+  'Каталог сейчас не открылся. Попробуй ещё раз через минуту или напиши, что нужно, текстом — оформлю вручную.';
+
+/** Сообщение со списком тарифов сервиса. */
+export function catalogTierPrompt(serviceName: string): string {
+  return `${serviceName} — выбери тариф:`;
+}
+
+/** Лейбл кнопки тарифа: «Plus · месяц — 1 750 ₽». */
+export function catalogTierButtonLabel(tier: CatalogTier): string {
+  const period = tier.period === 'year' ? 'год' : 'месяц';
+  return `${tier.name} · ${period} — ${formatRub(tier.totalKopecks)}`;
+}
+
+/** Запрос суммы для custom-amount сервиса (Airbnb и т.п.). */
+export function catalogCustomAmountPrompt(service: CatalogService): string {
+  const kyc = service.requiresKyc
+    ? '\n\nМожет понадобиться верификация (KYC) — подскажу при оформлении.'
+    : '';
+  return (
+    `${service.name}: у этого сервиса нет фиксированных тарифов. ` +
+    `Напиши сумму к оплате в долларах — число от $1 до $500 (например: 120).${kyc}`
+  );
+}
+
+/** Сумма не распознана в режиме ожидания ввода. */
+export const CATALOG_AMOUNT_INVALID_TEXT =
+  'Не понял сумму. Напиши число в долларах от $1 до $500 — например: 120. Или нажми /menu, чтобы выбрать другой сервис.';
+
+/** Текст карточки заказа под кнопками «Подтвердить» / «Отменить». */
+export function orderCardText(card: {
+  shortId: string;
+  service: string;
+  totalKopecks: number;
+  expiresAt: string;
+}): string {
+  return (
+    `Заказ №${card.shortId}\n` +
+    `${card.service}\n` +
+    `К оплате: ${formatRub(card.totalKopecks)}\n` +
+    `Заказ действует до ${formatExpires(card.expiresAt)}.\n\n` +
+    'Подтверди оплату кнопкой ниже.'
+  );
+}
 
 /**
  * Рабочие часы оператора в часовом поясе Europe/Moscow.

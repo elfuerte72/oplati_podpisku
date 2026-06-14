@@ -126,6 +126,38 @@ export async function loadRecentMessages(
   return history;
 }
 
+/**
+ * Возвращает `meta` последнего assistant-сообщения диалога (или `null`, если
+ * сообщений нет или meta пустой).
+ *
+ * Нужно Telegram-боту для лёгкого pending-state кнопочного флоу: при выборе
+ * сервиса без фиксированных тарифов (custom-amount) бот кладёт в meta
+ * assistant-сообщения флаг «жду сумму для slug», а при следующем текстовом
+ * сообщении читает его этой функцией — без отдельной таблицы состояния.
+ * Состояние самосбрасывается: любой новый assistant-ответ (например, от агента)
+ * становится последним и затирает флаг.
+ */
+export async function getLastAssistantMessageMeta(
+  db: DB,
+  conversationId: string,
+  log: RepoLogger = noopLogger,
+): Promise<Record<string, unknown> | null> {
+  const rows = await db
+    .select({ meta: messages.meta })
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), eq(messages.role, 'assistant')))
+    .orderBy(desc(messages.createdAt))
+    .limit(1);
+
+  const row = rows[0];
+  log.debug({
+    event: 'db.messages.last_assistant_meta',
+    conversationId,
+    found: Boolean(row),
+  });
+  return row?.meta ?? null;
+}
+
 // keep these imports referenced so tsc with verbatimModuleSyntax doesn't drop them
 void asc;
 void sql;
