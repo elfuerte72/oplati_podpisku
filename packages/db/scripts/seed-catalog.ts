@@ -6,24 +6,65 @@
  * Стратегия: UPSERT по `services.slug` (INSERT ... ON CONFLICT (slug) DO UPDATE).
  * Повторный запуск безопасен — обновит поля, новых строк не создаст.
  *
- * Цены — placeholder на основе известных USD-прайсов × курс ~95₽/USD × margin 15%.
- * TODO: верифицировать с владельцем перед production
- * (см. `.ai-factory/plans/feature-db-extended-schema.md`, Task 10).
+ * Тарифы и USD-цены актуализированы веб-ресёрчем (июнь 2026, ориентир США) —
+ * по нескольку потребительских уровней на сервис (ChatGPT Go/Plus/Pro, Claude
+ * Pro/Max, стриминг с/без рекламы и т.п.). Кнопочный каталог (web + Telegram)
+ * рендерит ВСЕ USD-тарифы автоматически из `pricing_policy.tiers[]`.
  *
- * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с priceRub=1
- * (минимальное валидное значение — zod-схема `serviceTier.priceRub` требует
- * .positive(), поэтому 0 не проходит). Фактическая стоимость бронирования
- * заполняется в orders.amount_rub под каждый заказ; dummy-tier удовлетворяет
- * валидации (tiers.min(1) + priceRub.positive()) без правок типов.
+ * Правила, которые нельзя нарушать (иначе сломается матчинг заказа):
+ *   - В пределах одного сервиса `tier.name` ДОЛЖНЫ быть уникальны: web-флоу
+ *     (`/api/orders/propose`) находит тариф по имени. Сейчас все уровни —
+ *     помесячные (`period: 'month'`); годовые добавлять отдельной итерацией
+ *     вместе с доработкой матчинга на (name + period).
+ *   - `originalAmount` — USD-центы (источник цены витрины × живой курс).
+ *   - `priceRub` — placeholder (в копейках), на витрине НЕ используется (там
+ *     пересчёт по живому курсу). Считается helper'ом `usd()` ниже.
+ *
+ * Цены — справочные на момент ресёрча; владелец сверяет перед production
+ * (часть взята из агрегаторов, не из живых официальных pricing-страниц).
+ *
+ * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с originalAmount=1
+ * (≤ 1 цента — маркер «индивидуальная цена», см. lib/catalog/build.ts). Кнопочный
+ * флоу для таких сервисов запрашивает сумму у клиента; фактическая стоимость
+ * заполняется в orders.amount_rub под каждый заказ.
  */
 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { pricingPolicy, type PricingPolicy } from '@oplati/types';
+import { pricingPolicy, type PricingPolicy, type ServiceTier } from '@oplati/types';
 import pino from 'pino';
 import { services } from '../src/schema.ts';
 
 const logger = pino({ name: 'seed-catalog' });
+
+/** Справочный курс и маржа — только для placeholder `priceRub` (не витрина). */
+const RATE_HINT = 95.5;
+const MARGIN = 0.15;
+
+/**
+ * Конструктор тарифа из долларовой цены. `originalAmount` (USD-центы) —
+ * источник правды витрины; `priceRub` — placeholder в копейках для прохождения
+ * zod-валидации (.positive()), фактическая рублёвая сумма считается по живому
+ * курсу в момент заказа.
+ */
+function usd(name: string, dollars: number, period: 'month' | 'year' = 'month'): ServiceTier {
+  return {
+    name,
+    period,
+    originalAmount: Math.round(dollars * 100),
+    currency: 'USD',
+    priceRub: Math.max(1, Math.round(dollars * RATE_HINT * (1 + MARGIN) * 100)),
+  };
+}
+
+/** dummy-tier для сервисов с индивидуальной ценой (Airbnb): сумму вводит клиент. */
+const CUSTOM_AMOUNT_TIER: ServiceTier = {
+  name: 'Booking',
+  period: 'month',
+  originalAmount: 1,
+  currency: 'USD',
+  priceRub: 1,
+};
 
 type CatalogEntry = {
   slug: string;
@@ -34,102 +75,88 @@ type CatalogEntry = {
   pricingPolicy: PricingPolicy;
 };
 
+function policy(tiers: ServiceTier[]): PricingPolicy {
+  return { tiers, margin: MARGIN };
+}
+
 const CATALOG: readonly CatalogEntry[] = [
-  {
-    slug: 'claude-pro',
-    name: 'Claude Pro',
-    description: 'AI-ассистент от Anthropic',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Pro',
-          period: 'month',
-          priceRub: 253000,
-          originalAmount: 2000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
+  // ─── AI ──────────────────────────────────────────────────────────────────
   {
     slug: 'chatgpt-plus',
-    name: 'ChatGPT Plus',
+    name: 'ChatGPT',
     description: 'AI-ассистент от OpenAI',
     category: 'ai',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Plus',
-          period: 'month',
-          priceRub: 253000,
-          originalAmount: 2000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Go', 8),
+      usd('Plus', 20),
+      usd('Pro 5x', 100),
+      usd('Pro', 200),
+    ]),
   },
   {
+    slug: 'claude-pro',
+    name: 'Claude',
+    description: 'AI-ассистент от Anthropic',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 20), usd('Max 5x', 100), usd('Max 20x', 200)]),
+  },
+  {
+    slug: 'midjourney-basic',
+    name: 'Midjourney',
+    description: 'AI-генерация изображений',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Basic', 10),
+      usd('Standard', 30),
+      usd('Pro', 60),
+      usd('Mega', 120),
+    ]),
+  },
+  {
+    slug: 'cursor-pro',
+    name: 'Cursor',
+    description: 'AI code editor',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 20), usd('Pro+', 60), usd('Ultra', 200)]),
+  },
+  {
+    slug: 'github-copilot',
+    name: 'GitHub Copilot',
+    description: 'AI-помощник для кода',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 10), usd('Pro+', 39)]),
+  },
+
+  // ─── Streaming ─────────────────────────────────────────────────────────────
+  {
     slug: 'netflix-premium',
-    name: 'Netflix Premium',
-    description: 'Стриминг — Premium-план',
+    name: 'Netflix',
+    description: 'Видеостриминг',
     category: 'streaming',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Premium',
-          period: 'month',
-          priceRub: 290800,
-          originalAmount: 2299,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('С рекламой', 8.99),
+      usd('Standard', 19.99),
+      usd('Premium', 26.99),
+    ]),
   },
   {
     slug: 'spotify-premium',
-    name: 'Spotify Premium',
-    description: 'Музыкальный стриминг — Individual',
+    name: 'Spotify',
+    description: 'Музыкальный стриминг',
     category: 'streaming',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Individual',
-          period: 'month',
-          priceRub: 139100,
-          originalAmount: 1099,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'airbnb',
-    name: 'Airbnb (бронирование)',
-    description: 'Бронирование жилья — индивидуальная цена под каждый заказ',
-    category: 'travel',
-    requiresKyc: true,
-    // dummy-tier: фактическая цена в orders.amount_rub
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Booking',
-          period: 'month',
-          priceRub: 1,
-          originalAmount: 1,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Individual', 12.99),
+      usd('Duo', 18.99),
+      usd('Family', 21.99),
+      usd('Student', 6.99),
+    ]),
   },
   {
     slug: 'youtube-premium',
@@ -137,284 +164,142 @@ const CATALOG: readonly CatalogEntry[] = [
     description: 'Без рекламы + YouTube Music',
     category: 'streaming',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Individual',
-          period: 'month',
-          priceRub: 177100,
-          originalAmount: 1399,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Individual', 15.99),
+      usd('Family', 26.99),
+      usd('Student', 8.99),
+    ]),
   },
+  {
+    slug: 'apple-music',
+    name: 'Apple Music',
+    description: 'Музыкальный стриминг Apple',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Student', 5.99),
+      usd('Individual', 10.99),
+      usd('Family', 16.99),
+    ]),
+  },
+  {
+    slug: 'disney-plus',
+    name: 'Disney+',
+    description: 'Видеостриминг Disney',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('С рекламой', 11.99), usd('Premium', 18.99)]),
+  },
+  {
+    slug: 'hbo-max',
+    name: 'HBO Max',
+    description: 'Видеостриминг HBO Max',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('С рекламой', 10.99),
+      usd('Standard', 18.49),
+      usd('Premium', 22.99),
+    ]),
+  },
+  {
+    slug: 'crunchyroll-mega-fan',
+    name: 'Crunchyroll',
+    description: 'Аниме-стриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Fan', 9.99),
+      usd('Mega Fan', 13.99),
+      usd('Ultimate Fan', 17.99),
+    ]),
+  },
+
+  // ─── Travel ────────────────────────────────────────────────────────────────
+  {
+    slug: 'airbnb',
+    name: 'Airbnb (бронирование)',
+    description: 'Бронирование жилья — индивидуальная цена под каждый заказ',
+    category: 'travel',
+    requiresKyc: true,
+    pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+  },
+
+  // ─── Productivity ───────────────────────────────────────────────────────────
   {
     slug: 'discord-nitro',
     name: 'Discord Nitro',
     description: 'Расширенные возможности Discord',
     category: 'productivity',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Nitro',
-          period: 'month',
-          priceRub: 126500,
-          originalAmount: 999,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'midjourney-basic',
-    name: 'Midjourney Basic',
-    description: 'AI-генерация изображений — Basic-план',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Basic',
-          period: 'month',
-          priceRub: 126500,
-          originalAmount: 1000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([usd('Nitro Basic', 2.99), usd('Nitro', 9.99)]),
   },
   {
     slug: 'linkedin-premium',
     name: 'LinkedIn Premium',
-    description: 'Career-план LinkedIn',
+    description: 'LinkedIn Premium',
     category: 'productivity',
     requiresKyc: true,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Career',
-          period: 'month',
-          priceRub: 379500,
-          originalAmount: 2999,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([usd('Career', 29.99), usd('Business', 59.99)]),
   },
   {
     slug: 'apple-one',
     name: 'Apple One',
-    description: 'Подписка Apple One — Individual',
+    description: 'Подписка Apple One',
     category: 'productivity',
     requiresKyc: true,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Individual',
-          period: 'month',
-          priceRub: 253000,
-          originalAmount: 1995,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Individual', 19.95),
+      usd('Family', 25.95),
+      usd('Premier', 37.95),
+    ]),
   },
   {
     slug: 'icloud-plus-200gb',
-    name: 'iCloud+ 200GB',
-    description: 'iCloud+ 200GB — облачное хранилище Apple',
+    name: 'iCloud+',
+    description: 'Облачное хранилище Apple',
     category: 'productivity',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: '200GB',
-          period: 'month',
-          priceRub: 37973,
-          originalAmount: 299,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'apple-music',
-    name: 'Apple Music',
-    description: 'Apple Music — Individual',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Individual',
-          period: 'month',
-          priceRub: 139573,
-          originalAmount: 1099,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('50GB', 0.99),
+      usd('200GB', 2.99),
+      usd('2TB', 9.99),
+      usd('6TB', 29.99),
+      usd('12TB', 59.99),
+    ]),
   },
   {
     slug: 'notion-plus',
-    name: 'Notion Plus',
-    description: 'Notion Plus — индивидуальный тариф',
+    name: 'Notion',
+    description: 'Notion — рабочее пространство',
     category: 'productivity',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Plus',
-          period: 'month',
-          priceRub: 127000,
-          originalAmount: 1000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([usd('Plus', 12), usd('Business', 24)]),
   },
   {
     slug: 'figma-professional',
-    name: 'Figma Professional',
-    description: 'Figma Professional — Editor seat',
+    name: 'Figma',
+    description: 'Figma — дизайн (платное место)',
     category: 'productivity',
     requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Professional',
-          period: 'month',
-          priceRub: 190500,
-          originalAmount: 1500,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'github-copilot',
-    name: 'GitHub Copilot',
-    description: 'GitHub Copilot Individual',
-    category: 'productivity',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Individual',
-          period: 'month',
-          priceRub: 127000,
-          originalAmount: 1000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Full seat', 16),
+      usd('Dev seat', 12),
+      usd('Collab seat', 3),
+    ]),
   },
   {
     slug: 'adobe-creative-cloud',
     name: 'Adobe Creative Cloud',
-    description: 'Adobe Creative Cloud (All Apps)',
+    description: 'Adobe Creative Cloud',
     category: 'productivity',
     requiresKyc: true,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'All Apps',
-          period: 'month',
-          priceRub: 761873,
-          originalAmount: 5999,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'disney-plus',
-    name: 'Disney+',
-    description: 'Disney+ — стриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Standard',
-          period: 'month',
-          priceRub: 126873,
-          originalAmount: 999,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'hbo-max',
-    name: 'HBO Max',
-    description: 'Max (HBO) — стриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Standard',
-          period: 'month',
-          priceRub: 126873,
-          originalAmount: 999,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'crunchyroll-mega-fan',
-    name: 'Crunchyroll Mega Fan',
-    description: 'Crunchyroll Mega Fan — аниме-стриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Mega Fan',
-          period: 'month',
-          priceRub: 152273,
-          originalAmount: 1199,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
-  },
-  {
-    slug: 'cursor-pro',
-    name: 'Cursor Pro',
-    description: 'Cursor Pro — AI code editor',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: {
-      tiers: [
-        {
-          name: 'Pro',
-          period: 'month',
-          priceRub: 254000,
-          originalAmount: 2000,
-          currency: 'USD',
-        },
-      ],
-      margin: 0.15,
-    },
+    pricingPolicy: policy([
+      usd('Photography', 9.99),
+      usd('Single App', 22.99),
+      usd('All Apps', 54.99),
+      usd('All Apps Pro', 69.99),
+    ]),
   },
 ];
 
