@@ -7,6 +7,7 @@ import {
   appendMessage,
   consumeLinkToken,
   getDb,
+  getLastAssistantMessageMeta,
   getOrCreateActiveConversation,
   getOrCreateUserByTelegramId,
   getOrderById,
@@ -36,13 +37,35 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
+import type { CatalogService } from '@/lib/catalog/build';
+import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
+import { proposeFromCatalog } from '@/lib/catalog/propose';
+import { formatExpires } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
+import { parseCustomAmountUsd } from './amount';
 import { getBot } from './bot';
-import { MEDIA_REPLY, type MediaKind } from './templates';
+import {
+  CATALOG_AMOUNT_INVALID_TEXT,
+  CATALOG_BACK_BUTTON,
+  CATALOG_LIST_PROMPT,
+  CATALOG_OPEN_BUTTON,
+  CATALOG_OWN_VARIANT_BUTTON,
+  CATALOG_OWN_VARIANT_TEXT,
+  CATALOG_UNAVAILABLE_TEXT,
+  catalogCustomAmountPrompt,
+  catalogTierButtonLabel,
+  catalogTierPrompt,
+  MEDIA_REPLY,
+  orderCardText,
+  type MediaKind,
+} from './templates';
+
+/** Ключ pending-state в meta assistant-сообщения: «жду сумму для этого slug». */
+const AWAITING_AMOUNT_META_KEY = 'awaiting_amount_for_slug';
 
 /**
  * Диспатч одиночного Telegram update.
@@ -312,7 +335,15 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       );
     }
 
-    await sendSafely(chatId, GREETING, update.update_id);
+    await sendSafely(chatId, GREETING, update.update_id, buildCatalogOpenKeyboard());
+    return;
+  }
+
+  // /menu — открыть кнопочный каталог в любой момент (зеркало кнопки «Выбрать
+  // сервис» на сайте). Навигация без AI — обрабатываем до rate-limit/агента.
+  if (text === '/menu' || text.startsWith('/menu ') || text.startsWith('/menu@')) {
+    log.info({ event: 'telegram.menu', chatId, telegramUserId });
+    await showCatalogList(chatId, undefined, update.update_id);
     return;
   }
 
@@ -350,6 +381,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       },
       update.update_id,
     );
+
+    // Кнопочный флоу: если бот ранее попросил сумму для custom-amount сервиса
+    // (Airbnb и т.п.) — следующий текст трактуем как эту сумму и оформляем
+    // заказ напрямую, мимо AI (ноль токенов). Не сумма-подобный текст — сброс
+    // ожидания и обычный путь через агента.
+    if (await tryHandlePendingAmount(ctx, chatId, text, update.update_id)) {
+      return;
+    }
   }
 
   // Дневной глобальный токен-бюджет (как в /api/chat): при превышении —
@@ -617,33 +656,164 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
     .text('Отменить', `cancel:${orderId}`);
 }
 
+/** Кнопка «Выбрать сервис» под приветствием /start. */
+function buildCatalogOpenKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text(CATALOG_OPEN_BUTTON, 'cat');
+}
+
+/** Кнопка «<< Назад к списку» (вернуться к выбору сервиса). */
+function buildBackKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text(CATALOG_BACK_BUTTON, 'back');
+}
+
+/** Клавиатура списка сервисов: по 2 в ряд + «Свой вариант» отдельной строкой. */
+function buildServiceListKeyboard(services: CatalogService[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (let i = 0; i < services.length; i += 2) {
+    const a = services[i];
+    const b = services[i + 1];
+    if (a) kb.text(a.name, `svc:${a.slug}`);
+    if (b) kb.text(b.name, `svc:${b.slug}`);
+    kb.row();
+  }
+  kb.text(CATALOG_OWN_VARIANT_BUTTON, 'own');
+  return kb;
+}
+
+/** Клавиатура тарифов сервиса: по одному в ряд (лейбл с ценой) + «Назад». */
+function buildTierListKeyboard(slug: string, tiers: CatalogService['tiers']): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  tiers.forEach((t, i) => {
+    kb.text(catalogTierButtonLabel(t), `tier:${slug}:${i}`).row();
+  });
+  kb.text(CATALOG_BACK_BUTTON, 'back');
+  return kb;
+}
+
 /**
- * Обработчик нажатия inline-кнопок «Подтвердить» / «Отменить».
- *
- * callback_data:
- *   - `confirm:<orderId>` → вызывает confirmOrder (создание L&P invoice) и
- *      отправляет пользователю ссылку оплаты.
- *   - `cancel:<orderId>`  → transitionOrder → cancelled, шлёт «Заказ отменён».
+ * Показать сообщение: редактирует существующее (`messageId` задан — навигация
+ * по inline-кнопке, ощущение «экрана» как на сайте) либо отправляет новое
+ * (`messageId` нет — /menu, ошибки в текстовом флоу). На edit-методах Telegram
+ * пропущенный `reply_markup` снимает старую клавиатуру — то, что нужно при
+ * переходе на текстовый экран. «message is not modified» — игнор; прочий сбой
+ * edit (старое/удалённое сообщение) — fallback на отправку нового.
+ */
+async function showOrEdit(
+  chatId: number,
+  messageId: number | undefined,
+  text: string,
+  updateId: number,
+  keyboard?: InlineKeyboard,
+): Promise<void> {
+  if (messageId === undefined) {
+    await sendSafely(chatId, text, updateId, keyboard);
+    return;
+  }
+  try {
+    await getBot().api.editMessageText(
+      chatId,
+      messageId,
+      text,
+      keyboard ? { reply_markup: keyboard } : {},
+    );
+  } catch (err) {
+    if (err instanceof GrammyError && /not modified/i.test(err.description)) {
+      return;
+    }
+    log.debug({ event: 'telegram.callback.edit_failed', updateId, err });
+    await sendSafely(chatId, text, updateId, keyboard);
+  }
+}
+
+/**
+ * Показать список сервисов кнопочного каталога (зеркало StartScreen сайта).
+ * При недоступности каталога (БД/курс) — деградируем текстом, без падения.
+ */
+async function showCatalogList(
+  chatId: number,
+  messageId: number | undefined,
+  updateId: number,
+): Promise<void> {
+  let services: CatalogService[] = [];
+  try {
+    services = await loadCatalog();
+  } catch (err) {
+    log.error({ event: 'telegram.catalog.load_failed', updateId, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.catalog', step: 'load' } });
+  }
+  if (services.length === 0) {
+    await showOrEdit(chatId, messageId, CATALOG_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+  await showOrEdit(
+    chatId,
+    messageId,
+    CATALOG_LIST_PROMPT,
+    updateId,
+    buildServiceListKeyboard(services),
+  );
+}
+
+/**
+ * Резолвит пользователя и активный conversation по нажавшему кнопку
+ * (`cb.from` обязателен по схеме). Нужен для записи pending-state и создания
+ * заказа. `null` при недоступной БД — caller деградирует.
+ */
+async function resolveCallbackContext(
+  cb: TelegramCallbackQuery,
+  updateId: number,
+): Promise<PersistContext | null> {
+  try {
+    const db = getDb();
+    const nameParts = [cb.from.first_name, cb.from.last_name].filter(
+      (p): p is string => typeof p === 'string' && p.length > 0,
+    );
+    const user = await getOrCreateUserByTelegramId(
+      db,
+      {
+        telegramId: String(cb.from.id),
+        displayName: nameParts.length > 0 ? nameParts.join(' ') : null,
+        language: cb.from.language_code ?? 'ru',
+      },
+      dbLog,
+    );
+    const conversation = await getOrCreateActiveConversation(
+      db,
+      { userId: user.id, channel: 'telegram' },
+      dbLog,
+    );
+    return { userId: user.id, conversationId: conversation.id };
+  } catch (err) {
+    log.error({ event: 'telegram.callback.resolve_ctx_failed', updateId, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.callback', step: 'resolve_ctx' } });
+    return null;
+  }
+}
+
+/**
+ * Диспетчер нажатий inline-кнопок. callback_data:
+ *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
+ *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
+ *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
+ *   - `tier:<slug>:<idx>` → выбран тариф: создать заказ → кнопки confirm/cancel;
+ *   - `confirm:<orderId>` → confirmOrder (создание L&P invoice) + ссылка оплаты;
+ *   - `cancel:<orderId>`  → transitionOrder → cancelled.
  *
  * Telegram требует ответить на callback_query через `answerCallbackQuery` —
- * иначе кнопка будет крутиться у пользователя до таймаута (~15s).
+ * иначе кнопка крутится у пользователя до таймаута (~15s).
  */
 async function handleCallbackQuery(
   update: TelegramUpdate,
   cb: TelegramCallbackQuery,
 ): Promise<void> {
   const chatId = cb.message?.chat.id;
+  const messageId = cb.message?.message_id;
   const updateId = update.update_id;
   const data = cb.data ?? '';
-  const [action, orderId] = data.split(':');
+  const parts = data.split(':');
+  const action = parts[0] ?? '';
 
-  log.info({
-    event: 'telegram.callback.received',
-    updateId,
-    chatId,
-    action,
-    hasOrderId: Boolean(orderId),
-  });
+  log.info({ event: 'telegram.callback.received', updateId, chatId, action });
 
   // Сразу подтверждаем callback (Telegram перестанет крутить кнопку).
   try {
@@ -652,35 +822,257 @@ async function handleCallbackQuery(
     log.warn({ event: 'telegram.callback.answer_failed', updateId, err });
   }
 
-  if (!chatId || !orderId || (action !== 'confirm' && action !== 'cancel')) {
+  if (!chatId) {
     log.warn({ event: 'telegram.callback.invalid', updateId, data });
     return;
   }
 
-  // Ownership: callback_data можно подделать через клиентский Bot API — нельзя
-  // доверять orderId без проверки владельца. Резолвим userId по нажавшему
-  // (cb.from обязателен по схеме) и передаём в confirmOrder / сверяем перед
-  // cancel. Если БД недоступна (userId не резолвится) — отказываем: весь flow
-  // всё равно требует БД, проводить платёж по непроверенному заказу нельзя.
-  let userId: string | null = null;
-  try {
-    const user = await getOrCreateUserByTelegramId(
-      getDb(),
-      { telegramId: String(cb.from.id), displayName: null, language: cb.from.language_code ?? 'ru' },
-      dbLog,
-    );
-    userId = user.id;
-  } catch (err) {
-    log.error({ event: 'telegram.callback.resolve_user_failed', updateId, orderId, err });
-    Sentry.captureException(err, {
-      tags: { source: 'telegram.callback', step: 'resolve_user' },
-      extra: { orderId },
-    });
+  switch (action) {
+    case 'cat':
+    case 'back':
+      await showCatalogList(chatId, messageId, updateId);
+      return;
+    case 'own':
+      await showOrEdit(chatId, messageId, CATALOG_OWN_VARIANT_TEXT, updateId);
+      return;
+    case 'svc': {
+      const slug = parts[1];
+      if (slug) {
+        await handleServiceSelected(cb, chatId, messageId, slug, updateId);
+        return;
+      }
+      break;
+    }
+    case 'tier': {
+      const slug = parts[1];
+      const idx = Number(parts[2]);
+      if (slug && Number.isInteger(idx) && idx >= 0) {
+        await handleTierSelected(cb, chatId, messageId, slug, idx, updateId);
+        return;
+      }
+      break;
+    }
+    case 'confirm':
+    case 'cancel': {
+      const orderId = parts[1];
+      if (orderId) {
+        await handleOrderActionCallback(cb, chatId, action, orderId, updateId);
+        return;
+      }
+      break;
+    }
+    default:
+      break;
   }
-  if (!userId) {
-    await sendSafely(chatId, 'Не получилось обработать действие — попробуй ещё раз через минуту.', updateId);
+  log.warn({ event: 'telegram.callback.invalid', updateId, data });
+}
+
+/**
+ * Выбран сервис (`svc:<slug>`). Сервис с фиксированными тарифами → показываем
+ * тарифы. Custom-amount (Airbnb) → просим написать сумму и ставим pending-state
+ * (флаг в meta assistant-сообщения), который подхватит следующий текст.
+ */
+async function handleServiceSelected(
+  cb: TelegramCallbackQuery,
+  chatId: number,
+  messageId: number | undefined,
+  slug: string,
+  updateId: number,
+): Promise<void> {
+  let service: CatalogService | null = null;
+  try {
+    service = await findCatalogService(slug);
+  } catch (err) {
+    log.error({ event: 'telegram.catalog.service_lookup_failed', updateId, slug, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.catalog', step: 'svc' } });
+  }
+  if (!service) {
+    await showOrEdit(chatId, messageId, CATALOG_UNAVAILABLE_TEXT, updateId);
     return;
   }
+
+  if (service.customAmount) {
+    const ctx = await resolveCallbackContext(cb, updateId);
+    if (!ctx) {
+      await showOrEdit(chatId, messageId, CATALOG_UNAVAILABLE_TEXT, updateId);
+      return;
+    }
+    const prompt = catalogCustomAmountPrompt(service);
+    // pending-state: следующий текст-число оформит заказ по этому slug мимо AI.
+    await safeAppendMessage(
+      ctx,
+      'assistant',
+      prompt,
+      { source: 'catalog_ui', [AWAITING_AMOUNT_META_KEY]: slug },
+      updateId,
+    );
+    await showOrEdit(chatId, messageId, prompt, updateId, buildBackKeyboard());
+    return;
+  }
+
+  if (service.tiers.length === 0) {
+    await showOrEdit(chatId, messageId, CATALOG_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+  await showOrEdit(
+    chatId,
+    messageId,
+    catalogTierPrompt(service.name),
+    updateId,
+    buildTierListKeyboard(slug, service.tiers),
+  );
+}
+
+/**
+ * Выбран тариф (`tier:<slug>:<idx>`). Резолвим имя тарифа из каталога (цена
+ * строго серверная) и создаём заказ через общий `proposeFromCatalog`. Успех —
+ * редактируем сообщение в карточку заказа с кнопками «Подтвердить»/«Отменить».
+ */
+async function handleTierSelected(
+  cb: TelegramCallbackQuery,
+  chatId: number,
+  messageId: number | undefined,
+  slug: string,
+  idx: number,
+  updateId: number,
+): Promise<void> {
+  const ctx = await resolveCallbackContext(cb, updateId);
+  if (!ctx) {
+    await showOrEdit(chatId, messageId, CATALOG_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+
+  let service: CatalogService | null = null;
+  try {
+    service = await findCatalogService(slug);
+  } catch (err) {
+    log.error({ event: 'telegram.catalog.service_lookup_failed', updateId, slug, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.catalog', step: 'tier' } });
+  }
+  const tier = service?.tiers[idx];
+  if (!service || !tier) {
+    await showOrEdit(
+      chatId,
+      messageId,
+      'Этот тариф уже недоступен. Нажми /menu, чтобы открыть список заново.',
+      updateId,
+    );
+    return;
+  }
+
+  const result = await withTypingIndicator(chatId, () =>
+    proposeFromCatalog({
+      userId: ctx.userId,
+      conversationId: ctx.conversationId,
+      channel: 'telegram',
+      slug,
+      tierName: tier.name,
+    }),
+  );
+  if (!result.ok) {
+    await showOrEdit(chatId, messageId, result.text, updateId);
+    return;
+  }
+  await showOrEdit(
+    chatId,
+    messageId,
+    orderCardText(result.card),
+    updateId,
+    buildConfirmKeyboard(result.card.orderId),
+  );
+}
+
+/**
+ * Кнопочный флоу: если бот ранее (выбор custom-amount сервиса) попросил сумму —
+ * следующий текст трактуем как неё и оформляем заказ напрямую, мимо AI.
+ * Возвращает `true`, если сообщение обработано здесь (caller прекращает обычный
+ * путь). pending-state читается из meta последнего assistant-сообщения.
+ */
+async function tryHandlePendingAmount(
+  ctx: PersistContext,
+  chatId: number,
+  text: string,
+  updateId: number,
+): Promise<boolean> {
+  let meta: Record<string, unknown> | null = null;
+  try {
+    meta = await getLastAssistantMessageMeta(getDb(), ctx.conversationId, dbLog);
+  } catch (err) {
+    log.warn({ event: 'telegram.pending_amount.meta_failed', updateId, err });
+    return false; // сбой чтения не должен блокировать обычный путь
+  }
+  const slug = meta?.[AWAITING_AMOUNT_META_KEY];
+  if (typeof slug !== 'string' || slug.length === 0) {
+    return false;
+  }
+
+  const parsed = parseCustomAmountUsd(text);
+  if (parsed.kind === 'not_amount') {
+    // Не число — пользователь сменил намерение; сброс ожидания, обычный путь.
+    return false;
+  }
+  if (parsed.kind === 'invalid') {
+    // Похоже на сумму, но вне диапазона/мусор — переспрашиваем, сохраняя флаг.
+    await safeAppendMessage(
+      ctx,
+      'assistant',
+      CATALOG_AMOUNT_INVALID_TEXT,
+      { source: 'catalog_ui', [AWAITING_AMOUNT_META_KEY]: slug },
+      updateId,
+    );
+    await sendSafely(chatId, CATALOG_AMOUNT_INVALID_TEXT, updateId);
+    return true;
+  }
+
+  const result = await withTypingIndicator(chatId, () =>
+    proposeFromCatalog({
+      userId: ctx.userId,
+      conversationId: ctx.conversationId,
+      channel: 'telegram',
+      slug,
+      amountUsdCents: parsed.usdCents,
+    }),
+  );
+  if (!result.ok) {
+    // Заказ не создан — фиксируем ответ без флага (сброс ожидания).
+    await safeAppendMessage(ctx, 'assistant', result.text, { source: 'catalog_ui' }, updateId);
+    await sendSafely(chatId, result.text, updateId);
+    return true;
+  }
+  // proposeFromCatalog уже записал след в историю (без флага) — ожидание сброшено.
+  await sendSafely(
+    chatId,
+    orderCardText(result.card),
+    updateId,
+    buildConfirmKeyboard(result.card.orderId),
+  );
+  return true;
+}
+
+/**
+ * Обработчик inline-кнопок «Подтвердить» / «Отменить» на карточке заказа.
+ * Ownership: callback_data можно подделать через клиентский Bot API — нельзя
+ * доверять orderId без проверки владельца. Резолвим userId по нажавшему и
+ * передаём в confirmOrder / сверяем перед cancel. БД недоступна → отказ: весь
+ * flow всё равно требует БД, проводить платёж по непроверенному заказу нельзя.
+ */
+async function handleOrderActionCallback(
+  cb: TelegramCallbackQuery,
+  chatId: number,
+  action: 'confirm' | 'cancel',
+  orderId: string,
+  updateId: number,
+): Promise<void> {
+  const ctx = await resolveCallbackContext(cb, updateId);
+  if (!ctx) {
+    await sendSafely(
+      chatId,
+      'Не получилось обработать действие — попробуй ещё раз через минуту.',
+      updateId,
+    );
+    return;
+  }
+  const userId = ctx.userId;
 
   // Снимем кнопки у исходного сообщения — нельзя нажать дважды.
   if (cb.message) {
@@ -754,15 +1146,6 @@ async function handleCallbackQuery(
       extra: { orderId },
     });
     await sendSafely(chatId, 'Не получилось отменить заказ. Напиши «оператор», подключу человека.', updateId);
-  }
-}
-
-function formatExpires(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'long' });
-  } catch {
-    return iso;
   }
 }
 
