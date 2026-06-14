@@ -1,9 +1,18 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
+import { getClient } from './client.ts';
 import { SYSTEM_PROMPT } from './prompts.ts';
 import { tools } from './tools.ts';
 
 export { SYSTEM_PROMPT, GREETING } from './prompts.ts';
 export { tools } from './tools.ts';
+export {
+  classifyMessage,
+  isRouterEnabled,
+  parseRouterLabel,
+  CANNED_REPLIES,
+  type RouteDecision,
+  type RouteKind,
+} from './router.ts';
 
 /**
  * Контракт инструментов AI-агента (MVP: Love & Pay + app.pay.space).
@@ -23,6 +32,11 @@ export interface CatalogItem {
 export interface ProposeOrderResult {
   orderId: string;
   shortId: string;
+  /**
+   * Субтотал в копейках RUB — БЕЗ комиссии (цена сервиса по курсу). К оплате
+   * идёт `totalRubKopecks` (= subtotal + commission). Имя историческое; не путать
+   * с суммой счёта L&P, которая равна `totalRubKopecks`.
+   */
   amountRubKopecks: number;
   commissionKopecks: number;
   totalRubKopecks: number;
@@ -89,15 +103,6 @@ export interface ToolCallLog {
   isError: boolean;
 }
 
-let _client: Anthropic | undefined;
-function getClient() {
-  if (_client) return _client;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  _client = new Anthropic({ apiKey });
-  return _client;
-}
-
 /**
  * System prompt как блок с cache_control — включает prompt caching Anthropic.
  * Брейкпоинт на последнем system-блоке кэширует префикс tools + system целиком
@@ -111,6 +116,9 @@ function getClient() {
 const CACHED_SYSTEM: Anthropic.TextBlockParam[] = [
   { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
 ];
+
+/** Сквозной потолок web_search-запросов на один runAgent (см. использование). */
+const MAX_WEB_SEARCH_PER_RUN = 3;
 
 /**
  * Второй cache-брейкпоинт — на истории диалога (первый — CACHED_SYSTEM выше).
@@ -155,6 +163,34 @@ function withHistoryCacheBreakpoint(
 }
 
 /**
+ * Суммирование usage по итерациям tool-loop (и Haiku-роутера на call-site):
+ * каждая итерация — отдельный billable-вызов API, поэтому для честного учёта
+ * расходов (дневной токен-бюджет в apps/web/lib/ai/budget.ts) складываем все
+ * числовые счётчики. Остальные поля (`service_tier` и т.п.) берутся из
+ * последнего ответа через спред.
+ */
+function addUsage(total: Anthropic.Usage | null, u: Anthropic.Usage): Anthropic.Usage {
+  if (!total) return { ...u };
+  return {
+    ...u,
+    input_tokens: total.input_tokens + u.input_tokens,
+    output_tokens: total.output_tokens + u.output_tokens,
+    cache_creation_input_tokens:
+      (total.cache_creation_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+    cache_read_input_tokens:
+      (total.cache_read_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+    server_tool_use: {
+      web_search_requests:
+        (total.server_tool_use?.web_search_requests ?? 0) +
+        (u.server_tool_use?.web_search_requests ?? 0),
+      web_fetch_requests:
+        (total.server_tool_use?.web_fetch_requests ?? 0) +
+        (u.server_tool_use?.web_fetch_requests ?? 0),
+    },
+  };
+}
+
+/**
  * Параметры модели — читаются из ENV с дефолтами. Валидация — в apps/web/lib/env.ts
  * (Zod-схема), здесь только разумные fallback'и на случай standalone-использования.
  */
@@ -169,7 +205,8 @@ function getModelParams(): { temperature: number; maxTokens: number } {
 
 /**
  * Один круг разговора с AI.
- * Возвращает финальный текст для отправки пользователю + сырой ответ Anthropic.
+ * Возвращает финальный текст для отправки пользователю + usage, просуммированный
+ * по ВСЕМ итерациям tool-loop (для учёта расходов), + лог вызовов tools.
  * Вызов инструментов делается через ctx.toolHandlers — apps/web решает, что там внутри.
  */
 export async function runAgent(
@@ -187,17 +224,29 @@ export async function runAgent(
   }));
 
   const toolCalls: ToolCallLog[] = [];
+  let totalUsage: Anthropic.Usage | null = null;
+  // Сквозной потолок web_search на ОДИН runAgent. `max_uses: 2` в tools.ts —
+  // это лимит на один вызов API, а tool-loop делает до 6 итераций, поэтому без
+  // этого счётчика дорогой web_search мог бы сработать до 12 раз за разговор.
+  // По достижении лимита убираем web_search из набора tools на следующих шагах.
+  let webSearchUsed = 0;
 
   // Максимум 6 итераций tool use (план MVP, раздел 5.3).
   for (let step = 0; step < 6; step++) {
+    const toolsForStep =
+      webSearchUsed >= MAX_WEB_SEARCH_PER_RUN
+        ? tools.filter((t) => t.name !== 'web_search')
+        : tools;
     const response = await client.messages.create({
       model,
       max_tokens: maxTokens,
       temperature,
       system: CACHED_SYSTEM,
-      tools,
+      tools: toolsForStep,
       messages: withHistoryCacheBreakpoint(messages),
     });
+    totalUsage = addUsage(totalUsage, response.usage);
+    webSearchUsed += response.usage.server_tool_use?.web_search_requests ?? 0;
 
     if (response.stop_reason === 'tool_use') {
       const toolUses = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
@@ -239,7 +288,7 @@ export async function runAgent(
       .map((b) => b.text)
       .join('\n');
 
-    return { text, usage: response.usage, toolCalls };
+    return { text, usage: totalUsage, toolCalls };
   }
 
   throw new Error('Agent tool-use loop exceeded 6 iterations');

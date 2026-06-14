@@ -58,16 +58,24 @@ async function call(method: Method, path: string, body: string | null): Promise<
   console.log(`-> ${method} ${url}`);
   if (body) console.log('   body:', body);
 
-  const resp = await fetch(url, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey!,
-      'x-timestamp': timestamp,
-      'x-signature': signature,
-    },
-    body: method === 'GET' ? undefined : bodyText,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey!,
+        'x-timestamp': timestamp,
+        'x-signature': signature,
+      },
+      body: method === 'GET' ? undefined : bodyText,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const text = await resp.text();
   console.log(`<- ${resp.status} ${resp.statusText}`);

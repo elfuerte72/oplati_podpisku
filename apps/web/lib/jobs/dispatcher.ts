@@ -13,8 +13,12 @@ import { notifyPaymentConfirmed } from './notify-payment.ts';
  *
  * Sync-режим: запускаем job через `setImmediate` (fire-and-forget). Webhook
  * успевает ответить 200 OK, а job идёт в background внутри того же Fluid Compute
- * instance. Это не гарантирует завершение при cold-shutdown'е инстанса, но
- * подстрахован cron'ом `poll-payment` (Task 6.3) — он восстановит зависший заказ.
+ * instance. Это не гарантирует завершение при cold-shutdown'е инстанса.
+ *
+ * Подстраховка от потери: cron `poll-payment` (lib/jobs/poll-payment.ts) ищет
+ * заказы, зависшие в `paid` (findStuckPaidOrders), и повторно прогоняет
+ * issue-card. Повтор безопасен — issueCard claim'ит paid → in_fulfillment
+ * атомарно (transitionOrderDetailed), двойного топ-апа не будет.
  */
 
 const log = childLogger('jobs.dispatcher');

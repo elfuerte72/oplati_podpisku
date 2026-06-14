@@ -164,11 +164,30 @@ export type TransitionOrderInput = {
  * Всё в одной транзакции. Это единственный путь смены статуса в коде; прямой
  * `UPDATE orders SET status` запрещён архитектурным инвариантом.
  */
-export async function transitionOrder(
+export type TransitionOrderResult = {
+  order: OrderRow;
+  /**
+   * `true` — этот вызов реально выполнил переход (UPDATE + событие);
+   * `false` — заказ уже был в `toStatus` (idempotent no-op).
+   *
+   * Нужно для атомарного «claim» побочных эффектов: например, issue-card
+   * переводит `paid → in_fulfillment` и продолжает топ-ап карты ТОЛЬКО если
+   * `transitioned === true` — иначе параллельный/повторный вызов сделает
+   * двойную трату.
+   */
+  transitioned: boolean;
+};
+
+/**
+ * Как `transitionOrder`, но возвращает ещё и флаг `transitioned` — сделал ли
+ * именно этот вызов переход (vs idempotent no-op, когда заказ уже в `toStatus`).
+ * Атомарность гарантируется `FOR UPDATE`-локом внутри транзакции.
+ */
+export async function transitionOrderDetailed(
   db: DB,
   input: TransitionOrderInput,
   log: RepoLogger = noopLogger,
-): Promise<OrderRow> {
+): Promise<TransitionOrderResult> {
   const {
     orderId,
     toStatus,
@@ -203,7 +222,7 @@ export async function transitionOrder(
         orderId,
         status: fromStatus,
       });
-      return current;
+      return { order: current, transitioned: false };
     }
 
     if (!isAllowedTransition(fromStatus, toStatus)) {
@@ -252,8 +271,17 @@ export async function transitionOrder(
       eventType,
     });
 
-    return updatedRow;
+    return { order: updatedRow, transitioned: true };
   });
+}
+
+export async function transitionOrder(
+  db: DB,
+  input: TransitionOrderInput,
+  log: RepoLogger = noopLogger,
+): Promise<OrderRow> {
+  const result = await transitionOrderDetailed(db, input, log);
+  return result.order;
 }
 
 /** Устанавливает order.cardId — отдельной функцией, чтобы не плодить параметры в transitionOrder. */
@@ -275,6 +303,26 @@ export async function findExpiredPendingOrders(db: DB): Promise<OrderRow[]> {
     .where(
       sql`${orders.status} = 'pending_payment' AND ${orders.expiresAt} IS NOT NULL AND ${orders.expiresAt} < now()`,
     );
+}
+
+/**
+ * Заказы, «зависшие» в `paid`: оплата прошла (статус `paid` ставит только
+ * `processInvoicePaid` после успешного платежа), но fulfillment не стартовал —
+ * issue-card мог потеряться при cold-shutdown инстанса (`setImmediate`
+ * fire-and-forget). Cron `poll-payment` повторно диспатчит выпуск карты для них.
+ *
+ * `olderThanMs` отсекает только что оплаченные заказы, чей issue-card ещё может
+ * выполняться в фоне (не дёргаем выпуск дважды без необходимости).
+ */
+export async function findStuckPaidOrders(
+  db: DB,
+  input: { olderThanMs: number },
+): Promise<OrderRow[]> {
+  const cutoff = new Date(Date.now() - input.olderThanMs);
+  return await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.status, 'paid'), sql`${orders.paidAt} < ${cutoff}`));
 }
 
 /** Заказы для напоминания о продлении подписки — cron `subscription-renewal-reminder`. */

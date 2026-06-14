@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Источник правды — код + этот файл.** Старая спецификация (24 файла в `docs/`, спека-first workflow, ai-factory) удалена 2026-06-10 — история в git. Текущая `docs/` — справочная документация: [`docs/architecture.md`](docs/architecture.md) (архитектура и устройство кодовой базы), [`docs/database.html`](docs/database.html) (как работает БД), [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Если поведение не очевидно из кода — спросите владельца, не додумывайте.
+**Источник правды — код + этот файл.** Старая спецификация (24 файла в `docs/`, спека-first workflow, ai-factory) удалена 2026-06-10 — история в git. Текущая `docs/` — справочная документация: [`docs/architecture.md`](docs/architecture.md) (архитектура и устройство кодовой базы), [`docs/database.html`](docs/database.html) (как работает БД), [`docs/ai-cost-protection.md`](docs/ai-cost-protection.md) (слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов), [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Если поведение не очевидно из кода — спросите владельца, не додумывайте.
 
 ## О проекте
 
@@ -21,8 +21,9 @@ Telegram-бот + веб-чат для оплаты иностранных по�
 - **Платежи — Love&Pay (RUB)**: `confirm_order` → `POST /api/payments/create` (внутренний, защита `X-Internal-Token`) создаёт инвойс → клиент платит по ссылке → webhook `/api/payments/loveandpay` (подпись, идемпотентность, `invoice.paid` → `transitionOrder(paid)` + Telegram-уведомление клиенту). **Внимание:** тестовая панель кабинета L&P шлёт фейковый формат событий — реальный контракт (`invoice.paid`, `data.id`) снят живым вызовом, см. `lib/loveandpay/handlers.ts`.
 - **Статус заказа**: `/api/orders/status`, подтверждение — `/api/orders/confirm`.
 - **Cron (vercel.json → `/api/cron/*` → `lib/jobs/*`)**: `poll-payment` (каждые 5 мин, подстраховка от потерянных webhook'ов), `expire-payments` (15 мин), `renewal-reminder` (07:00), `recycle-cards` (03:30), `keepalive` (каждые 6 ч — анти-автопауза Supabase free tier).
+- **Защита AI-расходов (оба канала)**: Haiku-роутер перед агентом (`packages/agent/src/router.ts` — приветствие/оффтоп/инъекция получают каннед-ответ без Sonnet; при сомнении и при ошибке роутера — fail-open в агента; выключатель `AI_ROUTER_DISABLED=1`); дневной глобальный токен-бюджет (`ai_usage_daily` + `apps/web/lib/ai/budget.ts`, env `AI_DAILY_TOKEN_BUDGET`, взвешенные токены, fail-open при недоступной БД, Sentry-алерт на пересечении порога); серверные границы в `propose_order` ($1–500, ≤10 заказов/сутки на пользователя); WAF rate-limit на `/api/chat`, `/api/bot`, `/api/*`.
 - **Handoff оператору — НЕ реализован.** `request_human` пишет event `handoff_requested` в `order_events` (дедуп 5 мин, проверка принадлежности orderId) и сообщает SLA по `isWithinOperatorHours`. Целевая схема — Telegram forum-topics (один topic = один заказ, `/ai_back` возвращает AI), к ней пока не приступали.
-- **Тесты**: Vitest в `apps/web` (loveandpay: client/sign/handlers) и `packages/types` (state machine, схемы L&P).
+- **Тесты**: Vitest в `apps/web` (loveandpay: client/sign/handlers; ai: бюджет/роутер; chat: toolCards) и `packages/types` (state machine, схемы L&P).
 
 ## Фаза 2 — виртуальные карты (PaySpace), в работе
 
@@ -57,12 +58,12 @@ apps/web/          Next.js 16 — единый деплой: веб-чат (page
   lib/jobs/                       логика cron-джобов + dispatcher
   lib/chat/                       session + history веб-чата
 packages/types/    Zod-схемы и state machine заказа — источник правды контрактов
-packages/db/       Drizzle schema (src/schema.ts, 10 таблиц) + repositories + drizzle/
+packages/db/       Drizzle schema (src/schema.ts, 12 таблиц) + repositories + migrations/
 packages/agent/    AI-агент (runAgent/runAgentNoTools), промпты, tool-схемы; НЕ импортирует db
 docs/              справочная документация (architecture.md, database.html, CHANGELOG.md)
 ```
 
-Таблицы БД: `users`, `staff`, `conversations`, `messages`, `services` (каталог, без цен), `orders`, `order_events`, `payments`, `cards`, `attachments`. RLS включён.
+Таблицы БД: `users`, `link_tokens`, `staff`, `conversations`, `messages`, `services` (каталог, без цен), `orders`, `order_events`, `payments`, `cards`, `attachments`, `ai_usage_daily` (дневной счётчик токенов). RLS включён.
 
 ## Границы пакетов (строго!)
 
@@ -104,7 +105,9 @@ pnpm --filter @oplati/db db:studio      # Drizzle Studio
 
 ### Миграции БД
 
-**Forward-only через Drizzle.** Схема — `packages/db/src/schema.ts`. Правка схемы → `db:generate` → `.sql` в `packages/db/drizzle/` → `db:push`. Никогда не редактировать применённую миграцию и не править БД через Supabase Dashboard в обход Drizzle. Destructive-изменения — только backwards-compatible (nullable-колонки, два деплоя на удаление).
+**Forward-only через Drizzle.** Схема — `packages/db/src/schema.ts`. Правка схемы → `db:generate` → `.sql` в `packages/db/migrations/` → `db:push` (или `db:migrate`, если push не видит `DATABASE_URL`). Никогда не редактировать применённую миграцию и не править БД через Supabase Dashboard в обход Drizzle. Destructive-изменения — только backwards-compatible (nullable-колонки, два деплоя на удаление).
+
+**Enum-расширения — отдельной миграцией.** `ALTER TYPE ... ADD VALUE` в Postgres нельзя использовать в той же транзакции, где добавленное значение применяется (migrator оборачивает миграцию в транзакцию). Поэтому добавление значения в enum держим отдельной миграцией, не смешивая с DDL/DML, которые это значение используют (иначе `db:migrate` упадёт).
 
 ## Deployments
 

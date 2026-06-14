@@ -51,7 +51,9 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
     lines.push('Мы уже обрабатываем заказ — как только всё будет готово, пришлём всё в этот чат.');
     const message = lines.join('\n');
 
-    await getBot().api.sendMessage(Number(telegramId), message);
+    // telegram_id передаём строкой: Bot API принимает string chat_id, а Number()
+    // терял бы точность на id за пределами безопасного диапазона JS.
+    await getBot().api.sendMessage(telegramId, message);
     log.info({ event: 'job.notify_payment.sent', orderId, shortId: order.shortId });
   } catch (err) {
     log.error({ event: 'job.notify_payment.failed', orderId, err });

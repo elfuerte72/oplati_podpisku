@@ -4,13 +4,14 @@ import { NextResponse } from 'next/server';
 import { serverEnv } from '@/lib/env.server';
 import { pollPayments } from '@/lib/jobs/poll-payment';
 import { childLogger } from '@/lib/logger';
+import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 
 /**
  * GET /api/cron/poll-payment — cron-endpoint Vercel.
- * Защита: header `Authorization: Bearer <CRON_TOKEN>` (Vercel Cron шлёт его сам,
- * если задано `CRON_TOKEN` в env), либо `X-Cron-Token` для ручных вызовов.
+ * Защита: header `Authorization: Bearer <CRON_SECRET>` (Vercel Cron шлёт его сам,
+ * когда задан `CRON_SECRET` в env), либо `X-Cron-Token` для ручных вызовов.
  *
- * Расписание задаётся в `vercel.ts` (`crons: [{ path: '/api/cron/poll-payment',
+ * Расписание — `apps/web/vercel.json` (`crons: [{ path: '/api/cron/poll-payment',
  * schedule: '*\/5 * * * *' }]`).
  */
 
@@ -38,15 +39,19 @@ export async function GET(req: Request): Promise<NextResponse> {
 }
 
 export function authorizeCron(req: Request): boolean {
-  const token = process.env.CRON_SECRET ?? process.env.CRON_TOKEN;
+  // Через валидированный serverEnv (оба ключа в Zod-схеме), а не process.env.
+  const token = serverEnv.CRON_SECRET ?? serverEnv.CRON_TOKEN;
   if (!token) {
-    // На preview/dev без токена — разрешаем (план: smoke-тест локально).
-    return process.env.VERCEL_ENV !== 'production';
+    // Fail-closed везде, кроме локальной разработки (NODE_ENV=development).
+    // ВАЖНО: preview-деплои публичны (Deployment Protection отключён ради
+    // Telegram) и шарят prod-Supabase/кабинет L&P — пускать cron'ы без токена
+    // на preview нельзя (рециклинг карт, рассылки, опрос платежей наружу).
+    return serverEnv.NODE_ENV === 'development';
   }
   const auth = req.headers.get('authorization');
   const xToken = req.headers.get('x-cron-token');
-  return auth === `Bearer ${token}` || xToken === token;
+  return (
+    timingSafeEqualStr(auth ?? '', `Bearer ${token}`) ||
+    timingSafeEqualStr(xToken ?? '', token)
+  );
 }
-
-// keep serverEnv reference to satisfy lazy loading
-void serverEnv;

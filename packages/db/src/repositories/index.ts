@@ -40,6 +40,14 @@ export {
 
 export { noopLogger, type RepoLogger } from './logger.ts';
 
+export {
+  recordAiUsageDelta,
+  getAiUsageForDay,
+  utcDayKey,
+  type AiUsageDelta,
+  type AiUsageTotals,
+} from './ai-usage.ts';
+
 export { pingDb } from './health.ts';
 
 export {
@@ -60,19 +68,23 @@ export {
   getOrderById,
   getOrderByShortId,
   transitionOrder,
+  transitionOrderDetailed,
   setOrderCardId,
   findExpiredPendingOrders,
+  findStuckPaidOrders,
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   type OrderRow,
   type CreateDraftOrderInput,
   type TransitionOrderInput,
+  type TransitionOrderResult,
 } from './orders.ts';
 
 export {
   upsertPaymentByProviderRef,
   markPaymentSucceeded,
+  claimPaymentSucceeded,
   markPaymentStatus,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
@@ -84,6 +96,7 @@ export {
 
 export {
   searchActiveServices,
+  listActiveServices,
   getServiceById,
   getServiceBySlug,
   type ServiceRow,

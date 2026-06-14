@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import * as Sentry from '@sentry/nextjs';
+import { z } from 'zod';
+
 import {
   CatalogCard,
   ComicButton,
@@ -13,32 +16,53 @@ import {
   TypingBubble,
   formatExpires,
 } from '@/components/comic';
+import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
 import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
 import { ThemeToggle } from './ThemeToggle';
+import { StartScreen } from './StartScreen';
 import { parseToolCards, type ChatCard } from './toolCards';
 
 type ChatItem =
+  | { kind: 'start'; id: string }
   | { kind: 'msg'; id: string; from: 'bot' | 'user'; text: string }
   | { kind: 'cards'; id: string; cards: ChatCard[] };
 
-type ChatResponse = { ok: boolean; text?: string; toolCalls?: unknown; error?: string };
-type ConfirmResponse = {
-  ok: boolean;
-  paymentUrl?: string;
-  qrPayload?: string | null;
-  expiresAt?: string;
-  text?: string;
-  error?: string;
-};
-type StatusResponse = { ok: boolean; status?: string; paid?: boolean };
-type HistoryResponse = {
-  ok: boolean;
-  messages?: { id: string; role: 'user' | 'assistant' | 'operator'; content: string }[];
-};
+// Zod-схемы ответов API (валидируем форму вместо `as T` — не доверяем слепо).
+const chatResponseSchema = z.object({
+  ok: z.boolean(),
+  text: z.string().optional(),
+  toolCalls: z.unknown().optional(),
+  error: z.string().optional(),
+});
+const confirmResponseSchema = z.object({
+  ok: z.boolean(),
+  paymentUrl: z.string().optional(),
+  qrPayload: z.string().nullish(),
+  expiresAt: z.string().optional(),
+  text: z.string().optional(),
+  error: z.string().optional(),
+});
+const statusResponseSchema = z.object({
+  ok: z.boolean(),
+  status: z.string().optional(),
+  paid: z.boolean().optional(),
+});
+const historyResponseSchema = z.object({
+  ok: z.boolean(),
+  messages: z
+    .array(
+      z.object({
+        id: z.string(),
+        role: z.enum(['user', 'assistant', 'operator']),
+        content: z.string(),
+      }),
+    )
+    .optional(),
+});
 
 const POLL_INTERVAL_MS = 4000;
 const POLL_MAX_ATTEMPTS = 75; // ~5 минут
@@ -49,12 +73,13 @@ function nextId(): string {
   return `m${_idSeq}`;
 }
 
-export function ChatClient({ greeting }: { greeting: string }) {
-  const [items, setItems] = useState<ChatItem[]>(() => [
-    { kind: 'msg', id: nextId(), from: 'bot', text: greeting },
-  ]);
+export function ChatClient() {
+  const [items, setItems] = useState<ChatItem[]>(() => [{ kind: 'start', id: nextId() }]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // Поле ввода на стартовом экране скрыто — раскрывается «Своим вариантом»
+  // или само, как только начался диалог/появился заказ.
+  const [inputRevealed, setInputRevealed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -66,6 +91,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const celebrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const historyLoadedRef = useRef(false);
 
@@ -85,7 +112,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
       setPaidOrders((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
       setCelebrating(true);
       setPoseSettling('celebrate', 4000);
-      setTimeout(() => setCelebrating(false), 3500);
+      if (celebrateTimerRef.current) clearTimeout(celebrateTimerRef.current);
+      celebrateTimerRef.current = setTimeout(() => setCelebrating(false), 3500);
       // Статистика в панели профиля изменилась — пусть перечитает /api/profile.
       window.dispatchEvent(new Event(PROFILE_REFRESH_EVENT));
     },
@@ -104,17 +132,18 @@ export function ChatClient({ greeting }: { greeting: string }) {
           pollsRef.current.delete(orderId);
           return;
         }
-        void fetch(`/api/orders/status?id=${encodeURIComponent(orderId)}`)
-          .then((res) => res.json() as Promise<StatusResponse>)
+        void fetchWithTimeout(`/api/orders/status?id=${encodeURIComponent(orderId)}`, {}, 5000)
+          .then((res) => parseJsonSafe(res, statusResponseSchema))
           .then((data) => {
-            if (data.ok && data.paid) {
+            if (data?.ok && data.paid) {
               clearInterval(iv);
               pollsRef.current.delete(orderId);
               markPaid(orderId);
             }
           })
-          .catch(() => {
-            // транзиентная ошибка поллинга — следующий тик повторит
+          .catch((err) => {
+            // транзиентная ошибка поллинга — следующий тик повторит; фиксируем в Sentry
+            Sentry.captureException(err, { tags: { source: 'chat-client', step: 'poll-status' } });
           });
       }, POLL_INTERVAL_MS);
       pollsRef.current.set(orderId, iv);
@@ -128,6 +157,8 @@ export function ChatClient({ greeting }: { greeting: string }) {
     const polls = pollsRef.current;
     return () => {
       if (settleRef.current) clearTimeout(settleRef.current);
+      if (celebrateTimerRef.current) clearTimeout(celebrateTimerRef.current);
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
       polls.forEach((iv) => clearInterval(iv));
       polls.clear();
     };
@@ -138,10 +169,10 @@ export function ChatClient({ greeting }: { greeting: string }) {
   useEffect(() => {
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
-    void fetch('/api/chat/history')
-      .then((res) => res.json() as Promise<HistoryResponse>)
+    void fetchWithTimeout('/api/chat/history', {}, 8000)
+      .then((res) => parseJsonSafe(res, historyResponseSchema))
       .then((data) => {
-        const msgs = data.messages ?? [];
+        const msgs = data?.messages ?? [];
         if (msgs.length === 0) return;
         const restored: ChatItem[] = msgs.map((m) => ({
           kind: 'msg',
@@ -152,12 +183,13 @@ export function ChatClient({ greeting }: { greeting: string }) {
         setItems((prev) => {
           // Пользователь уже успел написать, пока грузилась история — не затираем.
           if (prev.some((it) => it.kind === 'msg' && it.from === 'user')) return prev;
-          const greetingItem = prev[0];
-          return greetingItem ? [greetingItem, ...restored] : restored;
+          // Диалог уже был — стартовый экран не нужен, сразу обычный чат.
+          return restored;
         });
       })
-      .catch(() => {
+      .catch((err) => {
         // история недоступна — стартуем с приветствия, /api/chat работает независимо
+        Sentry.captureException(err, { tags: { source: 'chat-client', step: 'load-history' } });
       });
   }, []);
 
@@ -172,19 +204,31 @@ export function ChatClient({ greeting }: { greeting: string }) {
       if (!trimmed || sending) return;
 
       setError(null);
-      setItems((prev) => [...prev, { kind: 'msg', id: nextId(), from: 'user', text: trimmed }]);
+      setItems((prev) => [
+        // Первое сообщение закрывает стартовый экран — дальше обычная лента.
+        ...prev.filter((it) => it.kind !== 'start'),
+        { kind: 'msg', id: nextId(), from: 'user', text: trimmed },
+      ]);
       setInput('');
       setSending(true);
       setPoseSettling('thinking');
 
       try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ message: trimmed }),
-        });
-        const data = (await res.json()) as ChatResponse;
-        if (data.ok) {
+        // Таймаут 35с: агент (route maxDuration=30) может думать почти столько.
+        const res = await fetchWithTimeout(
+          '/api/chat',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ message: trimmed }),
+          },
+          35_000,
+        );
+        const data = await parseJsonSafe(res, chatResponseSchema);
+        if (!data) {
+          setError('Технические проблемы. Попробуйте через минуту.');
+          setPoseSettling('idle');
+        } else if (data.ok) {
           const next: ChatItem[] = [];
           if (data.text) next.push({ kind: 'msg', id: nextId(), from: 'bot', text: data.text });
           const cards = parseToolCards(data.toolCalls);
@@ -216,12 +260,21 @@ export function ChatClient({ greeting }: { greeting: string }) {
       setConfirming(orderId);
       setError(null);
       try {
-        const res = await fetch('/api/orders/confirm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ orderId }),
-        });
-        const data = (await res.json()) as ConfirmResponse;
+        // Таймаут 65с: confirm создаёт счёт L&P через self-call (maxDuration=60).
+        const res = await fetchWithTimeout(
+          '/api/orders/confirm',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ orderId }),
+          },
+          65_000,
+        );
+        const data = await parseJsonSafe(res, confirmResponseSchema);
+        if (!data) {
+          setError('Не получилось создать счёт. Попробуйте ещё раз или позовите оператора.');
+          return;
+        }
         const { paymentUrl, expiresAt } = data;
         if (data.ok && paymentUrl && expiresAt) {
           setConfirmed((prev) => [...prev, orderId]);
@@ -255,18 +308,19 @@ export function ChatClient({ greeting }: { greeting: string }) {
   );
 
   // «Очистить диалог»: сервер открывает новый conversation (история остаётся
-  // в БД), клиент сбрасывается к приветствию.
+  // в БД), клиент сбрасывается к стартовому экрану.
   const clearChat = useCallback(async () => {
     if (clearing || sending) return;
     setClearing(true);
     setError(null);
     try {
-      const res = await fetch('/api/chat/clear', { method: 'POST' });
+      const res = await fetchWithTimeout('/api/chat/clear', { method: 'POST' });
       const data = (await res.json()) as { ok: boolean };
       if (data.ok) {
         pollsRef.current.forEach((iv) => clearInterval(iv));
         pollsRef.current.clear();
-        setItems([{ kind: 'msg', id: nextId(), from: 'bot', text: greeting }]);
+        setItems([{ kind: 'start', id: nextId() }]);
+        setInputRevealed(false);
         setConfirmed([]);
         setPaidOrders([]);
         setCelebrating(false);
@@ -279,7 +333,35 @@ export function ChatClient({ greeting }: { greeting: string }) {
     } finally {
       setClearing(false);
     }
-  }, [clearing, sending, greeting, setPoseSettling]);
+  }, [clearing, sending, setPoseSettling]);
+
+  // Кнопочный флоу стартового экрана: заказ создан без AI — карточка в ленту,
+  // дальше обычный чат (подтверждение/оплата — существующий confirmOrder).
+  const handleOrderCreated = useCallback(
+    (card: ChatCard) => {
+      setItems((prev) => [
+        ...prev.filter((it) => it.kind !== 'start'),
+        { kind: 'cards', id: nextId(), cards: [card] },
+      ]);
+      setInputRevealed(true);
+      setPoseSettling('presenting', 2800);
+    },
+    [setPoseSettling],
+  );
+
+  // «Свой вариант»: раскрыть поле ввода и поставить фокус (textarea
+  // монтируется этим же рендером — фокус после коммита).
+  const revealInput = useCallback(() => {
+    setInputRevealed(true);
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = setTimeout(() => taRef.current?.focus(), 50);
+  }, []);
+
+  // Ошибки кнопочного флоу зовут «написать в чат» — раскрываем ввод сразу.
+  const handleStartError = useCallback((text: string) => {
+    setError(text);
+    setInputRevealed(true);
+  }, []);
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -438,6 +520,17 @@ export function ChatClient({ greeting }: { greeting: string }) {
         <div ref={scrollRef} className="halftone comic-scroll flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-3xl space-y-3 px-4 py-5">
             {items.map((item) => {
+              if (item.kind === 'start') {
+                return (
+                  <StartScreen
+                    key={item.id}
+                    onOrderCreated={handleOrderCreated}
+                    onOwnVariant={revealInput}
+                    onError={handleStartError}
+                    onListOpen={() => setPoseSettling('presenting', 2800)}
+                  />
+                );
+              }
               if (item.kind === 'cards') {
                 return (
                   <div key={item.id} className="space-y-3">
@@ -466,7 +559,9 @@ export function ChatClient({ greeting }: { greeting: string }) {
           </div>
         </div>
 
-        {/* Низ: ошибка, ввод */}
+        {/* Низ: ошибка, ввод. На стартовом экране скрыт до «Своего варианта»
+            или первого заказа/сообщения. */}
+        {(inputRevealed || items.some((it) => it.kind !== 'start')) && (
         <div className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
           <div className="mx-auto w-full max-w-3xl px-4 py-3">
             {error && (
@@ -501,6 +596,7 @@ export function ChatClient({ greeting }: { greeting: string }) {
             </form>
           </div>
         </div>
+        )}
       </section>
 
       <ProfilePanel pose={pose} typing={sending} />

@@ -11,6 +11,7 @@ import {
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { getLoveAndPayClient, LoveAndPayApiError } from '@/lib/loveandpay';
 
 /**
@@ -49,7 +50,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const headerToken = req.headers.get('x-internal-token');
-  if (headerToken !== expectedToken) {
+  if (!timingSafeEqualStr(headerToken ?? '', expectedToken)) {
     log.warn({ event: 'payments.create.unauthorized' });
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }

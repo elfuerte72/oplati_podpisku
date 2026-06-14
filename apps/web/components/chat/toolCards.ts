@@ -67,7 +67,7 @@ export function parseToolCards(toolCalls: unknown): ChatCard[] {
           name: asStr(o.name) ?? '',
           requiresKyc: o.requiresKyc === true,
         }))
-        .filter((o) => o.name.length > 0);
+        .filter((o) => o.id.length > 0 && o.name.length > 0);
       if (items.length > 0) cards.push({ type: 'catalog', items });
       continue;
     }

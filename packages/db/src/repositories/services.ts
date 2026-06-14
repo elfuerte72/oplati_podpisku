@@ -9,10 +9,11 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * (см. schema.ts → таблица services без `.enableRLS()`). Поэтому функции тут
  * можно дёргать от любого роли; в продакшене это будет supabase-server / admin.
  *
- * Цены НЕ возвращаются — каталог хранит только реестр поддерживаемых сервисов
- * (slug, name, requiresKyc). Актуальную цену AI достаёт через web_search tool
- * перед propose_order. Поле `pricing_policy` в БД остаётся как legacy данные;
- * search-результат его не использует и не возвращает.
+ * Цены: у AI-пути их по-прежнему НЕТ — search-результат отдаёт только реестр
+ * (slug, name, requiresKyc), актуальную цену агент достаёт через web_search.
+ * Для кнопочного веб-флоу (решение владельца 2026-06-12) источник цены —
+ * `pricing_policy.tiers[].originalAmount` (USD-центы, поддерживает владелец);
+ * полные строки отдаёт `listActiveServices`.
  */
 
 export type ServiceRow = typeof services.$inferSelect;
@@ -62,6 +63,14 @@ export async function searchActiveServices(
 
   log.info({ event: 'db.services.search', query: q, count: items.length });
   return items;
+}
+
+/**
+ * Все активные сервисы целиком (включая pricing_policy) — для кнопочного
+ * каталога веб-чата. Порядок отображения задаёт вызывающая сторона.
+ */
+export async function listActiveServices(db: DB): Promise<ServiceRow[]> {
+  return db.select().from(services).where(eq(services.isActive, true));
 }
 
 export async function getServiceById(db: DB, id: string): Promise<ServiceRow | null> {

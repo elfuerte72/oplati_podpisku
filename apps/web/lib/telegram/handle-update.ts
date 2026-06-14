@@ -15,11 +15,29 @@ import {
   transitionOrder,
   type MessageHistoryItem,
 } from '@oplati/db';
-import { GREETING, runAgent, runAgentNoTools, type ProposeOrderResult, type ToolCallLog } from '@oplati/agent';
+import {
+  classifyMessage,
+  GREETING,
+  runAgent,
+  runAgentNoTools,
+  type AgentMessage,
+  type ProposeOrderResult,
+  type RouteDecision,
+  type RouteKind,
+  type ToolCallLog,
+} from '@oplati/agent';
 import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@oplati/types';
 import { InlineKeyboard } from 'grammy';
 
+import {
+  BUDGET_EXCEEDED_TEXT,
+  isAiBudgetExceeded,
+  mergeUsage,
+  recordAgentUsage,
+  type AgentUsageLike,
+} from '@/lib/ai/budget';
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
@@ -298,6 +316,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     return;
   }
 
+  // Per-identity rate-limit ДО persist/роутера/агента: режет DoS-на-бюджет от
+  // одного пользователя. `/start` и привязка обрабатываются выше и не затронуты.
+  const rlIdentity = String(telegramUserId ?? chatId);
+  const rl = await checkRateLimit('telegram', rlIdentity);
+  if (!rl.allowed) {
+    log.warn({ event: 'telegram.rate_limited', updateId: update.update_id, chatId });
+    await sendSafely(
+      chatId,
+      'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.',
+      update.update_id,
+    );
+    return;
+  }
+
   log.info({
     event: 'telegram.message.user',
     updateId: update.update_id,
@@ -320,15 +352,35 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     );
   }
 
+  // Дневной глобальный токен-бюджет (как в /api/chat): при превышении —
+  // заготовленный ответ без единого вызова Anthropic.
+  if (await isAiBudgetExceeded()) {
+    log.warn({ event: 'telegram.budget_exceeded', updateId: update.update_id, chatId });
+    if (ctx) {
+      await safeAppendMessage(
+        ctx,
+        'assistant',
+        BUDGET_EXCEEDED_TEXT,
+        { source: 'budget_guard' },
+        update.update_id,
+      );
+    }
+    await sendSafely(chatId, BUDGET_EXCEEDED_TEXT, update.update_id);
+    return;
+  }
+
   const startedAt = Date.now();
+  let routedAs: RouteKind = 'agent';
+  let routerUsage: AgentUsageLike | null = null;
   let result: Awaited<ReturnType<typeof runAgent>>;
   try {
     result = await withTypingIndicator(chatId, async () => {
+      // MVP-сценарий: search_catalog → propose_order → confirm_order. Без истории
+      // AI забывает orderId из propose_order и не сможет вызвать confirm_order.
+      // Подгружаем последние 20 user/assistant сообщений в хронологии. Текущее
+      // user-сообщение уже записано в БД (safeAppendMessage выше), оно последнее.
+      let agentHistory: AgentMessage[] = [{ role: 'user', content: text }];
       if (ctx) {
-        // MVP-сценарий: search_catalog → propose_order → confirm_order. Без истории
-        // AI забывает orderId из propose_order и не сможет вызвать confirm_order.
-        // Подгружаем последние 20 user/assistant сообщений в хронологии. Текущее
-        // user-сообщение уже записано в БД (safeAppendMessage выше), оно последнее.
         let history: MessageHistoryItem[] = [];
         try {
           history = await loadRecentMessages(getDb(), ctx.conversationId, 20, dbLog);
@@ -340,8 +392,28 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
             err,
           });
         }
+        agentHistory = toAgentHistory(history, text);
+      }
 
-        const agentHistory = toAgentHistory(history, text);
+      // Haiku-роутер: приветствие/оффтоп/инъекция → каннед-ответ без Sonnet.
+      // Fail-open: упавший классификатор не блокирует агента.
+      let route: RouteDecision = { route: 'agent', usage: null };
+      try {
+        route = await classifyMessage(agentHistory);
+      } catch (err) {
+        log.warn({ event: 'telegram.router_failed', updateId: update.update_id, err });
+        Sentry.captureException(err, { tags: { source: 'telegram.router' } });
+      }
+      routerUsage = route.usage;
+
+      if (route.route !== 'agent') {
+        routedAs = route.route;
+        // usage роутера уйдёт в счётчик как result.usage — не учитывать дважды
+        routerUsage = null;
+        return { text: route.cannedText, usage: route.usage, toolCalls: [] };
+      }
+
+      if (ctx) {
         const toolHandlers = createToolHandlers({
           userId: ctx.userId,
           conversationId: ctx.conversationId,
@@ -353,7 +425,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           toolHandlers,
         });
       }
-      const noToolsResult = await runAgentNoTools([{ role: 'user', content: text }]);
+      const noToolsResult = await runAgentNoTools(agentHistory);
       return { ...noToolsResult, toolCalls: [] };
     });
   } catch (err) {
@@ -371,6 +443,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     );
     return;
   }
+
+  // Дневной счётчик: usage агента + Haiku-роутера (при каннед-ответе роутер уже в result).
+  await recordAgentUsage(mergeUsage(routerUsage, result.usage));
 
   const durationMs = Date.now() - startedAt;
   const replyText = result.text.trim();
@@ -390,12 +465,15 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     updateId: update.update_id,
     chatId,
     durationMs,
+    // 'agent' — обычный путь; greeting/offtopic/injection — каннед без Sonnet
+    routedAs,
     inputTokens: result.usage.input_tokens,
     outputTokens: result.usage.output_tokens,
     totalTokens: result.usage.input_tokens + result.usage.output_tokens,
     // Prompt caching: read > 0 — префикс tools+system пришёл из кэша (~0.1x цены)
     cacheReadTokens: result.usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: result.usage.cache_creation_input_tokens ?? 0,
+    webSearchRequests: result.usage.server_tool_use?.web_search_requests ?? 0,
     replyLength: replyText.length,
   });
 
@@ -579,6 +657,31 @@ async function handleCallbackQuery(
     return;
   }
 
+  // Ownership: callback_data можно подделать через клиентский Bot API — нельзя
+  // доверять orderId без проверки владельца. Резолвим userId по нажавшему
+  // (cb.from обязателен по схеме) и передаём в confirmOrder / сверяем перед
+  // cancel. Если БД недоступна (userId не резолвится) — отказываем: весь flow
+  // всё равно требует БД, проводить платёж по непроверенному заказу нельзя.
+  let userId: string | null = null;
+  try {
+    const user = await getOrCreateUserByTelegramId(
+      getDb(),
+      { telegramId: String(cb.from.id), displayName: null, language: cb.from.language_code ?? 'ru' },
+      dbLog,
+    );
+    userId = user.id;
+  } catch (err) {
+    log.error({ event: 'telegram.callback.resolve_user_failed', updateId, orderId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'telegram.callback', step: 'resolve_user' },
+      extra: { orderId },
+    });
+  }
+  if (!userId) {
+    await sendSafely(chatId, 'Не получилось обработать действие — попробуй ещё раз через минуту.', updateId);
+    return;
+  }
+
   // Снимем кнопки у исходного сообщения — нельзя нажать дважды.
   if (cb.message) {
     try {
@@ -591,7 +694,7 @@ async function handleCallbackQuery(
   if (action === 'confirm') {
     let confirmResult: Awaited<ReturnType<typeof confirmOrder>>;
     try {
-      confirmResult = await withTypingIndicator(chatId, () => confirmOrder({ orderId }));
+      confirmResult = await withTypingIndicator(chatId, () => confirmOrder({ orderId, userId }));
     } catch (err) {
       log.error({ event: 'telegram.callback.confirm.failed', updateId, orderId, err });
       Sentry.captureException(err, {
@@ -621,7 +724,16 @@ async function handleCallbackQuery(
   try {
     const db = getDb();
     const order = await getOrderById(db, orderId);
-    if (!order) {
+    // Не раскрываем существование чужого заказа — тот же ответ, что и not-found.
+    if (!order || order.userId !== userId) {
+      if (order && order.userId !== userId) {
+        log.warn({ event: 'telegram.callback.cancel.ownership_mismatch', updateId, orderId });
+        Sentry.captureMessage('cancel callback: ownership mismatch', {
+          level: 'warning',
+          tags: { source: 'telegram.callback', step: 'cancel' },
+          extra: { orderId },
+        });
+      }
       await sendSafely(chatId, 'Заказ уже не найден. Если хочешь начать заново — напиши /start.', updateId);
       return;
     }

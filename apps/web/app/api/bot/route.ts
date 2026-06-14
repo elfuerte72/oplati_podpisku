@@ -5,6 +5,7 @@ import { telegramUpdateSchema } from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { handleTelegramUpdate } from '@/lib/telegram/handle-update';
 
 /**
@@ -44,7 +45,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const headerSecret = req.headers.get('x-telegram-bot-api-secret-token');
-  if (headerSecret !== expectedSecret) {
+  if (!timingSafeEqualStr(headerSecret ?? '', expectedSecret)) {
     log.warn({ event: 'telegram.webhook.unauthorized' });
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }

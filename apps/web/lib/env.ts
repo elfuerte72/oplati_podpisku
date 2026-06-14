@@ -59,6 +59,16 @@ const serverEnvSchema = z.object({
   // увеличен на 2048 (хватает на KYC-инструкции, длинные ссылки и пр.).
   ANTHROPIC_TEMPERATURE: z.coerce.number().min(0).max(1).default(0.3),
   ANTHROPIC_MAX_TOKENS: z.coerce.number().int().min(256).max(8192).default(2048),
+  // Haiku-роутер перед основным агентом (packages/agent/src/router.ts).
+  // Модель читается агентом напрямую из process.env (как ANTHROPIC_MODEL).
+  ANTHROPIC_ROUTER_MODEL: z.string().default('claude-haiku-4-5-20251001'),
+  // Аварийный выключатель роутера: '1'/'true' — все сообщения идут сразу в агент.
+  AI_ROUTER_DISABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
+  // Дневной глобальный бюджет AI во «взвешенных» токенах (эквивалент input-цены
+  // Sonnet; веса и формула — apps/web/lib/ai/budget.ts). 3M ≈ $9/день.
+  AI_DAILY_TOKEN_BUDGET: z.coerce.number().int().positive().default(3_000_000),
 
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
@@ -80,13 +90,7 @@ const serverEnvSchema = z.object({
   // Минимальная сумма счёта L&P в рублях (терминал KANYON не принимает < 500 ₽).
   // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
-  LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(0).default(500),
-  // Discovery-флаг: при '1'/'true' webhook логирует реальные заголовки + rawBody
-  // ДО любых проверок — чтобы снять контракт L&P с живого вызова и сверить с
-  // Zod-схемами. Снять (удалить env) после подтверждения контракта.
-  LOVEANDPAY_WEBHOOK_DEBUG: z
-    .preprocess((v) => v === '1' || v === 'true', z.boolean())
-    .default(false),
+  LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(500).default(500),
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
@@ -104,9 +108,24 @@ const serverEnvSchema = z.object({
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
   INTERNAL_API_TOKEN: optionalEnvString(),
 
-  // Rate limit (Sprint 3)
+  // Секрет cron-endpoint'ов. Vercel Cron шлёт его как `Authorization: Bearer`.
+  // Без него `authorizeCron` пускает только NODE_ENV=development (fail-closed
+  // на preview/production). На проде задавать ОБЯЗАТЕЛЬНО.
+  CRON_SECRET: optionalEnvString(),
+  CRON_TOKEN: optionalEnvString(),
+
+  // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
+  // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —
+  // RATE_LIMIT_DISABLED='1'/'true' (читается в lib/ratelimit.ts).
+  // Имена UPSTASH_* — ручная конвенция; KV_REST_API_* — то, что инжектит
+  // интеграция Upstash через Vercel Marketplace. Поддерживаем оба (lib/ratelimit.ts).
   UPSTASH_REDIS_REST_URL: optionalUrl(),
   UPSTASH_REDIS_REST_TOKEN: optionalEnvString(),
+  KV_REST_API_URL: optionalUrl(),
+  KV_REST_API_TOKEN: optionalEnvString(),
+  RATE_LIMIT_DISABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
 
   // Trigger.dev (Sprint 3)
   TRIGGER_API_KEY: optionalEnvString(),
