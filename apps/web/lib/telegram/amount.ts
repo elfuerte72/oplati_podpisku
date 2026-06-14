@@ -26,7 +26,7 @@ export type AmountParse =
  */
 export function parseCustomAmountUsd(text: string): AmountParse {
   if (!/\d/.test(text)) return { kind: 'not_amount' };
-  const cleaned = text.trim().replace(/[$\s]/g, '').replace(',', '.');
+  const cleaned = text.trim().replace(/[$\s]/g, '').replace(/,/g, '.');
   const usd = Number(cleaned);
   if (!Number.isFinite(usd) || usd < MIN_AMOUNT_USD || usd > MAX_AMOUNT_USD) {
     return { kind: 'invalid' };
