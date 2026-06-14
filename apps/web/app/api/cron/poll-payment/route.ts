@@ -39,13 +39,14 @@ export async function GET(req: Request): Promise<NextResponse> {
 }
 
 export function authorizeCron(req: Request): boolean {
-  const token = process.env.CRON_SECRET ?? process.env.CRON_TOKEN;
+  // Через валидированный serverEnv (оба ключа в Zod-схеме), а не process.env.
+  const token = serverEnv.CRON_SECRET ?? serverEnv.CRON_TOKEN;
   if (!token) {
     // Fail-closed везде, кроме локальной разработки (NODE_ENV=development).
     // ВАЖНО: preview-деплои публичны (Deployment Protection отключён ради
     // Telegram) и шарят prod-Supabase/кабинет L&P — пускать cron'ы без токена
     // на preview нельзя (рециклинг карт, рассылки, опрос платежей наружу).
-    return process.env.NODE_ENV === 'development';
+    return serverEnv.NODE_ENV === 'development';
   }
   const auth = req.headers.get('authorization');
   const xToken = req.headers.get('x-cron-token');
@@ -54,6 +55,3 @@ export function authorizeCron(req: Request): boolean {
     timingSafeEqualStr(xToken ?? '', token)
   );
 }
-
-// keep serverEnv reference to satisfy lazy loading
-void serverEnv;
