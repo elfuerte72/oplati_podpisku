@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import * as Sentry from '@sentry/nextjs';
+import { z } from 'zod';
+
 import {
   CatalogCard,
   ComicButton,
@@ -13,6 +16,7 @@ import {
   TypingBubble,
   formatExpires,
 } from '@/components/comic';
+import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
 import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
@@ -27,20 +31,38 @@ type ChatItem =
   | { kind: 'msg'; id: string; from: 'bot' | 'user'; text: string }
   | { kind: 'cards'; id: string; cards: ChatCard[] };
 
-type ChatResponse = { ok: boolean; text?: string; toolCalls?: unknown; error?: string };
-type ConfirmResponse = {
-  ok: boolean;
-  paymentUrl?: string;
-  qrPayload?: string | null;
-  expiresAt?: string;
-  text?: string;
-  error?: string;
-};
-type StatusResponse = { ok: boolean; status?: string; paid?: boolean };
-type HistoryResponse = {
-  ok: boolean;
-  messages?: { id: string; role: 'user' | 'assistant' | 'operator'; content: string }[];
-};
+// Zod-схемы ответов API (валидируем форму вместо `as T` — не доверяем слепо).
+const chatResponseSchema = z.object({
+  ok: z.boolean(),
+  text: z.string().optional(),
+  toolCalls: z.unknown().optional(),
+  error: z.string().optional(),
+});
+const confirmResponseSchema = z.object({
+  ok: z.boolean(),
+  paymentUrl: z.string().optional(),
+  qrPayload: z.string().nullish(),
+  expiresAt: z.string().optional(),
+  text: z.string().optional(),
+  error: z.string().optional(),
+});
+const statusResponseSchema = z.object({
+  ok: z.boolean(),
+  status: z.string().optional(),
+  paid: z.boolean().optional(),
+});
+const historyResponseSchema = z.object({
+  ok: z.boolean(),
+  messages: z
+    .array(
+      z.object({
+        id: z.string(),
+        role: z.enum(['user', 'assistant', 'operator']),
+        content: z.string(),
+      }),
+    )
+    .optional(),
+});
 
 const POLL_INTERVAL_MS = 4000;
 const POLL_MAX_ATTEMPTS = 75; // ~5 минут
@@ -69,6 +91,8 @@ export function ChatClient() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const celebrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const historyLoadedRef = useRef(false);
 
@@ -88,7 +112,8 @@ export function ChatClient() {
       setPaidOrders((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
       setCelebrating(true);
       setPoseSettling('celebrate', 4000);
-      setTimeout(() => setCelebrating(false), 3500);
+      if (celebrateTimerRef.current) clearTimeout(celebrateTimerRef.current);
+      celebrateTimerRef.current = setTimeout(() => setCelebrating(false), 3500);
       // Статистика в панели профиля изменилась — пусть перечитает /api/profile.
       window.dispatchEvent(new Event(PROFILE_REFRESH_EVENT));
     },
@@ -107,17 +132,18 @@ export function ChatClient() {
           pollsRef.current.delete(orderId);
           return;
         }
-        void fetch(`/api/orders/status?id=${encodeURIComponent(orderId)}`)
-          .then((res) => res.json() as Promise<StatusResponse>)
+        void fetchWithTimeout(`/api/orders/status?id=${encodeURIComponent(orderId)}`, {}, 5000)
+          .then((res) => parseJsonSafe(res, statusResponseSchema))
           .then((data) => {
-            if (data.ok && data.paid) {
+            if (data?.ok && data.paid) {
               clearInterval(iv);
               pollsRef.current.delete(orderId);
               markPaid(orderId);
             }
           })
-          .catch(() => {
-            // транзиентная ошибка поллинга — следующий тик повторит
+          .catch((err) => {
+            // транзиентная ошибка поллинга — следующий тик повторит; фиксируем в Sentry
+            Sentry.captureException(err, { tags: { source: 'chat-client', step: 'poll-status' } });
           });
       }, POLL_INTERVAL_MS);
       pollsRef.current.set(orderId, iv);
@@ -131,6 +157,8 @@ export function ChatClient() {
     const polls = pollsRef.current;
     return () => {
       if (settleRef.current) clearTimeout(settleRef.current);
+      if (celebrateTimerRef.current) clearTimeout(celebrateTimerRef.current);
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
       polls.forEach((iv) => clearInterval(iv));
       polls.clear();
     };
@@ -141,10 +169,10 @@ export function ChatClient() {
   useEffect(() => {
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
-    void fetch('/api/chat/history')
-      .then((res) => res.json() as Promise<HistoryResponse>)
+    void fetchWithTimeout('/api/chat/history', {}, 8000)
+      .then((res) => parseJsonSafe(res, historyResponseSchema))
       .then((data) => {
-        const msgs = data.messages ?? [];
+        const msgs = data?.messages ?? [];
         if (msgs.length === 0) return;
         const restored: ChatItem[] = msgs.map((m) => ({
           kind: 'msg',
@@ -159,8 +187,9 @@ export function ChatClient() {
           return restored;
         });
       })
-      .catch(() => {
+      .catch((err) => {
         // история недоступна — стартуем с приветствия, /api/chat работает независимо
+        Sentry.captureException(err, { tags: { source: 'chat-client', step: 'load-history' } });
       });
   }, []);
 
@@ -185,13 +214,21 @@ export function ChatClient() {
       setPoseSettling('thinking');
 
       try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ message: trimmed }),
-        });
-        const data = (await res.json()) as ChatResponse;
-        if (data.ok) {
+        // Таймаут 35с: агент (route maxDuration=30) может думать почти столько.
+        const res = await fetchWithTimeout(
+          '/api/chat',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ message: trimmed }),
+          },
+          35_000,
+        );
+        const data = await parseJsonSafe(res, chatResponseSchema);
+        if (!data) {
+          setError('Технические проблемы. Попробуйте через минуту.');
+          setPoseSettling('idle');
+        } else if (data.ok) {
           const next: ChatItem[] = [];
           if (data.text) next.push({ kind: 'msg', id: nextId(), from: 'bot', text: data.text });
           const cards = parseToolCards(data.toolCalls);
@@ -223,12 +260,21 @@ export function ChatClient() {
       setConfirming(orderId);
       setError(null);
       try {
-        const res = await fetch('/api/orders/confirm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ orderId }),
-        });
-        const data = (await res.json()) as ConfirmResponse;
+        // Таймаут 65с: confirm создаёт счёт L&P через self-call (maxDuration=60).
+        const res = await fetchWithTimeout(
+          '/api/orders/confirm',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ orderId }),
+          },
+          65_000,
+        );
+        const data = await parseJsonSafe(res, confirmResponseSchema);
+        if (!data) {
+          setError('Не получилось создать счёт. Попробуйте ещё раз или позовите оператора.');
+          return;
+        }
         const { paymentUrl, expiresAt } = data;
         if (data.ok && paymentUrl && expiresAt) {
           setConfirmed((prev) => [...prev, orderId]);
@@ -268,7 +314,7 @@ export function ChatClient() {
     setClearing(true);
     setError(null);
     try {
-      const res = await fetch('/api/chat/clear', { method: 'POST' });
+      const res = await fetchWithTimeout('/api/chat/clear', { method: 'POST' });
       const data = (await res.json()) as { ok: boolean };
       if (data.ok) {
         pollsRef.current.forEach((iv) => clearInterval(iv));
@@ -307,7 +353,8 @@ export function ChatClient() {
   // монтируется этим же рендером — фокус после коммита).
   const revealInput = useCallback(() => {
     setInputRevealed(true);
-    setTimeout(() => taRef.current?.focus(), 50);
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = setTimeout(() => taRef.current?.focus(), 50);
   }, []);
 
   // Ошибки кнопочного флоу зовут «написать в чат» — раскрываем ввод сразу.

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { siTelegram } from 'simple-icons';
 
 import { ComicButton } from '@/components/comic';
+import { fetchWithTimeout } from '@/lib/http';
 
 /**
  * Привязка Telegram к веб-сессии (deep-link flow).
@@ -80,7 +81,7 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
   useEffect(() => {
     const recheck = () => {
       if (document.visibilityState !== 'visible' || linkedRef.current) return;
-      void fetch('/api/auth/telegram/link/status')
+      void fetchWithTimeout('/api/auth/telegram/link/status', {}, 5000)
         .then((res) => res.json() as Promise<StatusResponse>)
         .then((data) => {
           if (data.linked === true) markLinked({ notify: true, broadcast: true });
@@ -131,7 +132,7 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
         setPhase('idle');
         return;
       }
-      void fetch('/api/auth/telegram/link/status')
+      void fetchWithTimeout('/api/auth/telegram/link/status', {}, 5000)
         .then((res) => res.json() as Promise<StatusResponse>)
         .then((data) => {
           if (data.linked === true) markLinked({ notify: true, broadcast: true });
@@ -145,7 +146,7 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
   const start = useCallback(async () => {
     setPhase('starting');
     try {
-      const res = await fetch('/api/auth/telegram/link', { method: 'POST' });
+      const res = await fetchWithTimeout('/api/auth/telegram/link', { method: 'POST' });
       const data = (await res.json()) as StartResponse;
       if (data.ok && data.url) {
         // Открываем бота в новой вкладке/приложении; на этой странице ждём поллингом.

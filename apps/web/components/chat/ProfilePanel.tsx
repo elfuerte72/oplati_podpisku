@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { formatRub } from '@/components/comic';
+import { fetchWithTimeout } from '@/lib/http';
 import { Mascot, type MascotPose } from './Mascot';
 import { useTelegramLink } from './TelegramLink';
 
@@ -49,7 +50,7 @@ export function ProfilePanel({
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const loadProfile = useCallback(() => {
-    void fetch('/api/profile')
+    void fetchWithTimeout('/api/profile')
       .then((res) => res.json() as Promise<ProfileResponse>)
       .then((data) => {
         if (data.ok && data.profile) setProfile(data.profile);

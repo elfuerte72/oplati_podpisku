@@ -1,10 +1,13 @@
+'use client';
+
 import { useCallback, useState } from 'react';
 
 import { ComicButton } from '@/components/comic';
 import { formatRub } from '@/components/comic/format';
+import { fetchWithTimeout } from '@/lib/http';
 import type { CatalogService } from '@/lib/catalog/build';
 
-import { ServiceLogo } from './serviceLogos';
+import { ServiceLogo } from './ServiceLogos';
 import type { ChatCard } from './toolCards';
 
 /**
@@ -50,7 +53,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
     setLoading(true);
     setFailed(false);
     try {
-      const res = await fetch('/api/catalog');
+      const res = await fetchWithTimeout('/api/catalog');
       const data = (await res.json()) as CatalogResponse;
       if (data.ok && data.services && data.services.length > 0) {
         setCatalog(data.services);
@@ -75,11 +78,15 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
       if (proposing) return;
       setProposing(true);
       try {
-        const res = await fetch('/api/orders/propose', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ slug, ...payload }),
-        });
+        const res = await fetchWithTimeout(
+          '/api/orders/propose',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ slug, ...payload }),
+          },
+          20_000,
+        );
         const data = (await res.json()) as ProposeResponse;
         if (data.ok && data.card) {
           onOrderCreated({ type: 'order', ...data.card });

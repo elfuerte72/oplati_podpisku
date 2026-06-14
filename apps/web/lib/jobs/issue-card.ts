@@ -251,7 +251,9 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
   ].join('\n');
 
   try {
-    await getBot().api.sendMessage(Number(args.telegramId), message);
+    // chat_id строкой — Bot API это принимает, Number() терял бы точность на
+    // больших telegram_id.
+    await getBot().api.sendMessage(args.telegramId, message);
     log.info({
       event: 'job.issue_card.credentials_sent',
       shortId: args.serviceShortId,
