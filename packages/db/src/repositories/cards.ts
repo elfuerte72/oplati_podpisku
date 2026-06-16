@@ -89,6 +89,20 @@ export async function findActiveByUserId(db: DB, userId: string): Promise<Card |
 }
 
 /**
+ * Карты пользователя для личного кабинета (Mini App): только `active` и `idle`.
+ * `recycled` скрываем — такая карта могла быть переназначена другому владельцу,
+ * показывать её прежнему клиенту нельзя. Свежие первыми. Read-only.
+ */
+export async function findCardsByUserIdForCabinet(db: DB, userId: string): Promise<Card[]> {
+  const rows = await db
+    .select()
+    .from(cards)
+    .where(and(eq(cards.userId, userId), sql`${cards.status} IN ('active', 'idle')`))
+    .orderBy(sql`${cards.createdAt} DESC`);
+  return rows.map(mapRowToCard);
+}
+
+/**
  * Recycled-карта для повторного использования: status='recycled' (см. `recycle-cards`
  * cron). Берём первую попавшуюся; в issue-card job переписываем userId на нового
  * владельца и переводим в active.

@@ -10,6 +10,11 @@ export {
 } from './telegram.ts';
 
 export {
+  telegramWebAppUser,
+  type TelegramWebAppUser,
+} from './telegram-webapp.ts';
+
+export {
   loveAndPayInvoiceStatus,
   type LoveAndPayInvoiceStatus,
   loveAndPayStatusToInternal,

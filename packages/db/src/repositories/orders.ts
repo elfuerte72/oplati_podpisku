@@ -144,6 +144,40 @@ export async function getOrderByShortId(db: DB, shortId: string): Promise<OrderR
   return rows[0] ?? null;
 }
 
+export type OrderEventRow = typeof orderEvents.$inferSelect;
+
+/**
+ * Заказы пользователя для личного кабинета (Telegram Mini App). Свежие первыми.
+ * Read-only; вызывается после резолва userId по проверенному initData.
+ */
+export async function getOrdersByUserId(
+  db: DB,
+  userId: string,
+  limit = 50,
+): Promise<OrderRow[]> {
+  return await db
+    .select()
+    .from(orders)
+    .where(eq(orders.userId, userId))
+    .orderBy(sql`${orders.createdAt} DESC`)
+    .limit(limit);
+}
+
+/**
+ * Таймлайн событий заказа (append-only `order_events`) для экрана заказа в
+ * кабинете. Хронологический порядок (старые → новые). Read-only.
+ */
+export async function getOrderEventsByOrderId(
+  db: DB,
+  orderId: string,
+): Promise<OrderEventRow[]> {
+  return await db
+    .select()
+    .from(orderEvents)
+    .where(eq(orderEvents.orderId, orderId))
+    .orderBy(sql`${orderEvents.createdAt} ASC`);
+}
+
 export type TransitionOrderInput = {
   orderId: string;
   toStatus: OrderStatus;

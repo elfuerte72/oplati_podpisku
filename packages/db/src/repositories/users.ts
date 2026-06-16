@@ -242,6 +242,44 @@ export async function getWebSessionProfile(
 }
 
 /**
+ * Профиль пользователя по `user.id` — для шапки личного кабинета (Mini App).
+ * Личность уже установлена проверенным initData, поэтому ходим по `id`. Read-only.
+ */
+
+export type UserProfile = {
+  displayName: string | null;
+  phone: string | null;
+  email: string | null;
+  telegramLinked: boolean;
+  createdAt: Date;
+};
+
+export async function getUserProfileById(
+  db: DB,
+  userId: string,
+): Promise<UserProfile | null> {
+  const rows = await db.execute<{
+    display_name: string | null;
+    phone: string | null;
+    email: string | null;
+    telegram_id: string | null;
+    created_at: string;
+  }>(
+    sql`SELECT display_name, phone, email, telegram_id, created_at
+        FROM users WHERE id = ${userId} LIMIT 1`,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    displayName: row.display_name,
+    phone: row.phone,
+    email: row.email,
+    telegramLinked: row.telegram_id !== null,
+    createdAt: new Date(row.created_at),
+  };
+}
+
+/**
  * Read-only поиск пользователя по `web_session_id` — для GET-эндпоинтов
  * (восстановление истории веб-чата), где создавать user нельзя
  * (инвариант: запись появляется только при первом сообщении).
