@@ -5,11 +5,9 @@ import * as Sentry from '@sentry/nextjs';
 import {
   createCard,
   findActiveByUserId,
-  findRecyclableCard,
   getDb,
   getOrderById,
   getUserTelegramId,
-  markActive,
   setOrderCardId,
   transitionOrder,
   transitionOrderDetailed,
@@ -116,7 +114,9 @@ export async function issueCard(orderId: string): Promise<void> {
       const topup = await paypace.topupCard({
         cardId: card.providerCardId,
         amountUsdCents,
+        requestId: `topup_${orderId}_${card.id}`,
       });
+      ensureTopupCompleted(topup, orderId);
       await updateBalance(db, card.id, amountUsdCents, log);
       log.info({
         event: 'job.issue_card.topup_ok',
@@ -124,51 +124,39 @@ export async function issueCard(orderId: string): Promise<void> {
         balanceUsdCents: topup.balanceUsdCents,
       });
     } else {
-      // 2. Recyclable.
-      const recyclable = await findRecyclableCard(db, log);
-      if (recyclable) {
-        log.info({ event: 'job.issue_card.reusing_recyclable', orderId, cardId: recyclable.id });
-        await paypace.topupCard({
-          cardId: recyclable.providerCardId,
-          amountUsdCents,
-        });
-        await markActive(db, recyclable.id, order.userId, log);
-        await updateBalance(db, recyclable.id, amountUsdCents, log);
-        card = recyclable;
-      } else {
-        // 3. Создаём новую.
-        const created = await paypace.createCard({
-          externalUserId: order.userId,
-          initialBalanceUsdCents: amountUsdCents,
-        });
-        card = await createCard(
-          db,
-          {
-            userId: order.userId,
-            providerCardId: created.cardId,
-            panMasked: created.panMasked,
-            balanceUsdCents: created.balanceUsdCents,
-          },
-          log,
-        );
-        log.info({
-          event: 'job.issue_card.created',
-          orderId,
-          cardId: card.id,
-          panMasked: card.panMasked, // panMasked можно — это маска
-        });
-
-        // Полные реквизиты надо передать пользователю — НЕ логируем сюда `pan`/`cvc`.
-        await sendCardCredentialsToUser({
-          telegramId: await resolveTelegramIdByUserId(order.userId),
+      // 2. Активной карты нет — выпускаем НОВУЮ.
+      // Recycled-карты между клиентами НЕ переиспользуем: `release` закрывает
+      // карту в провайдере необратимо, а переиспользование PAN разными клиентами
+      // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
+      // рамках одного клиента через активную карту выше.
+      const created = await paypace.createCard({ amountUsdCents });
+      card = await createCard(
+        db,
+        {
+          userId: order.userId,
+          providerCardId: created.cardId,
           panMasked: created.panMasked,
-          fullPan: created.pan,
-          expMonth: created.expMonth,
-          expYear: created.expYear,
-          cvc: created.cvc,
-          serviceShortId: order.shortId,
-        });
-      }
+          balanceUsdCents: created.balanceUsdCents,
+        },
+        log,
+      );
+      log.info({
+        event: 'job.issue_card.created',
+        orderId,
+        cardId: card.id,
+        panMasked: card.panMasked, // panMasked можно — это маска
+      });
+
+      // Полные реквизиты надо передать пользователю — НЕ логируем сюда `pan`/`cvc`.
+      await sendCardCredentialsToUser({
+        telegramId: await resolveTelegramIdByUserId(order.userId),
+        panMasked: created.panMasked,
+        fullPan: created.pan,
+        expMonth: created.expMonth,
+        expYear: created.expYear,
+        cvc: created.cvc,
+        serviceShortId: order.shortId,
+      });
     }
 
     // 4. Привязать card к order.
@@ -214,6 +202,22 @@ async function markOrderFailed(orderId: string, reason: string): Promise<void> {
       level: 'error',
       tags: { source: 'job.issue-card', step: 'mark_failed' },
     });
+  }
+}
+
+/**
+ * Async-topup PaySpace может вернуть `pending` (деньги ещё не подтверждены) — в
+ * этом случае НЕ завершаем заказ: бросаем, чтобы уйти в `failed` и отдать
+ * оператору. Повтор безопасен: topup идемпотентен по `requestId`.
+ */
+function ensureTopupCompleted(
+  topup: { status: string; requestId: string },
+  orderId: string,
+): void {
+  if (topup.status !== 'completed') {
+    throw new Error(
+      `paypace topup не завершён (status=${topup.status}, requestId=${topup.requestId}, orderId=${orderId})`,
+    );
   }
 }
 

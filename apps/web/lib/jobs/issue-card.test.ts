@@ -48,7 +48,7 @@ vi.mock('../pay-space/index.ts', () => ({
   getPaySpaceClient: () => ({
     topupCard: h.topupMock,
     createCard: h.createCardMock,
-    getCard: vi.fn(),
+    getCardInfo: vi.fn(),
   }),
 }));
 
@@ -92,7 +92,12 @@ describe('issueCard', () => {
     h.dbState.order = { ...baseOrder };
     h.dbState.claimTransitioned = true;
     h.dbState.activeCard = { ...activeCard };
-    h.topupMock.mockResolvedValue({ balanceUsdCents: 2000 });
+    h.topupMock.mockResolvedValue({
+      cardId: 'pc-1',
+      requestId: 'topup_order-1_card-1',
+      status: 'completed',
+      balanceUsdCents: 2000,
+    });
   });
 
   it('happy path: claim успешен, активная карта → ровно один топ-ап', async () => {
@@ -100,10 +105,33 @@ describe('issueCard', () => {
 
     expect(db.transitionOrderDetailed).toHaveBeenCalledTimes(1);
     expect(h.topupMock).toHaveBeenCalledTimes(1);
-    expect(h.topupMock).toHaveBeenCalledWith({ cardId: 'pc-1', amountUsdCents: 2000 });
+    expect(h.topupMock).toHaveBeenCalledWith({
+      cardId: 'pc-1',
+      amountUsdCents: 2000,
+      requestId: 'topup_order-1_card-1',
+    });
     expect(db.updateBalance).toHaveBeenCalledTimes(1);
     // in_fulfillment → completed (claim уже сделал paid → in_fulfillment).
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('topup завис в pending → заказ НЕ завершаем, уходим в failed', async () => {
+    h.topupMock.mockResolvedValue({
+      cardId: 'pc-1',
+      requestId: 'topup_order-1_card-1',
+      status: 'pending',
+      balanceUsdCents: null,
+    });
+
+    await issueCard('order-1');
+
+    // balance не трогаем, заказ не completed — только переход в failed.
+    expect(db.updateBalance).not.toHaveBeenCalled();
+    expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'failed' }),
+    );
   });
 
   it('идемпотентность: claim проигран (transitioned=false) → НЕТ топ-апа (нет двойной траты)', async () => {

@@ -62,7 +62,8 @@ export {
   markRecycled,
   markActive,
   updateBalance,
-  recycleAgedCards,
+  idleAgedActiveCards,
+  findCardsToRecycle,
   type Card,
   type CreateCardInput,
 } from './cards.ts';
