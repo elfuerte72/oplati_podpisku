@@ -7,31 +7,34 @@ import { PaySpaceClient } from './client.ts';
 let _client: PaySpaceClient | undefined;
 
 /**
- * Сконфигурирован ли PaySpace (есть ли ключи для выпуска карт).
+ * Сконфигурирован ли PaySpace (есть ли ключ для выпуска карт).
  *
- * Нужен issue-card для graceful-degradation: без ключей заказ остаётся в `paid`
+ * Нужен issue-card для graceful-degradation: без ключа заказ остаётся в `paid`
  * (ручной fulfillment оператором), а не падает в `failed`. Проверять ДО
- * `getPaySpaceClient()`, который при отсутствии ключей бросает.
+ * `getPaySpaceClient()`, который при отсутствии ключа бросает.
+ *
+ * accountId провайдеру не передаётся (он неявен в API-ключе), поэтому в guard
+ * он больше не участвует.
  */
 export function isPaySpaceConfigured(): boolean {
-  return Boolean(serverEnv.PAYSPACE_API_KEY && serverEnv.PAYSPACE_ACCOUNT_ID);
+  return Boolean(serverEnv.PAYSPACE_API_KEY);
 }
 
 export function getPaySpaceClient(): PaySpaceClient {
   if (_client) return _client;
 
   const apiKey = serverEnv.PAYSPACE_API_KEY;
-  const accountId = serverEnv.PAYSPACE_ACCOUNT_ID;
   const baseUrl = serverEnv.PAYSPACE_BASE_URL;
+  const requestSecret = serverEnv.PAYSPACE_REQUEST_SECRET;
 
-  if (!apiKey || !accountId) {
-    throw new Error('PAYSPACE_API_KEY / PAYSPACE_ACCOUNT_ID не заданы в env');
+  if (!apiKey) {
+    throw new Error('PAYSPACE_API_KEY не задан в env');
   }
 
   _client = new PaySpaceClient({
     apiKey,
-    accountId,
     baseUrl,
+    requestSecret,
     logger: childLogger('paypace'),
   });
   return _client;
