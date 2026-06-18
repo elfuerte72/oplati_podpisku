@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, lt, sql } from 'drizzle-orm';
 
 import {
   orders,
@@ -356,7 +356,7 @@ export async function findStuckPaidOrders(
   return await db
     .select()
     .from(orders)
-    .where(and(eq(orders.status, 'paid'), sql`${orders.paidAt} < ${cutoff}`));
+    .where(and(eq(orders.status, 'paid'), lt(orders.paidAt, cutoff)));
 }
 
 /** Заказы для напоминания о продлении подписки — cron `subscription-renewal-reminder`. */
