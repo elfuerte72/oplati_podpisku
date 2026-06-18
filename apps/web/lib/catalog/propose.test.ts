@@ -29,9 +29,11 @@ vi.mock('@oplati/db', () => ({
 vi.mock('@/lib/tool-handlers/propose-order', () => {
   class OrderAmountOutOfBoundsError extends Error {}
   class OrderCapExceededError extends Error {}
+  class OrderBelowMinimumError extends Error {}
   return {
     OrderAmountOutOfBoundsError,
     OrderCapExceededError,
+    OrderBelowMinimumError,
     proposeOrder: (input: unknown) => h.proposeImpl(input),
   };
 });
@@ -43,6 +45,7 @@ vi.mock('@sentry/nextjs', () => ({
 
 import {
   OrderAmountOutOfBoundsError,
+  OrderBelowMinimumError,
   OrderCapExceededError,
 } from '@/lib/tool-handlers/propose-order';
 
@@ -158,6 +161,15 @@ describe('proposeFromCatalog', () => {
     h.proposeImpl.mockRejectedValue(new OrderAmountOutOfBoundsError('bounds'));
     const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', tierName: 'Pro' });
     expect(res).toMatchObject({ ok: false, error: 'amount_out_of_bounds' });
+  });
+
+  it('proposeOrder бросает OrderBelowMinimumError → below_min', async () => {
+    h.service = tierService;
+    h.proposeImpl.mockRejectedValue(new OrderBelowMinimumError('min'));
+    const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', tierName: 'Pro' });
+    expect(res).toMatchObject({ ok: false, error: 'below_min' });
+    if (res.ok) throw new Error('expected fail');
+    expect(res.text).toContain('500');
   });
 
   it('неожиданная ошибка → propose_failed', async () => {

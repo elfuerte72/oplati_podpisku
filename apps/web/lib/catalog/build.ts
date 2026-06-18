@@ -58,11 +58,18 @@ export function computeTotalKopecks(
  * Преобразует строку каталога в позицию витрины. `null` — сервис показать
  * нельзя: невалидная pricing_policy или ни одного пригодного USD-тарифа
  * (вызывающая сторона логирует).
+ *
+ * `minOrderKopecks` — пол суммы заказа у платёжного терминала L&P
+ * (`LOVEANDPAY_MIN_AMOUNT_RUB × 100`). Тарифы дешевле порога НЕ показываем:
+ * их всё равно нельзя оплатить (`below_min_amount`), кнопка-тупик. На
+ * custom-amount сервисы (Airbnb) не влияет — там минимум проверяется при вводе
+ * суммы в `proposeOrder`.
  */
 export function buildCatalogService(
   row: ServiceRowLike,
   rate: number,
   commissionPercent: number,
+  minOrderKopecks: number,
 ): CatalogService | null {
   const parsed = pricingPolicy.safeParse(row.pricingPolicy);
   if (!parsed.success) return null;
@@ -94,7 +101,9 @@ export function buildCatalogService(
       // filter выше гарантирует number, но noUncheckedIndexedAccess-стиль честнее
       usdCents: t.originalAmount ?? 0,
       totalKopecks: computeTotalKopecks(t.originalAmount ?? 0, rate, commissionPercent),
-    }));
+    }))
+    // Тарифы ниже пола терминала L&P не показываем — их нельзя оплатить.
+    .filter((t) => t.totalKopecks >= minOrderKopecks);
 
   if (tiers.length === 0) return null;
   return { ...base, customAmount: false, tiers };

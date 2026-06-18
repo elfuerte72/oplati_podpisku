@@ -4,6 +4,7 @@ import { buildCatalogService, computeTotalKopecks, sortCatalog } from './build';
 
 const RATE = 95.5; // RUB за USDT
 const COMMISSION = 10; // %
+const MIN_KOPECKS = 50_000; // пол 500 ₽ (LOVEANDPAY_MIN_AMOUNT_RUB × 100)
 
 function row(overrides: Partial<Parameters<typeof buildCatalogService>[0]> = {}) {
   return {
@@ -37,7 +38,7 @@ describe('computeTotalKopecks', () => {
 
 describe('buildCatalogService', () => {
   it('возвращает тариф с рублёвой оценкой для обычного сервиса', () => {
-    const svc = buildCatalogService(row(), RATE, COMMISSION);
+    const svc = buildCatalogService(row(), RATE, COMMISSION, MIN_KOPECKS);
     expect(svc).not.toBeNull();
     expect(svc?.customAmount).toBe(false);
     expect(svc?.tiers).toEqual([
@@ -57,14 +58,15 @@ describe('buildCatalogService', () => {
       }),
       RATE,
       COMMISSION,
+      MIN_KOPECKS,
     );
     expect(svc?.customAmount).toBe(true);
     expect(svc?.tiers).toEqual([]);
   });
 
   it('невалидная pricing_policy → null', () => {
-    expect(buildCatalogService(row({ pricingPolicy: { tiers: [] } }), RATE, COMMISSION)).toBeNull();
-    expect(buildCatalogService(row({ pricingPolicy: null }), RATE, COMMISSION)).toBeNull();
+    expect(buildCatalogService(row({ pricingPolicy: { tiers: [] } }), RATE, COMMISSION, MIN_KOPECKS)).toBeNull();
+    expect(buildCatalogService(row({ pricingPolicy: null }), RATE, COMMISSION, MIN_KOPECKS)).toBeNull();
   });
 
   it('не-USD тарифы отбрасываются; если пригодных нет — null', () => {
@@ -78,6 +80,42 @@ describe('buildCatalogService', () => {
       }),
       RATE,
       COMMISSION,
+      MIN_KOPECKS,
+    );
+    expect(svc).toBeNull();
+  });
+
+  it('тарифы ниже пола 500 ₽ отфильтрованы (iCloud: $0.99 убрать, $9.99 оставить)', () => {
+    const svc = buildCatalogService(
+      row({
+        slug: 'icloud-plus-200gb',
+        pricingPolicy: {
+          tiers: [
+            { name: '50GB', period: 'month', priceRub: 1, originalAmount: 99, currency: 'USD' },
+            { name: '2TB', period: 'month', priceRub: 1, originalAmount: 999, currency: 'USD' },
+          ],
+        },
+      }),
+      RATE,
+      COMMISSION,
+      MIN_KOPECKS,
+    );
+    expect(svc?.tiers.map((t) => t.name)).toEqual(['2TB']); // $0.99 (~104 ₽) выкинут
+  });
+
+  it('все тарифы ниже пола → сервис не показываем (null)', () => {
+    const svc = buildCatalogService(
+      row({
+        slug: 'icloud-cheap',
+        pricingPolicy: {
+          tiers: [
+            { name: '50GB', period: 'month', priceRub: 1, originalAmount: 99, currency: 'USD' },
+          ],
+        },
+      }),
+      RATE,
+      COMMISSION,
+      MIN_KOPECKS,
     );
     expect(svc).toBeNull();
   });

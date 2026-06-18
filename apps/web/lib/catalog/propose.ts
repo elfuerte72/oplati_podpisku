@@ -9,6 +9,7 @@ import { formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import {
   OrderAmountOutOfBoundsError,
+  OrderBelowMinimumError,
   OrderCapExceededError,
   proposeOrder,
 } from '@/lib/tool-handlers/propose-order';
@@ -58,6 +59,7 @@ export type ProposeFromCatalogError =
   | 'amount_required'
   | 'order_cap_exceeded'
   | 'amount_out_of_bounds'
+  | 'below_min'
   | 'propose_failed';
 
 export type ProposeFromCatalogResult =
@@ -78,6 +80,8 @@ const FAIL_TEXT: Record<ProposeFromCatalogError, string> = {
     'Лимит новых заказов на сегодня исчерпан. Напиши в чат — подключу оператора.',
   amount_out_of_bounds:
     'Сумма заказа должна быть от $1 до $500. Для больших сумм напиши в чат — оформим через оператора.',
+  below_min:
+    'Минимальная сумма заказа — 500 ₽ (ограничение оплаты). Выбери тариф подороже или оплати сразу несколько подписок. Нужна именно эта сумма — напиши в чат, подключу оператора.',
   propose_failed:
     'Не получилось создать заказ. Попробуй ещё раз или напиши в чат — подключу оператора.',
 };
@@ -194,6 +198,10 @@ export async function proposeFromCatalog(
     if (err instanceof OrderAmountOutOfBoundsError) {
       log.warn({ event: 'catalog.propose.bounds', channel, slug });
       return fail('amount_out_of_bounds');
+    }
+    if (err instanceof OrderBelowMinimumError) {
+      log.warn({ event: 'catalog.propose.below_min', channel, slug });
+      return fail('below_min');
     }
     log.error({ event: 'catalog.propose.failed', channel, slug, err });
     Sentry.captureException(err, { tags: { source: 'catalog.propose' } });

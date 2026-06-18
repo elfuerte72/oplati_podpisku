@@ -51,6 +51,8 @@ const TTL_HOURS = 24;
  */
 export class OrderAmountOutOfBoundsError extends Error {}
 export class OrderCapExceededError extends Error {}
+/** Итоговая сумма в RUB ниже пола платёжного терминала L&P (`LOVEANDPAY_MIN_AMOUNT_RUB`). */
+export class OrderBelowMinimumError extends Error {}
 
 /**
  * Серверные границы суммы заказа. Промпт-правила («цена только из web_search»)
@@ -179,6 +181,25 @@ export async function proposeOrder(input: {
   const subtotalKopecks = Math.round(amountUsdCents * rate);
   const commissionKopecks = Math.round((subtotalKopecks * commissionPercent) / 100);
   const totalKopecks = subtotalKopecks + commissionKopecks;
+
+  // Пол платёжного терминала L&P: заказ дешевле минимума всё равно не оплатить
+  // (`/api/payments/create` вернёт `below_min_amount`). Ловим ЗДЕСЬ, до создания
+  // draft-заказа, чтобы не плодить неоплатимые черновики и дать понятный ответ.
+  const minOrderKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
+  if (totalKopecks < minOrderKopecks) {
+    log.warn({
+      event: 'tool.propose_order.below_minimum',
+      userId,
+      totalKopecks,
+      minOrderKopecks,
+    });
+    throw new OrderBelowMinimumError(
+      `propose_order: сумма заказа ${Math.round(totalKopecks / 100)} ₽ ниже минимума ` +
+        `${serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB} ₽ (ограничение платёжного терминала). ` +
+        'Не создавай заказ и не подгоняй сумму под лимит; предложи пользователю тариф ' +
+        'подороже или оплату нескольких подписок одним заказом (либо оператора, request_human).',
+    );
+  }
 
   // Сохраняем курс как `rate * 10000` (фиксированная точка с 4 знаками) в integer —
   // чтобы 95.2345 RUB/USDT хранился как 952345. Это совместимо с `usdt_rub_rate_kopecks integer`.

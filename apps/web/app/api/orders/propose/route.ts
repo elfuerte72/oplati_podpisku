@@ -45,6 +45,7 @@ const ERROR_STATUS: Record<ProposeFromCatalogError, number> = {
   amount_required: 400,
   order_cap_exceeded: 429,
   amount_out_of_bounds: 400,
+  below_min: 400,
   propose_failed: 500,
 };
 
