@@ -18,6 +18,14 @@ import { z } from 'zod';
  * Доменные типы запросов/результатов (camelCase, центы) живут в клиенте.
  */
 
+/**
+ * Денежная величина в ответах PaySpace. Контракт НЕстабилен: часть эндпоинтов
+ * отдаёт суммы строкой ("18.43"), а `card.balance` в create — числом (1.0).
+ * Принимаем оба; конверсия в центы — `dollarStringToUsdCents` (тоже принимает оба).
+ * Зафиксировано живым вызовом 2026-06-18.
+ */
+export const paySpaceMoney = z.union([z.string(), z.number()]);
+
 // ─── Ошибка ────────────────────────────────────────────────────────────────
 
 export const paySpaceErrorSchema = z.object({
@@ -33,12 +41,12 @@ export const paySpaceVccCardSchema = z.object({
   /** Полный PAN (16 цифр) — НИКОГДА не логировать и не хранить в БД. */
   card_no: z.string(),
   currency: z.string(),
-  /** Срок действия в формате YYYY-MM-DD (внимание: в card/info — MM/YY). */
+  /** Срок действия. По доке YYYY-MM-DD, но живой вызов вернул MM/YY ("06/27"). */
   exp_date: z.string(),
   /** CVV — НИКОГДА не логировать; уходит клиенту только сообщением в Telegram. */
   cvv: z.string(),
-  /** Баланс карты, доллары-строка (например "10" или "10.00"). */
-  balance: z.string(),
+  /** Баланс карты (строка или число — см. paySpaceMoney). */
+  balance: paySpaceMoney,
   callback_url: z.string().nullable(),
 });
 export type PaySpaceVccCard = z.infer<typeof paySpaceVccCardSchema>;
@@ -67,9 +75,9 @@ export const paySpaceTopupCheckDataSchema = z.object({
   card_id: z.string(),
   request_id: z.string(),
   bal_type: z.string(),
-  /** Баланс карты ПОСЛЕ пополнения, доллары-строка. */
-  total_amt: z.string(),
-  recharge_amt: z.string(),
+  /** Баланс карты ПОСЛЕ пополнения (строка или число). */
+  total_amt: paySpaceMoney,
+  recharge_amt: paySpaceMoney,
   op_time: z.string(),
 });
 export type PaySpaceTopupCheckData = z.infer<typeof paySpaceTopupCheckDataSchema>;
@@ -80,8 +88,8 @@ export const paySpaceWithdrawCheckDataSchema = z.object({
   card_id: z.string(),
   request_id: z.string(),
   bal_type: z.string(),
-  total_amt: z.string(),
-  withdraw_amt: z.string(),
+  total_amt: paySpaceMoney,
+  withdraw_amt: paySpaceMoney,
   op_time: z.string(),
 });
 export type PaySpaceWithdrawCheckData = z.infer<typeof paySpaceWithdrawCheckDataSchema>;
@@ -90,8 +98,8 @@ export type PaySpaceWithdrawCheckData = z.infer<typeof paySpaceWithdrawCheckData
 
 export const paySpaceReleaseDataSchema = z.object({
   cardId: z.string(),
-  /** Возвращённый на VCC-баланс остаток карты, доллары-строка. */
-  releaseBal: z.string(),
+  /** Возвращённый на VCC-баланс остаток карты (строка или число). */
+  releaseBal: paySpaceMoney,
 });
 export type PaySpaceReleaseData = z.infer<typeof paySpaceReleaseDataSchema>;
 
@@ -104,27 +112,28 @@ export const paySpaceCardInfoDataSchema = z.object({
   cardId: z.string(),
   cardNo: z.string(),
   cvv: z.string(),
-  /** Срок действия MM/YY (формат отличается от create!). */
+  /** Срок действия MM/YY. */
   expDate: z.string(),
   status: z.string(),
-  cardBal: z.string(),
-  usedAmt: z.string(),
-  totalAmt: z.string(),
-  settleAmt: z.string().optional(),
-  createTime: z.string().optional(),
-  cardType: z.string().optional(),
-  productCode: z.string().optional(),
-  card_email: z.string().optional(),
+  cardBal: paySpaceMoney,
+  usedAmt: paySpaceMoney,
+  totalAmt: paySpaceMoney,
+  // Опциональные поля провайдер отдаёт и как null (живой вызов: card_email=null).
+  settleAmt: paySpaceMoney.nullish(),
+  createTime: z.string().nullish(),
+  cardType: z.string().nullish(),
+  productCode: z.string().nullish(),
+  card_email: z.string().nullish(),
 });
 export type PaySpaceCardInfoData = z.infer<typeof paySpaceCardInfoDataSchema>;
 
 // ─── Баланс VCC-аккаунта (GET /vcc/user/balance/) ────────────────────────────
 
 export const paySpaceUserBalanceDataSchema = z.object({
-  /** Доступный баланс, доллары-строка. */
-  balance: z.string(),
-  /** Замороженная сумма, доллары-строка. */
-  pending: z.string(),
+  /** Доступный баланс (строка или число). */
+  balance: paySpaceMoney,
+  /** Замороженная сумма (строка или число). */
+  pending: paySpaceMoney,
   currency: z.string(),
 });
 export type PaySpaceUserBalanceData = z.infer<typeof paySpaceUserBalanceDataSchema>;

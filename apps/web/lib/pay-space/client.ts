@@ -15,7 +15,7 @@ import { PaySpaceApiError, PaySpaceContractError } from './errors.ts';
 import {
   dollarStringToUsdCents,
   maskPan,
-  parseExpDateYmd,
+  parseExpDate,
   usdCentsToDollarString,
 } from './format.ts';
 import { canonicalQuery, signPaySpaceRequest } from './sign.ts';
@@ -169,7 +169,7 @@ export class PaySpaceClient {
       schema: paySpaceCreateCardDataSchema,
     });
     const { card, network } = data;
-    const { expMonth, expYear } = parseExpDateYmd(card.exp_date);
+    const { expMonth, expYear } = parseExpDate(card.exp_date);
     const result: CreateCardResult = {
       cardId: card.card_id,
       pan: card.card_no,

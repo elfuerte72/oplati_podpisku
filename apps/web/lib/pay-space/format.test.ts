@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dollarStringToUsdCents,
   maskPan,
-  parseExpDateYmd,
+  parseExpDate,
   usdCentsToDollarString,
 } from './format.ts';
 
@@ -30,6 +30,12 @@ describe('dollarStringToUsdCents', () => {
     expect(dollarStringToUsdCents('1234.56')).toBe(123456);
   });
 
+  it('принимает число (card.balance приходит числом)', () => {
+    expect(dollarStringToUsdCents(1.0)).toBe(100);
+    expect(dollarStringToUsdCents(18.43)).toBe(1843);
+    expect(dollarStringToUsdCents(0)).toBe(0);
+  });
+
   it('round-trip с центами', () => {
     for (const cents of [0, 1, 5, 99, 100, 1050, 49999]) {
       expect(dollarStringToUsdCents(usdCentsToDollarString(cents))).toBe(cents);
@@ -53,13 +59,19 @@ describe('maskPan', () => {
   });
 });
 
-describe('parseExpDateYmd', () => {
-  it('парсит YYYY-MM-DD', () => {
-    expect(parseExpDateYmd('2027-01-20')).toEqual({ expMonth: 1, expYear: 2027 });
-    expect(parseExpDateYmd('2026-12-31')).toEqual({ expMonth: 12, expYear: 2026 });
+describe('parseExpDate', () => {
+  it('парсит YYYY-MM-DD (как в доке)', () => {
+    expect(parseExpDate('2027-01-20')).toEqual({ expMonth: 1, expYear: 2027 });
+    expect(parseExpDate('2026-12-31')).toEqual({ expMonth: 12, expYear: 2026 });
   });
 
-  it('бросает на ином формате', () => {
-    expect(() => parseExpDateYmd('01/27')).toThrow();
+  it('парсит MM/YY (реальный ответ create/info)', () => {
+    expect(parseExpDate('06/27')).toEqual({ expMonth: 6, expYear: 2027 });
+    expect(parseExpDate('01/30')).toEqual({ expMonth: 1, expYear: 2030 });
+  });
+
+  it('бросает на неизвестном формате', () => {
+    expect(() => parseExpDate('27-06')).toThrow();
+    expect(() => parseExpDate('garbage')).toThrow();
   });
 });

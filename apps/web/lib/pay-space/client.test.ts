@@ -67,6 +67,31 @@ describe('PaySpaceClient.createCard', () => {
     expect(headers.Authorization).toBe('Bearer api_key_test');
   });
 
+  it('парсит реальный ответ: balance числом + exp MM/YY (дрейф 2026-06-18)', async () => {
+    const liveBody = {
+      success: true,
+      data: {
+        card: {
+          card_id: 'a27cdd4620260618130932',
+          card_no: '5592680100101726',
+          currency: 'USD',
+          exp_date: '06/27',
+          cvv: '167',
+          balance: 1.0,
+          callback_url: null,
+        },
+        network: 'trc20',
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(makeResp(200, liveBody));
+    const c = makeClient(fetchMock);
+    const res = await c.createCard({ amountUsdCents: 100 });
+    expect(res.balanceUsdCents).toBe(100);
+    expect(res.expMonth).toBe(6);
+    expect(res.expYear).toBe(2027);
+    expect(res.panMasked).toBe('559268******1726');
+  });
+
   it('подписывает запрос при заданном requestSecret', async () => {
     const fetchMock = vi.fn().mockResolvedValue(makeResp(200, CREATE_OK));
     const c = makeClient(fetchMock, 'req_secret');
@@ -186,6 +211,38 @@ describe('PaySpaceClient.releaseCard / getVccBalance', () => {
     const c = makeClient(fetchMock);
     const res = await c.releaseCard('c1', 'rel_1');
     expect(res).toEqual({ cardId: 'c1', releasedUsdCents: 500 });
+  });
+
+  it('getCardInfo: реальный ответ (cardBal строкой, card_email null)', async () => {
+    const body = {
+      success: true,
+      data: {
+        cardId: 'c1',
+        cardNo: '5592680100101726',
+        cvv: '167',
+        expDate: '06/27',
+        cardBal: '1.00',
+        status: '1',
+        usedAmt: '0.00',
+        totalAmt: '1.00',
+        settleAmt: '0.00',
+        createTime: '2026-06-18 13:09:32',
+        cardType: 'MC',
+        productCode: 'SG_SUB',
+        card_email: null,
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(makeResp(200, body));
+    const c = makeClient(fetchMock);
+    const res = await c.getCardInfo('c1');
+    expect(res).toEqual({
+      cardId: 'c1',
+      panMasked: '559268******1726',
+      statusCode: '1',
+      statusLabel: 'activated',
+      balanceUsdCents: 100,
+      expDate: '06/27',
+    });
   });
 
   it('getVccBalance → центы', async () => {

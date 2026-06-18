@@ -1,8 +1,9 @@
 /**
  * Конвертеры на границе app.pay.space.
  *
- * PaySpace оперирует строками-долларами ("10.00"), наш внутренний инвариант —
- * деньги integer в минимальных единицах (USD-центы). Перевод — только здесь.
+ * PaySpace оперирует суммами то строкой ("18.43"), то числом (1.0 — `card.balance`
+ * в create), а наш внутренний инвариант — деньги integer в минимальных единицах
+ * (USD-центы). Перевод — только здесь.
  */
 
 /** USD-центы (integer) → строка-доллары "X.XX" (без потери точности на fp). */
@@ -17,9 +18,9 @@ export function usdCentsToDollarString(cents: number): string {
   return `${sign}${whole}.${String(frac).padStart(2, '0')}`;
 }
 
-/** Строка-доллары ("10" / "10.00" / "10.5") → USD-центы (integer). */
-export function dollarStringToUsdCents(value: string): number {
-  const n = Number(value);
+/** Сумма из ответа PaySpace (строка "10.5" или число 1.0) → USD-центы (integer). */
+export function dollarStringToUsdCents(value: string | number): number {
+  const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) {
     throw new Error(`dollarStringToUsdCents: невалидная сумма "${value}"`);
   }
@@ -37,11 +38,23 @@ export function maskPan(pan: string): string {
   return `${digits.slice(0, 6)}${'*'.repeat(digits.length - 10)}${digits.slice(-4)}`;
 }
 
-/** "YYYY-MM-DD" (формат exp_date в ответе create) → { expMonth, expYear }. */
-export function parseExpDateYmd(value: string): { expMonth: number; expYear: number } {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!m) throw new Error(`parseExpDateYmd: ожидался YYYY-MM-DD, получено "${value}"`);
-  const [, yyyy, mm] = m;
-  if (!yyyy || !mm) throw new Error(`parseExpDateYmd: не разобрана дата "${value}"`);
-  return { expYear: Number(yyyy), expMonth: Number(mm) };
+/**
+ * Срок действия карты → { expMonth, expYear }. Поддерживает оба формата, что
+ * встречаются у PaySpace: `MM/YY` (реальный ответ create/info) и `YYYY-MM-DD`
+ * (как в доке). Зафиксировано живым вызовом 2026-06-18: create вернул "06/27".
+ */
+export function parseExpDate(value: string): { expMonth: number; expYear: number } {
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (ymd) {
+    const yyyy = ymd[1];
+    const mm = ymd[2];
+    if (yyyy && mm) return { expYear: Number(yyyy), expMonth: Number(mm) };
+  }
+  const my = /^(\d{2})\/(\d{2})$/.exec(value);
+  if (my) {
+    const mm = my[1];
+    const yy = my[2];
+    if (mm && yy) return { expMonth: Number(mm), expYear: 2000 + Number(yy) };
+  }
+  throw new Error(`parseExpDate: неизвестный формат срока "${value}"`);
 }
