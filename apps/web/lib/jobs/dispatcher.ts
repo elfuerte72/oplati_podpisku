@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { after } from 'next/server';
 import * as Sentry from '@sentry/nextjs';
 
 import { childLogger } from '../logger.ts';
@@ -7,46 +8,53 @@ import { issueCard } from './issue-card.ts';
 import { notifyPaymentConfirmed } from './notify-payment.ts';
 
 /**
- * Диспатч background-job'ов. Сегодня — sync-fallback (Trigger.dev не подключён;
- * план MVP Task 6.1 помечает это как known risk и допускает sync). Когда
- * Trigger.dev появится — заменим тело на `await client.sendEvent({ name, payload })`.
+ * Диспатч background-job'ов после ответа webhook'а/cron'а.
  *
- * Sync-режим: запускаем job через `setImmediate` (fire-and-forget). Webhook
- * успевает ответить 200 OK, а job идёт в background внутри того же Fluid Compute
- * instance. Это не гарантирует завершение при cold-shutdown'е инстанса.
+ * Используем `after()` из `next/server` (под капотом — платформенный
+ * `waitUntil`): Vercel ДЕРЖИТ инстанс живым до завершения колбэка. Это
+ * принципиально отличается от прежнего `setImmediate` (fire-and-forget): тот
+ * не отслеживался платформой, и инстанс мог замёрзнуть сразу после `200 OK`,
+ * не доделав выпуск карты / уведомление (наблюдали вживую — заказ зависал в
+ * `paid` без карты и без сообщения в Telegram).
  *
- * Подстраховка от потери: cron `poll-payment` (lib/jobs/poll-payment.ts) ищет
- * заказы, зависшие в `paid` (findStuckPaidOrders), и повторно прогоняет
- * issue-card. Повтор безопасен — issueCard claim'ит paid → in_fulfillment
- * атомарно (transitionOrderDetailed), двойного топ-апа не будет.
+ * Контракт: оба `dispatch*` вызываются синхронно из тела route-handler'а
+ * (webhook `/api/payments/loveandpay` и cron `/api/cron/poll-payment` через
+ * `processInvoicePaid`), т.е. в request-scope — `after()` там валиден.
+ *
+ * Подстраховка от потери всё равно остаётся: cron `poll-payment`
+ * (findStuckPaidOrders) повторно прогоняет issue-card для заказов, зависших в
+ * `paid`. Повтор безопасен — issueCard атомарно claim'ит paid → in_fulfillment.
  */
 
 const log = childLogger('jobs.dispatcher');
 
 export function dispatchIssueCard(orderId: string): void {
   log.info({ event: 'jobs.dispatch.issue_card', orderId });
-  // setImmediate — поток управления возвращается в webhook сразу.
-  setImmediate(() => {
-    issueCard(orderId).catch((err) => {
+  after(async () => {
+    try {
+      await issueCard(orderId);
+    } catch (err) {
       log.error({ event: 'jobs.dispatch.issue_card.failed', orderId, err });
       Sentry.captureException(err, {
         tags: { source: 'jobs.dispatcher', job: 'issue_card' },
         extra: { orderId },
       });
-    });
+    }
   });
 }
 
 export function dispatchPaymentConfirmed(orderId: string): void {
   log.info({ event: 'jobs.dispatch.payment_confirmed', orderId });
-  setImmediate(() => {
-    // notifyPaymentConfirmed сам не бросает, но .catch на всякий случай.
-    notifyPaymentConfirmed(orderId).catch((err) => {
+  after(async () => {
+    // notifyPaymentConfirmed сам не бросает, но try/catch на всякий случай.
+    try {
+      await notifyPaymentConfirmed(orderId);
+    } catch (err) {
       log.error({ event: 'jobs.dispatch.payment_confirmed.failed', orderId, err });
       Sentry.captureException(err, {
         tags: { source: 'jobs.dispatcher', job: 'payment_confirmed' },
         extra: { orderId },
       });
-    });
+    }
   });
 }
