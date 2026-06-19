@@ -37,10 +37,11 @@ export async function loadCatalog(): Promise<CatalogService[]> {
   const db = getDb();
   const [rows, rate] = await Promise.all([listActiveServices(db), resolveUsdtRubRate()]);
   const commissionPercent = serverEnv.COMMISSION_PERCENT;
+  const minOrderKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
 
   const services: CatalogService[] = [];
   for (const r of rows) {
-    const svc = buildCatalogService(r, rate, commissionPercent);
+    const svc = buildCatalogService(r, rate, commissionPercent, minOrderKopecks);
     if (svc) {
       services.push(svc);
     } else {

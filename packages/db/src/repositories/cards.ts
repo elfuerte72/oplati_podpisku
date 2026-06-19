@@ -89,6 +89,20 @@ export async function findActiveByUserId(db: DB, userId: string): Promise<Card |
 }
 
 /**
+ * Карты пользователя для личного кабинета (Mini App): только `active` и `idle`.
+ * `recycled` скрываем — такая карта могла быть переназначена другому владельцу,
+ * показывать её прежнему клиенту нельзя. Свежие первыми. Read-only.
+ */
+export async function findCardsByUserIdForCabinet(db: DB, userId: string): Promise<Card[]> {
+  const rows = await db
+    .select()
+    .from(cards)
+    .where(and(eq(cards.userId, userId), sql`${cards.status} IN ('active', 'idle')`))
+    .orderBy(sql`${cards.createdAt} DESC`);
+  return rows.map(mapRowToCard);
+}
+
+/**
  * Recycled-карта для повторного использования: status='recycled' (см. `recycle-cards`
  * cron). Берём первую попавшуюся; в issue-card job переписываем userId на нового
  * владельца и переводим в active.
@@ -172,32 +186,44 @@ export async function updateBalance(
 }
 
 /**
- * Массовый recycle для cron `recycle-cards` (раз в сутки).
- *  - active + last_used_at < now - 90d → idle
- *  - idle   + created_at  < now - 180d → recycled
+ * Шаг 1 cron `recycle-cards`: active + last_used_at < now - 90d → idle.
+ * Чистое БД-изменение, без обращения к провайдеру. Возвращает число затронутых.
  */
-export async function recycleAgedCards(
+export async function idleAgedActiveCards(
   db: DB,
   log: RepoLogger = noopLogger,
-): Promise<{ idled: number; recycled: number }> {
-  const idledRows = await db.execute<{ id: string }>(sql`
+): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
     UPDATE cards
     SET status = 'idle', last_used_at = COALESCE(last_used_at, now())
     WHERE status = 'active' AND last_used_at < now() - interval '90 days'
     RETURNING id
   `);
+  const idled = rows.length;
+  log.info({ event: 'db.cards.idled_aged', idled });
+  return idled;
+}
 
-  const recycledRows = await db.execute<{ id: string }>(sql`
-    UPDATE cards
-    SET status = 'recycled', recycled_at = now()
-    WHERE status = 'idle' AND recycled_at IS NULL AND created_at < now() - interval '180 days'
-    RETURNING id
-  `);
-
-  const idled = idledRows.length;
-  const recycled = recycledRows.length;
-  log.info({ event: 'db.cards.recycled_aged', idled, recycled });
-  return { idled, recycled };
+/**
+ * Шаг 2 cron `recycle-cards`: idle-карты, отслужившие 180 дней и ещё НЕ
+ * закрытые (`recycled_at IS NULL`). Возвращаем строки — джоба закроет каждую в
+ * провайдере (`releaseCard`, необратимо) и только затем пометит `markRecycled`.
+ * Поэтому это SELECT, а не bulk-UPDATE: at-least-once с пер-картной обработкой
+ * ошибок провайдера (упавшую карту добьёт следующий запуск).
+ */
+export async function findCardsToRecycle(db: DB): Promise<Card[]> {
+  const rows = await db
+    .select()
+    .from(cards)
+    .where(
+      and(
+        eq(cards.status, 'idle'),
+        sql`${cards.recycledAt} IS NULL`,
+        sql`${cards.createdAt} < now() - interval '180 days'`,
+      ),
+    )
+    .orderBy(sql`${cards.createdAt} ASC`);
+  return rows.map(mapRowToCard);
 }
 
 function mapRowToCard(row: typeof cards.$inferSelect): Card {

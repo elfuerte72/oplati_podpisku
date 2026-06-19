@@ -10,6 +10,11 @@ export {
 } from './telegram.ts';
 
 export {
+  telegramWebAppUser,
+  type TelegramWebAppUser,
+} from './telegram-webapp.ts';
+
+export {
   loveAndPayInvoiceStatus,
   type LoveAndPayInvoiceStatus,
   loveAndPayStatusToInternal,
@@ -35,20 +40,26 @@ export {
 } from './loveandpay.ts';
 
 export {
-  paySpaceCreateCardRequestSchema,
-  type PaySpaceCreateCardRequest,
-  paySpaceCreateCardResponseSchema,
-  type PaySpaceCreateCardResponse,
-  paySpaceTopupRequestSchema,
-  type PaySpaceTopupRequest,
-  paySpaceTopupResponseSchema,
-  type PaySpaceTopupResponse,
-  paySpaceCardStatus,
-  type PaySpaceCardStatus,
-  paySpaceGetCardResponseSchema,
-  type PaySpaceGetCardResponse,
   paySpaceErrorSchema,
   type PaySpaceError,
+  paySpaceVccCardSchema,
+  type PaySpaceVccCard,
+  paySpaceCreateCardDataSchema,
+  type PaySpaceCreateCardData,
+  paySpaceAsyncOpStatus,
+  type PaySpaceAsyncOpStatus,
+  paySpaceAsyncOpDataSchema,
+  type PaySpaceAsyncOpData,
+  paySpaceTopupCheckDataSchema,
+  type PaySpaceTopupCheckData,
+  paySpaceWithdrawCheckDataSchema,
+  type PaySpaceWithdrawCheckData,
+  paySpaceReleaseDataSchema,
+  type PaySpaceReleaseData,
+  paySpaceCardInfoDataSchema,
+  type PaySpaceCardInfoData,
+  paySpaceUserBalanceDataSchema,
+  type PaySpaceUserBalanceData,
 } from './paypace.ts';
 
 // ─── Order status + state machine ─────────────────────────────────────────

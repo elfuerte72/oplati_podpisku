@@ -94,8 +94,18 @@ const serverEnvSchema = z.object({
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
+  // accountId неявен в API-ключе и провайдеру не передаётся; оставлен для обратной
+  // совместимости env, в коде НЕ используется (проверить и убрать после live-вызова).
   PAYSPACE_ACCOUNT_ID: optionalEnvString(),
+  // HMAC-секрет подписи исходящих запросов (X-Signature). Задан в кабинете → подпись
+  // обязательна для всех запросов.
+  PAYSPACE_REQUEST_SECRET: optionalEnvString(),
+  // Секрет проверки подписи входящих VCC-вебхуков (Шаг E; схема подписи D6).
+  PAYSPACE_WEBHOOK_SECRET: optionalEnvString(),
   PAYSPACE_BASE_URL: z.string().url().default('https://app.pay.space/api/v1'),
+  // Порог алёрта по балансу VCC-аккаунта (USD-центы): ниже — Sentry warning в
+  // cron recycle-cards. Пополнение VCC — T+1, поэтому предупреждаем заранее.
+  PAYSPACE_MIN_VCC_BALANCE_USD_CENTS: z.coerce.number().int().nonnegative().default(5000),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),

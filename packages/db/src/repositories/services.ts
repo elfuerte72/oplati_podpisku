@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 import { services } from '../schema.ts';
 import type { DB } from '../index.ts';
@@ -81,4 +81,13 @@ export async function getServiceById(db: DB, id: string): Promise<ServiceRow | n
 export async function getServiceBySlug(db: DB, slug: string): Promise<ServiceRow | null> {
   const rows = await db.select().from(services).where(eq(services.slug, slug)).limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * Сервисы по набору id одним запросом — для списка заказов в кабинете
+ * (резолв названий без N+1). Пустой вход → пустой результат.
+ */
+export async function getServicesByIds(db: DB, ids: string[]): Promise<ServiceRow[]> {
+  if (ids.length === 0) return [];
+  return await db.select().from(services).where(inArray(services.id, ids));
 }

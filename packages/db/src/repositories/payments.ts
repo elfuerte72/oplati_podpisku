@@ -263,3 +263,15 @@ export async function findPaymentByProviderRef(
     .limit(1);
   return rows[0] ?? null;
 }
+
+/**
+ * Платежи заказа для личного кабинета. Свежие первыми (первый — актуальный
+ * invoice). Read-only.
+ */
+export async function findPaymentsByOrderId(db: DB, orderId: string): Promise<PaymentRow[]> {
+  return await db
+    .select()
+    .from(payments)
+    .where(eq(payments.orderId, orderId))
+    .orderBy(sql`${payments.createdAt} DESC`);
+}
