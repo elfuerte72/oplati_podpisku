@@ -14,7 +14,9 @@ import {
   updateBalance,
 } from '@oplati/db';
 
+import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import { cardFundingUsdCents } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
 
@@ -88,7 +90,13 @@ export async function issueCard(orderId: string): Promise<void> {
     return;
   }
 
-  const amountUsdCents = order.originalAmount;
+  // Сумма фондирования карты = цена сервиса + буфер на VAT/FX/foreign-fee.
+  // Цена клиента (`originalAmount`) при этом не меняется — буфер только на карте,
+  // остаток вернётся на VCC-баланс при release. См. cardFundingUsdCents.
+  const priceUsdCents = order.originalAmount;
+  const bufferPercent = serverEnv.PAYSPACE_CARD_BUFFER_PERCENT;
+  const amountUsdCents = cardFundingUsdCents(priceUsdCents, bufferPercent);
+  log.info({ event: 'job.issue_card.card_funding', orderId, priceUsdCents, bufferPercent, amountUsdCents });
 
   // Атомарный claim paid → in_fulfillment. Только этот вызов продолжит к топ-апу;
   // параллельный/повторный (webhook + recovery cron, double-dispatch) увидит

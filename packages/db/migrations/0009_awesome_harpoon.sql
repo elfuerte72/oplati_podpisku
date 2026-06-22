@@ -1,0 +1,1 @@
+CREATE INDEX "orders_stuck_paid_idx" ON "orders" USING btree ("paid_at") WHERE "orders"."status" = 'paid';

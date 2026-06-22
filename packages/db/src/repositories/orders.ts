@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { and, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 
 import {
   orders,
@@ -348,6 +348,8 @@ export async function findExpiredPendingOrders(db: DB): Promise<OrderRow[]> {
  * `olderThanMs` отсекает только что оплаченные заказы, чей issue-card ещё может
  * выполняться в фоне (не дёргаем выпуск дважды без необходимости).
  */
+const STUCK_BATCH_LIMIT = 50;
+
 export async function findStuckPaidOrders(
   db: DB,
   input: { olderThanMs: number },
@@ -356,7 +358,34 @@ export async function findStuckPaidOrders(
   return await db
     .select()
     .from(orders)
-    .where(and(eq(orders.status, 'paid'), lt(orders.paidAt, cutoff)));
+    .where(and(eq(orders.status, 'paid'), lt(orders.paidAt, cutoff)))
+    .orderBy(asc(orders.paidAt))
+    .limit(STUCK_BATCH_LIMIT);
+}
+
+/**
+ * Заказы, «зависшие» в `in_fulfillment`: claim `paid → in_fulfillment` прошёл, но
+ * заказ не дошёл до `completed`/`failed`. Самый опасный кейс — инстанс умер ПОСЛЕ
+ * успешного выпуска карты в провайдере, но ДО записи в нашу БД: карта реально
+ * выпущена и оплачена из VCC-баланса, а recovery её НЕ переотрабатывает (claim
+ * уже не вернёт transitioned — at-most-once против двойной траты). Такие заказы
+ * нельзя авто-перевыпускать (риск двойного fee+суммы) — их разбирает оператор по
+ * кабинету PaySpace. Эта функция только НАХОДИТ их для алёрта в `poll-payment`.
+ *
+ * `paidAt` как прокси времени входа в fulfillment: `in_fulfillment` следует за
+ * `paid` в пределах секунд, отдельной метки времени для статуса нет.
+ */
+export async function findStuckInFulfillmentOrders(
+  db: DB,
+  input: { olderThanMs: number },
+): Promise<OrderRow[]> {
+  const cutoff = new Date(Date.now() - input.olderThanMs);
+  return await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.status, 'in_fulfillment'), lt(orders.paidAt, cutoff)))
+    .orderBy(asc(orders.paidAt))
+    .limit(STUCK_BATCH_LIMIT);
 }
 
 /** Заказы для напоминания о продлении подписки — cron `subscription-renewal-reminder`. */

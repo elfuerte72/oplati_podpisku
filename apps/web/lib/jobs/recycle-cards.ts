@@ -4,9 +4,9 @@ import * as Sentry from '@sentry/nextjs';
 
 import { findCardsToRecycle, getDb, idleAgedActiveCards, markRecycled } from '@oplati/db';
 
-import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
+import { alertOnLowVccBalance } from './vcc-balance.ts';
 
 const log = childLogger('cron.recycle-cards');
 
@@ -78,29 +78,9 @@ export async function recycleCards(): Promise<{ idled: number; recycled: number;
   }
 
   // Шаг 3: алёрт на низкий VCC-баланс (не влияет на errors — это мониторинг).
+  // Общий с poll-payment модуль, чтобы проверка шла и каждые 5 минут.
   await alertOnLowVccBalance();
 
   log.info({ event: 'cron.recycle_cards.done', idled, recycled, errors });
   return { idled, recycled, errors };
-}
-
-async function alertOnLowVccBalance(): Promise<void> {
-  if (!isPaySpaceConfigured()) return;
-  const threshold = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
-  try {
-    const { balanceUsdCents } = await getPaySpaceClient().getVccBalance();
-    if (balanceUsdCents < threshold) {
-      log.warn({ event: 'cron.recycle_cards.low_vcc_balance', balanceUsdCents, threshold });
-      Sentry.captureMessage('PaySpace VCC balance низкий — пополнить (T+1)', {
-        level: 'warning',
-        tags: { source: 'cron.recycle-cards', alert: 'low_vcc_balance' },
-        extra: { balanceUsdCents, threshold },
-      });
-    } else {
-      log.info({ event: 'cron.recycle_cards.vcc_balance_ok', balanceUsdCents });
-    }
-  } catch (err) {
-    log.error({ event: 'cron.recycle_cards.balance_check_error', err });
-    Sentry.captureException(err, { tags: { source: 'cron.recycle-cards', step: 'balance' } });
-  }
 }

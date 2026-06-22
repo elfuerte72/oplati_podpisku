@@ -251,6 +251,11 @@ export const orders = pgTable(
     statusIdx: index('orders_status_idx').on(t.status),
     userIdx: index('orders_user_id_idx').on(t.userId),
     operatorIdx: index('orders_operator_id_idx').on(t.assignedOperatorId),
+    // Частичный индекс под горячий cron-запрос findStuckPaidOrders (каждые 5 мин:
+    // status='paid' AND paid_at < cutoff). Крошечный — только активные `paid`.
+    stuckPaidIdx: index('orders_stuck_paid_idx')
+      .on(t.paidAt)
+      .where(sql`${t.status} = 'paid'`),
     serviceOrCustom: check(
       'orders_service_or_custom',
       sql`${t.serviceId} IS NOT NULL OR ${t.customServiceDescription} IS NOT NULL`,

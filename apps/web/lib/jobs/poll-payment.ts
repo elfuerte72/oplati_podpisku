@@ -2,7 +2,12 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { findPendingPaymentsForPoll, findStuckPaidOrders, getDb } from '@oplati/db';
+import {
+  findPendingPaymentsForPoll,
+  findStuckInFulfillmentOrders,
+  findStuckPaidOrders,
+  getDb,
+} from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
 import { isPaySpaceConfigured } from '../pay-space/index.ts';
@@ -13,6 +18,7 @@ import {
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
 import { issueCard } from './issue-card.ts';
+import { alertOnLowVccBalance } from './vcc-balance.ts';
 
 /**
  * Cron `poll-payment` — подстраховка от потерянных L&P-webhook'ов И от
@@ -33,6 +39,11 @@ const log = childLogger('cron.poll-payment');
 // Заказ в `paid` дольше этого порога считаем «issue-card потерян» (нормальный
 // выпуск стартует через setImmediate в пределах секунд после оплаты).
 const STUCK_PAID_THRESHOLD_MS = 10 * 60 * 1000;
+
+// Заказ в `in_fulfillment` дольше этого порога — аномалия (нормальный выпуск
+// карты завершается за секунды-минуты). Авто-перевыпуск НЕБЕЗОПАСЕН (риск
+// двойного fee+суммы, если карта уже выпущена в провайдере) — только алёрт оператору.
+const STUCK_IN_FULFILLMENT_THRESHOLD_MS = 30 * 60 * 1000;
 
 export async function pollPayments(): Promise<{
   processed: number;
@@ -134,6 +145,37 @@ export async function pollPayments(): Promise<{
       log.error({ event: 'cron.poll_payment.stuck_query_error', err });
       Sentry.captureException(err, { tags: { source: 'cron.poll-payment', step: 'stuck_query' } });
     }
+
+    // Заказы, зависшие в `in_fulfillment` (карта могла быть выпущена в провайдере,
+    // но не записана в БД — recovery их не подберёт). Не авто-перевыпускаем —
+    // только алёртим, оператор сверяет по кабинету PaySpace.
+    try {
+      const stuckFulfilling = await findStuckInFulfillmentOrders(db, {
+        olderThanMs: STUCK_IN_FULFILLMENT_THRESHOLD_MS,
+      });
+      if (stuckFulfilling.length > 0) {
+        log.error({
+          event: 'cron.poll_payment.stuck_in_fulfillment',
+          count: stuckFulfilling.length,
+          orderIds: stuckFulfilling.map((o) => o.id),
+        });
+        Sentry.captureMessage('Заказы зависли в in_fulfillment — нужна ручная сверка карт PaySpace', {
+          level: 'error',
+          tags: { source: 'cron.poll-payment', alert: 'stuck_in_fulfillment' },
+          extra: { count: stuckFulfilling.length, orderIds: stuckFulfilling.map((o) => o.id) },
+        });
+      }
+    } catch (err) {
+      errors++;
+      log.error({ event: 'cron.poll_payment.stuck_fulfilling_query_error', err });
+      Sentry.captureException(err, {
+        tags: { source: 'cron.poll-payment', step: 'stuck_fulfilling_query' },
+      });
+    }
+
+    // Мониторинг фонда под выпуск карт — каждые 5 минут, чтобы поймать уход
+    // баланса в ноль посреди дня (пополнение VCC — T+1).
+    await alertOnLowVccBalance();
   }
 
   log.info({

@@ -64,6 +64,13 @@
       "when": 1781201517760,
       "tag": "0008_calm_franklin_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782127883096,
+      "tag": "0009_awesome_harpoon",
+      "breakpoints": true
     }
   ]
 }

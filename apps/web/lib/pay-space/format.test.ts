@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cardFundingUsdCents,
   dollarStringToUsdCents,
   maskPan,
   parseExpDate,
@@ -42,8 +43,41 @@ describe('dollarStringToUsdCents', () => {
     }
   });
 
-  it('бросает на мусоре', () => {
+  it('округляет к ближайшему центу при 3+ знаках после точки (без fp-дрейфа)', () => {
+    expect(dollarStringToUsdCents('114.145')).toBe(11415); // .145 → округление вверх
+    expect(dollarStringToUsdCents('10.994')).toBe(1099); // .4 → вниз
+    expect(dollarStringToUsdCents('10.995')).toBe(1100); // .5 → вверх
+    expect(dollarStringToUsdCents('1.005')).toBe(101); // классический fp-кейс
+  });
+
+  it('бросает на мусоре и научной нотации', () => {
     expect(() => dollarStringToUsdCents('abc')).toThrow();
+    expect(() => dollarStringToUsdCents('1e2')).toThrow();
+    expect(() => dollarStringToUsdCents('')).toThrow();
+  });
+});
+
+describe('cardFundingUsdCents', () => {
+  it('буфер 0% — сумма ровно равна цене (прежнее поведение)', () => {
+    expect(cardFundingUsdCents(2000, 0)).toBe(2000);
+    expect(cardFundingUsdCents(10000, 0)).toBe(10000);
+  });
+
+  it('буфер 20% — добавляет запас, округляя ВВЕРХ', () => {
+    expect(cardFundingUsdCents(2000, 20)).toBe(2400); // $20.00 → $24.00
+    expect(cardFundingUsdCents(10000, 20)).toBe(12000); // $100 → $120 (покрывает +14% эстонский кейс)
+    // 999 × 1.2 = 1198.8 → ceil → 1199 (никогда не недобираем)
+    expect(cardFundingUsdCents(999, 20)).toBe(1199);
+  });
+
+  it('буфер 15% округляет вверх даже на дробном результате', () => {
+    expect(cardFundingUsdCents(101, 15)).toBe(117); // 101 × 1.15 = 116.15 → 117
+  });
+
+  it('бросает на невалидных входах', () => {
+    expect(() => cardFundingUsdCents(20.5, 20)).toThrow(); // не integer
+    expect(() => cardFundingUsdCents(-100, 20)).toThrow(); // отрицательная цена
+    expect(() => cardFundingUsdCents(2000, -5)).toThrow(); // отрицательный буфер
   });
 });
 

@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 
 import { payments } from '../schema.ts';
 import type { DB } from '../index.ts';
@@ -239,7 +239,13 @@ export async function markPaymentStatus(
  * Платежи для cron `poll-payment` — pending, старше 10 минут (webhook должен бы уже
  * прийти) и не древнее 25 часов (TTL invoice'а — 24h). Сортируем по дате
  * создания: восстанавливаем старые первыми.
+ *
+ * `LIMIT` ограничивает один проход cron'а: при завале (массовый сбой webhook'ов
+ * или недоступность L&P) не тянем все pending разом — каждый запрос к getInvoice
+ * последователен, можно упереться в maxDuration. Хвост добьёт следующий запуск.
  */
+const POLL_BATCH_LIMIT = 50;
+
 export async function findPendingPaymentsForPoll(db: DB): Promise<PaymentRow[]> {
   return await db
     .select()
@@ -248,7 +254,9 @@ export async function findPendingPaymentsForPoll(db: DB): Promise<PaymentRow[]> 
       sql`${payments.status} = 'pending'
           AND ${payments.createdAt} < now() - interval '10 minutes'
           AND ${payments.createdAt} > now() - interval '25 hours'`,
-    );
+    )
+    .orderBy(asc(payments.createdAt))
+    .limit(POLL_BATCH_LIMIT);
 }
 
 export async function findPaymentByProviderRef(

@@ -106,6 +106,13 @@ const serverEnvSchema = z.object({
   // Порог алёрта по балансу VCC-аккаунта (USD-центы): ниже — Sentry warning в
   // cron recycle-cards. Пополнение VCC — T+1, поэтому предупреждаем заранее.
   PAYSPACE_MIN_VCC_BALANCE_USD_CENTS: z.coerce.number().int().nonnegative().default(5000),
+  // Буфер сверх USD-цены сервиса на сумму ВЫПУСКАЕМОЙ/пополняемой карты (проценты).
+  // Запас под местный VAT/НДС по стране карты, FX-конвертацию сети и foreign-fee:
+  // реальный charge подписки часто выше витринной цены (эстонская карта $100 →
+  // списание ~$114). Закладывается ТОЛЬКО в сумму карты, в цену для клиента НЕ
+  // входит; неизрасходованный остаток возвращается на VCC-баланс при release.
+  // 0 = карта ровно на цену (прежнее поведение). Калибровать по реальным заказам.
+  PAYSPACE_CARD_BUFFER_PERCENT: z.coerce.number().int().min(0).max(100).default(20),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
