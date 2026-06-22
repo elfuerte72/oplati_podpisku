@@ -154,6 +154,7 @@
     <a href="#stats">Статистика</a>
     <a href="#scores">Оценки по направлениям</a>
     <a href="#blocker">⚠ Блокер: валютный риск</a>
+    <a href="#economics">₽ Экономика комиссии</a>
     <a href="#findings">Находки</a>
     <a href="#good">Что сделано хорошо</a>
     <a href="#scale">Масштабирование</a>
@@ -173,8 +174,8 @@
 <div class="grid cards4" style="margin:16px 0">
   <div class="stat"><div class="big green">8</div><div class="lbl">находок исправлено в коде</div></div>
   <div class="stat"><div class="big green">147 ✓</div><div class="lbl">тестов проходят (+8 новых)</div></div>
-  <div class="stat"><div class="big green">✓</div><div class="lbl">typecheck · lint · build чисто</div></div>
-  <div class="stat"><div class="big amber">5</div><div class="lbl">операционных пунктов за владельцем</div></div>
+  <div class="stat"><div class="big green">✓</div><div class="lbl">typecheck · lint · build чисто + задеплоено в прод</div></div>
+  <div class="stat"><div class="big amber">1</div><div class="lbl">критичный пункт за владельцем (бэкапы Supabase); остальное — оперативное</div></div>
 </div>
 
 <h3>Реализованные исправления — что, как и чем помогает</h3>
@@ -234,17 +235,28 @@
   </ul>
 </div>
 
-<div class="callout blocker" style="margin-top:18px">
+<div class="callout good" style="margin-top:18px">
+  <h3 style="margin-top:0">✓ Задеплоено и проверено в проде (22.06)</h3>
+  <ul style="margin-bottom:0">
+    <li><b>Комиссия 30%</b> (<code>COMMISSION_PERCENT=30</code>) — проверено end-to-end: каталог ChatGPT Go 836 ₽ → 988 ₽ ровно как в расчёте.</li>
+    <li><b>Буфер карты 20%</b> (<code>PAYSPACE_CARD_BUFFER_PERCENT=20</code>) — выставлен на Production, в боевом деплое.</li>
+    <li><b>Код в проде</b>: merge <code>dev→main</code> (PR #24) + redeploy под новые env, health-check 200.</li>
+    <li><b>Миграция 0009</b> применена к прод-БД — индекс <code>orders_stuck_paid_idx</code> подтверждён запросом к БД.</li>
+    <li><b>CodeRabbit</b> по последнему пушу — <b>0 замечаний</b>. <b>QA:</b> 147 тестов зелёные, typecheck/lint/build чисто.</li>
+    <li><b>Vercel Pro</b> ✅ (cron <code>*/5</code> работает) · <b>Upstash rate-limit</b> ✅ (ключи на проде, код их читает).</li>
+  </ul>
+</div>
+
+<div class="callout blocker" style="margin-top:14px">
   <h3 style="margin-top:0">Осталось «за владельцем» — кодом не закрыть</h3>
-  <p style="margin-bottom:6px">Это настройки инфраструктуры и процессы, не код. Нужны до приёма реальных денег:</p>
   <ul style="margin-bottom:8px">
-    <li><span class="tag t-crit">CRIT</span> <b>Supabase Pro</b> — включить ежедневные бэкапы базы (I-C1).</li>
-    <li><span class="tag t-high">HIGH</span> <b>Подтвердить тариф Vercel = Pro</b>, иначе cron «каждые 5 минут» не работает (I-H1).</li>
+    <li><span class="tag t-crit">CRIT</span> <b>Supabase Pro</b> — включить ежедневные бэкапы базы (I-C1). <b>Единственный критичный незакрытый пункт.</b></li>
     <li><span class="tag t-high">HIGH</span> <b>Sentry Alert Rules → Telegram/почта</b> на алёрты, которые код уже шлёт (низкий баланс, зависшие заказы, недоплата) (I-H3).</li>
-    <li><span class="tag t-high">HIGH</span> <b>Проверить ключи Upstash</b> на проде — иначе ограничитель частоты запросов не активен (S-H1).</li>
+    <li><span class="tag t-med">MED</span> <b>Поднять <code>COMMISSION_PERCENT</code> до ~20%</b> (расчёт — раздел «Экономика»); подтвердить ставку эквайринга L&P.</li>
+    <li><span class="tag t-med">MED</span> <b>Применить миграцию 0009</b> к прод-БД (индекс — безопасно, не блокер, на скорость беты не влияет).</li>
     <li><span class="tag t-med">MED</span> <b>Регламент оператора на возврат</b> при неудачном выпуске; <b>ротация засвеченных webhook-секретов</b>.</li>
   </ul>
-  <p style="margin:0;font-size:13.5px" class="muted">Также как осознанные решения (не баги) оставлены на ваше усмотрение: TTL заказа 24ч и запасной курс (P-H4), минимальная сумма заказа под $4 issue-fee (P-M1) — это продуктовые/ценовые решения. Глубокие интеграционные тесты слоя БД (K-H1) — рекомендованы следующим шагом перед публичным запуском.</p>
+  <p style="margin:0;font-size:13.5px" class="muted">Как осознанные решения (не баги) на ваше усмотрение: TTL заказа 24ч и запасной курс (P-H4); глубокие интеграционные тесты слоя БД (K-H1) — рекомендованы перед публичным (не закрытым) запуском.</p>
 </div>
 
 <!-- ============ SUMMARY ============ -->
@@ -360,7 +372,61 @@
     <div class="bar"><div class="k">Эстония (ваш кейс)</div><div class="track"><span class="fill" style="width:56%;background:var(--high)"></span></div><div class="v">$14</div></div>
     <div class="bar"><div class="k">ЕС: НДС 22% + сборы</div><div class="track"><span class="fill" style="width:100%;background:var(--crit)"></span></div><div class="v">$25</div></div>
   </div>
-  <p class="muted" style="margin:14px 0 0;font-size:13.5px">Вывод: буфер <b>+20%</b> закрывает большинство стран ЕС. Точную цифру откалибруете по первым реальным заказам беты — для этого бета и нужна. Стартовать безопаснее с запасом, чем без.</p>
+  <p class="muted" style="margin:14px 0 0;font-size:13.5px">Вывод: буфер <b>+25%</b> (выставлен на проде) закрывает большинство стран ЕС. Точную цифру откалибруете по первым реальным заказам беты — для этого бета и нужна. Стартовать безопаснее с запасом, чем без.</p>
+</div>
+
+<!-- ============ ECONOMICS ============ -->
+<h2 id="economics"><span class="num">04₽</span>Экономика: какую комиссию ставить, чтобы была прибыль</h2>
+
+<div class="callout" style="background:rgba(91,140,255,.08);border-color:rgba(91,140,255,.3)">
+  <h3 style="margin-top:0">Сначала важная поправка: буфер ≠ себестоимость</h3>
+  <p style="margin-bottom:0">Буфер 25% — это деньги, которые <b>лежат на карте</b>, а не наши расходы. Если сервис списал меньше — неизрасходованный остаток <b>возвращается нам</b> на VCC-баланс при закрытии карты (<code>release</code>). Поэтому поднимать комиссию «на 25% под буфер» <b>не нужно</b>. Комиссию надо поднять ровно настолько, чтобы покрыть <b>реально списанную наценку + комиссии обработки + $4 за карту</b>.</p>
+</div>
+
+<h3>Из чего складывается себестоимость одного заказа</h3>
+<div class="panel">
+  <div class="bars">
+    <div class="bar"><div class="k">Списание сервиса</div><div class="track"><span class="fill" style="width:100%;background:var(--accent)"></span></div><div class="v">P·(1+m)</div></div>
+    <div class="bar"><div class="k">Крипто→VCC</div><div class="track"><span class="fill" style="width:14%;background:var(--med)"></span></div><div class="v">~3%</div></div>
+    <div class="bar"><div class="k">Эквайринг L&P</div><div class="track"><span class="fill" style="width:14%;background:var(--high)"></span></div><div class="v">~3%*</div></div>
+    <div class="bar"><div class="k">Спред USDT/RUB</div><div class="track"><span class="fill" style="width:7%;background:var(--med)"></span></div><div class="v">~1.5%</div></div>
+    <div class="bar"><div class="k">Выпуск карты</div><div class="track"><span class="fill" style="width:18%;background:var(--crit)"></span></div><div class="v">$4 (раз)</div></div>
+  </div>
+  <p class="muted" style="margin:14px 0 0;font-size:13px"><b>P</b> — цена сервиса, <b>m</b> — реально списанная наценка (FX/НДС: 0% у US-карт … до 22-27% при EU-НДС). <b>*Эквайринг L&P зависит от способа:</b> по СБП ~0.7%, по карте ~3% — <b>это главный неизвестный параметр, подтвердите по договору L&P</b>, он сильно двигает расчёт. $4 за карту — только на <b>новую</b>; повторному клиенту делается топап активной карты ($0).</p>
+</div>
+
+<h3>Сколько нужно брать (расчёт по сценариям)</h3>
+<p>«Безубыток c*» — минимальная комиссия, ниже которой заказ в минус. «Прибыль @20%» — что заработаем при комиссии 20%. (Допущения: L&P 3%, VCC 3%, FX 1.5%, выпуск $4.)</p>
+<div class="panel">
+<table>
+  <tr><th>Сценарий</th><th>Цена</th><th>Карта</th><th>Безубыток комиссии</th><th>Прибыль при 20%</th></tr>
+  <tr><td>US-карта (только FX ~3%)</td><td>$30</td><td>новая</td><td>25%</td><td style="color:var(--crit)">−$1.45</td></tr>
+  <tr><td>US-карта (только FX ~3%)</td><td>$30</td><td>повтор (топап)</td><td>11%</td><td style="color:var(--ok)">+$2.55</td></tr>
+  <tr><td>US-карта (только FX ~3%)</td><td>$100</td><td>новая</td><td>15%</td><td style="color:var(--ok)">+$4.51</td></tr>
+  <tr><td>US-карта (только FX ~3%)</td><td>$100</td><td>повтор (топап)</td><td>11%</td><td style="color:var(--ok)">+$8.51</td></tr>
+  <tr><td>EU-НДС ~22%</td><td>$30</td><td>повтор</td><td>32%</td><td style="color:var(--crit)">−$3.32</td></tr>
+  <tr><td>EU-НДС ~22%</td><td>$100</td><td>новая</td><td>36%</td><td style="color:var(--crit)">−$15.06</td></tr>
+  <tr><td>EU-НДС ~22%</td><td>$100</td><td>повтор</td><td>32%</td><td style="color:var(--crit)">−$11.06</td></tr>
+</table>
+</div>
+
+<h3>Что это значит — простыми словами</h3>
+<div class="grid cards3" style="margin:14px 0">
+  <div class="stat"><div class="big red">10%</div><div class="lbl">текущая комиссия — на лучшем US-заказе ($100) даёт <b>−$1.04</b> (убыток даже в идеале)</div></div>
+  <div class="stat"><div class="big green">20%</div><div class="lbl">рекомендую для беты — на US-картах <b>+$4…8</b> прибыли с заказа</div></div>
+  <div class="stat"><div class="big amber">32%+</div><div class="lbl">сколько надо, если карту бьёт полный EU-НДС — плоской комиссией это уже не покрыть</div></div>
+</div>
+
+<div class="callout good">
+  <h3 style="margin-top:0">Рекомендация по комиссии</h3>
+  <ol style="margin-bottom:8px">
+    <li><b>Поднять <code>COMMISSION_PERCENT</code> с 10% до 20%</b> для старта беты. Текущие 10% не покрывают даже обработку (≈7.5%) + $4 за карту — мы в минусе/в ноль на каждом заказе. 20% даёт здоровую маржу на US-картах.</li>
+    <li><b>Замерить реальную наценку m</b> на наших картах: каждый <code>release</code> показывает фактическое списание = (фондировали − вернулось)/цена. После ~20-50 заказов вы <b>точно</b> знаете m и калибруете комиссию.</li>
+    <li><b>Если EU-НДС реально бьёт по нашим US-картам</b> (m часто 20%+) — плоская комиссия 20% такие заказы не вытянет (нужно 32%+). Тогда переходить на <b>передачу наценки клиенту</b> (цена + фактический налог) или пер-страну, а не задирать общую комиссию.</li>
+    <li><b>Переиспользовать карты</b> (топап активной вместо новой) — снимает $4 и делает мелкие заказы прибыльными. Логика уже в коде.</li>
+    <li><b>Уточнить эквайринг L&P</b> (СБП ~0.7% vs карта ~3%) — это единственный неизвестный вход; на СБП экономика заметно лучше.</li>
+  </ol>
+  <p style="margin:0;font-size:13.5px" class="muted"><b>Решение владельца (22.06):</b> <code>COMMISSION_PERCENT=30</code> и <code>PAYSPACE_CARD_BUFFER_PERCENT=20</code> — выставлены на проде и проверены. 30% комиссии даёт хорошую маржу на US-картах и делает даже заказ с EU-НДС ~22% близким к безубытку. Буфер 20% покрывает наценку до 20% (эстонский +14% — да); при полном EU-НДС 22-25% возможен отказ карты — отслеживать по первым заказам, при необходимости поднять буфер. Уточнить ставку эквайринга L&P (СБП ~0.7% vs карта ~3%) для финальной калибровки.</p>
 </div>
 
 <!-- ============ FINDINGS ============ -->
