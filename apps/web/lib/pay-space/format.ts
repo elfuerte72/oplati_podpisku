@@ -18,13 +18,49 @@ export function usdCentsToDollarString(cents: number): string {
   return `${sign}${whole}.${String(frac).padStart(2, '0')}`;
 }
 
-/** Сумма из ответа PaySpace (строка "10.5" или число 1.0) → USD-центы (integer). */
+/**
+ * Сумма из ответа PaySpace (строка "10.5" или число 1.0) → USD-центы (integer).
+ *
+ * Парсим через строку, а не `Number(value) * 100`: умножение на 100 в плавающей
+ * точке на «грязных» суммах (например 3+ знака после точки) может разойтись с
+ * фактическим балансом карты на цент. Берём ровно 2 знака центов + 1 знак для
+ * округления к ближайшему. Для штатных 2-знаковых сумм результат идентичен прежнему.
+ */
 export function dollarStringToUsdCents(value: string | number): number {
-  const n = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(n)) {
+  const str = (typeof value === 'number' ? value.toString() : value).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(str)) {
     throw new Error(`dollarStringToUsdCents: невалидная сумма "${value}"`);
   }
-  return Math.round(n * 100);
+  const negative = str.startsWith('-');
+  const [wholePart, fracPart = ''] = str.replace(/^-/, '').split('.');
+  // Добиваем дробную часть нулями до 3 знаков: 2 на центы + 1 на округление.
+  const padded = `${fracPart}000`.slice(0, 3);
+  const centsFromFrac = Number(padded.slice(0, 2));
+  const roundUp = Number(padded[2]) >= 5 ? 1 : 0;
+  const cents = Number(wholePart) * 100 + centsFromFrac + roundUp;
+  return negative ? -cents : cents;
+}
+
+/**
+ * Сумма фондирования карты = цена сервиса + буфер (округление ВВЕРХ, `Math.ceil`).
+ *
+ * Буфер — операционный запас под местный VAT/НДС по стране карты, FX-конвертацию
+ * платёжной сети и foreign-transaction-fee: реальный charge иностранной подписки
+ * часто выше витринной USD-цены (наблюдалось: эстонская карта $100 → списание
+ * ~$114). Без запаса карта на ровную цену получает «недостаточно средств» при
+ * первой же оплате с НДС. Закладывается ТОЛЬКО в сумму карты — цена для клиента
+ * (она же `originalAmount`) не меняется; остаток вернётся на VCC-баланс при release.
+ */
+export function cardFundingUsdCents(priceUsdCents: number, bufferPercent: number): number {
+  if (!Number.isInteger(priceUsdCents) || priceUsdCents < 0) {
+    throw new Error(
+      `cardFundingUsdCents: цена должна быть неотрицательным integer, получено ${priceUsdCents}`,
+    );
+  }
+  if (!Number.isFinite(bufferPercent) || bufferPercent < 0) {
+    throw new Error(`cardFundingUsdCents: буфер должен быть >= 0, получено ${bufferPercent}`);
+  }
+  return Math.ceil(priceUsdCents * (1 + bufferPercent / 100));
 }
 
 /**

@@ -6,7 +6,13 @@ vi.mock('../jobs/dispatcher.ts', () => ({
   dispatchPaymentConfirmed: vi.fn(),
 }));
 
-type Pay = { id: string; orderId: string; status: string; provider: string };
+type Pay = {
+  id: string;
+  orderId: string;
+  status: string;
+  provider: string;
+  amountRub?: number;
+};
 
 vi.mock('@oplati/db', () => {
   const state: { payment: Pay | null; forceClaimNull: boolean } = {
@@ -125,6 +131,55 @@ describe('processInvoicePaid', () => {
     expect(res.kind).toBe('not_found');
     expect(db.claimPaymentSucceeded).not.toHaveBeenCalled();
     expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+
+  it('оплачено меньше выставленного → amount_mismatch, fulfillment НЕ запускается', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+      amountRub: 10000, // выставлено 100 ₽
+    });
+
+    // L&P шлёт amount в рублях; оплачено 80 ₽ при выставленных 100 ₽.
+    const res = await processInvoicePaid({ data: { ...data, amount: 80 }, rawPayload: {} });
+
+    expect(res.kind).toBe('amount_mismatch');
+    // Не клеймим платёж и не запускаем выпуск карты на полную сумму.
+    expect(db.claimPaymentSucceeded).not.toHaveBeenCalled();
+    expect(db.transitionOrder).not.toHaveBeenCalled();
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+
+  it('amount=0 в webhook (поле опционально) → сверку пропускаем, обрабатываем как обычно', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+      amountRub: 10000,
+    });
+
+    const res = await processInvoicePaid({ data: { ...data, amount: 0 }, rawPayload: {} });
+
+    expect(res.kind).toBe('processed');
+    expect(dispatchIssueCard).toHaveBeenCalledWith('order-1');
+  });
+
+  it('точная оплата (amount == сумма заказа) → обрабатываем нормально', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+      amountRub: 10000, // 100 ₽
+    });
+
+    const res = await processInvoicePaid({ data: { ...data, amount: 100 }, rawPayload: {} });
+
+    expect(res.kind).toBe('processed');
+    expect(dispatchIssueCard).toHaveBeenCalledWith('order-1');
   });
 });
 

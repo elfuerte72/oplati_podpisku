@@ -79,6 +79,7 @@ export {
   setOrderCardId,
   findExpiredPendingOrders,
   findStuckPaidOrders,
+  findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,

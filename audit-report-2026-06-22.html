@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Аудит проекта «Оплати подписки» — 22.06.2026</title>
+<style>
+  :root{
+    --bg:#0f1320; --panel:#161b2e; --panel2:#1d2238; --ink:#e8ecf6; --muted:#9aa3bd;
+    --line:#2a3150; --accent:#5b8cff; --accent2:#7c5bff;
+    --crit:#ff4d5e; --high:#ff8a3d; --med:#ffd13d; --low:#5bd6a0; --ok:#37d399;
+    --shadow:0 8px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:linear-gradient(180deg,#0c0f1a,#0f1320 240px);
+    color:var(--ink); font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  header.hero{
+    background:radial-gradient(1200px 400px at 20% -20%,rgba(91,140,255,.25),transparent),
+               linear-gradient(135deg,#1a2138,#141829);
+    border:1px solid var(--line); border-radius:22px; padding:34px 32px; box-shadow:var(--shadow);
+    position:relative; overflow:hidden;
+  }
+  header.hero:after{content:"";position:absolute;right:-60px;top:-60px;width:260px;height:260px;
+    background:radial-gradient(circle,rgba(124,91,255,.35),transparent 70%);filter:blur(6px)}
+  .eyebrow{letter-spacing:.18em;text-transform:uppercase;font-size:12px;color:var(--muted);font-weight:700}
+  h1{margin:.25em 0 .1em;font-size:34px;line-height:1.15;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:15px}
+  .verdict{
+    display:inline-flex;align-items:center;gap:12px;margin-top:22px;padding:14px 20px;border-radius:14px;
+    background:linear-gradient(135deg,rgba(55,211,153,.16),rgba(255,209,61,.12));
+    border:1px solid rgba(91,214,160,.4); font-weight:700; font-size:18px;
+  }
+  .verdict .dot{width:12px;height:12px;border-radius:50%;background:var(--med);box-shadow:0 0 0 5px rgba(255,209,61,.18)}
+  .verdict small{display:block;font-weight:500;color:var(--muted);font-size:13px;margin-top:2px}
+
+  h2{font-size:24px;margin:48px 0 6px;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+  h2 .num{font-size:14px;color:var(--accent);border:1px solid var(--line);border-radius:8px;padding:2px 9px;background:var(--panel)}
+  h3{font-size:18px;margin:26px 0 8px}
+  p{color:#cdd4e8}
+  .lead{font-size:17px;color:#d7ddf0}
+  a{color:var(--accent)}
+
+  .grid{display:grid;gap:16px}
+  .cards4{grid-template-columns:repeat(4,1fr)}
+  .cards3{grid-template-columns:repeat(3,1fr)}
+  .cards2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:760px){.cards4,.cards3,.cards2{grid-template-columns:1fr 1fr}}
+  @media(max-width:480px){.cards4,.cards3,.cards2{grid-template-columns:1fr}}
+
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .stat .big{font-size:30px;font-weight:800;letter-spacing:-.02em}
+  .stat .lbl{color:var(--muted);font-size:13px;margin-top:2px}
+  .stat .big.green{color:var(--ok)} .stat .big.amber{color:var(--med)} .stat .big.red{color:var(--crit)}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:var(--shadow)}
+  .panel+.panel{margin-top:16px}
+
+  /* gauges */
+  .gauges{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  @media(max-width:760px){.gauges{grid-template-columns:1fr 1fr}}
+  .gauge{display:flex;flex-direction:column;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .ring{width:118px;height:118px;border-radius:50%;display:grid;place-items:center;position:relative}
+  .ring::before{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--panel)}
+  .ring span{position:relative;font-weight:800;font-size:26px}
+  .gauge .gl{font-size:14px;color:var(--muted);text-align:center}
+
+  /* bar chart */
+  .bars{display:flex;flex-direction:column;gap:14px;margin-top:8px}
+  .bar{display:grid;grid-template-columns:130px 1fr 44px;align-items:center;gap:12px}
+  .bar .k{font-size:14px;color:var(--muted)}
+  .track{height:22px;background:#11152480;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .fill{height:100%;border-radius:7px 0 0 7px;display:block}
+  .bar .v{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+
+  /* severity legend chips */
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 0}
+  .chip{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+  .sw{width:11px;height:11px;border-radius:3px}
+
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14.5px}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:#0d1120;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:#bcd0ff}
+
+  .tag{display:inline-block;font-size:11.5px;font-weight:800;letter-spacing:.03em;padding:3px 9px;border-radius:7px;text-transform:uppercase}
+  .t-crit{background:rgba(255,77,94,.16);color:#ff7c89;border:1px solid rgba(255,77,94,.45)}
+  .t-high{background:rgba(255,138,61,.14);color:#ffac6e;border:1px solid rgba(255,138,61,.42)}
+  .t-med{background:rgba(255,209,61,.12);color:#ffe08a;border:1px solid rgba(255,209,61,.4)}
+  .t-low{background:rgba(91,214,160,.12);color:#8fe7c2;border:1px solid rgba(91,214,160,.4)}
+  .t-ok{background:rgba(55,211,153,.14);color:#7ef0c0;border:1px solid rgba(55,211,153,.4)}
+
+  .finding{border-left:4px solid var(--line);padding:4px 0 4px 18px;margin:18px 0}
+  .finding.crit{border-color:var(--crit)} .finding.high{border-color:var(--high)} .finding.med{border-color:var(--med)} .finding.low{border-color:var(--low)}
+  .finding h4{margin:.2em 0 .4em;font-size:16.5px}
+  .finding .loc{font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .finding p{margin:.4em 0}
+  .fix{background:rgba(91,140,255,.08);border:1px solid rgba(91,140,255,.25);border-radius:10px;padding:10px 14px;margin-top:8px;font-size:14.5px}
+  .fix b{color:#9fc0ff}
+
+  .callout{border-radius:16px;padding:22px 24px;border:1px solid;margin:18px 0}
+  .callout.blocker{background:linear-gradient(135deg,rgba(255,77,94,.12),rgba(255,138,61,.07));border-color:rgba(255,77,94,.4)}
+  .callout.good{background:linear-gradient(135deg,rgba(55,211,153,.1),rgba(91,140,255,.06));border-color:rgba(55,211,153,.35)}
+  .callout h3{margin-top:0}
+
+  .term{border-bottom:1px dashed var(--muted);cursor:help}
+
+  .road{position:relative;margin-top:14px;padding-left:4px}
+  .step{display:grid;grid-template-columns:120px 1fr;gap:18px;padding:16px 0;border-bottom:1px solid var(--line)}
+  .step:last-child{border-bottom:none}
+  .step .when{font-weight:800;color:var(--accent)}
+  .step .when small{display:block;color:var(--muted);font-weight:500;font-size:12px}
+  .step ul{margin:.2em 0;padding-left:18px}
+  .step li{margin:.25em 0}
+
+  .check{list-style:none;padding:0;margin:8px 0}
+  .check li{display:grid;grid-template-columns:26px 80px 1fr;gap:10px;align-items:start;padding:11px 0;border-bottom:1px solid var(--line)}
+  .check li:last-child{border-bottom:none}
+  .box{width:20px;height:20px;border:2px solid var(--muted);border-radius:6px;margin-top:2px}
+
+  .glossary dt{font-weight:700;color:#cfe0ff;margin-top:12px}
+  .glossary dd{margin:2px 0 0;color:var(--muted);font-size:14.5px}
+
+  footer{margin-top:50px;color:var(--muted);font-size:13px;text-align:center;border-top:1px solid var(--line);padding-top:22px}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .toc a{font-size:13.5px;background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:6px 13px;text-decoration:none;color:#cdd4e8}
+  .toc a:hover{border-color:var(--accent)}
+  .muted{color:var(--muted)}
+  .hr{height:1px;background:var(--line);margin:34px 0;border:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">Технический аудит · Код + Инфраструктура + Безопасность</div>
+  <h1>«Оплати подписки» — отчёт о готовности к бете</h1>
+  <div class="sub">Дата: 22 июня 2026 · Ветка <code>dev</code> · Метод: чтение реального кода (≈162 файла), запуск тестов и проверок, 4 независимых направления аудита</div>
+  <div class="verdict" style="background:linear-gradient(135deg,rgba(55,211,153,.2),rgba(91,140,255,.12));border-color:rgba(91,214,160,.5)">
+    <span class="dot" style="background:var(--ok);box-shadow:0 0 0 5px rgba(55,211,153,.18)"></span>
+    <div>
+      КОД-БЛОКЕР УСТРАНЁН · готово к бете после операционного чек-листа
+      <small>Денежный блокер (буфер на карте) и 7 других находок исправлены в коде, протестированы и собраны. Осталось 5 операционных пунктов «за владельцем» (бэкапы, тариф, алёрты). См. раздел «Статус исправлений».</small>
+    </div>
+  </div>
+  <div class="toc">
+    <a href="#done" style="border-color:var(--ok);color:#8fe7c2">✓ Статус исправлений</a>
+    <a href="#summary">Сводка для руководства</a>
+    <a href="#stats">Статистика</a>
+    <a href="#scores">Оценки по направлениям</a>
+    <a href="#blocker">⚠ Блокер: валютный риск</a>
+    <a href="#findings">Находки</a>
+    <a href="#good">Что сделано хорошо</a>
+    <a href="#scale">Масштабирование</a>
+    <a href="#checklist">Чек-лист до запуска</a>
+    <a href="#glossary">Словарь терминов</a>
+  </div>
+</header>
+
+<!-- ============ DONE / IMPLEMENTATION STATUS ============ -->
+<h2 id="done"><span class="num">00</span>✓ Статус исправлений <span style="font-size:13px;color:var(--muted);font-weight:400">— обновлено после аудита</span></h2>
+
+<div class="callout good">
+  <h3 style="margin-top:0">Что сделано в этой итерации</h3>
+  <p style="margin-bottom:6px">Все находки, которые можно закрыть кодом, — <b>реализованы, покрыты тестами и проверены сборкой</b>. Главный денежный блокер (буфер на карте под чужой НДС) устранён. Операционные пункты (бэкапы, тарифы, алёрты) кодом закрыть нельзя — они вынесены отдельно как «за владельцем».</p>
+</div>
+
+<div class="grid cards4" style="margin:16px 0">
+  <div class="stat"><div class="big green">8</div><div class="lbl">находок исправлено в коде</div></div>
+  <div class="stat"><div class="big green">147 ✓</div><div class="lbl">тестов проходят (+8 новых)</div></div>
+  <div class="stat"><div class="big green">✓</div><div class="lbl">typecheck · lint · build чисто</div></div>
+  <div class="stat"><div class="big amber">5</div><div class="lbl">операционных пунктов за владельцем</div></div>
+</div>
+
+<h3>Реализованные исправления — что, как и чем помогает</h3>
+<table>
+  <tr><th>Находка</th><th>Что сделано в коде</th><th>Чем помогает</th></tr>
+  <tr>
+    <td><span class="tag t-crit">CRIT</span> <b>C1</b><br>буфер карты</td>
+    <td>Новая настройка <code>PAYSPACE_CARD_BUFFER_PERCENT</code> (по умолчанию 20%). Чистая функция <code>cardFundingUsdCents()</code> с округлением <b>вверх</b>; применена при выпуске и пополнении карты. Цена для клиента не меняется.</td>
+    <td><b>Главный блокер закрыт.</b> Карта на $100 теперь фондируется на $120 — покрывает эстонский кейс ($114) и НДС стран ЕС. Платёж по карте больше не падает на чужом налоге.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-high">HIGH</span> <b>P-H1</b><br>сверка суммы</td>
+    <td>В обработчике вебхука сверяем оплаченную сумму с суммой заказа (рубли vs копейки, с допуском на округление). Недоплата → статус <code>amount_mismatch</code>, выпуск карты не запускается, алёрт в Sentry.</td>
+    <td>Защита от выпуска карты на полную сумму при неполной оплате — прямой убыток предотвращён. Аномалия провайдера видна оператору.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-high">HIGH</span> <b>P-H2</b><br>зависшие заказы</td>
+    <td>Новый запрос <code>findStuckInFulfillmentOrders</code> + алёрт в cron каждые 5 минут о заказах, зависших «в обработке» >30 мин. Авто-перевыпуск намеренно НЕ делаем (риск двойной траты) — сигнал оператору.</td>
+    <td>Заказ с выпущенной, но «потерянной» картой больше не пропадает молча — оператор узнаёт и сверяет по кабинету PaySpace.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-med">MED</span> <b>P-M3</b><br>баланс карт</td>
+    <td>Проверку баланса VCC-кошелька вынес в общий модуль и подключил к cron <code>poll-payment</code> — теперь раз в 5 минут, а не раз в сутки.</td>
+    <td>Уход баланса в ноль посреди дня ловится за минуты, а не через сутки. Время на пополнение (T+1) есть.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-med">MED</span> <b>P-M4</b><br>парсинг сумм</td>
+    <td>Конвертацию сумм провайдера переписал через разбор строки с корректным округлением вместо умножения с плавающей точкой.</td>
+    <td>Никакого расхождения на цент при «грязных» суммах от провайдера — балансы карт всегда точны.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-med">MED</span> <b>I-M1</b><br>лимиты cron</td>
+    <td>Добавил <code>ORDER BY</code> + <code>LIMIT 50</code> в два горячих cron-запроса (pending-платежи, зависшие заказы).</td>
+    <td>При завале cron не упирается в таймаут — обрабатывает партиями, хвост добивает следующий запуск.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-med">MED</span> <b>I-M2</b><br>индекс БД</td>
+    <td>Частичный индекс <code>orders_stuck_paid_idx</code> + миграция <code>0009</code> (forward-only через Drizzle).</td>
+    <td>Запрос «зависшие в paid», который бежит каждые 5 минут, не деградирует при росте таблицы заказов.</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-low">LOW</span> <b>гигиена</b></td>
+    <td>Убрал неиспользуемый импорт (линтер теперь без предупреждений); добавил локальные артефакты (<code>api-1.json</code>, <code>content_site/</code>, <code>.agents/</code>) в <code>.gitignore</code>.</td>
+    <td>Чистый линтер; локальные файлы не попадут в коммит по случайному <code>git add</code>.</td>
+  </tr>
+</table>
+
+<h3>Как проверено (глубокое тестирование)</h3>
+<div class="panel">
+  <ul style="margin:0">
+    <li><b>+8 новых тестов</b> на новую логику: буфер карты (буфер 0/15/20%, округление вверх, невалидные входы), сверка суммы (недоплата → стоп, <code>amount=0</code> → пропуск, точная оплата → норма), округление парсинга на 3+ знаках.</li>
+    <li><b>Обновлены</b> существующие тесты выпуска карты под буферизованную сумму (топ-ап и новая карта на $24 вместо $20).</li>
+    <li><b>147 тестов проходят</b> (136 в <code>apps/web</code> + 11 в <code>types</code>); ни одного падения.</li>
+    <li><b>Проверка типов</b> (<code>tsc --noEmit</code>) — чисто во всех 4 пакетах; <b>линтер</b> — 0 ошибок и предупреждений.</li>
+    <li><b>Production-сборка</b> Next.js проходит — все 26 маршрутов компилируются.</li>
+    <li>Источник правды (<code>CLAUDE.md</code>) обновлён: поведение «карта ровно на цену» → «цена + буфер».</li>
+  </ul>
+</div>
+
+<div class="callout blocker" style="margin-top:18px">
+  <h3 style="margin-top:0">Осталось «за владельцем» — кодом не закрыть</h3>
+  <p style="margin-bottom:6px">Это настройки инфраструктуры и процессы, не код. Нужны до приёма реальных денег:</p>
+  <ul style="margin-bottom:8px">
+    <li><span class="tag t-crit">CRIT</span> <b>Supabase Pro</b> — включить ежедневные бэкапы базы (I-C1).</li>
+    <li><span class="tag t-high">HIGH</span> <b>Подтвердить тариф Vercel = Pro</b>, иначе cron «каждые 5 минут» не работает (I-H1).</li>
+    <li><span class="tag t-high">HIGH</span> <b>Sentry Alert Rules → Telegram/почта</b> на алёрты, которые код уже шлёт (низкий баланс, зависшие заказы, недоплата) (I-H3).</li>
+    <li><span class="tag t-high">HIGH</span> <b>Проверить ключи Upstash</b> на проде — иначе ограничитель частоты запросов не активен (S-H1).</li>
+    <li><span class="tag t-med">MED</span> <b>Регламент оператора на возврат</b> при неудачном выпуске; <b>ротация засвеченных webhook-секретов</b>.</li>
+  </ul>
+  <p style="margin:0;font-size:13.5px" class="muted">Также как осознанные решения (не баги) оставлены на ваше усмотрение: TTL заказа 24ч и запасной курс (P-H4), минимальная сумма заказа под $4 issue-fee (P-M1) — это продуктовые/ценовые решения. Глубокие интеграционные тесты слоя БД (K-H1) — рекомендованы следующим шагом перед публичным запуском.</p>
+</div>
+
+<!-- ============ SUMMARY ============ -->
+<h2 id="summary"><span class="num">01</span>Сводка для руководства</h2>
+<p class="lead">Проект сделан <b>дисциплинированно и выше среднего</b> для стартапа: деньги считаются в целых копейках (без ошибок округления), повторные уведомления от банка не создают двойных списаний, секретные данные карт нигде не пишутся в логи. <b>Критических уязвимостей в коде не найдено.</b></p>
+
+<p>Но есть <b>один денежный блокер</b>, который сработает на первом же реальном заказе — и это ровно та проблема, которую вы видели вживую с эстонской картой ($100 → списали ~$114). Плюс несколько операционных вещей, которые нужно закрыть до того, как принимать настоящие деньги.</p>
+
+<div class="grid cards3" style="margin-top:18px">
+  <div class="stat"><div class="big green">0</div><div class="lbl">критических уязвимостей безопасности в коде</div></div>
+  <div class="stat"><div class="big red">1</div><div class="lbl">денежный блокер (буфер на карте) — чинится за ~2 часа</div></div>
+  <div class="stat"><div class="big amber">4</div><div class="lbl">обязательных операционных пункта до запуска</div></div>
+</div>
+
+<div class="callout blocker" style="margin-top:20px">
+  <h3>🚦 Решение по сегодняшнему созвону: что сказать руководству</h3>
+  <p style="margin-bottom:6px"><b>Деньги на pay.space отправлять можно</b> — провайдер карт нужен, чтобы вообще проверить флоу. Но <b>перед приёмом реальных оплат от клиентов</b> бета должна получить одну правку кода (буфер на сумму карты) и 4 операционных галочки. Без буфера каждый второй заказ упадёт на чужом НДС, деньги клиента застрянут у нас, а механизма автоматического возврата в системе пока нет.</p>
+  <p style="margin:0"><b>Рекомендация:</b> запускать бету «для своих» (узкий круг, малый риск) — но либо (а) сегодня же добавить буфер +20% на карту, либо (б) на первые дни брать только сервисы без местного НДС и держать ручную доплату оператором наготове.</p>
+</div>
+
+<!-- ============ STATS ============ -->
+<h2 id="stats"><span class="num">02</span>Статистика проекта</h2>
+<div class="grid cards4">
+  <div class="stat"><div class="big">≈18 300</div><div class="lbl">строк кода TypeScript</div></div>
+  <div class="stat"><div class="big">≈162</div><div class="lbl">файла в проекте</div></div>
+  <div class="stat"><div class="big green">139 / 139</div><div class="lbl">тестов проходят (100% зелёные)</div></div>
+  <div class="stat"><div class="big green">✓ PASS</div><div class="lbl">проверка типов и линтер</div></div>
+</div>
+<div class="grid cards4" style="margin-top:16px">
+  <div class="stat"><div class="big">12</div><div class="lbl">таблиц в базе данных</div></div>
+  <div class="stat"><div class="big">6 / 6</div><div class="lbl">архитектурных правил соблюдены</div></div>
+  <div class="stat"><div class="big amber">≈52%</div><div class="lbl">покрытие тестами критичных путей</div></div>
+  <div class="stat"><div class="big">5</div><div class="lbl">фоновых задач по расписанию (cron)</div></div>
+</div>
+<p class="muted" style="margin-top:12px;font-size:13.5px">Покрытие тестами 52% — это нормально для беты. Хорошо покрыты платёжные сценарии и безопасность; «дыра» — внутренние операции с базой данных (см. находку C-кода H1). Для закрытой беты это приемлемо при включённом мониторинге.</p>
+
+<!-- ============ SEVERITY DISTRIBUTION ============ -->
+<h3>Распределение находок по серьёзности</h3>
+<div class="legend">
+  <span class="chip"><span class="sw" style="background:var(--crit)"></span>Critical — нужно чинить до приёма денег</span>
+  <span class="chip"><span class="sw" style="background:var(--high)"></span>High — важно, риск денег/сбоев</span>
+  <span class="chip"><span class="sw" style="background:var(--med)"></span>Medium — улучшить в ближайшее время</span>
+  <span class="chip"><span class="sw" style="background:var(--low)"></span>Low — косметика / гигиена</span>
+</div>
+<div class="panel" style="margin-top:12px">
+  <div class="bars">
+    <div class="bar"><div class="k">Critical</div><div class="track"><span class="fill" style="width:8%;background:var(--crit)"></span></div><div class="v">2</div></div>
+    <div class="bar"><div class="k">High</div><div class="track"><span class="fill" style="width:46%;background:var(--high)"></span></div><div class="v">12</div></div>
+    <div class="bar"><div class="k">Medium</div><div class="track"><span class="fill" style="width:73%;background:var(--med)"></span></div><div class="v">19</div></div>
+    <div class="bar"><div class="k">Low</div><div class="track"><span class="fill" style="width:73%;background:var(--low)"></span></div><div class="v">19</div></div>
+  </div>
+  <p class="muted" style="margin:14px 0 0;font-size:13.5px">2 critical = денежный буфер на карте (платежи) + отсутствие бэкапов базы данных (инфраструктура). Из 12 High большинство — это «подстелить соломку» на случай сбоя, а не дыры прямо сейчас.</p>
+</div>
+
+<!-- ============ SCORES ============ -->
+<h2 id="scores"><span class="num">03</span>Готовность по направлениям</h2>
+<p>Четыре независимых аудита, каждый читал реальный код своей зоны. Оценка — насколько направление готово к бете (0–100).</p>
+<div class="gauges">
+  <div class="gauge">
+    <div class="ring" style="background:conic-gradient(var(--ok) 0 85%,#222a44 85% 100%)"><span>85</span></div>
+    <div class="gl"><b>Безопасность</b><br>0 крит. дыр в коде, пара настроек</div>
+  </div>
+  <div class="gauge">
+    <div class="ring" style="background:conic-gradient(var(--med) 0 70%,#222a44 70% 100%)"><span>70</span></div>
+    <div class="gl"><b>Платежи / деньги</b><br>точность отличная, но буфер-блокер</div>
+  </div>
+  <div class="gauge">
+    <div class="ring" style="background:conic-gradient(var(--ok) 0 88%,#222a44 88% 100%)"><span>88</span></div>
+    <div class="gl"><b>Качество кода</b><br>зрело, правила соблюдены</div>
+  </div>
+  <div class="gauge">
+    <div class="ring" style="background:conic-gradient(var(--med) 0 72%,#222a44 72% 100%)"><span>72</span></div>
+    <div class="gl"><b>Инфраструктура</b><br>пулинг ок, нужны бэкапы+алёрты</div>
+  </div>
+</div>
+
+<!-- ============ BLOCKER ============ -->
+<h2 id="blocker"><span class="num">04</span>⚠ Главный блокер: валютный риск (ваш кейс с эстонской картой)</h2>
+
+<div class="callout blocker">
+  <h3>Что происходит простыми словами</h3>
+  <p>Логика сейчас такая: AI находит цену подписки (например <b>$100</b>), и мы выпускаем виртуальную карту <b>ровно на $100</b>, цент-в-цент. Но когда клиент платит этой картой за подписку, иностранный сервис часто списывает <b>больше</b> заявленной цены:</p>
+  <ul>
+    <li><b><span class="term" title="VAT / НДС — местный налог на цифровые услуги. В ЕС считается по стране карты клиента.">НДС</span> по стране карты</b> — для Эстонии это до +22%;</li>
+    <li><b>региональная цена</b> сервиса (в Европе дороже, чем витринная американская);</li>
+    <li><b><span class="term" title="FX — конвертация валют. Если карта в USD, а сервис биллит в EUR/GBP, платёжная сеть добавляет свою наценку.">валютная конвертация</span> и сборы</b> платёжной сети за иностранную операцию.</li>
+  </ul>
+  <p style="margin-bottom:0">Итог — ровно то, что вы видели: за подписку <b>$100</b> карта пытается списать <b>≈$114</b>. А на карте всего $100 → <b>отказ «недостаточно средств»</b>. При этом деньги клиента в рублях мы <b>уже приняли</b>, а подписка <b>не оплачена</b>.</p>
+</div>
+
+<h3>Почему это критично именно сейчас</h3>
+<p>Код выпуска карты <b>никак не ловит</b> этот отказ: команды «создать карту» и «пополнить» отрабатывают успешно (карта-то выпущена), заказ помечается «выполнен», клиенту уходят реквизиты — а реальная оплата подписки падает уже потом. Хуже того:</p>
+<ul>
+  <li><b>Нет автоматического возврата</b> денег клиенту (механизм возврата в коде отсутствует — только статусы в базе);</li>
+  <li>Заказ может <b>навсегда зависнуть</b> в статусе «в обработке», и фоновое восстановление его не подберёт.</li>
+</ul>
+
+<div class="finding crit" style="border-color:var(--ok)">
+  <span class="tag t-crit">Critical · C1</span> <span class="tag t-ok">✓ РЕШЕНО</span>
+  <h4>Карта выпускается ровно на цену сервиса — без запаса на налоги и конвертацию</h4>
+  <p style="background:rgba(55,211,153,.1);border:1px solid rgba(55,211,153,.35);border-radius:10px;padding:8px 12px;margin:6px 0"><b>Исправлено:</b> добавлен буфер <code>PAYSPACE_CARD_BUFFER_PERCENT</code> (20%), карта фондируется на цену + запас. Покрыто тестами, см. раздел «Статус исправлений».</p>
+  <div class="loc">Места в коде (проверено вручную): <code>propose-order.ts:219</code> · <code>issue-card.ts:91</code> · <code>pay-space/client.ts:165</code></div>
+  <p>В трёх местах сумма карты = заявленная цена без единого процента запаса. На любом сервисе с местным НДС платёж по карте обречён на отказ.</p>
+  <div class="fix"><b>Как чинить (≈2 часа):</b> ввести буфер на <b>сумму карты</b> через новую настройку <code>PAYSPACE_CARD_BUFFER_PERCENT</code> (старт 20%), округление <b>вверх</b>. Формула: <code>сумма_карты = ⌈цена × 1.20⌉</code>. Важно: буфер кладётся <b>только в карту</b>, цена для клиента не меняется (клиент платит цену + комиссия 10%). Неизрасходованный остаток буфера возвращается на наш баланс при закрытии карты (<code>releaseCard</code>) — то есть деньги не теряются, а оборачиваются.</p>
+</div>
+
+<h3>Сколько это стоит в деньгах — наглядно</h3>
+<div class="panel">
+  <p class="muted" style="margin-top:0;font-size:13.5px">Недобор средств на карте при разных наценках (карта выпущена на $100):</p>
+  <div class="bars">
+    <div class="bar"><div class="k">США (нет НДС)</div><div class="track"><span class="fill" style="width:2%;background:var(--low)"></span></div><div class="v">$0</div></div>
+    <div class="bar"><div class="k">+ конвертация ~3%</div><div class="track"><span class="fill" style="width:12%;background:var(--med)"></span></div><div class="v">$3</div></div>
+    <div class="bar"><div class="k">Эстония (ваш кейс)</div><div class="track"><span class="fill" style="width:56%;background:var(--high)"></span></div><div class="v">$14</div></div>
+    <div class="bar"><div class="k">ЕС: НДС 22% + сборы</div><div class="track"><span class="fill" style="width:100%;background:var(--crit)"></span></div><div class="v">$25</div></div>
+  </div>
+  <p class="muted" style="margin:14px 0 0;font-size:13.5px">Вывод: буфер <b>+20%</b> закрывает большинство стран ЕС. Точную цифру откалибруете по первым реальным заказам беты — для этого бета и нужна. Стартовать безопаснее с запасом, чем без.</p>
+</div>
+
+<!-- ============ FINDINGS ============ -->
+<h2 id="findings"><span class="num">05</span>Ключевые находки по направлениям</h2>
+
+<h3>💳 Платежи и деньги</h3>
+<table>
+  <tr><th>Серьёзность</th><th>Находка</th><th>Чем грозит</th></tr>
+  <tr><td><span class="tag t-crit">CRIT</span></td><td><b>C1.</b> Нет буфера на карте (см. блокер выше)</td><td>Отказ оплаты, деньги клиента застряли</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>P-H1.</b> Сумма из уведомления банка не сверяется с суммой заказа <span class="mono">handlers.ts</span></td><td>Частичная оплата прошла бы как полная</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>P-H2.</b> Заказ может зависнуть «в обработке», если карта выпущена, но запись в базу не дошла <span class="mono">issue-card.ts</span></td><td>Карта оплачена из нашего кошелька, клиент её не получил, восстановление не находит</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>P-H3.</b> Нет пути возврата при неудачном выполнении заказа</td><td>Оплатил — не получил — деньги остались у нас (репутация/юр. риск)</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>P-H4.</b> Курс рубль/доллар фиксируется на 24 ч, не перепроверяется при оплате; запасной курс «95» при сбое</td><td>На скачке курса заказ становится убыточным</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>P-M1.</b> Комиссия 10% не покрывает $4 за выпуск новой карты на дешёвых заказах</td><td>Заказы дешевле ~$40 убыточны при выпуске новой карты</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>P-M3.</b> Баланс кошелька карт проверяется раз в сутки, без запаса на оборот + задержку пополнения T+1</td><td>Деньги на карты могут кончиться среди дня → каскад отказов</td></tr>
+</table>
+
+<h3>🔒 Безопасность</h3>
+<table>
+  <tr><th>Серьёзность</th><th>Находка</th><th>Чем грозит</th></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>S-H1.</b> <span class="term" title="Rate limiting — ограничение числа запросов от одного клиента, защита от спама и накрутки AI-расходов.">Ограничитель частоты запросов</span> скорее всего не активен на проде (нет ключей Upstash)</td><td>Один абьюзер может сжечь дневной AI-бюджет на всех</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>S-H2.</b> Веб-личность (cookie/IP) легко сбрасывается → обход лимита «10 заказов/сутки»</td><td>Спам черновиками; денег не теряем — оплату спасает привязка Telegram</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>S-M1.</b> Авторизация Telegram-кабинета (initData) не проверена на живой подписи</td><td>Скорее «ложный отказ», чем взлом — но проверить до показа кабинета</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>S-M3.</b> Подпись уведомления от Love&Pay без метки времени → теоретически «повторяема»</td><td>На практике нейтрализуется защитой от дублей; код менять не нужно</td></tr>
+  <tr><td><span class="tag t-ok">ХОРОШО</span></td><td>Защита от <span class="term" title="Prompt injection — попытка через сообщение заставить AI нарушить инструкции (создать заказ на произвольную сумму, слить системный промпт).">prompt-инъекций</span>, подмены чужих заказов, утечки PAN/CVC</td><td>Даже взлом AI не превысит серверных лимитов $1–500 и проверки владельца</td></tr>
+</table>
+
+<h3>🏗 Инфраструктура и надёжность</h3>
+<table>
+  <tr><th>Серьёзность</th><th>Находка</th><th>Чем грозит</th></tr>
+  <tr><td><span class="tag t-crit">CRIT</span></td><td><b>I-C1.</b> Нет автоматических бэкапов базы (бесплатный тариф Supabase)</td><td>Для сервиса с деньгами — недопустимо: одна ошибка и данные о платежах не вернуть</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>I-H1.</b> Проверить тариф Vercel: на бесплатном <span class="term" title="Cron — задачи по расписанию (каждые 5 минут проверяем потерянные платежи и зависшие заказы).">cron-задачи</span> «каждые 5 минут» не работают</td><td>Восстановление потерянных платежей мёртвое (в истории проекта уже был такой инцидент)</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>I-H2.</b> Бесплатный тариф Supabase — узкое место (коннекты, размер, автопауза)</td><td>На росте — отказы соединений; уходить на Pro до 200/день</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>I-H3.</b> Нет эскалирующих алёртов на бизнес-инциденты — только записи в Sentry</td><td>Об упавшей карте / кончившемся балансе узна́ете, только если сами зайдёте в Sentry</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>I-M1.</b> Cron-запросы без лимита (тянут все зависшие заказы за раз)</td><td>При завале упрутся в таймаут и не добьют хвост</td></tr>
+  <tr><td><span class="tag t-ok">ХОРОШО</span></td><td><span class="term" title="Connection pooling — переиспользование соединений к базе. Типичная ошибка serverless здесь — исчерпать коннекты; тут сделано правильно (пулер 6543, transaction mode).">Пул соединений к базе</span> настроен правильно; фон через <code>after()</code>; деньги-инварианты железобетонные</td><td>Типичная ошибка serverless-проектов здесь избегнута</td></tr>
+</table>
+
+<h3>🧩 Качество кода</h3>
+<table>
+  <tr><th>Серьёзность</th><th>Находка</th><th>Чем грозит</th></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>K-H1.</b> Слой работы с базой (атомарные денежные операции) не покрыт тестами</td><td>Код прочитан — корректен, но тонкий баг в SQL прошёл бы незаметно</td></tr>
+  <tr><td><span class="tag t-high">HIGH</span></td><td><b>K-H3.</b> «Своя сумма» в Telegram хранится во флаге последнего сообщения без привязки к заказу</td><td>При буре сообщений сумма может прицепиться не к тому заказу</td></tr>
+  <tr><td><span class="tag t-med">MED</span></td><td><b>K-M2.</b> Часть ответов бота не пишется в историю → AI «не видит» выданную ссылку/отмену</td><td>Путаница агента на следующем шаге, не падение</td></tr>
+  <tr><td><span class="tag t-ok">ХОРОШО</span></td><td>Все 6 архитектурных правил соблюдены; <code>strict</code>-типизация; нет проглоченных ошибок; нет <code>console.log</code></td><td>Зрелая, поддерживаемая кодовая база</td></tr>
+</table>
+
+<!-- ============ GOOD ============ -->
+<h2 id="good"><span class="num">06</span>Что сделано по-настоящему хорошо</h2>
+<div class="callout good">
+  <p style="margin-top:0">Это не «причесанный» отчёт — сильные стороны реально несут на себе решение «запускать бету». Ключевое:</p>
+  <ul style="margin-bottom:0">
+    <li><b>Двойных списаний не будет.</b> Повторное уведомление от банка или гонка «webhook + проверка по расписанию» обрабатываются <span class="term" title="Идемпотентность — повторный вызов даёт тот же результат, без дублей. Реализовано через атомарный апдейт строки и уникальный ключ платежа.">атомарно</span> — карта пополняется ровно один раз.</li>
+    <li><b>Деньги — только целые копейки/центы.</b> Нигде нет дробных чисел с плавающей точкой → нет «потерянных копеек».</li>
+    <li><b>Секреты карт (PAN/CVC) не утекают</b> — никогда не пишутся в логи, базу или Sentry; уходят клиенту только сообщением в Telegram.</li>
+    <li><b>Сравнение паролей/токенов защищено от тайминг-атак</b>, уведомления банка — по криптоподписи, внутренние эндпоинты — по секретному токену.</li>
+    <li><b>Многослойная защита AI-расходов:</b> дешёвый «роутер» отсеивает мусор до дорогой модели, дневной бюджет токенов, серверные лимиты заказов ($1–500, ≤10/сутки).</li>
+    <li><b>Все 6 архитектурных правил соблюдены</b>, 139 тестов зелёные, проверка типов и линтер проходят.</li>
+  </ul>
+</div>
+
+<!-- ============ SCALE ============ -->
+<h2 id="scale"><span class="num">07</span>Как масштабироваться</h2>
+<p class="lead">Главный вывод: <b>техническая пропускная способность — НЕ ваше узкое место.</b> Архитектура (serverless + пул соединений + восстановление по расписанию) спокойно держит 1000 заказов/день без переписывания. Упрётесь раньше в другое:</p>
+<div class="grid cards3" style="margin:14px 0">
+  <div class="stat"><div class="big amber">№1</div><div class="lbl">Ручной фулфилмент операторами — растёт линейно по людям. Решает автоматизация через pay.space</div></div>
+  <div class="stat"><div class="big amber">№2</div><div class="lbl">AI-расходы — Sonnet на каждый диалог. Гнать happy-path через кнопки мимо AI</div></div>
+  <div class="stat"><div class="big amber">№3</div><div class="lbl">Бесплатный Supabase — бэкапы, коннекты, размер. Уходить на Pro</div></div>
+</div>
+
+<div class="panel">
+<div class="road">
+  <div class="step">
+    <div class="when">Сейчас<small>~50/день, бета</small></div>
+    <div>
+      <b>Закрыть до приёма реальных денег:</b>
+      <ul>
+        <li>🔴 <b>Буфер +20% на карту</b> (блокер C1)</li>
+        <li>🔴 <b>Supabase Pro ($25/мес)</b> — ежедневные бэкапы (нельзя брать деньги без бэкапа)</li>
+        <li>🟠 Подтвердить, что Vercel на тарифе <b>Pro</b> (иначе восстановление по расписанию не работает)</li>
+        <li>🟠 Алёрты в Telegram/почту на: упавший заказ, низкий баланс карт, потерянный платёж</li>
+        <li>🟡 Ротация засвеченных webhook-секретов (висит в задачах проекта)</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="when">50 → 200<small>/день</small></div>
+    <div>
+      <ul>
+        <li>Включить выпуск карт pay.space на <b>проде</b> → автоматизировать фулфилмент (главный рычаг разгрузки операторов)</li>
+        <li>Реализовать передачу диалога оператору (Telegram forum-topics — схема уже описана)</li>
+        <li>Добавить недостающие индексы базы + лимиты в cron-запросы</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="when">200 → 1000<small>/день</small></div>
+    <div>
+      <ul>
+        <li>Отделить тестовое окружение (preview) от боевой базы — отдельный проект Supabase</li>
+        <li>Ввести <span class="term" title="Очередь сообщений с гарантией доставки и повторами. Upstash QStash — HTTP-нативная, дружит с serverless, дешёвый вход.">очередь (Upstash QStash)</span> для выпуска карт вместо фон-задачи — надёжные повторы, разгрузка вебхука</li>
+        <li>Кэш каталога сервисов; архивация истории чата (растёт быстрее всего)</li>
+        <li>Пересмотреть дневной AI-бюджет как unit-экономику</li>
+      </ul>
+    </div>
+  </div>
+  <div class="step">
+    <div class="when">1000 → 5000<small>/день</small></div>
+    <div>
+      <ul>
+        <li>≥90% заказов через полностью автоматический флоу карт (ручной фулфилмент перестаёт масштабироваться первым)</li>
+        <li>Полноценная очередь с «мёртвой» очередью для разбора сбоев; убрать фон-задачи с денежных путей</li>
+        <li>Supabase: следить за коннектами/нагрузкой, реплика для аналитики; дашборд + дежурство (on-call)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+</div>
+<p class="muted" style="font-size:13.5px">Про Kafka/RabbitMQ: на этих объёмах <b>не нужны</b> — это решение проблемы, которой у вас нет (десятки тысяч сообщений/сек). Если когда-нибудь понадобится очередь — первым шагом Upstash QStash, а не свой брокер.</p>
+
+<!-- ============ CHECKLIST ============ -->
+<h2 id="checklist"><span class="num">08</span>Чек-лист перед запуском беты</h2>
+<div class="panel">
+<ul class="check">
+  <li><div class="box"></div><span class="tag t-crit">CRIT</span><div><b>Буфер +20% на сумму карты</b> (<code>PAYSPACE_CARD_BUFFER_PERCENT</code>, округление вверх). Без него — массовые отказы оплаты по сценарию с эстонской картой.</div></li>
+  <li><div class="box"></div><span class="tag t-crit">CRIT</span><div><b>Supabase Pro</b> ради ежедневных бэкапов. Принимать деньги без бэкапа базы нельзя.</div></li>
+  <li><div class="box"></div><span class="tag t-high">HIGH</span><div><b>Подтвердить тариф Vercel = Pro</b>, иначе cron «каждые 5 минут» не выполняется и восстановление платежей мёртвое.</div></li>
+  <li><div class="box"></div><span class="tag t-high">HIGH</span><div><b>Алёрты с эскалацией</b> (Sentry → Telegram/почта) на: заказ в «оплачен/провален», низкий баланс карт, потерянный платёж, плюс «сторож» на молчащий cron.</div></li>
+  <li><div class="box"></div><span class="tag t-high">HIGH</span><div><b>Проверить, что ограничитель частоты запросов активен</b> на проде (ключи Upstash заданы), иначе AI-бюджет беззащитен.</div></li>
+  <li><div class="box"></div><span class="tag t-med">MED</span><div><b>Регламент оператора на возврат</b>: что делать, если оплачено, но карта не выпустилась (механизма авто-возврата нет).</div></li>
+  <li><div class="box"></div><span class="tag t-med">MED</span><div><b>Завести запас на кошельке карт</b> минимум на день оборота + лаг пополнения T+1; проверять баланс чаще, чем раз в сутки.</div></li>
+  <li><div class="box"></div><span class="tag t-low">LOW</span><div>Закрыть ротацию засвеченных webhook-секретов; добавить <code>api-1.json</code>, <code>content_site/</code>, <code>.agents/</code> в <code>.gitignore</code>.</div></li>
+</ul>
+</div>
+
+<!-- ============ GLOSSARY ============ -->
+<h2 id="glossary"><span class="num">09</span>Словарь терминов</h2>
+<div class="panel glossary">
+  <dl>
+    <dt>Webhook (вебхук)</dt><dd>HTTP-уведомление, которое внешний сервис (банк, Telegram) шлёт нам сам, когда происходит событие — например «инвойс оплачен».</dd>
+    <dt>Идемпотентность</dt><dd>Свойство «повторный вызов не навредит». Если банк пришлёт уведомление об оплате дважды, карта всё равно пополнится один раз.</dd>
+    <dt>VCC (виртуальная карта)</dt><dd>Virtual Credit Card — выпускаемая через pay.space одноразовая карта в долларах, которой оплачивается иностранная подписка.</dd>
+    <dt>Префандинг</dt><dd>Деньги, заранее заведённые на кошелёк карт, из которого выпускаются и пополняются VCC. Пополнение идёт T+1 (на следующий день) и со своим сбором.</dd>
+    <dt>НДС / VAT</dt><dd>Местный налог на цифровые услуги. В ЕС начисляется по стране карты клиента и добавляется поверх витринной цены — корень валютного блокера.</dd>
+    <dt>FX</dt><dd>Конвертация валют. Карта в USD, а сервис может списывать в EUR/GBP — платёжная сеть добавляет свою наценку.</dd>
+    <dt>Connection pooling (пул соединений)</dt><dd>Переиспользование соединений к базе данных. Без него serverless-функции быстро исчерпывают лимит коннектов — здесь настроено правильно.</dd>
+    <dt>RLS (Row Level Security)</dt><dd>Построчная защита доступа в базе: по умолчанию никто ничего не видит, доступ — только через серверный код.</dd>
+    <dt>Rate limiting</dt><dd>Ограничение числа запросов от одного клиента за период. Защита от спама и накрутки AI-расходов.</dd>
+    <dt>Prompt injection</dt><dd>Попытка через сообщение заставить AI-агента нарушить инструкции. Здесь смягчена и не может превысить серверные лимиты.</dd>
+    <dt>Cron</dt><dd>Задачи по расписанию. Каждые 5 минут проверяем потерянные платежи и зависшие заказы (подстраховка вебхуков).</dd>
+    <dt>Fail-open / fail-closed</dt><dd>Поведение при сбое защиты. Fail-open — «при поломке пропускать» (доступность важнее), fail-closed — «при поломке блокировать» (безопасность важнее).</dd>
+    <dt>PITR</dt><dd>Point-in-Time Recovery — восстановление базы на любой момент в прошлом. Доступно на платном тарифе Supabase.</dd>
+    <dt>Serverless</dt><dd>Функции без постоянного сервера: поднимаются на запрос и гаснут. Дёшево и масштабируемо, но фоновые задачи требуют особой обработки.</dd>
+  </dl>
+</div>
+
+<footer>
+  Отчёт подготовлен автоматизированным аудитом по реальному коду ветки <code>dev</code> (22.06.2026). Все ссылки <span class="mono">файл:строка</span> проверяемы в репозитории.<br>
+  Критичная находка C1 (буфер на карте) перепроверена вручную. Severity-оценки — синтез 4 независимых направлений аудита.
+</footer>
+
+</div>
+</body>
+</html>

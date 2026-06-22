@@ -37,6 +37,7 @@ export type InvoicePaidInput = {
 export type HandlerResult =
   | { kind: 'processed'; paymentId: string; orderId: string }
   | { kind: 'idempotent_skip'; paymentId: string; reason: string }
+  | { kind: 'amount_mismatch'; paymentId: string; expectedKopecks: number; gotKopecks: number }
   | { kind: 'not_found'; providerRef: string };
 
 /**
@@ -61,6 +62,36 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       extra: { providerRef: data.id, invoiceNumber: data.invoiceNumber },
     });
     return { kind: 'not_found', providerRef: data.id };
+  }
+
+  // Сверка суммы оплаты с суммой заказа. L&P шлёт `amount` в РУБЛЯХ (не копейках);
+  // наш `payment.amountRub` — копейки. В webhook-пути `amount` опционален и может
+  // прийти как 0 — тогда сверку пропускаем (нечего сравнивать). При polling-пути
+  // (getInvoice) сумма всегда реальная. Если оплачено заметно МЕНЬШЕ выставленного
+  // (допуск 1 копейка на округление) — НЕ фулфилим: иначе выпустим карту на полную
+  // сумму, получив неполную оплату (прямой убыток). Деньги-вопрос → разбирает оператор.
+  const gotKopecks = Math.round(data.amount * 100);
+  if (gotKopecks > 0 && gotKopecks < payment.amountRub - 1) {
+    log.error({
+      event: 'loveandpay.handlers.amount_mismatch',
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      expectedKopecks: payment.amountRub,
+      gotKopecks,
+    });
+    Sentry.captureMessage('L&P invoice.paid: оплачено меньше выставленного — fulfillment остановлен', {
+      level: 'error',
+      tags: { source: 'loveandpay.handlers', alert: 'amount_mismatch' },
+      extra: {
+        paymentId: payment.id,
+        orderId: payment.orderId,
+        expectedKopecks: payment.amountRub,
+        gotKopecks,
+        invoiceId: data.id,
+        invoiceNumber: data.invoiceNumber,
+      },
+    });
+    return { kind: 'amount_mismatch', paymentId: payment.id, expectedKopecks: payment.amountRub, gotKopecks };
   }
 
   // Атомарный claim `pending → succeeded`: строку получит ровно ОДИН из

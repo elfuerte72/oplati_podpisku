@@ -1,6 +1,5 @@
 import {
   loveAndPayInvoiceResponseSchema,
-  loveAndPayInvoiceSchema,
   loveAndPayRatesResponseSchema,
   loveAndPayErrorSchema,
   type LoveAndPayInvoice,

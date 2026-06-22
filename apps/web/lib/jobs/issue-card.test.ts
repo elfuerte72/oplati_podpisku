@@ -5,6 +5,9 @@ process.env.APP_URL = 'https://example.com';
 process.env.SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-anon';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
+// Буфер карты на VAT/FX фиксируем явно (serverEnv кэшируется на весь файл):
+// цена $20.00 → карта ceil(2000 × 1.20) = 2400 центов.
+process.env.PAYSPACE_CARD_BUFFER_PERCENT = '20';
 
 type OrderLike = {
   id: string;
@@ -100,17 +103,20 @@ describe('issueCard', () => {
     });
   });
 
-  it('happy path: claim успешен, активная карта → ровно один топ-ап', async () => {
+  it('happy path: claim успешен, активная карта → топ-ап на сумму С БУФЕРОМ', async () => {
     await issueCard('order-1');
 
     expect(db.transitionOrderDetailed).toHaveBeenCalledTimes(1);
     expect(h.topupMock).toHaveBeenCalledTimes(1);
+    // Цена $20.00 (2000), буфер 20% → карта на 2400 (запас под VAT/FX).
     expect(h.topupMock).toHaveBeenCalledWith({
       cardId: 'pc-1',
-      amountUsdCents: 2000,
+      amountUsdCents: 2400,
       requestId: 'topup_order-1_card-1',
     });
+    // updateBalance пишет фактически пополненную (буферизованную) сумму.
     expect(db.updateBalance).toHaveBeenCalledTimes(1);
+    expect(db.updateBalance).toHaveBeenCalledWith(expect.anything(), 'card-1', 2400, expect.anything());
     // in_fulfillment → completed (claim уже сделал paid → in_fulfillment).
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
   });
@@ -179,6 +185,8 @@ describe('issueCard', () => {
     await issueCard('order-1');
 
     expect(h.createCardMock).toHaveBeenCalledTimes(1);
+    // Новая карта выпускается тоже на сумму с буфером: 2000 → 2400.
+    expect(h.createCardMock).toHaveBeenCalledWith({ amountUsdCents: 2400 });
     expect(h.topupMock).not.toHaveBeenCalled();
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
