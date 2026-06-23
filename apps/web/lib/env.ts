@@ -131,6 +131,14 @@ const serverEnvSchema = z.object({
   CRON_SECRET: optionalEnvString(),
   CRON_TOKEN: optionalEnvString(),
 
+  // Алерты Sentry → Telegram (relay POST /api/alerts/sentry). Sentry alert rule
+  // шлёт webhook с секретом в query (?s=<...>), endpoint пересылает алёрт в
+  // Telegram через бота. SENTRY_ALERT_WEBHOOK_SECRET гейтит запрос (timing-safe);
+  // ALERT_TELEGRAM_CHAT_ID — куда слать (telegram_id владельца или id группы
+  // алёртов, где бот). Любой не задан → endpoint no-op (200).
+  SENTRY_ALERT_WEBHOOK_SECRET: optionalEnvString(),
+  ALERT_TELEGRAM_CHAT_ID: optionalEnvString(),
+
   // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
   // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —
   // RATE_LIMIT_DISABLED='1'/'true' (читается в lib/ratelimit.ts).
