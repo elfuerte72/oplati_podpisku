@@ -8,6 +8,7 @@ import {
   getDb,
   getOrderById,
   getUserTelegramId,
+  markIdle,
   setOrderCardId,
   transitionOrder,
   transitionOrderDetailed,
@@ -17,7 +18,7 @@ import {
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents } from '../pay-space/format.ts';
-import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
+import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
 
 /**
@@ -115,24 +116,55 @@ export async function issueCard(orderId: string): Promise<void> {
   try {
     const paypace = getPaySpaceClient();
 
-    // 1. Активная карта пользователя — топ-ап.
+    // 1. Активная карта пользователя — топ-ап. Если провайдер ОТКЛОНИТ топ-ап
+    //    (карта протухла/заблокирована/из чужого окружения — БД общая prod/preview,
+    //    карта может принадлежать другому PaySpace-аккаунту), выводим её из реюза и
+    //    падаем на выпуск НОВОЙ, а не валим оплаченный заказ в failed.
     let card = await findActiveByUserId(db, order.userId);
     if (card) {
-      log.info({ event: 'job.issue_card.reusing_active', orderId, cardId: card.id });
-      const topup = await paypace.topupCard({
-        cardId: card.providerCardId,
-        amountUsdCents,
-        requestId: `topup_${orderId}_${card.id}`,
-      });
-      ensureTopupCompleted(topup, orderId);
-      await updateBalance(db, card.id, amountUsdCents, log);
-      log.info({
-        event: 'job.issue_card.topup_ok',
-        cardId: card.id,
-        balanceUsdCents: topup.balanceUsdCents,
-      });
-    } else {
-      // 2. Активной карты нет — выпускаем НОВУЮ.
+      try {
+        log.info({ event: 'job.issue_card.reusing_active', orderId, cardId: card.id });
+        const topup = await paypace.topupCard({
+          cardId: card.providerCardId,
+          amountUsdCents,
+          requestId: `topup_${orderId}_${card.id}`,
+        });
+        ensureTopupCompleted(topup, orderId);
+        await updateBalance(db, card.id, amountUsdCents, log);
+        log.info({
+          event: 'job.issue_card.topup_ok',
+          cardId: card.id,
+          balanceUsdCents: topup.balanceUsdCents,
+        });
+      } catch (err) {
+        // PaySpaceApiError на топ-апе = провайдер ОТКЛОНИЛ операцию (success:false
+        // или submit.status='failed') → деньги НЕ списаны, карту безопасно вывести
+        // из реюза и выпустить новую. Иные ошибки НЕ маскируем: timeout/pending →
+        // плоский Error из ensureTopupCompleted (возможна неопределённость по
+        // списанию), контракт-дрифт → PaySpaceContractError — пробрасываем (заказ
+        // уйдёт в failed, чтобы не рисковать двойной тратой).
+        if (!(err instanceof PaySpaceApiError)) throw err;
+        log.warn({
+          event: 'job.issue_card.topup_rejected_fallback',
+          orderId,
+          cardId: card.id,
+          code: err.code,
+        });
+        Sentry.captureMessage(
+          'issue-card: топ-ап переиспользуемой карты отклонён — выпускаю новую',
+          {
+            level: 'warning',
+            tags: { source: 'job.issue-card' },
+            extra: { orderId, cardId: card.id, code: err.code },
+          },
+        );
+        await markIdle(db, card.id, new Date(), log);
+        card = null; // форсим выпуск новой ниже
+      }
+    }
+
+    if (!card) {
+      // 2. Активной карты нет (или реюз отклонён выше) — выпускаем НОВУЮ.
       // Recycled-карты между клиентами НЕ переиспользуем: `release` закрывает
       // карту в провайдере необратимо, а переиспользование PAN разными клиентами
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
@@ -167,10 +199,9 @@ export async function issueCard(orderId: string): Promise<void> {
       });
     }
 
-    // 4. Привязать card к order.
-    if (card) {
-      await setOrderCardId(db, orderId, card.id, log);
-    }
+    // 4. Привязать card к order (card гарантированно не null: топ-ап активной
+    //    выше ИЛИ только что выпущенная новая).
+    await setOrderCardId(db, orderId, card.id, log);
 
     // 5. Завершаем fulfillment: in_fulfillment → completed (claim уже перевёл
     // заказ в in_fulfillment выше).
@@ -179,7 +210,7 @@ export async function issueCard(orderId: string): Promise<void> {
       toStatus: 'completed',
       actorType: 'system',
       eventType: 'fulfillment_completed',
-      payload: card ? { cardId: card.id, panMasked: card.panMasked } : null,
+      payload: { cardId: card.id, panMasked: card.panMasked },
     });
 
     log.info({ event: 'job.issue_card.completed', orderId });

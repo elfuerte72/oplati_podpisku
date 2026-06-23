@@ -17,17 +17,31 @@ type OrderLike = {
   shortId: string;
 };
 
-const h = vi.hoisted(() => ({
-  topupMock: vi.fn(),
-  createCardMock: vi.fn(),
-  sendMessageMock: vi.fn(),
-  paySpaceConfigured: { value: true },
-  dbState: {
-    order: null as OrderLike | null,
-    claimTransitioned: true,
-    activeCard: null as Record<string, unknown> | null,
-  },
-}));
+const h = vi.hoisted(() => {
+  // Стаб PaySpaceApiError: issue-card делает `err instanceof PaySpaceApiError`,
+  // поэтому брошенная в тесте ошибка должна быть инстансом ИМЕННО того класса,
+  // что экспортит мок '../pay-space/index.ts' ниже.
+  class PaySpaceApiError extends Error {
+    code: string;
+    constructor(opts: { code: string; message: string }) {
+      super(opts.message);
+      this.name = 'PaySpaceApiError';
+      this.code = opts.code;
+    }
+  }
+  return {
+    topupMock: vi.fn(),
+    createCardMock: vi.fn(),
+    sendMessageMock: vi.fn(),
+    PaySpaceApiError,
+    paySpaceConfigured: { value: true },
+    dbState: {
+      order: null as OrderLike | null,
+      claimTransitioned: true,
+      activeCard: null as Record<string, unknown> | null,
+    },
+  };
+});
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
@@ -41,6 +55,7 @@ vi.mock('@oplati/db', () => ({
   findRecyclableCard: vi.fn(async () => null),
   createCard: vi.fn(async () => ({ id: 'card-new', providerCardId: 'pc-new', panMasked: '****1234' })),
   markActive: vi.fn(async () => {}),
+  markIdle: vi.fn(async () => {}),
   updateBalance: vi.fn(async () => {}),
   setOrderCardId: vi.fn(async () => {}),
   getUserTelegramId: vi.fn(async () => '12345'),
@@ -53,6 +68,7 @@ vi.mock('../pay-space/index.ts', () => ({
     createCard: h.createCardMock,
     getCardInfo: vi.fn(),
   }),
+  PaySpaceApiError: h.PaySpaceApiError,
 }));
 
 vi.mock('../telegram/bot.ts', () => ({
@@ -190,5 +206,36 @@ describe('issueCard', () => {
     expect(h.topupMock).not.toHaveBeenCalled();
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
+  });
+
+  it('топ-ап отклонён провайдером (PaySpaceApiError) → карта в idle + выпуск НОВОЙ, заказ completed', async () => {
+    // Активная карта есть, но провайдер отклоняет топ-ап (напр. карта из чужого
+    // окружения при общей БД prod/preview).
+    h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'rejected' }));
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+
+    await issueCard('order-1');
+
+    // Сломанную карту вывели из реюза.
+    expect(db.markIdle).toHaveBeenCalledTimes(1);
+    expect(db.markIdle).toHaveBeenCalledWith(expect.anything(), 'card-1', expect.any(Date), expect.anything());
+    // Выпустили новую + реквизиты ушли клиенту.
+    expect(h.createCardMock).toHaveBeenCalledTimes(1);
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    // НЕ updateBalance (топ-ап провалился), заказ доведён до completed (НЕ failed).
+    expect(db.updateBalance).not.toHaveBeenCalled();
+    expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'completed' }),
+    );
   });
 });
