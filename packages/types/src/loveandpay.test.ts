@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loveAndPayWebhookEventSchema } from './loveandpay.ts';
+import { loveAndPayInvoiceResponseSchema, loveAndPayWebhookEventSchema } from './loveandpay.ts';
 
 /**
  * Контракт снят с РЕАЛЬНОГО платежа L&P (discovery 2026-06-09):
@@ -77,5 +77,48 @@ describe('loveAndPayWebhookEventSchema', () => {
       data: { id: 'i', invoiceNumber: 'INV', status: 'PAID' },
     });
     expect(res.success).toBe(false);
+  });
+});
+
+/**
+ * Регрессия: GET /invoices/{id} (проверка статуса, polling-recovery в cron
+ * poll-payment) НЕ возвращает `paymentLink` — оно есть только в ответе на
+ * создание инвойса. Раньше схема требовала paymentLink → каждый прогон падал с
+ * LoveAndPayContractError (подтверждено в проде, balanceUsdCents-логи). Теперь
+ * поле optional, статус-ответ парсится.
+ */
+describe('loveAndPayInvoiceResponseSchema (status vs create)', () => {
+  it('парсит ответ на проверку статуса БЕЗ paymentLink', () => {
+    const statusResponse = {
+      success: true,
+      invoice: {
+        id: 'a2ee2016-f048-40a9-b57b-555e9b60523b',
+        invoiceNumber: 'INV-1781002602464-47705e4b5bca',
+        amount: 2090,
+        currency: 'RUB',
+        status: 'PAID',
+        expiresAt: '2026-06-09T11:59:04.291Z',
+      },
+    };
+    const parsed = loveAndPayInvoiceResponseSchema.parse(statusResponse);
+    expect(parsed.invoice.status).toBe('PAID');
+    expect(parsed.invoice.paymentLink).toBeUndefined();
+  });
+
+  it('по-прежнему принимает paymentLink, когда он есть (ответ на создание)', () => {
+    const createResponse = {
+      success: true,
+      invoice: {
+        id: 'i1',
+        invoiceNumber: 'INV-1',
+        amount: 2090,
+        currency: 'RUB',
+        status: 'PENDING',
+        expiresAt: '2026-06-09T11:59:04.291Z',
+        paymentLink: 'https://pay.example.com/i1',
+      },
+    };
+    const parsed = loveAndPayInvoiceResponseSchema.parse(createResponse);
+    expect(parsed.invoice.paymentLink).toBe('https://pay.example.com/i1');
   });
 });

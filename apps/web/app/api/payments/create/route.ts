@@ -137,6 +137,16 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
 
     const invoice = invoiceResp.invoice;
+    // paymentLink в схеме optional (в ответе на проверку статуса его нет), но в
+    // ответе на СОЗДАНИЕ он обязателен — инвойс без ссылки на оплату непригоден.
+    // Форсим явно, чтобы не отдать клиенту пустой paymentUrl.
+    if (!invoice.paymentLink) {
+      throw new LoveAndPayApiError({
+        code: 'missing_payment_link',
+        httpStatus: 502,
+        message: 'L&P создал инвойс без paymentLink',
+      });
+    }
     log.info({
       event: 'payments.create.invoice_created',
       orderId,

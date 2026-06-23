@@ -78,7 +78,14 @@ export const loveAndPayInvoiceSchema = z.object({
   createdAt: z.string().optional(),
   qrCode: z.string().optional(),
   qrPayload: z.string().optional(),
-  paymentLink: z.string().url(),
+  /**
+   * Ссылка на оплату. Присутствует ТОЛЬКО в ответе на СОЗДАНИЕ инвойса
+   * (POST /invoices). В ответе на проверку статуса (GET /invoices/{id}) поля
+   * нет — поэтому optional, иначе polling-recovery (cron poll-payment) падает с
+   * LoveAndPayContractError на каждом прогоне. Обязательность для create
+   * форсится явным guard в `payments/create` (инвойс без ссылки непригоден).
+   */
+  paymentLink: z.string().url().optional(),
   originalPaymentUrl: z.string().url().optional(),
   externalOrderId: z.string().optional(),
   kycRequired: z.boolean().optional(),
