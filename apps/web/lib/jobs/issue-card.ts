@@ -15,6 +15,7 @@ import {
   updateBalance,
 } from '@oplati/db';
 
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents } from '../pay-space/format.ts';
@@ -71,7 +72,7 @@ export async function issueCard(orderId: string): Promise<void> {
   }
   if (!order.originalAmount || order.originalAmount <= 0) {
     log.error({ event: 'job.issue_card.invalid_amount', orderId });
-    await markOrderFailed(orderId, 'invalid_amount');
+    await markOrderFailed(orderId, 'invalid_amount', order.shortId);
     return;
   }
 
@@ -221,11 +222,11 @@ export async function issueCard(orderId: string): Promise<void> {
       tags: { source: 'job.issue-card' },
       extra: { orderId },
     });
-    await markOrderFailed(orderId, 'paypace_error');
+    await markOrderFailed(orderId, 'paypace_error', order.shortId);
   }
 }
 
-async function markOrderFailed(orderId: string, reason: string): Promise<void> {
+async function markOrderFailed(orderId: string, reason: string, shortId?: string): Promise<void> {
   try {
     const db = getDb();
     await transitionOrder(db, {
@@ -242,6 +243,12 @@ async function markOrderFailed(orderId: string, reason: string): Promise<void> {
       tags: { source: 'job.issue-card', step: 'mark_failed' },
     });
   }
+
+  // Прямой алерт владельцу: деньги приняты, карта не доехала — это нельзя
+  // пропустить. Канал не зависит от Sentry alert rules (см. notifyOps).
+  await notifyOps(
+    `Оплаченный заказ ${shortId ?? orderId} НЕ доставлен: выпуск карты упал (${reason}). Нужен ручной разбор.`,
+  );
 }
 
 /**
