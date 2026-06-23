@@ -31,3 +31,6 @@ skills-lock.json
 /*.docx
 /*.pdf
 /TZ.md
+
+# Локальный webhook-URL Sentry-алертов (содержит секрет, не коммитить)
+.sentry-webhook.local.txt
