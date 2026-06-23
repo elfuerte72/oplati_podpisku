@@ -8,6 +8,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
 // Буфер карты на VAT/FX фиксируем явно (serverEnv кэшируется на весь файл):
 // цена $20.00 → карта ceil(2000 × 1.20) = 2400 центов.
 process.env.PAYSPACE_CARD_BUFFER_PERCENT = '20';
+// Прямой ops-алерт в Telegram при провале выпуска (notifyOps).
+process.env.ALERT_TELEGRAM_CHAT_ID = '379336096';
 
 type OrderLike = {
   id: string;
@@ -153,6 +155,12 @@ describe('issueCard', () => {
     expect(db.transitionOrder).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
+    );
+    // Прямой ops-алерт владельцу: оплаченный заказ не доехал.
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '379336096',
+      expect.stringContaining('НЕ доставлен'),
     );
   });
 
