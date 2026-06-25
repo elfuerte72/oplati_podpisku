@@ -145,18 +145,47 @@ export async function issueCard(orderId: string): Promise<void> {
         // списанию), контракт-дрифт → PaySpaceContractError — пробрасываем (заказ
         // уйдёт в failed, чтобы не рисковать двойной тратой).
         if (!(err instanceof PaySpaceApiError)) throw err;
+
+        // Диагностика причины отказа: реальный статус карты в PaySpace
+        // (2 Frozen / 3 Expired / 4 Locked / 0 Deactivated / 9 Inactivated)
+        // объясняет, почему провайдер отклонил топ-ап; ошибка getCardInfo
+        // ("card not found") подтверждает гипотезу чужого окружения (общая БД
+        // prod/preview). Best-effort: не валим фолбэк, если диагностика упадёт.
+        let cardDiag: Record<string, unknown>;
+        try {
+          const info = await paypace.getCardInfo(card.providerCardId);
+          cardDiag = {
+            statusCode: info.statusCode,
+            statusLabel: info.statusLabel,
+            balanceUsdCents: info.balanceUsdCents,
+            expDate: info.expDate,
+          };
+        } catch (diagErr) {
+          cardDiag = { infoError: diagErr instanceof Error ? diagErr.message : String(diagErr) };
+        }
+
         log.warn({
           event: 'job.issue_card.topup_rejected_fallback',
           orderId,
           cardId: card.id,
+          providerCardId: card.providerCardId,
           code: err.code,
+          message: err.message,
+          cardDiag,
         });
         Sentry.captureMessage(
           'issue-card: топ-ап переиспользуемой карты отклонён — выпускаю новую',
           {
             level: 'warning',
             tags: { source: 'job.issue-card' },
-            extra: { orderId, cardId: card.id, code: err.code },
+            extra: {
+              orderId,
+              cardId: card.id,
+              providerCardId: card.providerCardId,
+              code: err.code,
+              message: err.message,
+              cardDiag,
+            },
           },
         );
         await markIdle(db, card.id, new Date(), log);

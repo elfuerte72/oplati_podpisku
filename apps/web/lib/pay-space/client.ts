@@ -207,6 +207,9 @@ export class PaySpaceClient {
     });
 
     if (submit.status === 'failed') {
+      // Причину провайдер в ответе topup не передаёт (контракт = request_id +
+      // status). Реальный диагноз даёт getCardInfo в issue-card. Логируем только
+      // известные поля — инвариант: ничего недокументированного в Sentry.
       throw new PaySpaceApiError({
         code: 'topup_failed',
         httpStatus: 200,

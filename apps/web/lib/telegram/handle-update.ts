@@ -61,6 +61,7 @@ import {
   catalogTierPrompt,
   MEDIA_REPLY,
   orderCardText,
+  SUPPORT_MOCK_TEXT,
   type MediaKind,
 } from './templates';
 
@@ -344,6 +345,14 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   if (text === '/menu' || text.startsWith('/menu ') || text.startsWith('/menu@')) {
     log.info({ event: 'telegram.menu', chatId, telegramUserId });
     await showCatalogList(chatId, undefined, update.update_id);
+    return;
+  }
+
+  // /support — вызов оператора. Пока MOCK (handoff не реализован): отвечаем
+  // заглушкой без AI, до rate-limit. См. SUPPORT_MOCK_TEXT.
+  if (text === '/support' || text.startsWith('/support ') || text.startsWith('/support@')) {
+    log.info({ event: 'telegram.support', chatId, telegramUserId });
+    await sendSafely(chatId, SUPPORT_MOCK_TEXT, update.update_id);
     return;
   }
 
