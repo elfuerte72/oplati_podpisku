@@ -203,14 +203,19 @@ export class PaySpaceClient {
         amt: usdCentsToDollarString(input.amountUsdCents),
         request_id: input.requestId,
       },
-      schema: paySpaceAsyncOpDataSchema,
+      // passthrough: при status:'failed' провайдер может вернуть доп. поля
+      // (reason/msg/code) сверх контракта. НЕ стрипаем их, чтобы причина отказа
+      // дошла до лога/Sentry, а не терялась (см. issue-card topup_rejected_fallback).
+      schema: paySpaceAsyncOpDataSchema.passthrough(),
     });
 
     if (submit.status === 'failed') {
+      // Полный ответ провайдера (request_id+status и любые доп. поля) в message —
+      // для диагностики, почему топ-ап отклонён. Сумм/PAN тут нет, логировать можно.
       throw new PaySpaceApiError({
         code: 'topup_failed',
         httpStatus: 200,
-        message: `topup failed (request_id=${submit.request_id})`,
+        message: `topup failed: ${JSON.stringify(submit)}`,
       });
     }
 
