@@ -47,8 +47,11 @@ async function resolveSupportUrl(): Promise<string | null> {
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const supportUrl = await resolveSupportUrl();
-    const webSessionId = await readWebSessionId();
+    // Независимы — параллелим, чтобы cold-start getMe не задерживал чтение сессии.
+    const [supportUrl, webSessionId] = await Promise.all([
+      resolveSupportUrl(),
+      readWebSessionId(),
+    ]);
     if (!webSessionId) {
       return NextResponse.json({ ok: true, profile: EMPTY, supportUrl }, { status: 200 });
     }

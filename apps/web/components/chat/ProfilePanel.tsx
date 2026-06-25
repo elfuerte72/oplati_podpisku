@@ -57,6 +57,18 @@ export function ProfilePanel({
   const [profile, setProfile] = useState<Profile | null>(null);
   const [supportUrl, setSupportUrl] = useState<string | null>(null);
 
+  // На мобильном закрытый drawer уезжает off-screen (translate-x-full), но
+  // остаётся в DOM — прячем его от скринридеров/таб-навигации через inert.
+  // На десктопе (lg+) панель статична и всегда интерактивна → inert не ставим.
+  const [isDesktop, setIsDesktop] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+
   const loadProfile = useCallback(() => {
     void fetchWithTimeout('/api/profile')
       .then((res) => res.json() as Promise<ProfileResponse>)
@@ -103,6 +115,7 @@ export function ProfilePanel({
           'lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:shadow-none',
         ].join(' ')}
         aria-label="Личный профиль"
+        {...(!isDesktop && !open ? { inert: true } : {})}
       >
         {/* Закрыть — только мобильный drawer. */}
         <button
