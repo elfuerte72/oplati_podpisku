@@ -87,6 +87,8 @@ export function ChatClient() {
   const [paidOrders, setPaidOrders] = useState<string[]>([]);
   const [celebrating, setCelebrating] = useState(false);
   const [pose, setPose] = useState<MascotPose>('wave');
+  // Профиль-drawer на мобильном (на десктопе панель видна всегда).
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -512,6 +514,18 @@ export function ChatClient() {
                 </svg>
               </button>
               <ThemeToggle />
+              {/* Профиль — только мобильный (на десктопе панель видна всегда). */}
+              <button
+                type="button"
+                onClick={() => setProfileOpen(true)}
+                aria-label="Открыть профиль"
+                title="Профиль и поддержка"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--surface)] text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none lg:hidden"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
             </div>
           </div>
         </header>
@@ -599,7 +613,12 @@ export function ChatClient() {
         )}
       </section>
 
-      <ProfilePanel pose={pose} typing={sending} />
+      <ProfilePanel
+        pose={pose}
+        typing={sending}
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+      />
     </div>
   );
 }

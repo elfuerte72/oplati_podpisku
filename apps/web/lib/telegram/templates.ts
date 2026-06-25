@@ -94,6 +94,13 @@ export function catalogCustomAmountPrompt(service: CatalogService): string {
 export const CATALOG_AMOUNT_INVALID_TEXT =
   'Не понял сумму. Напиши число в долларах от $1 до $500 — например: 120. Или нажми /menu, чтобы выбрать другой сервис.';
 
+/**
+ * Ответ на /support — вызов оператора. Пока MOCK: реальный handoff оператору
+ * (Telegram forum-topics) ещё не реализован, поэтому отвечаем заглушкой.
+ */
+export const SUPPORT_MOCK_TEXT =
+  'Данная настройка в разработке. Связь с оператором появится здесь чуть позже — а пока просто напиши, что нужно оплатить, и я помогу.';
+
 /** Текст карточки заказа под кнопками «Подтвердить» / «Отменить». */
 export function orderCardText(card: {
   shortId: string;
