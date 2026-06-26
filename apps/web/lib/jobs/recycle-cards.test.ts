@@ -58,7 +58,8 @@ describe('recycleCards', () => {
 
     expect(res).toEqual({ idled: 2, recycled: 2, errors: 0 });
     expect(h.releaseMock).toHaveBeenCalledTimes(2);
-    expect(h.releaseMock).toHaveBeenCalledWith('pc-1', 'recycle_card-1');
+    // Короткий детерминированный request_id (длинный PaySpace молча отклоняет).
+    expect(h.releaseMock).toHaveBeenCalledWith('pc-1', expect.stringMatching(/^rel_[0-9a-f]{16}$/));
     expect(db.markRecycled).toHaveBeenCalledTimes(2);
     // баланс в норме — алёрта нет
     expect(sentry.captureMessage).not.toHaveBeenCalled();
