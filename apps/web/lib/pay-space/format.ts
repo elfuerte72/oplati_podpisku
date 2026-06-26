@@ -5,6 +5,26 @@
  * в create), а наш внутренний инвариант — деньги integer в минимальных единицах
  * (USD-центы). Перевод — только здесь.
  */
+import { createHash } from 'node:crypto';
+
+/**
+ * Короткий детерминированный `request_id` для операций PaySpace (topup/release).
+ *
+ * ВАЖНО (живой вызов 2026-06-26): PaySpace МОЛЧА отклоняет операцию
+ * (`success:true, status:'failed'`) при слишком длинном `request_id`.
+ * Прод-формат `topup_<uuid-заказа>_<uuid-карты>` (79 символов) падал на каждом
+ * заказе → реюз карт не срабатывал ни разу, фолбэк плодил новые карты ($4/шт.).
+ * Тот же вызов с коротким id (28 символов) проходит (`completed`). Точный лимит
+ * в доке не указан; берём заведомо короткий ключ. См. docs/known-issues.
+ *
+ * Хэшируем входные части в 16 hex-символов: детерминированно (повтор того же
+ * fulfillment → тот же ключ, идемпотентность провайдера), коллизионно-устойчиво,
+ * и коротко (`<prefix>_<16hex>` ≤ ~20 символов).
+ */
+export function paySpaceRequestId(prefix: string, ...parts: string[]): string {
+  const hash = createHash('sha256').update(parts.join(':')).digest('hex').slice(0, 16);
+  return `${prefix}_${hash}`;
+}
 
 /** USD-центы (integer) → строка-доллары "X.XX" (без потери точности на fp). */
 export function usdCentsToDollarString(cents: number): string {

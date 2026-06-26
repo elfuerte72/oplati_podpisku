@@ -130,7 +130,8 @@ describe('issueCard', () => {
     expect(h.topupMock).toHaveBeenCalledWith({
       cardId: 'pc-1',
       amountUsdCents: 2400,
-      requestId: 'topup_order-1_card-1',
+      // Короткий детерминированный ключ (длинный PaySpace молча отклоняет).
+      requestId: expect.stringMatching(/^t_[0-9a-f]{16}$/),
     });
     // updateBalance пишет фактически пополненную (буферизованную) сумму.
     expect(db.updateBalance).toHaveBeenCalledTimes(1);
