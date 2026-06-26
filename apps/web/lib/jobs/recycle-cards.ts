@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import { findCardsToRecycle, getDb, idleAgedActiveCards, markRecycled } from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
+import { paySpaceRequestId } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 import { alertOnLowVccBalance } from './vcc-balance.ts';
 
@@ -54,7 +55,13 @@ export async function recycleCards(): Promise<{ idled: number; recycled: number;
       const paypace = getPaySpaceClient();
       for (const card of toRecycle) {
         try {
-          const res = await paypace.releaseCard(card.providerCardId, `recycle_${card.id}`);
+          // Короткий request_id: длинный PaySpace молча отклоняет (см.
+          // paySpaceRequestId). release-путь живьём ещё не запускался (180д),
+          // лимит у него неизвестен — держим заведомо короткий ключ.
+          const res = await paypace.releaseCard(
+            card.providerCardId,
+            paySpaceRequestId('rel', card.id),
+          );
           await markRecycled(db, card.id, log);
           recycled++;
           log.info({

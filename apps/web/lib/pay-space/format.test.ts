@@ -5,6 +5,7 @@ import {
   dollarStringToUsdCents,
   maskPan,
   parseExpDate,
+  paySpaceRequestId,
   usdCentsToDollarString,
 } from './format.ts';
 
@@ -107,5 +108,31 @@ describe('parseExpDate', () => {
   it('бросает на неизвестном формате', () => {
     expect(() => parseExpDate('27-06')).toThrow();
     expect(() => parseExpDate('garbage')).toThrow();
+  });
+});
+
+describe('paySpaceRequestId', () => {
+  const orderId = '624c9c49-5d87-4c31-ba0c-af14d071ae5e';
+  const cardId = '7f44128b-69fc-400d-afd4-a2e170009680';
+
+  it('держит request_id коротким (PaySpace молча отклоняет длинный — 79 симв. падал, ≤28 ок)', () => {
+    // Регрессия на главный баг карт: `topup_<uuid>_<uuid>` = 79 символов
+    // отклонялся провайдером. Ключ должен быть заведомо коротким.
+    const id = paySpaceRequestId('t', orderId, cardId);
+    expect(id.length).toBeLessThanOrEqual(28);
+    expect(id).toMatch(/^t_[0-9a-f]{16}$/);
+  });
+
+  it('детерминирован по входу (идемпотентность повтора того же fulfillment)', () => {
+    expect(paySpaceRequestId('t', orderId, cardId)).toBe(paySpaceRequestId('t', orderId, cardId));
+  });
+
+  it('различает разные заказы/карты и разные префиксы', () => {
+    expect(paySpaceRequestId('t', orderId, cardId)).not.toBe(
+      paySpaceRequestId('t', orderId, 'other-card'),
+    );
+    expect(paySpaceRequestId('t', orderId, cardId)).not.toBe(
+      paySpaceRequestId('rel', orderId, cardId),
+    );
   });
 });

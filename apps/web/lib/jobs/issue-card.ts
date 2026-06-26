@@ -18,7 +18,7 @@ import {
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
-import { cardFundingUsdCents } from '../pay-space/format.ts';
+import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
 
@@ -128,7 +128,10 @@ export async function issueCard(orderId: string): Promise<void> {
         const topup = await paypace.topupCard({
           cardId: card.providerCardId,
           amountUsdCents,
-          requestId: `topup_${orderId}_${card.id}`,
+          // Короткий детерминированный ключ: длинный request_id PaySpace молча
+          // отклоняет (см. paySpaceRequestId). Детерминизм по (order, card)
+          // сохраняет идемпотентность повтора того же fulfillment.
+          requestId: paySpaceRequestId('t', orderId, card.id),
         });
         ensureTopupCompleted(topup, orderId);
         await updateBalance(db, card.id, amountUsdCents, log);
