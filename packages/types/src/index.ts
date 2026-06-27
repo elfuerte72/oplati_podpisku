@@ -79,7 +79,7 @@ export const orderParameters = z.object({
   serviceSlug: z.string().optional(),
   customDescription: z.string().optional(),
   tierName: z.string().optional(),
-  period: z.enum(['month', 'year']).optional(),
+  period: z.enum(['month', 'quarter', 'year']).optional(),
   accountEmail: z.string().email().optional(),
   region: z.string().optional(),
   // свободные поля для сервисов со специфическими требованиями
@@ -91,7 +91,7 @@ export type OrderParameters = z.infer<typeof orderParameters>;
 
 export const serviceTier = z.object({
   name: z.string(),
-  period: z.enum(['month', 'year']),
+  period: z.enum(['month', 'quarter', 'year']),
   priceRub: z.number().int().positive(), // в копейках
   originalAmount: z.number().int().positive().optional(),
   currency: z.string().length(3).optional(),
@@ -110,7 +110,7 @@ export const proposeOrderInput = z.object({
   serviceSlug: z.string().optional(),
   customDescription: z.string().optional(),
   tierName: z.string().optional(),
-  period: z.enum(['month', 'year']).optional(),
+  period: z.enum(['month', 'quarter', 'year']).optional(),
   accountEmail: z.string().email().optional(),
   notes: z.string().optional(),
 });

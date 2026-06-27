@@ -40,6 +40,7 @@ export type ProposeFromCatalogInput = {
   slug: string;
   /** Для тарифных сервисов (взаимоисключающе с amountUsdCents). */
   tierName?: string;
+  tierPeriod?: 'month' | 'quarter' | 'year';
   /** Только для custom-amount сервисов; целые USD-центы. */
   amountUsdCents?: number;
 };
@@ -93,7 +94,7 @@ function fail(error: ProposeFromCatalogError): ProposeFromCatalogResult {
 export async function proposeFromCatalog(
   input: ProposeFromCatalogInput,
 ): Promise<ProposeFromCatalogResult> {
-  const { userId, conversationId, channel, slug, tierName, amountUsdCents } = input;
+  const { userId, conversationId, channel, slug, tierName, tierPeriod, amountUsdCents } = input;
 
   try {
     const db = getDb();
@@ -121,6 +122,7 @@ export async function proposeFromCatalog(
       const tier = tiers.find(
         (t) =>
           t.name === tierName &&
+          (!tierPeriod || t.period === tierPeriod) &&
           t.currency === 'USD' &&
           (t.originalAmount ?? 0) > CUSTOM_AMOUNT_THRESHOLD_USD_CENTS,
       );
@@ -128,7 +130,7 @@ export async function proposeFromCatalog(
         return fail('tier_not_found');
       }
       orderUsdCents = tier.originalAmount;
-      tierLabel = `${tier.name} · ${tier.period === 'year' ? 'год' : 'месяц'}`;
+      tierLabel = `${tier.name} · ${formatTierPeriod(tier.period)}`;
     }
 
     const result = await proposeOrder({
@@ -175,6 +177,7 @@ export async function proposeFromCatalog(
       shortId: result.shortId,
       slug,
       tierName: tierName ?? null,
+      tierPeriod: tierPeriod ?? null,
       amountUsdCents: orderUsdCents,
       totalKopecks: result.totalRubKopecks,
     });
@@ -207,4 +210,10 @@ export async function proposeFromCatalog(
     Sentry.captureException(err, { tags: { source: 'catalog.propose' } });
     return fail('propose_failed');
   }
+}
+
+function formatTierPeriod(period: 'month' | 'quarter' | 'year'): string {
+  if (period === 'year') return 'год';
+  if (period === 'quarter') return '3 месяца';
+  return 'месяц';
 }

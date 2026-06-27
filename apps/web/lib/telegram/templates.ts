@@ -75,7 +75,8 @@ export function catalogTierPrompt(serviceName: string): string {
 
 /** Лейбл кнопки тарифа: «Plus · месяц — 1 750 ₽». */
 export function catalogTierButtonLabel(tier: CatalogTier): string {
-  const period = tier.period === 'year' ? 'год' : 'месяц';
+  const period =
+    tier.period === 'year' ? 'год' : tier.period === 'quarter' ? '3 месяца' : 'месяц';
   return `${tier.name} · ${period} — ${formatRub(tier.totalKopecks)}`;
 }
 

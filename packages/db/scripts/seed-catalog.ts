@@ -12,16 +12,13 @@
  * рендерит ВСЕ USD-тарифы автоматически из `pricing_policy.tiers[]`.
  *
  * Правила, которые нельзя нарушать (иначе сломается матчинг заказа):
- *   - В пределах одного сервиса `tier.name` ДОЛЖНЫ быть уникальны: web-флоу
- *     (`/api/orders/propose`) находит тариф по имени. Сейчас все уровни —
- *     помесячные (`period: 'month'`); годовые добавлять отдельной итерацией
- *     вместе с доработкой матчинга на (name + period).
+ *   - В пределах одного сервиса пара (`tier.name`, `tier.period`) ДОЛЖНА быть
+ *     уникальна: web/Telegram-флоу находит тариф по имени + периоду.
  *   - `originalAmount` — USD-центы (источник цены витрины × живой курс).
  *   - `priceRub` — placeholder (в копейках), на витрине НЕ используется (там
  *     пересчёт по живому курсу). Считается helper'ом `usd()` ниже.
  *
- * Цены — справочные на момент ресёрча; владелец сверяет перед production
- * (часть взята из агрегаторов, не из живых официальных pricing-страниц).
+ * Цены — справочные на момент ресёрча; владелец сверяет перед production.
  *
  * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с originalAmount=1
  * (≤ 1 цента — маркер «индивидуальная цена», см. lib/catalog/build.ts). Кнопочный
@@ -50,7 +47,7 @@ const DEPRECATED_SLUGS: readonly string[] = ['midjourney', 'claude-code'];
 
 /** Справочный курс и маржа — только для placeholder `priceRub` (не витрина). */
 const RATE_HINT = 95.5;
-const MARGIN = 0.15;
+const MARGIN = 0.3;
 
 /**
  * Конструктор тарифа из долларовой цены. `originalAmount` (USD-центы) —
@@ -58,7 +55,11 @@ const MARGIN = 0.15;
  * zod-валидации (.positive()), фактическая рублёвая сумма считается по живому
  * курсу в момент заказа.
  */
-function usd(name: string, dollars: number, period: 'month' | 'year' = 'month'): ServiceTier {
+function usd(
+  name: string,
+  dollars: number,
+  period: 'month' | 'quarter' | 'year' = 'month',
+): ServiceTier {
   return {
     name,
     period,
@@ -267,6 +268,39 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Fan', 9.99),
       usd('Mega Fan', 13.99),
       usd('Ultimate Fan', 17.99),
+    ]),
+  },
+
+  // ─── Gaming ────────────────────────────────────────────────────────────────
+  {
+    slug: 'playstation-plus',
+    name: 'PlayStation Plus',
+    description: 'Подписка PlayStation Plus: Essential, Extra, Premium',
+    category: 'gaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Essential', 10.99),
+      usd('Essential', 27.99, 'quarter'),
+      usd('Essential', 79.99, 'year'),
+      usd('Extra', 16.99),
+      usd('Extra', 43.99, 'quarter'),
+      usd('Extra', 134.99, 'year'),
+      usd('Premium', 19.99),
+      usd('Premium', 54.99, 'quarter'),
+      usd('Premium', 159.99, 'year'),
+    ]),
+  },
+  {
+    slug: 'xbox-game-pass',
+    name: 'Xbox Game Pass',
+    description: 'Подписки Xbox Game Pass: Essential, Premium, Ultimate, PC',
+    category: 'gaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Essential', 9.99),
+      usd('Premium', 14.99),
+      usd('Ultimate', 22.99),
+      usd('PC Game Pass', 13.99),
     ]),
   },
 

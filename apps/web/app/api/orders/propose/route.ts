@@ -31,6 +31,7 @@ const bodySchema = z
   .object({
     slug: z.string().trim().min(1).max(100),
     tierName: z.string().trim().min(1).max(100).optional(),
+    tierPeriod: z.enum(['month', 'quarter', 'year']).optional(),
     // Только для custom-amount сервисов; целые USD-центы.
     amountUsdCents: z.number().int().positive().optional(),
   })
@@ -61,7 +62,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!parsed.success) {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
-  const { slug, tierName, amountUsdCents } = parsed.data;
+  const { slug, tierName, tierPeriod, amountUsdCents } = parsed.data;
 
   try {
     const db = getDb();
@@ -79,6 +80,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       channel: 'web',
       slug,
       tierName,
+      tierPeriod,
       amountUsdCents,
     });
 

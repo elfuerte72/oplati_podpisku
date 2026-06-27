@@ -32,6 +32,12 @@ const PROPOSE_FAIL_TEXT =
 const MIN_AMOUNT_USD = 1;
 const MAX_AMOUNT_USD = 500;
 
+function formatTierPeriod(period: 'month' | 'quarter' | 'year'): string {
+  if (period === 'year') return 'год';
+  if (period === 'quarter') return '3 месяца';
+  return 'месяц';
+}
+
 type StartScreenProps = {
   onOrderCreated: (card: OrderCard) => void;
   onOwnVariant: () => void;
@@ -74,7 +80,10 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
   }, [catalog, loadCatalog, onListOpen]);
 
   const propose = useCallback(
-    async (slug: string, payload: { tierName?: string; amountUsdCents?: number }) => {
+    async (
+      slug: string,
+      payload: { tierName?: string; tierPeriod?: 'month' | 'quarter' | 'year'; amountUsdCents?: number },
+    ) => {
       if (proposing) return;
       setProposing(true);
       try {
@@ -241,11 +250,11 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
                   key={`${t.name}-${t.period}`}
                   type="button"
                   disabled={proposing}
-                  onClick={() => void propose(selected.slug, { tierName: t.name })}
+                  onClick={() => void propose(selected.slug, { tierName: t.name, tierPeriod: t.period })}
                   className="flex w-full items-center justify-between gap-3 rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-3 shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] hover:-translate-y-0.5 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span className="font-body text-sm font-semibold text-[var(--text)]">
-                    {t.name} · {t.period === 'year' ? 'год' : 'месяц'}
+                    {t.name} · {formatTierPeriod(t.period)}
                   </span>
                   <span className="font-display text-lg font-bold text-[var(--accent)]">
                     {proposing ? '…' : formatRub(t.totalKopecks)}

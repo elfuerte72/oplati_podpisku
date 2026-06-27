@@ -46,6 +46,26 @@ describe('buildCatalogService', () => {
     ]);
   });
 
+  it('сохраняет 3-месячный период тарифа', () => {
+    const svc = buildCatalogService(
+      row({
+        slug: 'playstation-plus',
+        pricingPolicy: {
+          tiers: [
+            { name: 'Essential', period: 'quarter', priceRub: 1, originalAmount: 2799, currency: 'USD' },
+          ],
+        },
+      }),
+      RATE,
+      COMMISSION,
+      MIN_KOPECKS,
+    );
+
+    expect(svc?.tiers).toEqual([
+      { name: 'Essential', period: 'quarter', usdCents: 2799, totalKopecks: 294_036 },
+    ]);
+  });
+
   it('dummy-tier (originalAmount ≤ 1) → customAmount без тарифов (Airbnb)', () => {
     const svc = buildCatalogService(
       row({

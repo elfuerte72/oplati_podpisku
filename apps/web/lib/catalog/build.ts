@@ -14,7 +14,7 @@ import { pricingPolicy } from '@oplati/types';
 
 export type CatalogTier = {
   name: string;
-  period: 'month' | 'year';
+  period: 'month' | 'quarter' | 'year';
   usdCents: number;
   /** Оценка «к оплате» в копейках: курс на момент сборки + комиссия. */
   totalKopecks: number;
@@ -120,6 +120,8 @@ const POPULAR_ORDER: readonly string[] = [
   'netflix-premium',
   'youtube-premium',
   'discord-nitro',
+  'playstation-plus',
+  'xbox-game-pass',
   'midjourney-basic',
   'apple-music',
 ];

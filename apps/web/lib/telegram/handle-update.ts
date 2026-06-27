@@ -976,6 +976,7 @@ async function handleTierSelected(
       channel: 'telegram',
       slug,
       tierName: tier.name,
+      tierPeriod: tier.period,
     }),
   );
   if (!result.ok) {

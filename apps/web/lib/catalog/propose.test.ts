@@ -61,6 +61,20 @@ const tierService: ServiceLike = {
   },
 };
 
+const multiPeriodService: ServiceLike = {
+  id: 'svc-3',
+  slug: 'playstation-plus',
+  name: 'PlayStation Plus',
+  isActive: true,
+  pricingPolicy: {
+    tiers: [
+      { name: 'Essential', period: 'month', priceRub: 1, originalAmount: 1099, currency: 'USD' },
+      { name: 'Essential', period: 'quarter', priceRub: 1, originalAmount: 2799, currency: 'USD' },
+      { name: 'Essential', period: 'year', priceRub: 1, originalAmount: 7999, currency: 'USD' },
+    ],
+  },
+};
+
 const customService: ServiceLike = {
   id: 'svc-2',
   slug: 'airbnb',
@@ -114,6 +128,25 @@ describe('proposeFromCatalog', () => {
     const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', tierName: 'NoSuch' });
     expect(res).toMatchObject({ ok: false, error: 'tier_not_found' });
     expect(h.proposeImpl).not.toHaveBeenCalled();
+  });
+
+  it('тарифный сервис: выбирает тариф по имени и периоду', async () => {
+    h.service = multiPeriodService;
+    h.proposeImpl.mockResolvedValue(okResult);
+
+    const res = await proposeFromCatalog({
+      ...base,
+      slug: 'playstation-plus',
+      tierName: 'Essential',
+      tierPeriod: 'quarter',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('expected ok');
+    expect(res.card.service).toBe('PlayStation Plus (Essential · 3 месяца)');
+    expect(h.proposeImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ serviceId: 'svc-3', amountUsdCents: 2799 }),
+    );
   });
 
   it('custom-amount: с суммой → ok (лейбл без тарифа)', async () => {
