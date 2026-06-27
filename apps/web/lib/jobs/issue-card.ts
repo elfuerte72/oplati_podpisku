@@ -16,6 +16,11 @@ import {
 } from '@oplati/db';
 
 import { notifyOps } from '../alerts/notify-ops.ts';
+import {
+  formatBillingAddressLines,
+  getRandomUsBillingAddress,
+  type BillingAddress,
+} from '../billing-address.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
@@ -221,6 +226,10 @@ export async function issueCard(orderId: string): Promise<void> {
       });
 
       // Полные реквизиты надо передать пользователю — НЕ логируем сюда `pan`/`cvc`.
+      const [cardMetadata, billingAddress] = await Promise.all([
+        readCardMetadataSafely(paypace, created.cardId, order.shortId),
+        getRandomUsBillingAddress(),
+      ]);
       await sendCardCredentialsToUser({
         telegramId: await resolveTelegramIdByUserId(order.userId),
         panMasked: created.panMasked,
@@ -228,6 +237,8 @@ export async function issueCard(orderId: string): Promise<void> {
         expMonth: created.expMonth,
         expYear: created.expYear,
         cvc: created.cvc,
+        cardType: cardMetadata.cardType,
+        billingAddress,
         serviceShortId: order.shortId,
       });
     }
@@ -306,6 +317,8 @@ type SendCredentialsArgs = {
   expMonth: number;
   expYear: number;
   cvc: string;
+  cardType: string | null;
+  billingAddress: BillingAddress;
   serviceShortId: string;
 };
 
@@ -320,22 +333,30 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
   }
 
   const exp = `${String(args.expMonth).padStart(2, '0')}/${String(args.expYear).slice(-2)}`;
-  const message = [
-    `Заказ ${args.serviceShortId} оплачен. Реквизиты виртуальной карты:`,
+  const cardType = formatCardType(args.cardType);
+  const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
+  const messageHtml = [
+    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен.</b>`,
+    'Карта уже выпущена. Ниже данные для оплаты подписки.',
     '',
-    `Номер: ${args.fullPan}`,
-    `Срок: ${exp}`,
-    `CVC: ${args.cvc}`,
+    '<b>Карта</b>',
+    `<b>Номер:</b> <code>${escapeTelegramHtml(args.fullPan)}</code>`,
+    `<b>Срок:</b> <code>${escapeTelegramHtml(exp)}</code>`,
+    `<b>CVC:</b> <code>${escapeTelegramHtml(args.cvc)}</code>`,
+    `<b>Тип:</b> <code>${escapeTelegramHtml(cardType)}</code>`,
     '',
-    'Введите эти данные при оплате в нужном сервисе. Если потребуется адрес — используйте любой американский (например ZIP 10001).',
+    '<b>Billing address</b>',
+    ...addressLines,
     '',
-    'После активации сервиса напишите сюда — я уточню, всё ли получилось.',
+    'Если сервис попросит billing address, вводите адрес из блока выше.',
+    '',
+    'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
   ].join('\n');
 
   try {
     // chat_id строкой — Bot API это принимает, Number() терял бы точность на
     // больших telegram_id.
-    await getBot().api.sendMessage(args.telegramId, message);
+    await getBot().api.sendMessage(args.telegramId, messageHtml, { parse_mode: 'HTML' });
     log.info({
       event: 'job.issue_card.credentials_sent',
       shortId: args.serviceShortId,
@@ -356,4 +377,46 @@ async function resolveTelegramIdByUserId(userId: string): Promise<string | null>
     log.error({ event: 'job.issue_card.resolve_telegram.failed', userId, err });
     return null;
   }
+}
+
+type CardMetadata = {
+  cardType: string | null;
+};
+
+async function readCardMetadataSafely(
+  paypace: Pick<ReturnType<typeof getPaySpaceClient>, 'getCardInfo'>,
+  providerCardId: string,
+  shortId: string,
+): Promise<CardMetadata> {
+  try {
+    const info = await paypace.getCardInfo(providerCardId);
+    return {
+      cardType: info.cardType,
+    };
+  } catch (err) {
+    log.warn({ event: 'job.issue_card.card_metadata_failed', shortId, providerCardId, err });
+    return { cardType: null };
+  }
+}
+
+function formatCardType(cardType: string | null): string {
+  if (!cardType) return 'не указан';
+  const normalized = cardType.trim().toUpperCase();
+  if (normalized === 'MC' || normalized === 'MASTERCARD' || normalized === 'MASTER CARD') return 'Mastercard';
+  if (normalized === 'VISA') return 'Visa';
+  return cardType;
+}
+
+function formatAddressLineHtml(line: string): string {
+  const [label, ...rest] = line.split(':');
+  const value = rest.join(':').trim();
+  if (!label || !value) return escapeTelegramHtml(line);
+  return `<b>${escapeTelegramHtml(label)}:</b> <code>${escapeTelegramHtml(value)}</code>`;
+}
+
+function escapeTelegramHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }

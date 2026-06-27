@@ -5,9 +5,8 @@ import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
- * Репозиторий каталога. Сервисы — публичные данные, RLS на таблице не включён
- * (см. schema.ts → таблица services без `.enableRLS()`). Поэтому функции тут
- * можно дёргать от любого роли; в продакшене это будет supabase-server / admin.
+ * Репозиторий каталога. Сервисы — публичные данные на чтение, но запись закрыта
+ * RLS/grants и должна идти только через service role / прямой server-side DB.
  *
  * Цены: у AI-пути их по-прежнему НЕТ — search-результат отдаёт только реестр
  * (slug, name, requiresKyc), актуальную цену агент достаёт через web_search.

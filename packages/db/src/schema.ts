@@ -193,7 +193,7 @@ export const messages = pgTable(
   }),
 ).enableRLS();
 
-// ─── Services (публичный каталог; БЕЗ RLS) ────────────────────────────────
+// ─── Services (публичный каталог) ─────────────────────────────────────────
 
 export const services = pgTable('services', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -206,7 +206,7 @@ export const services = pgTable('services', {
   pricingPolicy: jsonb('pricing_policy').$type<PricingPolicy>(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}).enableRLS();
 
 // ─── Orders ───────────────────────────────────────────────────────────────
 
