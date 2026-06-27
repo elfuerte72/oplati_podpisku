@@ -114,6 +114,10 @@ export type CardInfoResult = {
   balanceUsdCents: number;
   /** Срок действия как отдал провайдер (MM/YY). */
   expDate: string;
+  /** Тип карты у провайдера: MC/VISA, если отдан. */
+  cardType: string | null;
+  /** Код карточного продукта у PaySpace: например SG_SUB, если отдан. */
+  productCode: string | null;
 };
 
 export type VccBalanceResult = {
@@ -293,6 +297,8 @@ export class PaySpaceClient {
       statusLabel: CARD_STATUS_LABELS[data.status] ?? `unknown_${data.status}`,
       balanceUsdCents: dollarStringToUsdCents(data.cardBal),
       expDate: data.expDate,
+      cardType: data.cardType ?? null,
+      productCode: data.productCode ?? null,
     };
   }
 

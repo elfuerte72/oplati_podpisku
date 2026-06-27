@@ -34,6 +34,7 @@ const h = vi.hoisted(() => {
   return {
     topupMock: vi.fn(),
     createCardMock: vi.fn(),
+    getCardInfoMock: vi.fn(),
     sendMessageMock: vi.fn(),
     PaySpaceApiError,
     paySpaceConfigured: { value: true },
@@ -68,9 +69,28 @@ vi.mock('../pay-space/index.ts', () => ({
   getPaySpaceClient: () => ({
     topupCard: h.topupMock,
     createCard: h.createCardMock,
-    getCardInfo: vi.fn(),
+    getCardInfo: h.getCardInfoMock,
   }),
   PaySpaceApiError: h.PaySpaceApiError,
+}));
+
+vi.mock('../billing-address.ts', () => ({
+  getRandomUsBillingAddress: vi.fn(async () => ({
+    streetLine1: '350 5th Ave',
+    city: 'New York',
+    state: 'New York',
+    stateCode: 'NY',
+    postalCode: '10118',
+    country: 'United States',
+    countryCode: 'US',
+  })),
+  formatBillingAddressLines: vi.fn((address: { streetLine1: string; city: string; postalCode: string }) => [
+    `Street address: ${address.streetLine1}`,
+    `City: ${address.city}`,
+    'State: New York (NY)',
+    `ZIP: ${address.postalCode}`,
+    'Country: United States',
+  ]),
 }));
 
 vi.mock('../telegram/bot.ts', () => ({
@@ -118,6 +138,16 @@ describe('issueCard', () => {
       requestId: 'topup_order-1_card-1',
       status: 'completed',
       balanceUsdCents: 2000,
+    });
+    h.getCardInfoMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '411111******1234',
+      statusCode: '1',
+      statusLabel: 'activated',
+      balanceUsdCents: 2400,
+      expDate: '12/30',
+      cardType: 'MC',
+      productCode: 'SG_SUB',
     });
   });
 
@@ -214,6 +244,31 @@ describe('issueCard', () => {
     expect(h.createCardMock).toHaveBeenCalledWith({ amountUsdCents: 2400 });
     expect(h.topupMock).not.toHaveBeenCalled();
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('<b>Тип:</b> <code>Mastercard</code>'),
+      { parse_mode: 'HTML' },
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('<b>Номер:</b> <code>4111111111111234</code>'),
+      { parse_mode: 'HTML' },
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('<b>Street address:</b> <code>350 5th Ave</code>'),
+      { parse_mode: 'HTML' },
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.not.stringContaining('SG_SUB'),
+      { parse_mode: 'HTML' },
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('<b>ZIP:</b> <code>10118</code>'),
+      { parse_mode: 'HTML' },
+    );
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
   });
 

@@ -242,6 +242,8 @@ describe('PaySpaceClient.releaseCard / getVccBalance', () => {
       statusLabel: 'activated',
       balanceUsdCents: 100,
       expDate: '06/27',
+      cardType: 'MC',
+      productCode: 'SG_SUB',
     });
   });
 
