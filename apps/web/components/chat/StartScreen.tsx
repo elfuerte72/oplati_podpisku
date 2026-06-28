@@ -172,7 +172,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
               className={tile}
             >
               <span className={tilePlate}>
-                <ServiceLogo slug={svc.slug} name={svc.name} size={22} />
+                <ServiceLogo slug={svc.slug} name={svc.name} size={24} />
               </span>
               <span className="min-w-0 font-body text-sm font-semibold leading-tight text-[var(--text)]">
                 {svc.name}
