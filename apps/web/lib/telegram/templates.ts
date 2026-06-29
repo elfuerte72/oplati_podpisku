@@ -3,6 +3,8 @@ import 'server-only';
 import { formatExpires, formatRub } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
 
+import { MIN_AMOUNT_USD, maxAmountUsdFor } from './amount';
+
 /**
  * Централизованные текстовые шаблоны для Telegram-бота.
  *
@@ -87,13 +89,14 @@ export function catalogCustomAmountPrompt(service: CatalogService): string {
     : '';
   return (
     `${service.name}: у этого сервиса нет фиксированных тарифов. ` +
-    `Напиши сумму к оплате в долларах — число от $1 до $500 (например: 120).${kyc}`
+    `Напиши сумму к оплате в долларах — число от $${MIN_AMOUNT_USD} до $${maxAmountUsdFor(service.slug)} (например: 120).${kyc}`
   );
 }
 
-/** Сумма не распознана в режиме ожидания ввода. */
-export const CATALOG_AMOUNT_INVALID_TEXT =
-  'Не понял сумму. Напиши число в долларах от $1 до $500 — например: 120. Или нажми /menu, чтобы выбрать другой сервис.';
+/** Сумма не распознана в режиме ожидания ввода (maxUsd — потолок выбранного сервиса). */
+export function catalogAmountInvalidText(maxUsd: number): string {
+  return `Не понял сумму. Напиши число в долларах от $${MIN_AMOUNT_USD} до $${maxUsd} — например: 120. Или нажми /menu, чтобы выбрать другой сервис.`;
+}
 
 /**
  * Ответ на /support — вызов оператора. Пока MOCK: реальный handoff оператору
