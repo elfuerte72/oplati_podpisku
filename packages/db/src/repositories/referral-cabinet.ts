@@ -303,30 +303,63 @@ export async function getReferralPayouts(
   }));
 }
 
+export type CreateReferralPayoutResult =
+  | { ok: true; payoutId: string }
+  | { ok: false; reason: 'insufficient_balance'; balanceUsdCents: number };
+
 /**
- * Создаёт заявку на вывод (status='requested', destination=null — способ выплат
- * D-REF-6 за владельцем, Этап E). Сумма в USD-центах. Возвращает id.
+ * Атомарно создаёт заявку на вывод (status='requested', destination=null — способ
+ * выплат D-REF-6 за владельцем, Этап E).
  *
- * Гонка двух заявок: проверка баланса делается в actions-слое ПЕРЕД вызовом
- * через `getReferralBalanceUsdCents`, который уже вычитает `requested`-выплаты —
- * так вторая параллельная заявка увидит уменьшенный баланс. CHECK `amount > 0`
- * в схеме — последний рубеж.
+ * Антигонка (находка greptile P1, TOCTOU): баланс-чек и INSERT — в ОДНОЙ
+ * транзакции под per-user advisory-локом `pg_advisory_xact_lock(hashtext(userId))`.
+ * Раньше баланс читался отдельным запросом ПЕРЕД вставкой — две параллельные
+ * заявки могли обе пройти проверку до коммита друг друга и обе вставиться
+ * (перевывод/порча ledger'а). Теперь вторая заявка ждёт коммита первой, видит её
+ * `requested`-строку в балансе и корректно отклоняется. Баланс считается тем же
+ * выражением, что `getReferralBalanceUsdCents` (канон), но внутри транзакции.
+ * CHECK `amount > 0` в схеме — последний рубеж.
  */
 export async function createReferralPayout(
   db: DB,
   params: { userId: string; amountUsdCents: number },
   log: RepoLogger = noopLogger,
-): Promise<string> {
+): Promise<CreateReferralPayoutResult> {
   const { userId, amountUsdCents } = params;
-  const rows = await db.execute<{ id: string }>(sql`
-    INSERT INTO referral_payouts (user_id, amount_usd_cents, status)
-    VALUES (${userId}, ${amountUsdCents}, 'requested')
-    RETURNING id
-  `);
-  const id = rows[0]?.id;
-  if (!id) {
-    throw new Error('createReferralPayout: пустой RETURNING — INSERT не вернул id');
-  }
-  log.info({ event: 'db.referral.payout_requested', userId, amountUsdCents });
-  return id;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId})::bigint)`);
+
+    const balRows = await tx.execute<{ balance: string | number }>(sql`
+      SELECT (
+        COALESCE((
+          SELECT SUM(amount_usd_cents) FROM referral_accruals
+          WHERE beneficiary_user_id = ${userId} AND status = 'accrued'
+        ), 0)
+        - COALESCE((
+          SELECT SUM(amount_usd_cents) FROM referral_accruals
+          WHERE beneficiary_user_id = ${userId} AND status = 'reversed'
+        ), 0)
+        - COALESCE((
+          SELECT SUM(amount_usd_cents) FROM referral_payouts
+          WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')
+        ), 0)
+      )::bigint AS balance
+    `);
+    const balanceUsdCents = Number(balRows[0]?.balance ?? 0);
+    if (amountUsdCents > balanceUsdCents) {
+      return { ok: false, reason: 'insufficient_balance', balanceUsdCents };
+    }
+
+    const rows = await tx.execute<{ id: string }>(sql`
+      INSERT INTO referral_payouts (user_id, amount_usd_cents, status)
+      VALUES (${userId}, ${amountUsdCents}, 'requested')
+      RETURNING id
+    `);
+    const id = rows[0]?.id;
+    if (!id) {
+      throw new Error('createReferralPayout: пустой RETURNING — INSERT не вернул id');
+    }
+    log.info({ event: 'db.referral.payout_requested', userId, amountUsdCents });
+    return { ok: true, payoutId: id };
+  });
 }

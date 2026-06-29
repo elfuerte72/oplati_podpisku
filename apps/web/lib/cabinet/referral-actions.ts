@@ -1,13 +1,6 @@
 import 'server-only';
 
-import * as Sentry from '@sentry/nextjs';
-
-import {
-  getDb,
-  getPartnerProfile,
-  getReferralBalanceUsdCents,
-  createReferralPayout,
-} from '@oplati/db';
+import { getDb, getPartnerProfile, createReferralPayout } from '@oplati/db';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
@@ -71,18 +64,13 @@ export async function requestReferralPayout(params: {
     return { ok: false, error: 'suspended' };
   }
 
-  const balanceUsdCents = await getReferralBalanceUsdCents(db, userId);
-  if (amountUsdCents > balanceUsdCents) {
-    return { ok: false, error: 'insufficient_balance', balanceUsdCents };
+  // Баланс-чек + вставка — атомарно внутри createReferralPayout (advisory-лок на
+  // userId, находка greptile P1 TOCTOU). Отдельного пред-чтения баланса нет — оно
+  // было гонко-уязвимым. Неожиданные ошибки пробрасываются в catch роута (→ 500).
+  const result = await createReferralPayout(db, { userId, amountUsdCents }, log);
+  if (!result.ok) {
+    return { ok: false, error: 'insufficient_balance', balanceUsdCents: result.balanceUsdCents };
   }
-
-  try {
-    const payoutId = await createReferralPayout(db, { userId, amountUsdCents }, log);
-    log.info({ event: 'referral.payout.requested', userId, amountUsdCents, payoutId });
-    return { ok: true, payoutId, amountUsdCents };
-  } catch (err) {
-    log.error({ event: 'referral.payout.failed', userId, err });
-    Sentry.captureException(err, { tags: { source: 'referral.payout' } });
-    return { ok: false, error: 'insufficient_balance', balanceUsdCents };
-  }
+  log.info({ event: 'referral.payout.requested', userId, amountUsdCents, payoutId: result.payoutId });
+  return { ok: true, payoutId: result.payoutId, amountUsdCents };
 }

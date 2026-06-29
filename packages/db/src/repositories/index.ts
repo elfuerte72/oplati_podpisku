@@ -82,6 +82,7 @@ export {
   getReferralLedger,
   getReferralPayouts,
   createReferralPayout,
+  type CreateReferralPayoutResult,
   type ReferralNetworkLevel,
   type ReferralLevelIncome,
   type ReferralEarnings,

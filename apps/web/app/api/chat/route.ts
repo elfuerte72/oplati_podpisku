@@ -204,6 +204,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   const ctx = await resolveContext(webSessionId, referredBy);
   // Гасим ref-cookie только после успешного резолва ctx (создание/upsert юзера) —
   // при сбое БД cookie сохраняется и реферер досчитается на следующем сообщении.
+  // Гейт REFERRAL_ENABLED: пока программа выключена, cookie НЕ гасится и переживёт
+  // выкатку (захват случится при включении). Когда включена, cookie гасится даже
+  // при неизвестном коде — это ОК: код выдаётся лениво (ensureReferralCode при
+  // открытии кабинета), и партнёр получает ссылку уже с существующим кодом, так
+  // что «код расшарен до выдачи» в нашей модели не возникает (находка greptile #4).
   if (ctx && serverEnv.REFERRAL_ENABLED) await clearRefCookie();
 
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });

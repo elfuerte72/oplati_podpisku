@@ -20,10 +20,14 @@ vi.mock('@oplati/db', () => {
   return {
     getDb: () => ({}) as unknown,
     getPartnerProfile: vi.fn(async () => state.profile),
-    getReferralBalanceUsdCents: vi.fn(async () => state.balance),
+    // Атомарный контракт: проверка баланса + вставка внутри. Мок воспроизводит
+    // решение по балансу (как реальная транзакция под advisory-локом).
     createReferralPayout: vi.fn(async (_db: unknown, p: { userId: string; amountUsdCents: number }) => {
+      if (p.amountUsdCents > state.balance) {
+        return { ok: false as const, reason: 'insufficient_balance' as const, balanceUsdCents: state.balance };
+      }
       state.created.push(p);
-      return 'payout-1';
+      return { ok: true as const, payoutId: 'payout-1' };
     }),
     __setProfile(p: Profile) {
       state.profile = p;
@@ -68,12 +72,12 @@ describe('requestReferralPayout — гейты и валидация', () => {
   it('программа выключена → disabled (БД не трогаем)', async () => {
     hoisted.env.REFERRAL_ENABLED = false;
     expect(await req()).toEqual({ ok: false, error: 'disabled' });
-    expect(db.getReferralBalanceUsdCents).not.toHaveBeenCalled();
+    expect(db.createReferralPayout).not.toHaveBeenCalled();
   });
 
   it('без привязки Telegram → telegram_link_required', async () => {
     expect(await req({ telegramLinked: false })).toEqual({ ok: false, error: 'telegram_link_required' });
-    expect(db.getReferralBalanceUsdCents).not.toHaveBeenCalled();
+    expect(db.createReferralPayout).not.toHaveBeenCalled();
   });
 
   it('нецелая/неположительная сумма → invalid_amount', async () => {
