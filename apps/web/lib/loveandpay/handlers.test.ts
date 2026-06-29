@@ -5,6 +5,11 @@ vi.mock('../jobs/dispatcher.ts', () => ({
   dispatchIssueCard: vi.fn(),
   dispatchPaymentConfirmed: vi.fn(),
 }));
+// Реферальные начисления тестируются отдельно (referral/accrue.test.ts) — здесь
+// no-op, чтобы тест webhook оставался сфокусированным на платёжном пути.
+vi.mock('../referral/accrue.ts', () => ({
+  accrueReferralForPayment: vi.fn(),
+}));
 
 type Pay = {
   id: string;

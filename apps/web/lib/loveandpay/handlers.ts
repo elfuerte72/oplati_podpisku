@@ -14,6 +14,7 @@ import type { LoveAndPayInvoiceStatus, LoveAndPayWebhookData } from '@oplati/typ
 
 import { childLogger } from '../logger.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
+import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 /**
  * Общие хендлеры обработки L&P-событий (как из webhook, так и из cron poll-payment).
@@ -155,6 +156,12 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
   // После успешной оплаты — запускаем issue-card. Sync-fallback через
   // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.
   dispatchIssueCard(payment.orderId);
+
+  // Реферальные начисления (из маржи). At-most-once: сюда попадает только
+  // победитель claim; внутри — graceful + идемпотентность по UNIQUE. Inline
+  // await (а не dispatch): дёшево, и гарантированно отрабатывает до 200 OK,
+  // в отличие от setImmediate, который Vercel может заморозить.
+  await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
 
   log.info({
     event: 'loveandpay.handlers.invoice_paid_processed',

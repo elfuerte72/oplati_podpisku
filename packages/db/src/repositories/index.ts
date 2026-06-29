@@ -63,6 +63,15 @@ export {
 } from './referrals.ts';
 
 export {
+  getPartnerProfile,
+  insertCommissionAccruals,
+  getReferralBalanceUsdCents,
+  orderHasAccruals,
+  type PartnerProfile,
+  type CommissionAccrualInsert,
+} from './referral-accruals.ts';
+
+export {
   createCard,
   findActiveByUserId,
   findCardsByUserIdForCabinet,
