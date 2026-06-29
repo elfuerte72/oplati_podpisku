@@ -89,7 +89,8 @@ export function catalogCustomAmountPrompt(service: CatalogService): string {
     : '';
   return (
     `${service.name}: у этого сервиса нет фиксированных тарифов. ` +
-    `Напиши сумму к оплате в долларах — число от $${MIN_AMOUNT_USD} до $${maxAmountUsdFor(service.slug)} (например: 120).${kyc}`
+    `Напиши сумму к оплате в долларах — без НДС, число от $${MIN_AMOUNT_USD} до $${maxAmountUsdFor(service.slug)} (например: 120).\n\n` +
+    `Совет: на сайте сервиса включи VPN с локацией США — тогда цена будет без налога и ты не переплатишь.${kyc}`
   );
 }
 

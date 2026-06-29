@@ -245,7 +245,11 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             <form onSubmit={submitAmount} className="mt-4 space-y-3">
               <p className="font-body text-sm text-[var(--text-muted)]">
                 У этого сервиса нет фиксированных тарифов — укажите сумму к оплате в долларах
-                (от ${MIN_AMOUNT_USD} до ${maxAmountUsdFor(selected.slug)}).
+                без НДС (от ${MIN_AMOUNT_USD} до ${maxAmountUsdFor(selected.slug)}).
+              </p>
+              <p className="font-body text-xs text-[var(--text-muted)]">
+                Совет: на сайте сервиса включите VPN с локацией США — тогда цена будет
+                без налога, и вы не переплатите.
               </p>
               <div className="flex gap-2">
                 <input
