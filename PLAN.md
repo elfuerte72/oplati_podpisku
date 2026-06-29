@@ -131,9 +131,13 @@
 - [x] Payout (`referral-actions.ts`): валидация ≥ минимума, баланс с учётом `requested`, гейты TG-привязки и `suspended`, запись `referral_payouts` (исполнение — Этап E).
 - [x] `ensureReferralCode(userId)` лениво в снапшоте (ключевой шаг пробуждения — только при `REFERRAL_ENABLED`; graceful при сбое).
 
-**D2 — веб-сайт (приоритет, `apps/web/app/partner/`):**
-- [ ] Страница `/partner` в общем сайте Оплатишки, дизайн D0 (5 экранов). Auth — веб-сессия (`session`-cookie) → `userId`; **гейт: партнёр привязан к Telegram** (баланс/выплаты требуют верифицированной личности; непривязанному — комикс-карточка «привяжи Telegram», переиспользуем `components/chat/TelegramLink.tsx`). Дёргает `GET /api/cabinet/referral`.
-- [ ] Кнопка «Партнёрская программа» в навигации сайта (`components/chat/LeftNav.tsx`/профиль).
+**D2 — веб-сайт (приоритет, `apps/web/app/partner/`):** — ✅ СДЕЛАНО
+
+> `app/partner/page.tsx` + `components/partner/PartnerCabinet.tsx` (5 экранов в стиле Оплатишки на бренд-токенах, `next/image` маскоты, комикс-карточки/штампы). Auth — веб-сессия (cookie) через `POST /api/cabinet/referral`. Адаптив: десктоп-сайдбар ↔ мобильная нижняя навигация. Визуально проверено (desktop+mobile, скриншоты). typecheck/lint/тесты зелёные.
+
+- [x] Страница `/partner` (5 экранов: дашборд/сеть/ссылка/история/статистика), дизайн D0. **Гейт привязки Telegram** — комикс-карточка «Привяжи Telegram» для непривязанных (сеть/ссылка работают, вывод заблокирован). Кнопка «Вывести» + модалка заявки. Показывает только реальные данные снапшота (без фабрикации графиков).
+- [x] `previewSnapshot`-seam для визуального QA и будущих D4-тестов (рендер без сети).
+- [x] Пункт «Партнёрам» в навигации сайта (`components/chat/LeftNav.tsx`, реальная ссылка через `next/link`).
 
 **D3 — мини-апп (вторая поверхность, `apps/web/app/cabinet/`):**
 - [ ] Вкладка `ReferralSection` в существующем Mini App кабинете. Auth — Telegram `initData` (`lib/cabinet/auth.ts`). Тот же дизайн D0, мобильный полноэкранный layout (сайдбар → нижняя навигация). Тот же `GET /api/cabinet/referral`.
