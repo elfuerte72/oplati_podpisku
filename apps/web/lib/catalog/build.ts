@@ -122,6 +122,7 @@ const POPULAR_ORDER: readonly string[] = [
   'discord-nitro',
   'playstation-plus',
   'xbox-game-pass',
+  'steam',
   'midjourney-basic',
   'apple-music',
 ];
@@ -135,4 +136,64 @@ export function sortCatalog(items: CatalogService[]): CatalogService[] {
     if (bi !== -1) return 1;
     return a.name.localeCompare(b.name, 'ru');
   });
+}
+
+/**
+ * Темы каталога: русские заголовки секций и порядок показа (решение владельца
+ * 2026-06-29 — список разбит на темы, чтобы не висел сплошной стеной кнопок).
+ * Ключ — `services.category`. Категории вне списка падают в хвост по алфавиту
+ * под собственным (английским) именем — это сигнал «забыли завести label».
+ */
+export const CATEGORY_LABELS: Record<string, string> = {
+  ai: 'ИИ',
+  streaming: 'Стриминг и музыка',
+  gaming: 'Игры',
+  productivity: 'Сервисы и работа',
+  social: 'Общение',
+  travel: 'Путешествия',
+};
+
+const CATEGORY_ORDER: readonly string[] = [
+  'ai',
+  'streaming',
+  'gaming',
+  'productivity',
+  'social',
+  'travel',
+];
+
+export type CatalogGroup = {
+  category: string;
+  label: string;
+  services: CatalogService[];
+};
+
+/**
+ * Группирует каталог по темам в порядке `CATEGORY_ORDER`; внутри темы порядок —
+ * как у `sortCatalog` (популярные вперёд, дальше алфавит). Пустые темы
+ * пропускаются. Неизвестные категории — в конце, по алфавиту.
+ */
+export function groupCatalog(items: CatalogService[]): CatalogGroup[] {
+  const byCategory = new Map<string, CatalogService[]>();
+  for (const svc of sortCatalog(items)) {
+    const category = svc.category ?? 'other';
+    const bucket = byCategory.get(category);
+    if (bucket) bucket.push(svc);
+    else byCategory.set(category, [svc]);
+  }
+
+  const groups: CatalogGroup[] = [];
+  for (const category of CATEGORY_ORDER) {
+    const services = byCategory.get(category);
+    if (services && services.length > 0) {
+      groups.push({ category, label: CATEGORY_LABELS[category] ?? category, services });
+      byCategory.delete(category);
+    }
+  }
+  for (const [category, services] of [...byCategory.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0]),
+  )) {
+    groups.push({ category, label: CATEGORY_LABELS[category] ?? category, services });
+  }
+  return groups;
 }

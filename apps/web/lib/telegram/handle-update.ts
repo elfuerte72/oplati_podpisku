@@ -37,7 +37,7 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
-import type { CatalogService } from '@/lib/catalog/build';
+import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
@@ -675,15 +675,22 @@ function buildBackKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text(CATALOG_BACK_BUTTON, 'back');
 }
 
-/** Клавиатура списка сервисов: по 2 в ряд + «Свой вариант» отдельной строкой. */
+/**
+ * Клавиатура списка сервисов: заголовок темы строкой (не-кликабельный `noop`),
+ * под ним сервисы по 2 в ряд; внизу «Свой вариант». Темы и порядок — общий
+ * `groupCatalog` (тот же, что на сайте), чтобы список не висел сплошной стеной.
+ */
 function buildServiceListKeyboard(services: CatalogService[]): InlineKeyboard {
   const kb = new InlineKeyboard();
-  for (let i = 0; i < services.length; i += 2) {
-    const a = services[i];
-    const b = services[i + 1];
-    if (a) kb.text(a.name, `svc:${a.slug}`);
-    if (b) kb.text(b.name, `svc:${b.slug}`);
-    kb.row();
+  for (const group of groupCatalog(services)) {
+    kb.text(`— ${group.label} —`, 'noop').row();
+    for (let i = 0; i < group.services.length; i += 2) {
+      const a = group.services[i];
+      const b = group.services[i + 1];
+      if (a) kb.text(a.name, `svc:${a.slug}`);
+      if (b) kb.text(b.name, `svc:${b.slug}`);
+      kb.row();
+    }
   }
   kb.text(CATALOG_OWN_VARIANT_BUTTON, 'own');
   return kb;
@@ -801,6 +808,7 @@ async function resolveCallbackContext(
 
 /**
  * Диспетчер нажатий inline-кнопок. callback_data:
+ *   - `noop`         → заголовок темы в каталоге (кнопка-разделитель, no-op);
  *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
  *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
  *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
@@ -837,6 +845,9 @@ async function handleCallbackQuery(
   }
 
   switch (action) {
+    case 'noop':
+      // Заголовок темы в каталоге — кнопка-разделитель, действия нет.
+      return;
     case 'cat':
     case 'back':
       await showCatalogList(chatId, messageId, updateId);

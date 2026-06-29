@@ -41,9 +41,21 @@ const logger = pino({ name: 'seed-catalog' });
  *   - `midjourney`  — пустой дубль `midjourney-basic` (тот с тарифами);
  *   - `claude-code` — НЕ отдельная подписка: доступ даёт `claude-pro`
  *                     (Claude Pro/Max), иначе была бы дублирующая карточка.
- * Список идемпотентен: если slug нет — no-op.
+ *   - `hbo-max`, `disney-plus`, `crunchyroll-mega-fan`, `mistral-pro`,
+ *     `windsurf-pro` — выведены из витрины решением владельца 2026-06-29
+ *     (сужаем каталог, чтобы список не был перегружен).
+ * Список идемпотентен: если slug нет — no-op. Деактивация (is_active=false),
+ * а не DELETE: история заказов и append-only `order_events` сохраняются.
  */
-const DEPRECATED_SLUGS: readonly string[] = ['midjourney', 'claude-code'];
+const DEPRECATED_SLUGS: readonly string[] = [
+  'midjourney',
+  'claude-code',
+  'hbo-max',
+  'disney-plus',
+  'crunchyroll-mega-fan',
+  'mistral-pro',
+  'windsurf-pro',
+];
 
 /** Справочный курс и маржа — только для placeholder `priceRub` (не витрина). */
 const RATE_HINT = 95.5;
@@ -164,25 +176,9 @@ const CATALOG: readonly CatalogEntry[] = [
     ]),
   },
   {
-    slug: 'mistral-pro',
-    name: 'Mistral Le Chat',
-    description: 'AI-ассистент от Mistral',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Pro', 14.99)]),
-  },
-  {
     slug: 'perplexity-pro',
     name: 'Perplexity',
     description: 'AI-поиск',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
-  },
-  {
-    slug: 'windsurf-pro',
-    name: 'Windsurf',
-    description: 'AI code editor',
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
@@ -238,38 +234,6 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Family', 16.99),
     ]),
   },
-  {
-    slug: 'disney-plus',
-    name: 'Disney+',
-    description: 'Видеостриминг Disney',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('С рекламой', 11.99), usd('Premium', 18.99)]),
-  },
-  {
-    slug: 'hbo-max',
-    name: 'HBO Max',
-    description: 'Видеостриминг HBO Max',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('С рекламой', 10.99),
-      usd('Standard', 18.49),
-      usd('Premium', 22.99),
-    ]),
-  },
-  {
-    slug: 'crunchyroll-mega-fan',
-    name: 'Crunchyroll',
-    description: 'Аниме-стриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('Fan', 9.99),
-      usd('Mega Fan', 13.99),
-      usd('Ultimate Fan', 17.99),
-    ]),
-  },
 
   // ─── Gaming ────────────────────────────────────────────────────────────────
   {
@@ -303,11 +267,27 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('PC Game Pass', 13.99),
     ]),
   },
+  {
+    slug: 'steam',
+    name: 'Steam (пополнение)',
+    description: 'Пополнение кошелька Steam — сумму вводит клиент',
+    category: 'gaming',
+    requiresKyc: false,
+    pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+  },
 
   // ─── Travel ────────────────────────────────────────────────────────────────
   {
     slug: 'airbnb',
     name: 'Airbnb (бронирование)',
+    description: 'Бронирование жилья — индивидуальная цена под каждый заказ',
+    category: 'travel',
+    requiresKyc: true,
+    pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+  },
+  {
+    slug: 'booking',
+    name: 'Booking.com (бронирование)',
     description: 'Бронирование жилья — индивидуальная цена под каждый заказ',
     category: 'travel',
     requiresKyc: true,
@@ -389,6 +369,32 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('All Apps', 54.99),
       usd('All Apps Pro', 69.99),
     ]),
+  },
+  {
+    slug: 'zoom-pro',
+    name: 'Zoom',
+    description: 'Zoom Workplace Pro — видеоконференции',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
+  },
+
+  // ─── Social ──────────────────────────────────────────────────────────────────
+  {
+    slug: 'telegram-premium',
+    name: 'Telegram Premium',
+    description: 'Telegram Premium — расширенные возможности мессенджера',
+    category: 'social',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Premium', 4.99), usd('Premium', 35.99, 'year')]),
+  },
+  {
+    slug: 'tinder',
+    name: 'Tinder',
+    description: 'Tinder — подписки Plus, Gold, Platinum',
+    category: 'social',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Plus', 24.99), usd('Gold', 39.99), usd('Platinum', 49.99)]),
   },
 ];
 

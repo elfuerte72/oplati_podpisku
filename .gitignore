@@ -23,6 +23,7 @@ Screenshot*.jpeg
 api-1.json
 content_site/
 .agents/
+.codex/
 skills-lock.json
 
 # Справочные материалы (PRD, TZ, customer Q&A, продуктовые .docx/.pdf)
