@@ -186,7 +186,7 @@ describe('groupCatalog', () => {
     ]);
 
     expect(groups.map((g) => [g.category, g.label])).toEqual([
-      ['ai', 'ИИ'],
+      ['ai', 'Искусственный интеллект'],
       ['streaming', 'Стриминг и музыка'],
       ['gaming', 'Игры'],
       ['social', 'Общение'],

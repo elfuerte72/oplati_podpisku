@@ -145,7 +145,7 @@ export function sortCatalog(items: CatalogService[]): CatalogService[] {
  * под собственным (английским) именем — это сигнал «забыли завести label».
  */
 export const CATEGORY_LABELS: Record<string, string> = {
-  ai: 'ИИ',
+  ai: 'Искусственный интеллект',
   streaming: 'Стриминг и музыка',
   gaming: 'Игры',
   productivity: 'Сервисы и работа',
