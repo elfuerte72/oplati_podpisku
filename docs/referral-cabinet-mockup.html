@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кабинет партнёра</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0D0F14;
+  --surface: #13161D;
+  --surface-2: #1A1E28;
+  --surface-3: #222736;
+  --border: rgba(255,255,255,0.07);
+  --border-2: rgba(255,255,255,0.12);
+  --text: #F0F2F8;
+  --text-2: #8B90A0;
+  --text-3: #555A6B;
+  --blue: #4F8EF7;
+  --blue-dim: rgba(79,142,247,0.12);
+  --blue-dim2: rgba(79,142,247,0.2);
+  --green: #34C77B;
+  --green-dim: rgba(52,199,123,0.12);
+  --amber: #F5A623;
+  --amber-dim: rgba(245,166,35,0.12);
+  --purple: #A78BFA;
+  --purple-dim: rgba(167,139,250,0.12);
+  --red: #F87171;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── LAYOUT ── */
+.app { display: flex; min-height: 100vh; }
+
+/* ── SIDEBAR ── */
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 24px 0;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 10;
+}
+
+.sidebar-logo {
+  padding: 0 20px 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.logo-mark {
+  display: flex; align-items: center; gap: 10px;
+}
+.logo-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--blue);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+}
+.logo-name { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--text); }
+.logo-sub { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+
+.nav { flex: 1; padding: 0 10px; display: flex; flex-direction: column; gap: 2px; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none; background: none; width: 100%; text-align: left;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item.active { background: var(--blue-dim); color: var(--blue); }
+.nav-item .nav-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+.nav-badge { margin-left: auto; background: var(--blue); color: #fff; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px; }
+
+.nav-section-label {
+  font-size: 10px; font-weight: 600; color: var(--text-3);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 12px 12px 4px;
+}
+
+.sidebar-user {
+  margin: 16px 10px 0;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: 10px;
+}
+.user-avatar {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--blue), var(--purple));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; color: #fff; flex-shrink: 0;
+}
+.user-name { font-size: 13px; font-weight: 500; }
+.user-level { font-size: 11px; color: var(--green); }
+
+/* ── MAIN ── */
+.main {
+  margin-left: 220px;
+  flex: 1;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── TOPBAR ── */
+.topbar {
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0;
+  background: rgba(13,15,20,0.85);
+  backdrop-filter: blur(12px);
+  z-index: 5;
+}
+.topbar-title { font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.topbar-date { font-size: 12px; color: var(--text-3); }
+.streak-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--amber-dim); border: 1px solid rgba(245,166,35,0.25);
+  border-radius: 20px; padding: 4px 10px;
+  font-size: 12px; font-weight: 500; color: var(--amber);
+}
+.withdraw-btn {
+  background: var(--blue); color: #fff;
+  border: none; border-radius: var(--radius-sm);
+  padding: 7px 16px; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-body);
+  transition: opacity 0.15s;
+}
+.withdraw-btn:hover { opacity: 0.85; }
+
+/* ── CONTENT ── */
+.content { padding: 24px 28px; flex: 1; }
+
+/* ── SCREENS ── */
+.screen { display: none; animation: fadeIn 0.2s ease; }
+.screen.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── HERO CARD ── */
+.hero-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.hero-card::before {
+  content: '';
+  position: absolute;
+  top: -60px; right: -60px;
+  width: 220px; height: 220px;
+  background: radial-gradient(circle, rgba(79,142,247,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+.hero-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.hero-level { display: flex; align-items: center; gap: 8px; }
+.level-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+.level-name { font-size: 12px; color: var(--text-2); font-weight: 500; }
+.level-badge {
+  background: var(--blue-dim); border: 1px solid rgba(79,142,247,0.25);
+  border-radius: 6px; padding: 3px 8px;
+  font-size: 11px; font-weight: 600; color: var(--blue);
+}
+.hero-next { font-size: 12px; color: var(--text-3); }
+.hero-next span { color: var(--blue); font-weight: 500; }
+
+.hero-amount {
+  font-family: var(--font-display);
+  font-size: 42px; font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.hero-amount-sub { font-size: 13px; color: var(--text-3); margin-bottom: 20px; }
+
+.progress-wrap { margin-bottom: 20px; }
+.progress-labels {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--text-3); margin-bottom: 6px;
+}
+.progress-labels .done { color: var(--green); font-weight: 500; }
+.progress-track {
+  height: 8px; background: var(--surface-3);
+  border-radius: 10px; overflow: hidden; position: relative;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), var(--purple));
+  border-radius: 10px;
+  transition: width 1.2s cubic-bezier(.4,0,.2,1);
+  position: relative;
+}
+.progress-fill::after {
+  content: '';
+  position: absolute; right: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 2px var(--blue);
+}
+.progress-milestone {
+  position: absolute; top: 0; height: 100%; width: 2px;
+  background: var(--green); opacity: 0.6;
+}
+
+.hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.hstat {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.hstat-label { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+.hstat-value { font-size: 20px; font-weight: 600; font-family: var(--font-display); }
+.hstat-sub { font-size: 11px; margin-top: 2px; }
+
+/* ── GRID 2 ── */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+
+/* ── CARD ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card-title {
+  font-size: 12px; font-weight: 600;
+  color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 14px;
+}
+
+/* ── RATES ── */
+.rate-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.rate-row:last-child { border: none; }
+.rate-lv { font-size: 12px; color: var(--text-2); }
+.rate-val { font-size: 20px; font-weight: 700; font-family: var(--font-display); }
+.rate-desc { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.rate-locked { opacity: 0.35; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
+
+/* ── SPRINT ── */
+.sprint-card {
+  background: var(--surface);
+  border: 1px solid rgba(245,166,35,0.2);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.sprint-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.sprint-title { font-size: 14px; font-weight: 600; color: var(--amber); }
+.sprint-timer {
+  font-size: 11px; color: var(--text-3);
+  background: var(--surface-2); border-radius: 6px;
+  padding: 3px 8px;
+}
+.sprint-goals { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sprint-goal {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+.sg-label { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+.sg-val { font-size: 16px; font-weight: 600; font-family: var(--font-display); margin-bottom: 8px; }
+.sg-track { height: 4px; background: var(--surface-3); border-radius: 4px; overflow: hidden; margin-bottom: 6px; }
+.sg-fill { height: 100%; border-radius: 4px; transition: width 1s; }
+.sg-status { font-size: 11px; color: var(--amber); }
+
+/* ── NETWORK ── */
+.net-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+}
+.net-lv { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+.net-count { font-size: 32px; font-weight: 700; font-family: var(--font-display); line-height: 1; margin-bottom: 4px; }
+.net-active { font-size: 11px; margin-bottom: 10px; }
+.net-earn { font-size: 12px; color: var(--text-2); }
+.net-earn strong { color: var(--text); font-weight: 600; }
+.mini-prog { height: 3px; background: var(--surface-3); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.mini-fill { height: 100%; border-radius: 3px; }
+
+/* ── TIMELINE ── */
+.timeline { display: flex; flex-direction: column; gap: 0; }
+.tl-item { display: flex; gap: 14px; }
+.tl-left { display: flex; flex-direction: column; align-items: center; }
+.tl-dot {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; flex-shrink: 0; z-index: 1;
+}
+.tl-line { width: 1px; flex: 1; background: var(--border); margin: 4px 0; min-height: 20px; }
+.tl-body {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+.tl-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.tl-sub { font-size: 12px; color: var(--text-3); margin-bottom: 6px; }
+.tl-pill {
+  display: inline-block;
+  font-size: 11px; font-weight: 500;
+  padding: 3px 8px; border-radius: 6px;
+}
+.tl-body.pending { border-style: dashed; opacity: 0.6; }
+
+/* ── TRANSACTIONS ── */
+.tx-list { display: flex; flex-direction: column; gap: 6px; }
+.tx-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  transition: background 0.15s;
+}
+.tx-item:hover { background: var(--surface-3); }
+.tx-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; flex-shrink: 0;
+}
+.tx-info { flex: 1; }
+.tx-name { font-size: 13px; font-weight: 500; }
+.tx-meta { font-size: 11px; color: var(--text-3); }
+.tx-right { text-align: right; }
+.tx-earn { font-size: 13px; font-weight: 600; color: var(--green); }
+.tx-date { font-size: 11px; color: var(--text-3); }
+
+/* ── REFERRAL LINK SCREEN ── */
+.link-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  text-align: center;
+  margin-bottom: 16px;
+  position: relative; overflow: hidden;
+}
+.link-hero::before {
+  content: '';
+  position: absolute; top: -80px; left: 50%; transform: translateX(-50%);
+  width: 300px; height: 300px;
+  background: radial-gradient(circle, rgba(79,142,247,0.06) 0%, transparent 70%);
+}
+.link-big { font-family: var(--font-display); font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+.link-sub { font-size: 13px; color: var(--text-3); margin-bottom: 24px; }
+.link-box {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  max-width: 420px; margin: 0 auto 16px;
+}
+.link-url { font-size: 13px; color: var(--blue); font-family: monospace; }
+.copy-btn {
+  background: var(--blue-dim); border: 1px solid rgba(79,142,247,0.3);
+  color: var(--blue); border-radius: 6px;
+  padding: 5px 12px; font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-body);
+  transition: all 0.15s; white-space: nowrap;
+}
+.copy-btn:hover { background: var(--blue); color: #fff; }
+.share-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.share-btn {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 16px;
+  font-size: 12px; font-weight: 500; color: var(--text-2);
+  cursor: pointer; font-family: var(--font-body);
+  transition: all 0.15s; display: flex; align-items: center; gap: 6px;
+}
+.share-btn:hover { background: var(--surface-3); color: var(--text); border-color: var(--border-2); }
+
+/* ── STATS SCREEN ── */
+.stat-big {
+  font-family: var(--font-display);
+  font-size: 48px; font-weight: 700; line-height: 1;
+}
+.chart-bar-wrap { display: flex; align-items: flex-end; gap: 6px; height: 80px; margin-top: 10px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.bar { width: 100%; border-radius: 4px 4px 0 0; transition: height 0.8s cubic-bezier(.4,0,.2,1); }
+.bar-label { font-size: 9px; color: var(--text-3); }
+.bar-val { font-size: 10px; color: var(--text-2); font-weight: 500; }
+
+/* ── TABS ── */
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.tab-btn {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-3); font-size: 13px; font-weight: 500;
+  padding: 6px 12px 10px; cursor: pointer; font-family: var(--font-body);
+  transition: all 0.15s; margin-bottom: -1px;
+}
+.tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+.tab-btn:hover { color: var(--text-2); }
+
+/* ── SECTION HEAD ── */
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.section-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.section-link { font-size: 12px; color: var(--blue); cursor: pointer; background: none; border: none; font-family: var(--font-body); }
+.section-link:hover { opacity: 0.75; }
+
+/* ── NOTIFICATION DOT ── */
+.notif { position: relative; }
+.notif-dot {
+  position: absolute; top: -2px; right: -2px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--red);
+  border: 2px solid var(--surface);
+}
+
+/* ── WITHDRAW MODAL ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7); z-index: 100;
+  align-items: center; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 380px;
+  animation: slideUp 0.2s ease;
+}
+@keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+.modal-title { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.modal-sub { font-size: 13px; color: var(--text-3); margin-bottom: 20px; }
+.modal-balance { background: var(--surface-2); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 16px; }
+.modal-balance-label { font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+.modal-balance-value { font-size: 28px; font-weight: 700; font-family: var(--font-display); color: var(--green); }
+.modal-input-label { font-size: 12px; color: var(--text-2); margin-bottom: 6px; }
+.modal-input {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm); padding: 10px 14px;
+  color: var(--text); font-size: 15px; font-family: var(--font-body);
+  outline: none; transition: border-color 0.15s; margin-bottom: 16px;
+}
+.modal-input:focus { border-color: var(--blue); }
+.modal-btns { display: flex; gap: 8px; }
+.modal-cancel {
+  flex: 1; background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-2); border-radius: var(--radius-sm); padding: 10px;
+  font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font-body);
+}
+.modal-confirm {
+  flex: 2; background: var(--green); border: none;
+  color: #fff; border-radius: var(--radius-sm); padding: 10px;
+  font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font-body);
+  transition: opacity 0.15s;
+}
+.modal-confirm:hover { opacity: 0.85; }
+
+/* ── SUCCESS TOAST ── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--surface-3); border: 1px solid var(--green);
+  border-radius: var(--radius-sm); padding: 12px 18px;
+  font-size: 13px; font-weight: 500; color: var(--green);
+  z-index: 200; display: none;
+  animation: toastIn 0.2s ease;
+}
+@keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">
+        <div class="logo-icon">💳</div>
+        <div>
+          <div class="logo-name">SubPay</div>
+          <div class="logo-sub">Партнёрский кабинет</div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <p class="nav-section-label">Главное</p>
+      <button class="nav-item active" onclick="showScreen('dashboard', this)">
+        <span class="nav-icon">📊</span> Дашборд
+      </button>
+      <button class="nav-item" onclick="showScreen('network', this)">
+        <span class="nav-icon">🌐</span> Моя сеть
+        <span class="nav-badge">76</span>
+      </button>
+      <button class="nav-item" onclick="showScreen('link', this)">
+        <span class="nav-icon">🔗</span> Реферальная ссылка
+      </button>
+
+      <p class="nav-section-label" style="margin-top:8px;">Финансы</p>
+      <button class="nav-item notif" onclick="showScreen('history', this)">
+        <span class="nav-icon">📋</span> История выплат
+        <div class="notif-dot"></div>
+      </button>
+      <button class="nav-item" onclick="showScreen('stats', this)">
+        <span class="nav-icon">📈</span> Статистика
+      </button>
+    </nav>
+
+    <div class="sidebar-user">
+      <div class="user-avatar">АК</div>
+      <div>
+        <div class="user-name">Алексей К.</div>
+        <div class="user-level">● Партнёр · 6%</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="topbar-title" id="topbar-title">Дашборд</div>
+      <div class="topbar-right">
+        <div class="topbar-date">Июнь 2026</div>
+        <div class="streak-pill">🔥 3 месяца подряд</div>
+        <button class="withdraw-btn" onclick="openModal()">Вывести деньги</button>
+      </div>
+    </header>
+
+    <!-- CONTENT -->
+    <div class="content">
+
+      <!-- ══ SCREEN: DASHBOARD ══ -->
+      <div class="screen active" id="screen-dashboard">
+
+        <!-- Hero -->
+        <div class="hero-card">
+          <div class="hero-top">
+            <div class="hero-level">
+              <div class="level-dot"></div>
+              <span class="level-name">Круг 2</span>
+              <div class="level-badge">Партнёр</div>
+            </div>
+            <div class="hero-next">До Круга 3: <span>$3 200</span> или ≈ 32 клиента</div>
+          </div>
+
+          <div class="hero-amount">$1 800</div>
+          <div class="hero-amount-sub">Оборот сети · июнь 2026</div>
+
+          <div class="progress-wrap">
+            <div class="progress-labels">
+              <span>$0</span>
+              <span class="done">✓ Круг 2: $2 000</span>
+              <span>Круг 3: $5 000</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-milestone" style="left: 40%"></div>
+              <div class="progress-fill" id="main-prog" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div class="hero-stats">
+            <div class="hstat">
+              <div class="hstat-label">Ваша ставка</div>
+              <div class="hstat-value" style="color: var(--blue)">6%</div>
+              <div class="hstat-sub" style="color: var(--green)">зафиксирована навсегда</div>
+            </div>
+            <div class="hstat">
+              <div class="hstat-label">Заработано в июне</div>
+              <div class="hstat-value">$148</div>
+              <div class="hstat-sub" style="color: var(--green)">↑ +$23 vs май</div>
+            </div>
+            <div class="hstat">
+              <div class="hstat-label">Баланс к выводу</div>
+              <div class="hstat-value" style="color: var(--green)">$312</div>
+              <div class="hstat-sub" style="color: var(--text-3)">мин. вывод $10</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sprint + Rates -->
+        <div class="grid2">
+          <!-- Sprint -->
+          <div class="sprint-card">
+            <div class="sprint-header">
+              <div class="sprint-title">⚡ Спринт июня</div>
+              <div class="sprint-timer">⏱ 12 дней</div>
+            </div>
+            <div class="sprint-goals">
+              <div class="sprint-goal">
+                <div class="sg-label">Новых рефералов</div>
+                <div class="sg-val">7 / 10</div>
+                <div class="sg-track">
+                  <div class="sg-fill" style="width: 70%; background: var(--blue)"></div>
+                </div>
+                <div class="sg-status">Ещё 3 → бонус $30</div>
+              </div>
+              <div class="sprint-goal">
+                <div class="sg-label">150% плана</div>
+                <div class="sg-val">$1 800 / $3 000</div>
+                <div class="sg-track">
+                  <div class="sg-fill" style="width: 60%; background: var(--purple)"></div>
+                </div>
+                <div class="sg-status">Ещё $1 200 → +1%</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Rates -->
+          <div class="card">
+            <div class="card-title">Ваши ставки</div>
+            <div class="rate-row">
+              <div>
+                <div class="rate-lv">1-й уровень</div>
+                <div style="font-size:11px; color: var(--text-3)">Прямые рефералы</div>
+              </div>
+              <div class="rate-val" style="color: var(--blue)">6%</div>
+            </div>
+            <div class="rate-row">
+              <div>
+                <div class="rate-lv">2-й уровень</div>
+                <div style="font-size:11px; color: var(--text-3)">Друзья рефералов</div>
+              </div>
+              <div class="rate-val" style="color: var(--green)">2%</div>
+            </div>
+            <div class="rate-row">
+              <div>
+                <div class="rate-lv">3-й уровень</div>
+                <div style="font-size:11px; color: var(--text-3)">Друзья друзей</div>
+              </div>
+              <div class="rate-val" style="color: var(--amber)">1%</div>
+            </div>
+            <div class="rate-row" style="opacity:0.35; padding-top:12px; margin-top:4px; border-top:1px solid var(--border)">
+              <div class="rate-locked">🔒 Круг 3 — открывается за $5 000</div>
+              <div style="font-size:16px; font-weight:700; font-family: var(--font-display); color: var(--purple)">7%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Network preview -->
+        <div class="section-head">
+          <div class="section-title">Моя сеть</div>
+          <button class="section-link" onclick="showScreen('network', document.querySelector('[onclick*=network]'))">Подробнее →</button>
+        </div>
+        <div class="grid3" style="margin-bottom:16px;">
+          <div class="net-card">
+            <div class="net-lv">Уровень 1</div>
+            <div class="net-count" style="color: var(--blue)">23</div>
+            <div class="net-active" style="color: var(--green)">18 активных</div>
+            <div class="net-earn">Доход: <strong>$108/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:78%; background: var(--blue)"></div></div>
+          </div>
+          <div class="net-card">
+            <div class="net-lv">Уровень 2</div>
+            <div class="net-count" style="color: var(--green)">41</div>
+            <div class="net-active" style="color: var(--amber)">29 активных</div>
+            <div class="net-earn">Доход: <strong>$34/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:70%; background: var(--green)"></div></div>
+          </div>
+          <div class="net-card">
+            <div class="net-lv">Уровень 3</div>
+            <div class="net-count" style="color: var(--purple)">12</div>
+            <div class="net-active" style="color: var(--text-3)">8 активных</div>
+            <div class="net-earn">Доход: <strong>$6/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:66%; background: var(--purple)"></div></div>
+          </div>
+        </div>
+
+        <!-- Recent transactions -->
+        <div class="section-head">
+          <div class="section-title">Последние транзакции</div>
+          <button class="section-link" onclick="showScreen('history', document.querySelector('[onclick*=history]'))">Все →</button>
+        </div>
+        <div class="tx-list">
+          <div class="tx-item">
+            <div class="tx-avatar" style="background: var(--blue-dim); color: var(--blue)">МА</div>
+            <div class="tx-info">
+              <div class="tx-name">Михаил А.</div>
+              <div class="tx-meta">Ур. 1 · Netflix $15.99</div>
+            </div>
+            <div class="tx-right">
+              <div class="tx-earn">+$0.96</div>
+              <div class="tx-date">Сегодня, 14:32</div>
+            </div>
+          </div>
+          <div class="tx-item">
+            <div class="tx-avatar" style="background: var(--green-dim); color: var(--green)">ОК</div>
+            <div class="tx-info">
+              <div class="tx-name">Ольга К.</div>
+              <div class="tx-meta">Ур. 2 · Spotify $9.99</div>
+            </div>
+            <div class="tx-right">
+              <div class="tx-earn">+$0.20</div>
+              <div class="tx-date">Вчера, 09:15</div>
+            </div>
+          </div>
+          <div class="tx-item">
+            <div class="tx-avatar" style="background: var(--amber-dim); color: var(--amber)">ДВ</div>
+            <div class="tx-info">
+              <div class="tx-name">Дмитрий В.</div>
+              <div class="tx-meta">Ур. 1 · ChatGPT Plus $20</div>
+            </div>
+            <div class="tx-right">
+              <div class="tx-earn">+$1.20</div>
+              <div class="tx-date">25 июн, 18:40</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ SCREEN: NETWORK ══ -->
+      <div class="screen" id="screen-network">
+        <div class="grid3" style="margin-bottom:20px;">
+          <div class="net-card" style="border-color: rgba(79,142,247,0.3);">
+            <div class="net-lv">Уровень 1 · 6% с оплат</div>
+            <div class="net-count" style="color: var(--blue); font-size:40px;">23</div>
+            <div class="net-active" style="color: var(--green)">18 активных</div>
+            <div style="font-size:11px; color: var(--text-3); margin-bottom:8px;">5 неактивных</div>
+            <div class="net-earn">Оборот: <strong>$1 800/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--green)">$108/мес</strong></div>
+            <div class="mini-prog" style="height:5px;"><div class="mini-fill" style="width:78%; background: var(--blue)"></div></div>
+          </div>
+          <div class="net-card" style="border-color: rgba(52,199,123,0.3);">
+            <div class="net-lv">Уровень 2 · 2% с оплат</div>
+            <div class="net-count" style="color: var(--green); font-size:40px;">41</div>
+            <div class="net-active" style="color: var(--amber)">29 активных</div>
+            <div style="font-size:11px; color: var(--text-3); margin-bottom:8px;">12 неактивных</div>
+            <div class="net-earn">Оборот: <strong>$1 700/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--green)">$34/мес</strong></div>
+            <div class="mini-prog" style="height:5px;"><div class="mini-fill" style="width:70%; background: var(--green)"></div></div>
+          </div>
+          <div class="net-card" style="border-color: rgba(167,139,250,0.3);">
+            <div class="net-lv">Уровень 3 · 1% с оплат</div>
+            <div class="net-count" style="color: var(--purple); font-size:40px;">12</div>
+            <div class="net-active" style="color: var(--text-3)">8 активных</div>
+            <div style="font-size:11px; color: var(--text-3); margin-bottom:8px;">4 неактивных</div>
+            <div class="net-earn">Оборот: <strong>$600/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--green)">$6/мес</strong></div>
+            <div class="mini-prog" style="height:5px;"><div class="mini-fill" style="width:66%; background: var(--purple)"></div></div>
+          </div>
+        </div>
+
+        <!-- Path to circle 3 -->
+        <div class="section-head"><div class="section-title">Путь к Кругу 3</div></div>
+        <div class="card" style="margin-bottom:16px;">
+          <div class="timeline">
+            <div class="tl-item">
+              <div class="tl-left">
+                <div class="tl-dot" style="background: var(--green-dim); color: var(--green);">✓</div>
+                <div class="tl-line"></div>
+              </div>
+              <div class="tl-body">
+                <div class="tl-title">Круг 1 · Старт</div>
+                <div class="tl-sub">Оборот $500 / мес · Выполнен апрель 2026</div>
+                <span class="tl-pill" style="background: var(--green-dim); color: var(--green)">Ставка 4% зафиксирована навсегда</span>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-left">
+                <div class="tl-dot" style="background: var(--blue-dim); color: var(--blue);">✓</div>
+                <div class="tl-line"></div>
+              </div>
+              <div class="tl-body">
+                <div class="tl-title">Круг 2 · Партнёр</div>
+                <div class="tl-sub">Оборот $2 000 / мес · Выполнен май 2026 · Бонус $50 получен</div>
+                <span class="tl-pill" style="background: var(--blue-dim); color: var(--blue)">Ставка 6% зафиксирована навсегда</span>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-left">
+                <div class="tl-dot" style="background: var(--surface-3); color: var(--text-3);">3</div>
+              </div>
+              <div class="tl-body pending">
+                <div class="tl-title" style="color: var(--text-2)">Круг 3 · Топ-партнёр</div>
+                <div class="tl-sub">Оборот $5 000 / мес · Осталось $3 200 (≈ 32 клиента)</div>
+                <span class="tl-pill" style="background: var(--surface-3); color: var(--text-3)">Ставка 7% + бонус $150 + совместный маркетинг</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ SCREEN: LINK ══ -->
+      <div class="screen" id="screen-link">
+        <div class="link-hero">
+          <div class="link-big">Ваша реферальная ссылка</div>
+          <div class="link-sub">Поделитесь — и зарабатывайте с каждой оплаты ваших рефералов</div>
+          <div class="link-box">
+            <span class="link-url">subpay.io/ref/alexey_k_2024</span>
+            <button class="copy-btn" onclick="copyLink(this)">Скопировать</button>
+          </div>
+          <div class="share-row">
+            <button class="share-btn">📱 Telegram</button>
+            <button class="share-btn">💬 WhatsApp</button>
+            <button class="share-btn">📸 Instagram</button>
+            <button class="share-btn">🔗 Скопировать</button>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">Ваши ставки по ссылке</div>
+            <div style="padding: 6px 0; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:13px; color: var(--text-2)">Кто оплатил по вашей ссылке</span>
+              <span style="font-size:20px; font-weight:700; color: var(--blue)">6%</span>
+            </div>
+            <div style="padding: 6px 0; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:13px; color: var(--text-2)">Кого пригласили ваши рефералы</span>
+              <span style="font-size:20px; font-weight:700; color: var(--green)">2%</span>
+            </div>
+            <div style="padding: 6px 0; display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:13px; color: var(--text-2)">Третье поколение</span>
+              <span style="font-size:20px; font-weight:700; color: var(--amber)">1%</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Статистика ссылки</div>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div class="hstat" style="background: var(--surface-2);">
+                <div class="hstat-label">Переходов по ссылке</div>
+                <div class="hstat-value">247</div>
+              </div>
+              <div class="hstat" style="background: var(--surface-2);">
+                <div class="hstat-label">Зарегистрировались</div>
+                <div class="hstat-value">23 <span style="font-size:13px; color: var(--green)">9.3%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ SCREEN: HISTORY ══ -->
+      <div class="screen" id="screen-history">
+        <div class="tabs">
+          <button class="tab-btn active">Все транзакции</button>
+          <button class="tab-btn" onclick="this.parentNode.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active')">Выводы</button>
+          <button class="tab-btn" onclick="this.parentNode.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active')">Бонусы</button>
+        </div>
+        <div class="tx-list">
+          <div class="tx-item"><div class="tx-avatar" style="background:var(--blue-dim);color:var(--blue)">МА</div><div class="tx-info"><div class="tx-name">Михаил А.</div><div class="tx-meta">Ур. 1 · Netflix $15.99</div></div><div class="tx-right"><div class="tx-earn">+$0.96</div><div class="tx-date">28 июн, 14:32</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:var(--green-dim);color:var(--green)">ОК</div><div class="tx-info"><div class="tx-name">Ольга К.</div><div class="tx-meta">Ур. 2 · Spotify $9.99</div></div><div class="tx-right"><div class="tx-earn">+$0.20</div><div class="tx-date">27 июн, 09:15</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:var(--amber-dim);color:var(--amber)">ДВ</div><div class="tx-info"><div class="tx-name">Дмитрий В.</div><div class="tx-meta">Ур. 1 · ChatGPT Plus $20</div></div><div class="tx-right"><div class="tx-earn">+$1.20</div><div class="tx-date">25 июн, 18:40</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:var(--purple-dim);color:var(--purple)">СМ</div><div class="tx-info"><div class="tx-name">Сергей М.</div><div class="tx-meta">Ур. 3 · Adobe CC $54.99</div></div><div class="tx-right"><div class="tx-earn">+$0.55</div><div class="tx-date">24 июн, 11:20</div></div></div>
+          <div class="tx-item" style="border-color:rgba(52,199,123,0.3)"><div class="tx-avatar" style="background:var(--green-dim);color:var(--green)">🎁</div><div class="tx-info"><div class="tx-name">Серийный бонус</div><div class="tx-meta">3 месяца подряд · Круг 2</div></div><div class="tx-right"><div class="tx-earn">+$75.00</div><div class="tx-date">1 июн, 00:01</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:var(--blue-dim);color:var(--blue)">НП</div><div class="tx-info"><div class="tx-name">Наталья П.</div><div class="tx-meta">Ур. 1 · YouTube Premium $13.99</div></div><div class="tx-right"><div class="tx-earn">+$0.84</div><div class="tx-date">23 июн, 16:05</div></div></div>
+          <div class="tx-item" style="opacity:0.6; border-color:var(--border)"><div class="tx-avatar" style="background:var(--surface-3);color:var(--text-3)">↑</div><div class="tx-info"><div class="tx-name">Вывод средств</div><div class="tx-meta">На карту · **** 4242</div></div><div class="tx-right"><div class="tx-earn" style="color:var(--text-3)">−$200.00</div><div class="tx-date">20 июн, 14:00</div></div></div>
+        </div>
+      </div>
+
+      <!-- ══ SCREEN: STATS ══ -->
+      <div class="screen" id="screen-stats">
+        <div class="grid2" style="margin-bottom:16px;">
+          <div class="card">
+            <div class="card-title">Общий доход</div>
+            <div class="stat-big" style="color: var(--green)">$876</div>
+            <div style="font-size:12px; color: var(--text-3); margin-top:4px;">За всё время</div>
+            <div class="chart-bar-wrap" id="income-chart"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Рост сети</div>
+            <div class="stat-big" style="color: var(--blue)">76</div>
+            <div style="font-size:12px; color: var(--text-3); margin-top:4px;">Всего рефералов</div>
+            <div class="chart-bar-wrap" id="network-chart"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Доход по месяцам</div>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px;">Янв</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:20%; height:100%; background:var(--blue); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--text-2); width:36px; text-align:right;">$48</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px;">Фев</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:30%; height:100%; background:var(--blue); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--text-2); width:36px; text-align:right;">$72</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px;">Мар</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:35%; height:100%; background:var(--blue); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--text-2); width:36px; text-align:right;">$84</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px;">Апр</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:42%; height:100%; background:var(--blue); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--text-2); width:36px; text-align:right;">$101</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px;">Май</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:52%; height:100%; background:var(--blue); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--text-2); width:36px; text-align:right;">$125</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span style="font-size:12px; color:var(--text-3); width:32px; color:var(--blue); font-weight:500;">Июн</span>
+              <div style="flex:1; height:6px; background:var(--surface-3); border-radius:4px; overflow:hidden;"><div style="width:62%; height:100%; background: linear-gradient(90deg,var(--blue),var(--purple)); border-radius:4px;"></div></div>
+              <span style="font-size:12px; color:var(--green); width:36px; text-align:right; font-weight:600;">$148</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-title">Вывести деньги</div>
+    <div class="modal-sub">Средства поступят на счёт в течение 1–3 рабочих дней</div>
+    <div class="modal-balance">
+      <div class="modal-balance-label">Доступно к выводу</div>
+      <div class="modal-balance-value">$312.45</div>
+    </div>
+    <div class="modal-input-label">Сумма вывода</div>
+    <input class="modal-input" type="number" placeholder="Минимум $10" value="100">
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closeModal()">Отмена</button>
+      <button class="modal-confirm" onclick="confirmWithdraw()">Вывести $100</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">✓ Заявка на вывод отправлена</div>
+
+<script>
+const screens = { dashboard: 'Дашборд', network: 'Моя сеть', link: 'Реферальная ссылка', history: 'История выплат', stats: 'Статистика' };
+
+function showScreen(name, btn) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  document.getElementById('topbar-title').textContent = screens[name];
+}
+
+function openModal() {
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+}
+function confirmWithdraw() {
+  closeModal();
+  const toast = document.getElementById('toast');
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+function copyLink(btn) {
+  btn.textContent = '✓ Скопировано';
+  btn.style.background = 'var(--green)';
+  btn.style.color = '#fff';
+  setTimeout(() => { btn.textContent = 'Скопировать'; btn.style.background = ''; btn.style.color = ''; }, 2000);
+}
+
+// Animate progress bar on load
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    document.getElementById('main-prog').style.width = '36%';
+  }, 300);
+
+  // Build bar charts
+  const incomeData = [48, 72, 84, 101, 125, 148];
+  const netData = [5, 12, 20, 38, 58, 76];
+  const months = ['Янв','Фев','Мар','Апр','Май','Июн'];
+  const colors = ['rgba(79,142,247,0.3)','rgba(79,142,247,0.4)','rgba(79,142,247,0.55)','rgba(79,142,247,0.65)','rgba(79,142,247,0.8)','#4F8EF7'];
+  const colors2 = ['rgba(52,199,123,0.3)','rgba(52,199,123,0.4)','rgba(52,199,123,0.55)','rgba(52,199,123,0.65)','rgba(52,199,123,0.8)','#34C77B'];
+
+  function buildChart(containerId, data, colors) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const max = Math.max(...data);
+    data.forEach((v, i) => {
+      const col = document.createElement('div');
+      col.className = 'bar-col';
+      const pct = Math.round((v / max) * 70);
+      col.innerHTML = `<div class="bar-val">${v}</div><div class="bar" style="height:${pct}px; background:${colors[i]}; width:100%;"></div><div class="bar-label">${months[i]}</div>`;
+      container.appendChild(col);
+    });
+  }
+
+  buildChart('income-chart', incomeData, colors);
+  buildChart('network-chart', netData, colors2);
+});
+</script>
+</body>
+</html>
