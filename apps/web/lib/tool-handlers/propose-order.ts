@@ -64,6 +64,25 @@ const MIN_AMOUNT_USD_CENTS = 100; // $1
 const MAX_AMOUNT_USD_CENTS = 50_000; // $500
 
 /**
+ * Сервисы-«пополнения» с индивидуальной крупной ценой (Airbnb/Booking/Steam):
+ * витринного потолка $500 им мало — клиент платит реальную стоимость брони/
+ * пополнения. Идентифицируем СТРОГО по slug каталога, не по customDescription:
+ * высокий лимит получают только распознанные каталожные сервисы, а произвольный
+ * свободный текст остаётся на $500 (анти-абьюз/инъекция).
+ *
+ * ВНИМАНИЕ: высокий лимит ≠ гарантия выпуска карты. На карту всё равно нужен
+ * VCC-баланс ≥ цена + буфер + $4 issue-fee, иначе issue-card упадёт уже ПОСЛЕ
+ * приёма рублей (заказ → failed, возврат руками). Перед крупным заказом убедись,
+ * что VCC пополнен под сумму.
+ */
+const HIGH_VALUE_SERVICE_SLUGS: ReadonlySet<string> = new Set([
+  'airbnb',
+  'booking',
+  'steam',
+]);
+const HIGH_VALUE_MAX_AMOUNT_USD_CENTS = 500_000; // $5000 — предохранитель от ошибки цены/инъекции
+
+/**
  * Анти-абьюз: потолок созданных заказов на пользователя за скользящее окно.
  * Реальному клиенту хватает с запасом; спамер/инъекция не завалит `orders`
  * черновиками и не сожжёт L&P-вызовы курса.
@@ -91,20 +110,17 @@ export async function proposeOrder(input: {
   // Модель может прислать дробные центы ($19.99 × 100 → 1998.9999…) — округляем.
   const amountUsdCents = Math.round(input.amountUsdCents);
 
-  if (
-    !Number.isFinite(amountUsdCents) ||
-    amountUsdCents < MIN_AMOUNT_USD_CENTS ||
-    amountUsdCents > MAX_AMOUNT_USD_CENTS
-  ) {
+  // Нижняя граница и валидность — не зависят от сервиса, проверяем сразу.
+  // Верхний потолок — service-aware (ниже, после резолва сервиса по slug).
+  if (!Number.isFinite(amountUsdCents) || amountUsdCents < MIN_AMOUNT_USD_CENTS) {
     log.warn({
-      event: 'tool.propose_order.amount_out_of_bounds',
+      event: 'tool.propose_order.amount_below_min',
       userId,
       amountUsdCents: input.amountUsdCents,
     });
     throw new OrderAmountOutOfBoundsError(
-      'propose_order: сумма вне допустимого диапазона $1–$500 за заказ. ' +
-        'Через бота такой заказ оформить нельзя — не пытайся создать его повторно ' +
-        'и не подгоняй сумму под лимит; предложи пользователю оператора (request_human).',
+      'propose_order: сумма ниже минимума $1 за заказ. ' +
+        'Не создавай заказ и не подгоняй сумму под лимит.',
     );
   }
 
@@ -159,6 +175,7 @@ export async function proposeOrder(input: {
 
   let resolvedServiceId: string | null = null;
   let serviceRequiresKyc = false;
+  let serviceSlug: string | null = null;
 
   if (hasServiceId) {
     const service = await getServiceById(db, serviceId);
@@ -170,6 +187,29 @@ export async function proposeOrder(input: {
     }
     resolvedServiceId = service.id;
     serviceRequiresKyc = service.requiresKyc;
+    serviceSlug = service.slug;
+  }
+
+  // Верхний потолок суммы — service-aware: распознанные каталожные сервисы-
+  // пополнения (Airbnb/Booking/Steam) допускают крупные заказы; всё остальное,
+  // включая custom-описания (serviceSlug === null), ограничено $500.
+  const maxAmountUsdCents =
+    serviceSlug !== null && HIGH_VALUE_SERVICE_SLUGS.has(serviceSlug)
+      ? HIGH_VALUE_MAX_AMOUNT_USD_CENTS
+      : MAX_AMOUNT_USD_CENTS;
+  if (amountUsdCents > maxAmountUsdCents) {
+    log.warn({
+      event: 'tool.propose_order.amount_over_max',
+      userId,
+      amountUsdCents,
+      maxAmountUsdCents,
+      serviceSlug,
+    });
+    throw new OrderAmountOutOfBoundsError(
+      `propose_order: сумма выше лимита $${maxAmountUsdCents / 100} за заказ. ` +
+        'Через бота такой заказ оформить нельзя — не пытайся создать его повторно ' +
+        'и не подгоняй сумму под лимит; предложи пользователю оператора (request_human).',
+    );
   }
 
   const rate = await resolveUsdtRubRate();
