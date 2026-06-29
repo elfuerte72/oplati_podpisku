@@ -162,9 +162,10 @@ export async function consumeLinkToken(
           await tx.execute(
             sql`UPDATE referral_accruals SET beneficiary_user_id = ${byTelegram.id} WHERE beneficiary_user_id = ${byWebSession.id}`,
           );
-          await tx.execute(
-            sql`UPDATE referral_accruals SET source_user_id = ${byTelegram.id} WHERE source_user_id = ${byWebSession.id}`,
-          );
+          // source_user_id НЕ переписываем: иначе строка (beneficiary=W→T, source=W→T)
+          // стала бы self-accrual (T заработал с собственной покупки — находка ревью).
+          // FK source_user_id = ON DELETE set null → при DELETE W станет NULL («источник
+          // неизвестен»), что безопасно и не создаёт самоначисление.
           await tx.execute(
             sql`UPDATE referral_payouts SET user_id = ${byTelegram.id} WHERE user_id = ${byWebSession.id}`,
           );
@@ -190,7 +191,10 @@ export async function consumeLinkToken(
               seen.add(parent);
               cur = parent;
             }
-            return false;
+            // Глубина > 16: fail-closed — считаем потенциальным предком, чтобы
+            // глубокая цепочка не обошла цикл-чек (находка ревью). Реальные
+            // деревья мельче (захват 3 уровня), 16 — с большим запасом.
+            return true;
           };
 
           // Реферальная сеть переживает merge. (1) Реферер удаляемой web-строки

@@ -326,8 +326,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     // чтобы getOrCreateUserByTelegramId проставил referred_by при СОЗДАНИИ строки
     // (immutable — повторный заход существующего юзера дерево не меняет).
     // Best-effort: любой сбой/неизвестный код → null (приветствие не ломаем).
+    // Префикс ref_ обязателен (bare-код в /start рефералом не считаем), но
+    // регистронезависимо — Telegram/клиенты могут прислать REF_ (находка ревью).
     const referredBy =
-      serverEnv.REFERRAL_ENABLED && startPayload.startsWith(REFERRAL_DEEPLINK_PREFIX)
+      serverEnv.REFERRAL_ENABLED &&
+      startPayload.toLowerCase().startsWith(REFERRAL_DEEPLINK_PREFIX)
         ? await resolveReferrerFromStart(startPayload, update.update_id)
         : null;
 

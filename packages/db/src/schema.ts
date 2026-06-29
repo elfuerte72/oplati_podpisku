@@ -447,6 +447,11 @@ export const referralAccruals = pgTable(
       t.beneficiaryUserId,
       t.level,
     ),
+    // Recovery/orderHasAccruals пробят по order_id — индекс (находка код-ревью, перф).
+    orderIdx: index('referral_accruals_order_id_idx').on(t.orderId),
+    // Деньги неотрицательны (defense-in-depth): начисления всегда > 0 (план дропает
+    // floor-в-ноль), reversal — положительная строка со status='reversed'.
+    amountNonNeg: check('referral_accruals_amount_nonneg', sql`${t.amountUsdCents} >= 0`),
   }),
 ).enableRLS();
 
@@ -467,6 +472,7 @@ export const referralPayouts = pgTable(
   },
   (t) => ({
     userIdx: index('referral_payouts_user_idx').on(t.userId),
+    amountPositive: check('referral_payouts_amount_positive', sql`${t.amountUsdCents} > 0`),
   }),
 ).enableRLS();
 

@@ -132,7 +132,7 @@ export async function setReferrerOnce(
   }
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE users
-    SET referred_by = ${referrerId}, updated_at = now()
+    SET referred_by = ${referrerId}, referred_by_set_at = now(), updated_at = now()
     WHERE id = ${userId} AND referred_by IS NULL
     RETURNING id
   `);

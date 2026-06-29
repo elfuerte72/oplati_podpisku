@@ -102,12 +102,15 @@ export async function insertCommissionAccruals(
 }
 
 /**
- * Доступный к выводу баланс партнёра (USD-центы): начислено (status=accrued)
- * минус выводы в работе/выплаченные И уже **запрошенные** (`requested`). Учёт
- * requested обязателен (находка security): иначе две параллельные заявки увидели
- * бы полный баланс и обе прошли → перевывод сверх заработанного. `reversed`-
- * начисления и `rejected`-заявки не учитываются. Cast `::bigint` (SUM шире int) +
- * Number — без переполнения на $21M+, в духе «деньги — integer».
+ * Доступный к выводу баланс партнёра (USD-центы):
+ *   начислено (accrued) − реверснуто (reversed) − выводы (requested|processing|paid).
+ *
+ * - `reversed` вычитается (находка ревью): reversal по контракту — НОВАЯ строка
+ *   status='reversed' той же суммы (append-only, исходная остаётся 'accrued'),
+ *   поэтому в балансе её надо гасить вычитанием, иначе reversal не уменьшал бы баланс.
+ * - `requested`-выводы вычитаются (находка security): иначе две параллельные заявки
+ *   увидели бы полный баланс и обе прошли → перевывод. `rejected`-заявки не считаются.
+ * - Cast `::bigint` + Number — без переполнения на $21M+, в духе «деньги — integer».
  */
 export async function getReferralBalanceUsdCents(db: DB, userId: string): Promise<number> {
   const rows = await db.execute<{ balance: string | number }>(sql`
@@ -115,6 +118,10 @@ export async function getReferralBalanceUsdCents(db: DB, userId: string): Promis
       COALESCE((
         SELECT SUM(amount_usd_cents) FROM referral_accruals
         WHERE beneficiary_user_id = ${userId} AND status = 'accrued'
+      ), 0)
+      - COALESCE((
+        SELECT SUM(amount_usd_cents) FROM referral_accruals
+        WHERE beneficiary_user_id = ${userId} AND status = 'reversed'
       ), 0)
       - COALESCE((
         SELECT SUM(amount_usd_cents) FROM referral_payouts

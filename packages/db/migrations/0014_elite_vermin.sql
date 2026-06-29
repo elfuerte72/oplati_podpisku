@@ -1,0 +1,3 @@
+CREATE INDEX "referral_accruals_order_id_idx" ON "referral_accruals" USING btree ("order_id");--> statement-breakpoint
+ALTER TABLE "referral_accruals" ADD CONSTRAINT "referral_accruals_amount_nonneg" CHECK ("referral_accruals"."amount_usd_cents" >= 0);--> statement-breakpoint
+ALTER TABLE "referral_payouts" ADD CONSTRAINT "referral_payouts_amount_positive" CHECK ("referral_payouts"."amount_usd_cents" > 0);

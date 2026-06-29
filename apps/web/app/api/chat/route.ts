@@ -102,14 +102,22 @@ async function consumeRefCookie(): Promise<string | null> {
   if (!code) return null;
   try {
     const referrerId = await resolveReferralCode(getDb(), code);
-    store.delete('ref'); // одноразово — не резолвим на каждом сообщении
     log.info({ event: referrerId ? 'web-chat.referral.captured' : 'web-chat.referral.code_unknown' });
     return referrerId;
   } catch (err) {
+    // НЕ гасим cookie здесь: при сбое БД реферер не должен пропасть — повторим на
+    // следующем сообщении. Cookie гасится только после успешного резолва ctx (POST).
     log.warn({ event: 'web-chat.referral.resolve_failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat.referral' } });
     return null;
   }
+}
+
+/** Гасит ref-cookie одноразово — вызывается ТОЛЬКО после успешного создания/upsert
+ * пользователя (ctx != null), иначе реферер мог бы потеряться при сбое БД. */
+async function clearRefCookie(): Promise<void> {
+  const store = await cookies();
+  if (store.get('ref')) store.delete('ref');
 }
 
 /** Upsert user/conversation для веб-сессии. `null` при недоступной БД (degrade). */
@@ -194,6 +202,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   const webSessionId = await getOrCreateWebSessionId();
   const referredBy = await consumeRefCookie();
   const ctx = await resolveContext(webSessionId, referredBy);
+  // Гасим ref-cookie только после успешного резолва ctx (создание/upsert юзера) —
+  // при сбое БД cookie сохраняется и реферер досчитается на следующем сообщении.
+  if (ctx && serverEnv.REFERRAL_ENABLED) await clearRefCookie();
 
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });
 

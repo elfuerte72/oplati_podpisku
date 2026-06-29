@@ -193,7 +193,13 @@ referral_monthly_stats (Этап C — поля заложить, крон по�
 - Merge-хардненинг: перенос `referral_accruals`/`referral_payouts`/`referral_partners` с удаляемой web-строки (M-2, иначе restrict-FK рушит привязку); цикл-чек при inherit/repoint (M-1).
 - Баланс вычитает `requested`-выплаты + `::bigint` (M-3); ревалидация cookie `ref`; CHECK `referred_by <> id`.
 
+**Исправлено по greptile + CodeRabbit (batch 3):**
+- `setReferrerOnce` теперь ставит `referred_by_set_at` (greptile P1 — иначе recovery исключал бы таких юзеров).
+- Бот: `ref_`-гейт регистронезависимый (`/start REF_` ловится). Цикл-чек merge fail-closed на глубине 16. Merge не переписывает `source_user_id` (исключает self-accrual). Начисление только при успешном переходе в `paid` (не на cancelled/expired). Cookie `ref` гасится только после успешного резолва ctx. Баланс вычитает `reversed`. CHECK `amount>=0`/`>0` + индекс `referral_accruals(order_id)` (миграция 0014).
+
 **Отложено на Этап E (задокументировано, не блокирует A+B; программа дремлет до Этапа D + `REFERRAL_ENABLED=1`):**
+- **Reversal-флоу** (полный): баланс уже вычитает `status='reversed'`, но сам механизм проставления reversal-строк (clawback) — Этап E.
+- **Recovery-метрики**: `recoverReferralAccruals` считает `processed` по «не бросило», а не по реальной вставке — улучшить до явного per-order статуса (CodeRabbit, не корректность, а наблюдаемость).
 - **L-1** — идемпотентность начисления по `payment_id`, а экономическое событие — на заказ. Два `succeeded`-платежа на заказ (near-impossible по флоу `ready_for_payment`→`pending_payment`+409) дали бы двойное начисление на inline-пути. Защита: per-order ключ ИЛИ partial-unique `payments(order_id) WHERE status='succeeded'` (не добавлен сейчас — риск уронить prod-миграцию при дублях). Recovery уже защищён через `DISTINCT ON`.
 - **L-2** — мультиаккаунт-самореферал (одна персона = два аккаунта) не детектируется. Нужны Этап E `suspended`-энфорсмент (хук уже есть в `accrue.ts`) + сигналы (общий платёжный инструмент, device/IP-кластеры, velocity). **`REFERRAL_ENABLED=1` не включать до этого.**
 - **Snapshot ставки** — `accrue.ts` берёт ставку из текущего профиля партнёра; с приходом Этапа C (мутирующий круг/буст) решить, не снапшотить ли круг на момент оплаты (recovery через месяц иначе посчитает по другой ставке). Сейчас профили статичны — расхождения нет.
