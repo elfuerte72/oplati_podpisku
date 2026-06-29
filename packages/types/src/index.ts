@@ -85,12 +85,15 @@ export {
   clampCircle,
   referralRateBps,
   referralAmountUsdCents,
+  planCommissionAccruals,
   parseReferralCode,
   shouldInheritReferrerOnMerge,
   walkReferralAncestors,
   type ReferralCircleRates,
   type ReferralCode,
   type ReferralAncestor,
+  type AccrualBeneficiary,
+  type PlannedAccrual,
 } from './referral.ts';
 
 // ─── Order parameters (гибкая структура) ──────────────────────────────────

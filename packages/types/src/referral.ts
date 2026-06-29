@@ -89,6 +89,58 @@ export const REFERRAL_MAX_CHAIN_BPS =
   REFERRAL_RATE_TABLE[REFERRAL_RATE_TABLE.length - 1]!.l2Bps +
   REFERRAL_RATE_TABLE[REFERRAL_RATE_TABLE.length - 1]!.l3Bps;
 
+// ─── Расчёт начислений (чистая логика, экономическое ядро) ─────────────────
+
+/** Параметры одного beneficiary для расчёта commission-начисления. */
+export type AccrualBeneficiary = {
+  readonly userId: string;
+  /** Уровень сети относительно плательщика: 1..3. */
+  readonly level: number;
+  /** Круг партнёра (0..3); 0 если профиля referral_partners ещё нет. */
+  readonly circle: number;
+  /** 5+ активных рефералов L2 → ставка L2 2%→2.5% (Этап C); иначе false. */
+  readonly teamMultiplier: boolean;
+  /** Временный +1% к L1 на текущий месяц (Этап C); 0 если нет. */
+  readonly boostBps: number;
+};
+
+/** Спланированное начисление (без id/payment — их проставит репозиторий при INSERT). */
+export type PlannedAccrual = {
+  readonly beneficiaryUserId: string;
+  readonly level: number;
+  readonly rateBps: number;
+  readonly amountUsdCents: number;
+};
+
+/** Ставка L2 при активном командном множителе: 2% → 2.5%. */
+const TEAM_MULTIPLIER_L2_BPS = 250;
+
+/**
+ * Считает commission-начисления цепочки от базы заказа (`original_amount`,
+ * USD-центы). Ставка beneficiary = базовая по кругу/уровню + командный множитель
+ * (только L2 с базой 2%) + временный буст (только L1). Начисления, схлопнувшиеся
+ * в 0 после floor, отбрасываются. Чистая функция — тестируется без БД.
+ */
+export function planCommissionAccruals(
+  baseUsdCents: number,
+  beneficiaries: readonly AccrualBeneficiary[],
+): PlannedAccrual[] {
+  const out: PlannedAccrual[] = [];
+  for (const b of beneficiaries) {
+    let rateBps = referralRateBps(b.circle, b.level);
+    if (b.level === 2 && b.teamMultiplier && rateBps === 200) {
+      rateBps = TEAM_MULTIPLIER_L2_BPS;
+    }
+    if (b.level === 1 && b.boostBps > 0) {
+      rateBps += b.boostBps;
+    }
+    const amountUsdCents = referralAmountUsdCents(baseUsdCents, rateBps);
+    if (amountUsdCents <= 0) continue;
+    out.push({ beneficiaryUserId: b.userId, level: b.level, rateBps, amountUsdCents });
+  }
+  return out;
+}
+
 // ─── Реферальный код и deep-link ──────────────────────────────────────────
 
 /** Префикс deep-link захвата: `t.me/<bot>?start=ref_<code>`. */

@@ -2,14 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
   parseReferralCode,
+  planCommissionAccruals,
   referralAmountUsdCents,
   referralRateBps,
   shouldInheritReferrerOnMerge,
   REFERRAL_MAX_CHAIN_BPS,
   REFERRAL_RATE_TABLE,
   walkReferralAncestors,
+  type AccrualBeneficiary,
+  type PlannedAccrual,
   type ReferralAncestor,
 } from './referral.ts';
+
+const benef = (over: Partial<AccrualBeneficiary> & Pick<AccrualBeneficiary, 'userId' | 'level'>): AccrualBeneficiary => ({
+  circle: 0,
+  teamMultiplier: false,
+  boostBps: 0,
+  ...over,
+});
 
 describe('REFERRAL_RATE_TABLE — воспроизводит worked-примеры правил и мокапа', () => {
   // Док: «клиент оплатил Netflix $15.99 — партнёр-Клиент получает $0.64,
@@ -92,6 +102,64 @@ describe('parseReferralCode', () => {
     expect(parseReferralCode('link_xyz')).toBeNull(); // другой deep-link
     expect(parseReferralCode('ref_!!bad!!')).toBeNull();
     expect(parseReferralCode('ab')).toBeNull(); // слишком короткий
+  });
+});
+
+describe('planCommissionAccruals — расчёт цепочки начислений', () => {
+  it('Топ-партнёр (круг 3) на 3 уровнях, база $20 → 7%/2%/1%', () => {
+    const rows = planCommissionAccruals(2000, [
+      benef({ userId: 'l1', level: 1, circle: 3 }),
+      benef({ userId: 'l2', level: 2, circle: 3 }),
+      benef({ userId: 'l3', level: 3, circle: 3 }),
+    ]);
+    expect(rows).toEqual<PlannedAccrual[]>([
+      { beneficiaryUserId: 'l1', level: 1, rateBps: 700, amountUsdCents: 140 },
+      { beneficiaryUserId: 'l2', level: 2, rateBps: 200, amountUsdCents: 40 },
+      { beneficiaryUserId: 'l3', level: 3, rateBps: 100, amountUsdCents: 20 },
+    ]);
+  });
+
+  it('командный множитель: L2 круга 2 (2%) → 2.5%', () => {
+    const [row] = planCommissionAccruals(2000, [
+      benef({ userId: 'l2', level: 2, circle: 2, teamMultiplier: true }),
+    ]);
+    expect(row).toEqual<PlannedAccrual>({ beneficiaryUserId: 'l2', level: 2, rateBps: 250, amountUsdCents: 50 });
+  });
+
+  it('командный множитель НЕ применяется к L2 круга 0/1 (база 1.5%, не 2%)', () => {
+    const [row] = planCommissionAccruals(2000, [
+      benef({ userId: 'l2', level: 2, circle: 1, teamMultiplier: true }),
+    ]);
+    expect(row?.rateBps).toBe(150); // множитель только для базы 2%
+  });
+
+  it('временный буст +1% применяется только к L1', () => {
+    const rows = planCommissionAccruals(2000, [
+      benef({ userId: 'l1', level: 1, circle: 2, boostBps: 100 }),
+      benef({ userId: 'l2', level: 2, circle: 2, boostBps: 100 }),
+    ]);
+    expect(rows[0]?.rateBps).toBe(700); // 6% + 1% буст
+    expect(rows[1]?.rateBps).toBe(200); // L2 буст не трогает
+  });
+
+  it('начисление, схлопнувшееся в 0 после floor, отбрасывается', () => {
+    // База 1 цент × 0.5% = 0.00005 → floor 0 → нет строки.
+    const rows = planCommissionAccruals(1, [benef({ userId: 'l3', level: 3, circle: 0 })]);
+    expect(rows).toEqual([]);
+  });
+
+  it('пустая цепочка → пустой результат', () => {
+    expect(planCommissionAccruals(2000, [])).toEqual([]);
+  });
+
+  it('инвариант: суммарная база цепочки = 10% (без модификаторов)', () => {
+    const rows = planCommissionAccruals(100_000, [
+      benef({ userId: 'l1', level: 1, circle: 3 }),
+      benef({ userId: 'l2', level: 2, circle: 3 }),
+      benef({ userId: 'l3', level: 3, circle: 3 }),
+    ]);
+    const totalBps = rows.reduce((s, r) => s + r.rateBps, 0);
+    expect(totalBps).toBe(REFERRAL_MAX_CHAIN_BPS); // 1000 = 10%
   });
 });
 

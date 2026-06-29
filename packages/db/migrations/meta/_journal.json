@@ -85,6 +85,13 @@
       "when": 1782725182857,
       "tag": "0011_eminent_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782726200116,
+      "tag": "0012_flat_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }
