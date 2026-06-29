@@ -139,11 +139,17 @@
 - [x] `previewSnapshot`-seam для визуального QA и будущих D4-тестов (рендер без сети).
 - [x] Пункт «Партнёрам» в навигации сайта (`components/chat/LeftNav.tsx`, реальная ссылка через `next/link`).
 
-**D3 — мини-апп (вторая поверхность, `apps/web/app/cabinet/`):**
-- [ ] Вкладка `ReferralSection` в существующем Mini App кабинете. Auth — Telegram `initData` (`lib/cabinet/auth.ts`). Тот же дизайн D0, мобильный полноэкранный layout (сайдбар → нижняя навигация). Тот же `GET /api/cabinet/referral`.
+**D3 — мини-апп (вторая поверхность, `apps/web/app/cabinet/`):** — ✅ СДЕЛАНО
 
-**D4 — тесты:**
-- [ ] snapshot, гейт минимальной суммы, ownership (партнёр видит только своё), оба пути auth (initData / cookie+link).
+> Переиспользует тот же `PartnerCabinet` (проп `initData` + `onBack`). В `CabinetClient` — кнопка-вход «Партнёрская программа» + view `referral` → полноэкранный кабинет (мобильный layout с нижней навигацией) с кнопкой возврата к заказам. `initData` вынесен в state (ref в рендере нельзя).
+
+- [x] Вход в мини-апп кабинете → `PartnerCabinet` с `initData`. Тот же дизайн D0, тот же `POST /api/cabinet/referral`. Auth — Telegram `initData`.
+
+**D4 — тесты:** — ✅ СДЕЛАНО
+
+> Web 192 теста зелёных (23 файла). Реферальные: `effectiveReferralRates` (types 5), payout-валидация/минимум/suspended/баланс/ownership (8), снапшот/disabled/ссылки/гейт/сортировка/graceful (9), оба auth-пути initData↔cookie (6).
+
+- [x] snapshot-композиция, гейт минимальной суммы, ownership (снапшот по `userId`), оба пути auth (initData / web-cookie), payout-гейты.
 
 **D5 — полное e2e-тестирование (после D0–D4, по решению владельца):**
 - [ ] Включить `REFERRAL_ENABLED=1` на preview → сквозной прогон: регистрация по ref-ссылке → оплата → начисление → кабинет показывает сеть/баланс → заявка на вывод. Владелец проверяет лично. Прод — отдельным решением после.

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { formatRub } from '@/components/comic/format';
+import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import {
@@ -42,7 +43,7 @@ export function CabinetClient() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [errorText, setErrorText] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [view, setView] = useState<'list' | 'detail'>('list');
+  const [view, setView] = useState<'list' | 'detail' | 'referral'>('list');
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<'pay' | 'repeat' | 'operator' | null>(null);
@@ -51,6 +52,9 @@ export function CabinetClient() {
 
   const tgRef = useRef<TelegramWebApp | null>(null);
   const initDataRef = useRef<string>('');
+  // initData в state (а не только в ref) — нужно при рендере секции «Партнёрам»
+  // (PartnerCabinet получает initData как проп; ref читать в рендере нельзя).
+  const [initData, setInitData] = useState('');
 
   // ─── Инициализация: SDK Telegram → snapshot ──────────────────────────────
   useEffect(() => {
@@ -64,6 +68,7 @@ export function CabinetClient() {
       }
       tgRef.current = tg;
       initDataRef.current = tg.initData;
+      setInitData(tg.initData);
       try {
         tg.ready();
         tg.expand();
@@ -212,9 +217,30 @@ export function CabinetClient() {
     );
   }
 
+  if (view === 'referral') {
+    return <PartnerCabinet initData={initData} onBack={() => setView('list')} />;
+  }
+
   return (
     <main className="mx-auto w-full max-w-md space-y-5 p-4">
       <ProfileHeader profile={snapshot.profile} />
+
+      <button
+        type="button"
+        onClick={() => setView('referral')}
+        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+      >
+        <span className="text-[22px]">🤝</span>
+        <span className="flex-1">
+          <span className="block font-display text-[15px] font-bold text-[var(--color-paper)]">
+            Партнёрская программа
+          </span>
+          <span className="block font-body text-[12px] text-[var(--color-paper)] opacity-90">
+            Приглашай и зарабатывай с каждой оплаты
+          </span>
+        </span>
+        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
+      </button>
 
       {notice && (
         <p className="rounded-[12px] border-2 border-[var(--color-stamp)] px-3 py-2 font-body text-sm text-[var(--color-stamp)]">

@@ -49,10 +49,13 @@ const SOFT =
 export function PartnerCabinet({
   initData,
   previewSnapshot,
+  onBack,
 }: {
   initData?: string;
   /** Тест/превью-seam: если задан — рендерим без сетевого запроса. */
   previewSnapshot?: ReferralSnapshot;
+  /** Если задан — в топбаре кнопка «назад» (мини-апп: возврат к заказам). */
+  onBack?: () => void;
 } = {}) {
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [snap, setSnap] = useState<ReferralSnapshot | null>(previewSnapshot ?? null);
@@ -96,13 +99,15 @@ export function PartnerCabinet({
     setTimeout(() => setToast(null), 2800);
   }, []);
 
-  if (phase === 'loading') return <Centered text="Открываю партнёрский кабинет…" />;
-  if (phase === 'error') return <Centered title="Что-то пошло не так" text="Попробуй обновить страницу." />;
+  if (phase === 'loading') return <Centered text="Открываю партнёрский кабинет…" onBack={onBack} />;
+  if (phase === 'error')
+    return <Centered title="Что-то пошло не так" text="Попробуй обновить страницу." onBack={onBack} />;
   if (phase === 'disabled' || !snap) {
     return (
       <Centered
         title="Партнёрская программа скоро"
         text="Мы готовим кабинет к запуску. Загляни немного позже — здесь появятся твоя сеть, ставки и баланс."
+        onBack={onBack}
       />
     );
   }
@@ -143,7 +148,19 @@ export function PartnerCabinet({
         <main className="min-h-screen flex-1 pb-24 lg:pb-0">
           {/* Topbar */}
           <header className="sticky top-0 z-10 flex items-center justify-between border-b-[2.5px] border-[var(--shadow-ink)] bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-5 py-4 backdrop-blur">
-            <h1 className="font-display text-[22px] font-bold">{title}</h1>
+            <div className="flex items-center gap-2.5">
+              {onBack && (
+                <button
+                  type="button"
+                  onClick={onBack}
+                  aria-label="Назад к заказам"
+                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+                >
+                  ←
+                </button>
+              )}
+              <h1 className="font-display text-[22px] font-bold">{title}</h1>
+            </div>
             <div className="flex items-center gap-3">
               <span className="hidden items-center gap-1.5 rounded-full border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-3 py-1 text-[12px] font-semibold text-[var(--color-skin)] shadow-[2px_2px_0_var(--shadow-ink)] sm:flex">
                 🔥 {snap.circle.label}
@@ -852,9 +869,19 @@ function errorText(res: { error: string; minPayoutUsdCents?: number; balanceUsdC
   }
 }
 
-function Centered({ title, text }: { title?: string; text: string }) {
+function Centered({ title, text, onBack }: { title?: string; text: string; onBack?: () => void }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-3 p-6 text-center">
+    <div className="relative flex min-h-screen flex-col items-center justify-center gap-3 p-6 text-center">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Назад к заказам"
+          className="absolute left-4 top-4 flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+        >
+          ←
+        </button>
+      )}
       <Image
         src={mascotSrc('idle')}
         alt="Оплатишка"
