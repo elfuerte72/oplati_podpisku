@@ -118,10 +118,12 @@ const serverEnvSchema = z.object({
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
 
-  // Fallback USDT→RUB курс, если L&P /rates временно недоступен (например, пока
-  // не подписан договор и RATE_NOT_FOUND). Когда L&P оживёт, fallback перестанет
-  // срабатывать сам. Значение в рублях за 1 USDT (например 95.0).
-  RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(95),
+  // Fallback USDT→RUB курс, если L&P /rates временно недоступен (сейчас именно
+  // так: договор по фикс-курсу не подписан → /rates отдаёт RATE_NOT_FOUND, и
+  // ВСЕ заказы идут на этом fallback'е). Значение — актуальный рыночный курс в
+  // рублях за 1 USDT; держать близко к реальному, пока L&P не оживёт (тогда
+  // живой курс перекроет fallback сам).
+  RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(77),
 
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
   INTERNAL_API_TOKEN: optionalEnvString(),
