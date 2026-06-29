@@ -86,6 +86,7 @@ export {
   referralRateBps,
   referralAmountUsdCents,
   planCommissionAccruals,
+  effectiveReferralRates,
   parseReferralCode,
   shouldInheritReferrerOnMerge,
   walkReferralAncestors,
@@ -94,6 +95,7 @@ export {
   type ReferralAncestor,
   type AccrualBeneficiary,
   type PlannedAccrual,
+  type EffectiveReferralRates,
 } from './referral.ts';
 
 // ─── Order parameters (гибкая структура) ──────────────────────────────────

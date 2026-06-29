@@ -144,6 +144,36 @@ export function planCommissionAccruals(
   return out;
 }
 
+// ─── Эффективные ставки для отображения (кабинет) ─────────────────────────
+
+/** Текущие применяемые ставки цепочки (bps) для показа в кабинете. */
+export type EffectiveReferralRates = {
+  readonly l1Bps: number;
+  readonly l2Bps: number;
+  readonly l3Bps: number;
+};
+
+/**
+ * Ставки, по которым СЕЙЧАС считается начисление beneficiary — повторяет логику
+ * `planCommissionAccruals` (храповик L1 из профиля + буст L1 + командный
+ * множитель L2 2%→2.5%), но как чистую функцию для кабинета. Держим здесь, чтобы
+ * витрина и расчёт не разъезжались (один источник правды).
+ */
+export function effectiveReferralRates(input: {
+  circle: number;
+  lockedRateL1Bps: number;
+  teamMultiplier: boolean;
+  boostBps: number;
+}): EffectiveReferralRates {
+  const row = REFERRAL_RATE_TABLE[clampCircle(input.circle)];
+  const l1Bps = input.lockedRateL1Bps + (input.boostBps > 0 ? input.boostBps : 0);
+  let l2Bps = row?.l2Bps ?? 0;
+  if (input.teamMultiplier && l2Bps === 200) {
+    l2Bps = TEAM_MULTIPLIER_L2_BPS;
+  }
+  return { l1Bps, l2Bps, l3Bps: row?.l3Bps ?? 0 };
+}
+
 // ─── Реферальный код и deep-link ──────────────────────────────────────────
 
 /** Префикс deep-link захвата: `t.me/<bot>?start=ref_<code>`. */

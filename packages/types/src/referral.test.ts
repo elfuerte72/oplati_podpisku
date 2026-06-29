@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  effectiveReferralRates,
   parseReferralCode,
   planCommissionAccruals,
   referralAmountUsdCents,
@@ -221,5 +222,48 @@ describe('walkReferralAncestors — обход дерева до 3 уровне�
     );
     // a→b (level 1), затем b→a уже visited → стоп.
     expect(ancestors).toEqual<ReferralAncestor[]>([{ userId: 'b', level: 1 }]);
+  });
+});
+
+describe('effectiveReferralRates — ставки кабинета = ставки начисления', () => {
+  it('круг 2 (Партнёр): 6%/2%/1% без модификаторов', () => {
+    expect(
+      effectiveReferralRates({ circle: 2, lockedRateL1Bps: 600, teamMultiplier: false, boostBps: 0 }),
+    ).toEqual({ l1Bps: 600, l2Bps: 200, l3Bps: 100 });
+  });
+
+  it('буст +1% прибавляется только к L1', () => {
+    const r = effectiveReferralRates({ circle: 2, lockedRateL1Bps: 600, teamMultiplier: false, boostBps: 100 });
+    expect(r.l1Bps).toBe(700);
+    expect(r.l2Bps).toBe(200);
+    expect(r.l3Bps).toBe(100);
+  });
+
+  it('командный множитель поднимает L2 2%→2.5% (только при базе 2%)', () => {
+    expect(
+      effectiveReferralRates({ circle: 2, lockedRateL1Bps: 600, teamMultiplier: true, boostBps: 0 }).l2Bps,
+    ).toBe(250);
+    // Круг 1 (L2=1.5%) — множитель не применяется.
+    expect(
+      effectiveReferralRates({ circle: 1, lockedRateL1Bps: 400, teamMultiplier: true, boostBps: 0 }).l2Bps,
+    ).toBe(150);
+  });
+
+  it('храповик: locked L1 берётся из профиля, не из таблицы круга', () => {
+    // Партнёр на круге 1, но с зафиксированной 6% (исторически выше) — показываем фикс.
+    expect(
+      effectiveReferralRates({ circle: 1, lockedRateL1Bps: 600, teamMultiplier: false, boostBps: 0 }).l1Bps,
+    ).toBe(600);
+  });
+
+  it('совпадает с planCommissionAccruals для той же конфигурации', () => {
+    // Конфиг: круг 2, bust +1% L1, team multiplier L2. База $100.
+    const rates = effectiveReferralRates({ circle: 2, lockedRateL1Bps: 600, teamMultiplier: true, boostBps: 100 });
+    const planned = planCommissionAccruals(10_000, [
+      { userId: 'l1', level: 1, circle: 2, teamMultiplier: true, boostBps: 100 },
+      { userId: 'l2', level: 2, circle: 2, teamMultiplier: true, boostBps: 100 },
+      { userId: 'l3', level: 3, circle: 2, teamMultiplier: true, boostBps: 100 },
+    ]);
+    expect(planned.map((p) => p.rateBps)).toEqual([rates.l1Bps, rates.l2Bps, rates.l3Bps]);
   });
 });

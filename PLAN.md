@@ -122,11 +122,14 @@
 - [x] Через skill `oplatishka-design` перерисованы 5 экранов кабинета в фирменный стиль: бренд-токены (комикс-нуар, teal-палитра, Balsamiq Sans + Rubik), сигнатура (контур 2.5px + жёсткая тень 4px), halftone, живой маскот (`wave` на дашборде, `presenting` на ссылке), штамп круга, lock-штампы «навсегда» вместо плоских бейджей, комикс-табы/кнопки, speech-bubble от маскота. Акценты 3 уровней — `teal-light/glasses-light/skin` (на бренде). Прототип: [`docs/referral-cabinet-oplatishka.html`](docs/referral-cabinet-oplatishka.html) (5 экранов, переключение по hash, тумблер темы, модалка вывода). Дженерик-мокап [`docs/referral-cabinet-mockup.html`](docs/referral-cabinet-mockup.html) оставлен как референс структуры.
 - [ ] **Согласовать прототип с владельцем** → правки → только потом D1 (код).
 
-**D1 — общий бэкенд (одна реализация на обе поверхности):**
-- [ ] `buildReferralSnapshot(userId)` (`lib/cabinet/`): тариф + зафиксированная ставка, прогресс до круга (деньги + клиенты), сеть по уровням (count/active/доход), спринт-задачи, история начислений, баланс к выводу, персональный код/ссылка.
-- [ ] `GET /api/cabinet/referral` — отдаёт snapshot; резолвит `userId` из контекста вызова (cookie/initData).
-- [ ] `POST /api/cabinet/referral/payout` — заявка на вывод (валидация ≥ `$10`, баланс с учётом `requested`, антифрод-гейт), запись `referral_payouts`.
-- [ ] `ensureReferralCode(userId)` при первом открытии кабинета (lazy-выдача кода — **ключевой шаг: до этого кода ни у кого нет, и вся программа дремлет**).
+**D1 — общий бэкенд (одна реализация на обе поверхности):** — ✅ СДЕЛАНО
+
+> Read-слой `@oplati/db/referral-cabinet.ts` (сеть рекурсивным CTE до 3 ур., доход по уровням/месяцам, лента, выплаты, новые рефералы) + `effectiveReferralRates` в `@oplati/types` (витрина = расчёт, один источник правды). Снапшот/auth/payout — `apps/web/lib/cabinet/referral-*`. Тесты: types 37, web кабинет 17 (всего web 186 зелёных).
+
+- [x] `buildReferralSnapshot(userId, ctx)` (`lib/cabinet/referral-read.ts`): круг + зафиксированная ставка, эффективные ставки L1–L3, прогресс до круга (оборот сети/порог), сеть по 3 уровням (count/active/оборот/доход), спринт-цели, история (начисления+выводы, сорт по дате), баланс, помесячный доход (6 мес), код/ссылки (web `?ref=` + TG deep-link).
+- [x] `POST /api/cabinet/referral` — `action: snapshot|payout`; гибкий auth (`referral-auth.ts`: initData мини-аппа ИЛИ web-сессия по cookie); гейт `REFERRAL_ENABLED` (выключено → «спящий» снапшот без записи в БД); per-identity rate-limit. (POST вместо GET — единый контракт с существующим `/api/cabinet`, initData нельзя в URL.)
+- [x] Payout (`referral-actions.ts`): валидация ≥ минимума, баланс с учётом `requested`, гейты TG-привязки и `suspended`, запись `referral_payouts` (исполнение — Этап E).
+- [x] `ensureReferralCode(userId)` лениво в снапшоте (ключевой шаг пробуждения — только при `REFERRAL_ENABLED`; graceful при сбое).
 
 **D2 — веб-сайт (приоритет, `apps/web/app/partner/`):**
 - [ ] Страница `/partner` в общем сайте Оплатишки, дизайн D0 (5 экранов). Auth — веб-сессия (`session`-cookie) → `userId`; **гейт: партнёр привязан к Telegram** (баланс/выплаты требуют верифицированной личности; непривязанному — комикс-карточка «привяжи Telegram», переиспользуем `components/chat/TelegramLink.tsx`). Дёргает `GET /api/cabinet/referral`.
