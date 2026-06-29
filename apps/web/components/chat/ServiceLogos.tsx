@@ -4,8 +4,8 @@ import {
   siAirbnb,
   siApple,
   siApplemusic,
+  siBookingdotcom,
   siClaude,
-  siCrunchyroll,
   siCursor,
   siDiscord,
   siGithubcopilot,
@@ -14,7 +14,11 @@ import {
   siNotion,
   siPlaystation,
   siSpotify,
+  siSteam,
+  siTelegram,
+  siTinder,
   siYoutube,
+  siZoom,
 } from 'simple-icons';
 
 /**
@@ -27,14 +31,11 @@ const IMAGE_LOGOS: Record<string, string> = {
   'chatgpt-plus': '/service-icons/openai.png',
   'midjourney-basic': '/service-icons/midjourney.png',
   'adobe-creative-cloud': '/service-icons/adobe-creative-cloud.png',
-  'disney-plus': '/service-icons/disney-plus.png',
   'figma-professional': '/service-icons/figma.png',
   'gemini-advanced': '/service-icons/gemini.png',
   'grok-pro': '/service-icons/grok.png',
-  'hbo-max': '/service-icons/hbo-max.png',
   'linkedin-premium': '/service-icons/linkedin.png',
   'perplexity-pro': '/service-icons/perplexity.png',
-  'windsurf-pro': '/service-icons/windsurf.png',
 };
 
 const xboxGlyph: ServiceIcon = {
@@ -54,10 +55,14 @@ const LOGOS: Record<string, ServiceIcon> = {
   'apple-music': siApplemusic,
   'notion-plus': siNotion,
   'github-copilot': siGithubcopilot,
-  'crunchyroll-mega-fan': siCrunchyroll,
   'cursor-pro': siCursor,
   'playstation-plus': siPlaystation,
   'xbox-game-pass': xboxGlyph,
+  steam: siSteam,
+  booking: siBookingdotcom,
+  'telegram-premium': siTelegram,
+  tinder: siTinder,
+  'zoom-pro': siZoom,
 };
 
 type ServiceLogoProps = {

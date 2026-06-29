@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ComicButton } from '@/components/comic';
 import { formatRub } from '@/components/comic/format';
 import { fetchWithTimeout } from '@/lib/http';
-import type { CatalogService } from '@/lib/catalog/build';
+import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 
 import { ServiceLogo } from './ServiceLogos';
 import type { ChatCard } from './toolCards';
@@ -123,6 +123,8 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
     void propose(selected.slug, { amountUsdCents: Math.round(usd * 100) });
   };
 
+  const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);
+
   const tilePlate =
     'grid h-9 w-9 shrink-0 place-items-center rounded-xl border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)]';
   const tile =
@@ -158,28 +160,38 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
       )}
 
       {listOpen && !selected && !loading && !failed && catalog && (
-        <div className="grid w-full max-w-xl grid-cols-2 gap-3 sm:grid-cols-3">
-          {catalog.map((svc) => (
-            <button
-              key={svc.slug}
-              type="button"
-              disabled={proposing}
-              onClick={() => {
-                setSelected(svc);
-                setAmount('');
-                setAmountError(null);
-              }}
-              className={tile}
-            >
-              <span className={tilePlate}>
-                <ServiceLogo slug={svc.slug} name={svc.name} size={24} />
-              </span>
-              <span className="min-w-0 font-body text-sm font-semibold leading-tight text-[var(--text)]">
-                {svc.name}
-              </span>
-            </button>
+        <div className="w-full max-w-xl space-y-5">
+          {groups.map((group) => (
+            <section key={group.category} className="space-y-2">
+              <h3 className="px-1 text-left font-display text-xs font-bold uppercase tracking-wide text-[var(--text-muted)]">
+                {group.label}
+              </h3>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {group.services.map((svc) => (
+                  <button
+                    key={svc.slug}
+                    type="button"
+                    disabled={proposing}
+                    onClick={() => {
+                      setSelected(svc);
+                      setAmount('');
+                      setAmountError(null);
+                    }}
+                    className={tile}
+                  >
+                    <span className={tilePlate}>
+                      <ServiceLogo slug={svc.slug} name={svc.name} size={24} />
+                    </span>
+                    <span className="min-w-0 font-body text-sm font-semibold leading-tight text-[var(--text)]">
+                      {svc.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
           ))}
-          <button type="button" onClick={onOwnVariant} className={tile}>
+
+          <button type="button" onClick={onOwnVariant} className={`${tile} w-full`}>
             <span className={tilePlate}>
               <span aria-hidden className="font-display text-xl font-bold text-[var(--color-ink)]">
                 +

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCatalogService, computeTotalKopecks, sortCatalog } from './build';
+import { buildCatalogService, computeTotalKopecks, groupCatalog, sortCatalog } from './build';
 
 const RATE = 95.5; // RUB за USDT
 const COMMISSION = 10; // %
@@ -163,5 +163,47 @@ describe('sortCatalog', () => {
       'airbnb',
       'notion-plus',
     ]);
+  });
+});
+
+describe('groupCatalog', () => {
+  const mk = (slug: string, name: string, category: string) => ({
+    slug,
+    name,
+    category,
+    requiresKyc: false,
+    customAmount: false,
+    tiers: [],
+  });
+
+  it('группирует по темам в заданном порядке, внутри — по популярности', () => {
+    const groups = groupCatalog([
+      mk('telegram-premium', 'Telegram Premium', 'social'),
+      mk('netflix-premium', 'Netflix', 'streaming'),
+      mk('chatgpt-plus', 'ChatGPT', 'ai'),
+      mk('xbox-game-pass', 'Xbox Game Pass', 'gaming'),
+      mk('playstation-plus', 'PlayStation Plus', 'gaming'),
+    ]);
+
+    expect(groups.map((g) => [g.category, g.label])).toEqual([
+      ['ai', 'ИИ'],
+      ['streaming', 'Стриминг и музыка'],
+      ['gaming', 'Игры'],
+      ['social', 'Общение'],
+    ]);
+    // gaming: PlayStation раньше Xbox по POPULAR_ORDER, несмотря на порядок входа.
+    expect(groups.find((g) => g.category === 'gaming')?.services.map((s) => s.slug)).toEqual([
+      'playstation-plus',
+      'xbox-game-pass',
+    ]);
+  });
+
+  it('неизвестная категория падает в хвост под собственным именем', () => {
+    const groups = groupCatalog([
+      mk('foo', 'Foo', 'mystery'),
+      mk('chatgpt-plus', 'ChatGPT', 'ai'),
+    ]);
+    expect(groups.map((g) => g.category)).toEqual(['ai', 'mystery']);
+    expect(groups[1]?.label).toBe('mystery');
   });
 });
