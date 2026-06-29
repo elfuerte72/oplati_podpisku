@@ -2,12 +2,15 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { cookies } from 'next/headers';
+
 import {
   appendMessage,
   getDb,
   getOrCreateActiveConversation,
   getOrCreateUserByWebSessionId,
   loadRecentMessages,
+  resolveReferralCode,
   type MessageHistoryItem,
 } from '@oplati/db';
 import {
@@ -26,6 +29,7 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
+import { serverEnv } from '@/lib/env';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
@@ -82,11 +86,41 @@ function getClientIp(req: Request): string {
 
 type WebChatContext = { userId: string; conversationId: string };
 
+/**
+ * Реферальный cookie `ref` (его ставит middleware из `?ref=<code>`). Одноразово:
+ * резолвим в id реферера и гасим cookie. Возвращает referrerId для проставления
+ * при создании веб-пользователя. Best-effort: выключенная программа/неизвестный
+ * код/сбой → null (захвата нет, чат работает). Гейтится REFERRAL_ENABLED.
+ */
+async function consumeRefCookie(): Promise<string | null> {
+  if (!serverEnv.REFERRAL_ENABLED) return null;
+  const store = await cookies();
+  const code = store.get('ref')?.value;
+  if (!code) return null;
+  try {
+    const referrerId = await resolveReferralCode(getDb(), code);
+    store.delete('ref'); // одноразово — не резолвим на каждом сообщении
+    log.info({ event: referrerId ? 'web-chat.referral.captured' : 'web-chat.referral.code_unknown' });
+    return referrerId;
+  } catch (err) {
+    log.warn({ event: 'web-chat.referral.resolve_failed', err });
+    Sentry.captureException(err, { tags: { source: 'web-chat.referral' } });
+    return null;
+  }
+}
+
 /** Upsert user/conversation для веб-сессии. `null` при недоступной БД (degrade). */
-async function resolveContext(webSessionId: string): Promise<WebChatContext | null> {
+async function resolveContext(
+  webSessionId: string,
+  referredBy: string | null,
+): Promise<WebChatContext | null> {
   try {
     const db = getDb();
-    const user = await getOrCreateUserByWebSessionId(db, { webSessionId, language: 'ru' }, dbLog);
+    const user = await getOrCreateUserByWebSessionId(
+      db,
+      { webSessionId, language: 'ru', referredBy },
+      dbLog,
+    );
     const conversation = await getOrCreateActiveConversation(
       db,
       { userId: user.id, channel: 'web' },
@@ -155,7 +189,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const webSessionId = await getOrCreateWebSessionId();
-  const ctx = await resolveContext(webSessionId);
+  const referredBy = await consumeRefCookie();
+  const ctx = await resolveContext(webSessionId, referredBy);
 
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });
 

@@ -12,6 +12,7 @@ import {
   date,
   index,
   uniqueIndex,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type { OrderParameters, PricingPolicy } from '@oplati/types';
 
@@ -98,6 +99,16 @@ export const users = pgTable(
     phone: text('phone'),
     email: text('email'),
     notes: text('notes'),
+    // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
+    // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
+    // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —
+    // персональный код для deep-link `?start=ref_<code>`; lazy, UNIQUE (NULL
+    // допускает множество строк). onDelete: set null — удаление реферера не
+    // должно ронять строки рефералов (FK restrict здесь не нужен).
+    referredBy: uuid('referred_by').references((): AnyPgColumn => users.id, {
+      onDelete: 'set null',
+    }),
+    referralCode: text('referral_code').unique(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -108,6 +119,7 @@ export const users = pgTable(
     webSessionIdx: uniqueIndex('users_web_session_id_idx')
       .on(t.webSessionId)
       .where(sql`${t.webSessionId} IS NOT NULL`),
+    referredByIdx: index('users_referred_by_idx').on(t.referredBy),
     identityCheck: check(
       'users_identity_present',
       sql`${t.telegramId} IS NOT NULL OR ${t.webSessionId} IS NOT NULL`,

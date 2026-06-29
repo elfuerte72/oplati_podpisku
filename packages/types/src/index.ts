@@ -73,6 +73,25 @@ export {
   OrderTransitionError,
 } from './order-state-machine.ts';
 
+// ─── Referral (партнёрская программа) ──────────────────────────────────────
+
+export {
+  REFERRAL_RATE_TABLE,
+  REFERRAL_MAX_LEVEL,
+  REFERRAL_DEFAULT_CIRCLE,
+  REFERRAL_MAX_CHAIN_BPS,
+  REFERRAL_DEEPLINK_PREFIX,
+  referralCodeSchema,
+  clampCircle,
+  referralRateBps,
+  referralAmountUsdCents,
+  parseReferralCode,
+  walkReferralAncestors,
+  type ReferralCircleRates,
+  type ReferralCode,
+  type ReferralAncestor,
+} from './referral.ts';
+
 // ─── Order parameters (гибкая структура) ──────────────────────────────────
 
 export const orderParameters = z.object({

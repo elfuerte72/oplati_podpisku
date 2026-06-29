@@ -54,6 +54,15 @@ export {
 export { pingDb } from './health.ts';
 
 export {
+  generateReferralCode,
+  resolveReferralCode,
+  ensureReferralCode,
+  setReferrerOnce,
+  getReferralAncestors,
+  type SetReferrerResult,
+} from './referrals.ts';
+
+export {
   createCard,
   findActiveByUserId,
   findCardsByUserIdForCabinet,
