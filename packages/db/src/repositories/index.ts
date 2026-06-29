@@ -67,8 +67,10 @@ export {
   insertCommissionAccruals,
   getReferralBalanceUsdCents,
   orderHasAccruals,
+  findOrdersMissingReferralAccruals,
   type PartnerProfile,
   type CommissionAccrualInsert,
+  type OrderMissingAccrual,
 } from './referral-accruals.ts';
 
 export {
