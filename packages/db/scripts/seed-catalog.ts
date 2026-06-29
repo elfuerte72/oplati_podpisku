@@ -55,6 +55,7 @@ const DEPRECATED_SLUGS: readonly string[] = [
   'crunchyroll-mega-fan',
   'mistral-pro',
   'windsurf-pro',
+  'github-copilot',
 ];
 
 /** Справочный курс и маржа — только для placeholder `priceRub` (не витрина). */
@@ -148,14 +149,6 @@ const CATALOG: readonly CatalogEntry[] = [
     pricingPolicy: policy([usd('Pro', 20), usd('Pro+', 60), usd('Ultra', 200)]),
   },
   {
-    slug: 'github-copilot',
-    name: 'GitHub Copilot',
-    description: 'AI-помощник для кода',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Pro', 10), usd('Pro+', 39)]),
-  },
-  {
     slug: 'gemini-advanced',
     name: 'Google Gemini',
     description: 'AI-ассистент от Google',
@@ -182,6 +175,23 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
+  },
+  {
+    slug: 'suno',
+    name: 'Suno',
+    description: 'AI-генерация музыки',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 10), usd('Premier', 30)]),
+  },
+  {
+    slug: 'higgsfield',
+    name: 'Higgsfield',
+    description: 'AI-генерация видео и изображений',
+    category: 'ai',
+    requiresKyc: false,
+    // Higgsfield активно A/B-тестит цены — справочные на июнь 2026, владелец сверяет.
+    pricingPolicy: policy([usd('Starter', 15), usd('Plus', 39), usd('Ultra', 99)]),
   },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
