@@ -153,25 +153,78 @@ export async function consumeLinkToken(
           await tx.execute(
             sql`UPDATE attachments SET uploaded_by = ${byTelegram.id} WHERE uploaded_by = ${byWebSession.id}`,
           );
-          // Реферальная сеть переживает merge (иначе референс терялся бы при DELETE
-          // через onDelete: set null). (1) Реферер удаляемой web-строки наследуется
-          // telegram-строкой, если у неё его ещё нет; (2) рефералы, указывавшие на
-          // web-строку, переезжают на telegram-строку. Оба шага исключают самореферал.
-          // referred_by мог появиться на web-строке при веб-захвате `?ref=` до привязки.
+          // M-2 (находка security): перенести реферальный ledger с удаляемой
+          // web-строки на telegram-строку ДО DELETE. beneficiary_user_id и
+          // payouts.user_id — FK ON DELETE restrict: без переноса DELETE уронил бы
+          // всю транзакцию привязки. referral_partners — cascade: переносим, иначе
+          // заработанный тир молча терялся бы (только если у telegram-строки своего
+          // профиля ещё нет — PK 1:1; иначе профиль web-строки уйдёт по cascade).
+          await tx.execute(
+            sql`UPDATE referral_accruals SET beneficiary_user_id = ${byTelegram.id} WHERE beneficiary_user_id = ${byWebSession.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE referral_accruals SET source_user_id = ${byTelegram.id} WHERE source_user_id = ${byWebSession.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE referral_payouts SET user_id = ${byTelegram.id} WHERE user_id = ${byWebSession.id}`,
+          );
+          await tx.execute(sql`
+            UPDATE referral_partners SET user_id = ${byTelegram.id}
+            WHERE user_id = ${byWebSession.id}
+              AND NOT EXISTS (SELECT 1 FROM referral_partners WHERE user_id = ${byTelegram.id})
+          `);
+
+          // Цикл-чек (M-1, находка security): обход вверх по referred_by в tx.
+          // Возвращает true, если candidateAncestorId встречается выше ofUserId.
+          const isAncestor = async (candidateAncestorId: string, ofUserId: string): Promise<boolean> => {
+            let cur = ofUserId;
+            const seen = new Set<string>([cur]);
+            for (let i = 0; i < 16; i++) {
+              const r = await tx.execute<{ referred_by: string | null }>(
+                sql`SELECT referred_by FROM users WHERE id = ${cur} LIMIT 1`,
+              );
+              const parent = r[0]?.referred_by ?? null;
+              if (parent === null) return false;
+              if (parent === candidateAncestorId) return true;
+              if (seen.has(parent)) return false; // существующий цикл — bail
+              seen.add(parent);
+              cur = parent;
+            }
+            return false;
+          };
+
+          // Реферальная сеть переживает merge. (1) Реферер удаляемой web-строки
+          // наследуется telegram-строкой, если своего нет (referred_by мог появиться
+          // при веб-захвате `?ref=` до привязки) — но НЕ если это создаст цикл
+          // (telegram-строка уже предок наследуемого реферера). referred_by_set_at
+          // = now() — отметка для anti-retro гейта recovery-начислений.
+          const sourceReferrer = byWebSession.referred_by;
           if (
-            shouldInheritReferrerOnMerge(
-              byTelegram.referred_by,
-              byWebSession.referred_by,
-              byTelegram.id,
-            )
+            sourceReferrer !== null &&
+            shouldInheritReferrerOnMerge(byTelegram.referred_by, sourceReferrer, byTelegram.id) &&
+            !(await isAncestor(byTelegram.id, sourceReferrer))
           ) {
             await tx.execute(
-              sql`UPDATE users SET referred_by = ${byWebSession.referred_by}, updated_at = now() WHERE id = ${byTelegram.id}`,
+              sql`UPDATE users SET referred_by = ${sourceReferrer}, referred_by_set_at = now(), updated_at = now() WHERE id = ${byTelegram.id}`,
             );
           }
-          await tx.execute(
-            sql`UPDATE users SET referred_by = ${byTelegram.id}, updated_at = now() WHERE referred_by = ${byWebSession.id} AND id <> ${byTelegram.id}`,
+          // (2) Рефералы, указывавшие на web-строку, переезжают на telegram-строку —
+          // пер-строчно, пропуская тех, для кого это создаст цикл (реферал — предок
+          // telegram-строки): такое ребро оставляем на удаляемую строку → DELETE
+          // обнулит через onDelete: set null (рвём ребро вместо цикла).
+          const children = await tx.execute<{ id: string }>(
+            sql`SELECT id FROM users WHERE referred_by = ${byWebSession.id} AND id <> ${byTelegram.id}`,
           );
+          for (const child of children) {
+            if (await isAncestor(child.id, byTelegram.id)) {
+              log.warn({ event: 'db.referral.merge_repoint_cycle_skip', childId: child.id });
+              continue;
+            }
+            await tx.execute(
+              sql`UPDATE users SET referred_by = ${byTelegram.id}, updated_at = now() WHERE id = ${child.id}`,
+            );
+          }
+
           await tx.execute(sql`DELETE FROM users WHERE id = ${byWebSession.id}`);
           merged = true;
         } else {

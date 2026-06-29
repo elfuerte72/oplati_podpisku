@@ -185,6 +185,19 @@ referral_monthly_stats (Этап C — поля заложить, крон по�
 - **Этап D** — кабинет (API + UI по мокапу). Read-only снапшот, экраны, заявка на вывод.
 - **Этап E** — исполнение выплат (D-REF-6), антифрод (детект накрутки, suspend, reversal/clawback), уведомление об изменении условий (30 дней).
 
+## 8.1. Находки код-ревью — статус (2 агента: code-reviewer + security-auditor)
+
+**Исправлено в этом цикле:**
+- Атомарность начисления (`db.transaction` в `insertCommissionAccruals`) — частичная вставка больше не ломает recovery-гейт.
+- Anti-retro гейт recovery (H-1): `users.referred_by_set_at` + `paid_at >= referred_by_set_at` + окно 30д — merge не back-pay'ит комиссию на исторические заказы (D-REF-9).
+- Merge-хардненинг: перенос `referral_accruals`/`referral_payouts`/`referral_partners` с удаляемой web-строки (M-2, иначе restrict-FK рушит привязку); цикл-чек при inherit/repoint (M-1).
+- Баланс вычитает `requested`-выплаты + `::bigint` (M-3); ревалидация cookie `ref`; CHECK `referred_by <> id`.
+
+**Отложено на Этап E (задокументировано, не блокирует A+B; программа дремлет до Этапа D + `REFERRAL_ENABLED=1`):**
+- **L-1** — идемпотентность начисления по `payment_id`, а экономическое событие — на заказ. Два `succeeded`-платежа на заказ (near-impossible по флоу `ready_for_payment`→`pending_payment`+409) дали бы двойное начисление на inline-пути. Защита: per-order ключ ИЛИ partial-unique `payments(order_id) WHERE status='succeeded'` (не добавлен сейчас — риск уронить prod-миграцию при дублях). Recovery уже защищён через `DISTINCT ON`.
+- **L-2** — мультиаккаунт-самореферал (одна персона = два аккаунта) не детектируется. Нужны Этап E `suspended`-энфорсмент (хук уже есть в `accrue.ts`) + сигналы (общий платёжный инструмент, device/IP-кластеры, velocity). **`REFERRAL_ENABLED=1` не включать до этого.**
+- **Snapshot ставки** — `accrue.ts` берёт ставку из текущего профиля партнёра; с приходом Этапа C (мутирующий круг/буст) решить, не снапшотить ли круг на момент оплаты (recovery через месяц иначе посчитает по другой ставке). Сейчас профили статичны — расхождения нет.
+
 ## 9. Definition of Done (для цикла /loop)
 
 1. Этапы A + B реализованы, `REFERRAL_ENABLED` по умолчанию off.
