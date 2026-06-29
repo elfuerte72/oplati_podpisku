@@ -109,6 +109,11 @@ export const users = pgTable(
       onDelete: 'set null',
     }),
     referralCode: text('referral_code').unique(),
+    // Когда установлен referred_by — для гейта recovery-начислений против ретро-
+    // атрибуции (D-REF-9): merge может проставить реферера ПОСЛЕ оплаты заказов,
+    // и без этой отметки recovery-cron back-pay'нул бы комиссию на исторические
+    // заказы. Гейт: начисляем только если order.paid_at >= referred_by_set_at.
+    referredBySetAt: timestamp('referred_by_set_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -123,6 +128,12 @@ export const users = pgTable(
     identityCheck: check(
       'users_identity_present',
       sql`${t.telegramId} IS NOT NULL OR ${t.webSessionId} IS NOT NULL`,
+    ),
+    // Defense-in-depth для денежного дерева: запрет self-edge на уровне БД
+    // (immutability-after-set остаётся app-enforced).
+    noSelfReferral: check(
+      'users_no_self_referral',
+      sql`${t.referredBy} IS NULL OR ${t.referredBy} <> ${t.id}`,
     ),
   }),
 ).enableRLS();

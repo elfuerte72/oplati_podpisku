@@ -21,6 +21,7 @@ import {
   type RouteDecision,
   type RouteKind,
 } from '@oplati/agent';
+import { parseReferralCode } from '@oplati/types';
 
 import {
   BUDGET_EXCEEDED_TEXT,
@@ -95,7 +96,9 @@ type WebChatContext = { userId: string; conversationId: string };
 async function consumeRefCookie(): Promise<string | null> {
   if (!serverEnv.REFERRAL_ENABLED) return null;
   const store = await cookies();
-  const code = store.get('ref')?.value;
+  // Cookie ставит middleware (уже валидированным), но значение клиент-управляемо —
+  // ревалидируем формат/длину перед запросом к БД (находка security).
+  const code = parseReferralCode(store.get('ref')?.value);
   if (!code) return null;
   try {
     const referrerId = await resolveReferralCode(getDb(), code);

@@ -92,6 +92,13 @@
       "when": 1782726200116,
       "tag": "0012_flat_supreme_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782727902291,
+      "tag": "0013_typical_random",
+      "breakpoints": true
     }
   ]
 }

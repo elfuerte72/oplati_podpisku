@@ -60,6 +60,11 @@ export async function accrueReferralForPayment(params: {
       return;
     }
 
+    // ВНИМАНИЕ (Этап C): ставка берётся из ТЕКУЩЕГО профиля партнёра, не из
+    // снимка на момент оплаты. Пока Этап C (месячный крон, мутирующий circle/
+    // boost/team_multiplier) не реализован, профили статичны и расхождения нет.
+    // С приходом Этапа C решить: снапшотить круг на заказ/платёж, иначе recovery
+    // через месяц посчитает по другой ставке. До тех пор — корректно.
     const beneficiaries: AccrualBeneficiary[] = [];
     for (const a of ancestors) {
       const profile = await getPartnerProfile(db, a.userId);

@@ -78,30 +78,39 @@ export async function insertCommissionAccruals(
   },
 ): Promise<number> {
   const { sourceUserId, orderId, paymentId, rows } = params;
-  let inserted = 0;
-  for (const row of rows) {
-    const res = await db.execute<{ id: string }>(sql`
-      INSERT INTO referral_accruals
-        (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind, rate_bps, amount_usd_cents)
-      VALUES (
-        ${row.beneficiaryUserId}, ${sourceUserId}, ${orderId}, ${paymentId},
-        ${row.level}, 'commission', ${row.rateBps}, ${row.amountUsdCents}
-      )
-      ON CONFLICT (payment_id, beneficiary_user_id, level) DO NOTHING
-      RETURNING id
-    `);
-    if (res[0]?.id) inserted++;
-  }
-  return inserted;
+  if (rows.length === 0) return 0;
+  // Транзакция: цепочка вставляется атомарно (all-or-nothing). Иначе обрыв после
+  // L1 оставил бы у заказа одну строку, а recovery-гейт (NOT EXISTS любой строки)
+  // больше не подобрал бы заказ → L2/L3 потеряны навсегда (находка код-ревью).
+  return db.transaction(async (tx) => {
+    let inserted = 0;
+    for (const row of rows) {
+      const res = await tx.execute<{ id: string }>(sql`
+        INSERT INTO referral_accruals
+          (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind, rate_bps, amount_usd_cents)
+        VALUES (
+          ${row.beneficiaryUserId}, ${sourceUserId}, ${orderId}, ${paymentId},
+          ${row.level}, 'commission', ${row.rateBps}, ${row.amountUsdCents}
+        )
+        ON CONFLICT (payment_id, beneficiary_user_id, level) DO NOTHING
+        RETURNING id
+      `);
+      if (res[0]?.id) inserted++;
+    }
+    return inserted;
+  });
 }
 
 /**
- * Баланс партнёра к выводу (USD-центы): начислено (status=accrued) минус выведено
- * (status processing|paid). `reversed`-начисления и отклонённые/новые заявки не
- * учитываются. Cast `::int` — как в getWebSessionProfile (на нашем масштабе влезает).
+ * Доступный к выводу баланс партнёра (USD-центы): начислено (status=accrued)
+ * минус выводы в работе/выплаченные И уже **запрошенные** (`requested`). Учёт
+ * requested обязателен (находка security): иначе две параллельные заявки увидели
+ * бы полный баланс и обе прошли → перевывод сверх заработанного. `reversed`-
+ * начисления и `rejected`-заявки не учитываются. Cast `::bigint` (SUM шире int) +
+ * Number — без переполнения на $21M+, в духе «деньги — integer».
  */
 export async function getReferralBalanceUsdCents(db: DB, userId: string): Promise<number> {
-  const rows = await db.execute<{ balance: number }>(sql`
+  const rows = await db.execute<{ balance: string | number }>(sql`
     SELECT (
       COALESCE((
         SELECT SUM(amount_usd_cents) FROM referral_accruals
@@ -109,11 +118,11 @@ export async function getReferralBalanceUsdCents(db: DB, userId: string): Promis
       ), 0)
       - COALESCE((
         SELECT SUM(amount_usd_cents) FROM referral_payouts
-        WHERE user_id = ${userId} AND status IN ('processing', 'paid')
+        WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')
       ), 0)
-    )::int AS balance
+    )::bigint AS balance
   `);
-  return rows[0]?.balance ?? 0;
+  return Number(rows[0]?.balance ?? 0);
 }
 
 /**
@@ -132,12 +141,21 @@ export async function orderHasAccruals(db: DB, orderId: string): Promise<boolean
 export type OrderMissingAccrual = { orderId: string; paymentId: string };
 
 /**
- * Recovery-кандидаты: заказы со статусом paid+ у пользователя с реферером, с
- * USD-базой и успешным платежом, но БЕЗ единой строки начисления (пропуск, если
- * БД упала в момент webhook). `DISTINCT ON (o.id)` гарантирует ровно один платёж
- * на заказ (последний succeeded) — иначе один заказ начислился бы дважды на
- * разные payment_id. NOT EXISTS гасит уже начисленные. accrueReferralForPayment
- * перепроверит всё сам и идемпотентен — здесь лишь находим orderId+paymentId.
+ * Recovery-кандидаты: заказы paid+ у пользователя с реферером, с USD-базой и
+ * успешным платежом, но БЕЗ единой строки начисления (пропуск, если БД упала в
+ * момент webhook).
+ *
+ * Гейты против ложной атрибуции и churn'а (находки security/code-review):
+ *  - `o.paid_at >= u.referred_by_set_at` — НЕ начисляем на заказы, оплаченные ДО
+ *    появления реферера (D-REF-9: merge может проставить реферера задним числом;
+ *    без гейта recovery back-pay'нул бы комиссию на исторические заказы). NULL
+ *    referred_by_set_at → условие ложно → заказ исключён (консервативно).
+ *  - окно 30 дней — ограничивает повторный перебор «легитимно пустых» цепочек
+ *    (все предки suspended) каждый час; реальные пропуски ловятся inline+recovery
+ *    задолго до этого.
+ *  - `DISTINCT ON (o.id)` — ровно один платёж на заказ (иначе двойное начисление
+ *    на разные payment_id). NOT EXISTS гасит уже начисленные.
+ * accrueReferralForPayment перепроверит всё сам и идемпотентен.
  */
 export async function findOrdersMissingReferralAccruals(
   db: DB,
@@ -150,11 +168,15 @@ export async function findOrdersMissingReferralAccruals(
         p.id AS payment_id,
         o.paid_at AS paid_at
       FROM orders o
-      JOIN users u ON u.id = o.user_id AND u.referred_by IS NOT NULL
+      JOIN users u ON u.id = o.user_id
+        AND u.referred_by IS NOT NULL
+        AND u.referred_by_set_at IS NOT NULL
+        AND o.paid_at >= u.referred_by_set_at
       JOIN payments p ON p.order_id = o.id AND p.status = 'succeeded'
       WHERE o.status IN ('paid', 'in_fulfillment', 'completed')
         AND o.original_amount IS NOT NULL
         AND o.original_amount > 0
+        AND o.paid_at >= now() - interval '30 days'
         AND NOT EXISTS (
           SELECT 1 FROM referral_accruals ra WHERE ra.order_id = o.id
         )

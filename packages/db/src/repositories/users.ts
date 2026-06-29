@@ -61,12 +61,13 @@ export async function getOrCreateUserByTelegramId(
   // referred_by — только в INSERT-ветке; DO UPDATE его не упоминает, поэтому при
   // повторном /start (ON CONFLICT) реферер существующего юзера не перезаписывается.
   const rows = await db.execute<{ id: string; created: boolean }>(sql`
-    INSERT INTO users (telegram_id, display_name, language, referred_by)
+    INSERT INTO users (telegram_id, display_name, language, referred_by, referred_by_set_at)
     VALUES (
       ${telegramId},
       ${displayName ?? null},
       ${language ?? 'ru'},
-      ${referredBy ?? null}
+      ${referredBy ?? null},
+      ${referredBy ? new Date() : null}
     )
     ON CONFLICT (telegram_id) WHERE telegram_id IS NOT NULL
     DO UPDATE SET
@@ -159,8 +160,11 @@ export async function getOrCreateUserByWebSessionId(
   });
 
   const rows = await db.execute<{ id: string; created: boolean }>(sql`
-    INSERT INTO users (web_session_id, language, referred_by)
-    VALUES (${webSessionId}, ${language ?? 'ru'}, ${referredBy ?? null})
+    INSERT INTO users (web_session_id, language, referred_by, referred_by_set_at)
+    VALUES (
+      ${webSessionId}, ${language ?? 'ru'}, ${referredBy ?? null},
+      ${referredBy ? new Date() : null}
+    )
     ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL
     DO UPDATE SET updated_at = now()
     RETURNING id, (xmax = 0) AS created
