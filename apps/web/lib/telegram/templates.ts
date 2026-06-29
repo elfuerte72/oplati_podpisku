@@ -70,9 +70,17 @@ export const CATALOG_OWN_VARIANT_TEXT =
 export const CATALOG_UNAVAILABLE_TEXT =
   'Каталог сейчас не открылся. Попробуй ещё раз через минуту или напиши, что нужно, текстом — оформлю вручную.';
 
+/**
+ * Совет про НДС/VPN — показываем на ЛЮБОМ сервисе (и тарифы, и custom-amount),
+ * чтобы реальный charge не вырос из-за локального налога: подписка $100 из-за
+ * локации может списаться как $111. Карта американская, под US VPN — без НДС.
+ */
+export const VAT_VPN_HINT =
+  'Платим американской картой без НДС. На сайте сервиса включи VPN с локацией США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).';
+
 /** Сообщение со списком тарифов сервиса. */
 export function catalogTierPrompt(serviceName: string): string {
-  return `${serviceName} — выбери тариф:`;
+  return `${serviceName} — выбери тариф:\n\n${VAT_VPN_HINT}`;
 }
 
 /** Лейбл кнопки тарифа: «Plus · месяц — 1 750 ₽». */
@@ -90,7 +98,7 @@ export function catalogCustomAmountPrompt(service: CatalogService): string {
   return (
     `${service.name}: у этого сервиса нет фиксированных тарифов. ` +
     `Напиши сумму к оплате в долларах — без НДС, число от $${MIN_AMOUNT_USD} до $${maxAmountUsdFor(service.slug)} (например: 120).\n\n` +
-    `Совет: на сайте сервиса включи VPN с локацией США — тогда цена будет без налога и ты не переплатишь.${kyc}`
+    `${VAT_VPN_HINT}${kyc}`
   );
 }
 

@@ -241,15 +241,16 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             </div>
           </div>
 
+          <p className="mt-4 font-body text-xs leading-snug text-[var(--text-muted)]">
+            Платим американской картой без НДС. Включите на сайте сервиса VPN с локацией
+            США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).
+          </p>
+
           {selected.customAmount ? (
             <form onSubmit={submitAmount} className="mt-4 space-y-3">
               <p className="font-body text-sm text-[var(--text-muted)]">
                 У этого сервиса нет фиксированных тарифов — укажите сумму к оплате в долларах
                 без НДС (от ${MIN_AMOUNT_USD} до ${maxAmountUsdFor(selected.slug)}).
-              </p>
-              <p className="font-body text-xs text-[var(--text-muted)]">
-                Совет: на сайте сервиса включите VPN с локацией США — тогда цена будет
-                без налога, и вы не переплатите.
               </p>
               <div className="flex gap-2">
                 <input
