@@ -34,6 +34,7 @@ const IMAGE_LOGOS: Record<string, string> = {
   'figma-professional': '/service-icons/figma.png',
   'gemini-advanced': '/service-icons/gemini.png',
   'grok-pro': '/service-icons/grok.png',
+  higgsfield: '/service-icons/higgsfield.png',
   'linkedin-premium': '/service-icons/linkedin.png',
   'perplexity-pro': '/service-icons/perplexity.png',
 };
