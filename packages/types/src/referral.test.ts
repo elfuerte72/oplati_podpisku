@@ -4,6 +4,7 @@ import {
   parseReferralCode,
   referralAmountUsdCents,
   referralRateBps,
+  shouldInheritReferrerOnMerge,
   REFERRAL_MAX_CHAIN_BPS,
   REFERRAL_RATE_TABLE,
   walkReferralAncestors,
@@ -91,6 +92,21 @@ describe('parseReferralCode', () => {
     expect(parseReferralCode('link_xyz')).toBeNull(); // другой deep-link
     expect(parseReferralCode('ref_!!bad!!')).toBeNull();
     expect(parseReferralCode('ab')).toBeNull(); // слишком короткий
+  });
+});
+
+describe('shouldInheritReferrerOnMerge — наследование реферера при merge привязки', () => {
+  it('наследует, если у target реферера нет, а у source есть', () => {
+    expect(shouldInheritReferrerOnMerge(null, 'referrer-x', 'tg-row')).toBe(true);
+  });
+  it('НЕ наследует, если у target уже есть реферер (immutable)', () => {
+    expect(shouldInheritReferrerOnMerge('existing', 'referrer-x', 'tg-row')).toBe(false);
+  });
+  it('НЕ наследует, если у source реферера нет', () => {
+    expect(shouldInheritReferrerOnMerge(null, null, 'tg-row')).toBe(false);
+  });
+  it('НЕ наследует самореферал (source-реферер === target)', () => {
+    expect(shouldInheritReferrerOnMerge(null, 'tg-row', 'tg-row')).toBe(false);
   });
 });
 

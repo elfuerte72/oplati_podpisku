@@ -124,6 +124,24 @@ export function parseReferralCode(raw: string | null | undefined): string | null
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Должна ли «выживающая» строка (telegram) унаследовать реферера удаляемой
+ * (web) при merge привязки `consumeLinkToken`. True только если у target реферера
+ * ещё нет, у source он есть и это не самореферал (source-реферер ≠ target). Чистая
+ * логика выделена из транзакции ради тестируемости (packages/db без тест-раннера).
+ */
+export function shouldInheritReferrerOnMerge(
+  targetReferredBy: string | null,
+  sourceReferredBy: string | null,
+  targetUserId: string,
+): boolean {
+  return (
+    targetReferredBy === null &&
+    sourceReferredBy !== null &&
+    sourceReferredBy !== targetUserId
+  );
+}
+
 // ─── Обход дерева сети (чистая логика, БД-агностичная) ─────────────────────
 
 export type ReferralAncestor = {

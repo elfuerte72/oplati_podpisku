@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import { sql } from 'drizzle-orm';
+import { shouldInheritReferrerOnMerge } from '@oplati/types';
 
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
@@ -116,8 +117,9 @@ export async function consumeLinkToken(
       id: string;
       telegram_id: string | null;
       web_session_id: string | null;
+      referred_by: string | null;
     }>(sql`
-      SELECT id, telegram_id, web_session_id
+      SELECT id, telegram_id, web_session_id, referred_by
       FROM users
       WHERE telegram_id = ${telegramId} OR web_session_id = ${webSessionId}
       FOR UPDATE
@@ -150,6 +152,25 @@ export async function consumeLinkToken(
           );
           await tx.execute(
             sql`UPDATE attachments SET uploaded_by = ${byTelegram.id} WHERE uploaded_by = ${byWebSession.id}`,
+          );
+          // Реферальная сеть переживает merge (иначе референс терялся бы при DELETE
+          // через onDelete: set null). (1) Реферер удаляемой web-строки наследуется
+          // telegram-строкой, если у неё его ещё нет; (2) рефералы, указывавшие на
+          // web-строку, переезжают на telegram-строку. Оба шага исключают самореферал.
+          // referred_by мог появиться на web-строке при веб-захвате `?ref=` до привязки.
+          if (
+            shouldInheritReferrerOnMerge(
+              byTelegram.referred_by,
+              byWebSession.referred_by,
+              byTelegram.id,
+            )
+          ) {
+            await tx.execute(
+              sql`UPDATE users SET referred_by = ${byWebSession.referred_by}, updated_at = now() WHERE id = ${byTelegram.id}`,
+            );
+          }
+          await tx.execute(
+            sql`UPDATE users SET referred_by = ${byTelegram.id}, updated_at = now() WHERE referred_by = ${byWebSession.id} AND id <> ${byTelegram.id}`,
           );
           await tx.execute(sql`DELETE FROM users WHERE id = ${byWebSession.id}`);
           merged = true;

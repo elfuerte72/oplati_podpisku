@@ -86,6 +86,7 @@ export {
   referralRateBps,
   referralAmountUsdCents,
   parseReferralCode,
+  shouldInheritReferrerOnMerge,
   walkReferralAncestors,
   type ReferralCircleRates,
   type ReferralCode,
