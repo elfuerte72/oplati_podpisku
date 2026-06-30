@@ -33,9 +33,10 @@ export type RequestPayoutResult =
  *  3. Не заблокирован антифродом (`suspended`).
  *  4. Сумма — целое > 0, ≥ минимума, ≤ доступного баланса.
  *
- * Баланс берётся `getReferralBalanceUsdCents`, который УЖЕ вычитает выплаты в
- * статусах requested|processing|paid — поэтому две параллельные заявки не
- * «перевыведут»: вторая увидит уменьшенный баланс. Исполнение заявки — Этап E.
+ * Проверка баланса и вставка — атомарно ВНУТРИ `createReferralPayout` (per-user
+ * advisory-лок, баланс вычитает выплаты requested|processing|paid в той же
+ * транзакции). Поэтому две параллельные заявки не «перевыведут»: вторая ждёт
+ * коммита первой и видит уменьшенный баланс. Исполнение заявки — Этап E.
  */
 export async function requestReferralPayout(params: {
   userId: string;
