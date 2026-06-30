@@ -83,9 +83,7 @@ export function LeftNav() {
       />
       <NavItem
         label="VPN"
-        badge="Бета"
-        href="https://goateed-misguidingly-michelle.ngrok-free.dev/"
-        external
+        badge="Скоро"
         icon={
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
             <path d="M12 3l7 3v5c0 4.4-3 8.2-7 9-4-0.8-7-4.6-7-9V6l7-3z" strokeLinejoin="round" />
