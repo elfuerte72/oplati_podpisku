@@ -49,10 +49,10 @@ import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
-import { parseCustomAmountUsd } from './amount';
+import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
 import { getBot } from './bot';
 import {
-  CATALOG_AMOUNT_INVALID_TEXT,
+  catalogAmountInvalidText,
   CATALOG_BACK_BUTTON,
   CATALOG_LIST_PROMPT,
   CATALOG_OPEN_BUTTON,
@@ -1072,21 +1072,22 @@ async function tryHandlePendingAmount(
     return false;
   }
 
-  const parsed = parseCustomAmountUsd(text);
+  const parsed = parseCustomAmountUsd(text, slug);
   if (parsed.kind === 'not_amount') {
     // Не число — пользователь сменил намерение; сброс ожидания, обычный путь.
     return false;
   }
   if (parsed.kind === 'invalid') {
     // Похоже на сумму, но вне диапазона/мусор — переспрашиваем, сохраняя флаг.
+    const invalidText = catalogAmountInvalidText(maxAmountUsdFor(slug));
     await safeAppendMessage(
       ctx,
       'assistant',
-      CATALOG_AMOUNT_INVALID_TEXT,
+      invalidText,
       { source: 'catalog_ui', [AWAITING_AMOUNT_META_KEY]: slug },
       updateId,
     );
-    await sendSafely(chatId, CATALOG_AMOUNT_INVALID_TEXT, updateId);
+    await sendSafely(chatId, invalidText, updateId);
     return true;
   }
 

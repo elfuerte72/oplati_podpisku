@@ -32,6 +32,16 @@ const PROPOSE_FAIL_TEXT =
 const MIN_AMOUNT_USD = 1;
 const MAX_AMOUNT_USD = 500;
 
+// Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam)
+// допускают суммы до HIGH_VALUE_MAX_AMOUNT_USD. Зеркалит серверный
+// HIGH_VALUE_SERVICE_SLUGS из propose-order.ts — держать синхронно.
+const HIGH_VALUE_SLUGS = new Set(['airbnb', 'booking', 'steam']);
+const HIGH_VALUE_MAX_AMOUNT_USD = 5000;
+
+function maxAmountUsdFor(slug: string): number {
+  return HIGH_VALUE_SLUGS.has(slug) ? HIGH_VALUE_MAX_AMOUNT_USD : MAX_AMOUNT_USD;
+}
+
 function formatTierPeriod(period: 'month' | 'quarter' | 'year'): string {
   if (period === 'year') return 'год';
   if (period === 'quarter') return '3 месяца';
@@ -115,8 +125,9 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
     e.preventDefault();
     if (!selected) return;
     const usd = Number(amount.replace(',', '.'));
-    if (!Number.isFinite(usd) || usd < MIN_AMOUNT_USD || usd > MAX_AMOUNT_USD) {
-      setAmountError(`Сумма — от $${MIN_AMOUNT_USD} до $${MAX_AMOUNT_USD}. Больше? Напишите в чат, оформим через оператора.`);
+    const maxUsd = maxAmountUsdFor(selected.slug);
+    if (!Number.isFinite(usd) || usd < MIN_AMOUNT_USD || usd > maxUsd) {
+      setAmountError(`Сумма — от $${MIN_AMOUNT_USD} до $${maxUsd}. Больше? Напишите в чат, оформим через оператора.`);
       return;
     }
     setAmountError(null);
@@ -230,11 +241,16 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             </div>
           </div>
 
+          <p className="mt-4 font-body text-xs leading-snug text-[var(--text-muted)]">
+            Платим американской картой без НДС. Включите на сайте сервиса VPN с локацией
+            США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).
+          </p>
+
           {selected.customAmount ? (
             <form onSubmit={submitAmount} className="mt-4 space-y-3">
               <p className="font-body text-sm text-[var(--text-muted)]">
                 У этого сервиса нет фиксированных тарифов — укажите сумму к оплате в долларах
-                (от ${MIN_AMOUNT_USD} до ${MAX_AMOUNT_USD}).
+                без НДС (от ${MIN_AMOUNT_USD} до ${maxAmountUsdFor(selected.slug)}).
               </p>
               <div className="flex gap-2">
                 <input
