@@ -6,6 +6,7 @@ import { getDb, getOrCreateUserByWebSessionId, getUserProfileById } from '@oplat
 
 import { childLogger } from '../logger.ts';
 import { getOrCreateWebSessionId } from '../chat/session.ts';
+import { consumeRefCookie, clearRefCookie } from '../referral/capture.ts';
 import { resolveCabinetUser } from './auth.ts';
 
 /**
@@ -60,7 +61,12 @@ export async function resolveReferralRequester(
   try {
     const webSessionId = await getOrCreateWebSessionId();
     const db = getDb();
-    const { id } = await getOrCreateUserByWebSessionId(db, { webSessionId }, dbLog);
+    // Захват реферера ДО создания юзера (находка greptile P1): если человек зашёл
+    // по `/?ref=код` и открыл кабинет раньше первого сообщения в чат, без этого
+    // юзер создался бы с referred_by=NULL, а реферер потом не проставится (immutable).
+    const referredBy = await consumeRefCookie();
+    const { id } = await getOrCreateUserByWebSessionId(db, { webSessionId, referredBy }, dbLog);
+    await clearRefCookie(); // гасим только после успешного создания/upsert
     const profile = await getUserProfileById(db, id);
     return {
       ok: true,

@@ -2,15 +2,12 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { cookies } from 'next/headers';
-
 import {
   appendMessage,
   getDb,
   getOrCreateActiveConversation,
   getOrCreateUserByWebSessionId,
   loadRecentMessages,
-  resolveReferralCode,
   type MessageHistoryItem,
 } from '@oplati/db';
 import {
@@ -21,7 +18,6 @@ import {
   type RouteDecision,
   type RouteKind,
 } from '@oplati/agent';
-import { parseReferralCode } from '@oplati/types';
 
 import {
   BUDGET_EXCEEDED_TEXT,
@@ -36,6 +32,7 @@ import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { toAgentHistory } from '@/lib/chat/history';
+import { consumeRefCookie, clearRefCookie } from '@/lib/referral/capture';
 
 /**
  * POST /api/chat — веб-чат (тот же AI-агент, что и Telegram).
@@ -86,39 +83,6 @@ function getClientIp(req: Request): string {
 }
 
 type WebChatContext = { userId: string; conversationId: string };
-
-/**
- * Реферальный cookie `ref` (его ставит middleware из `?ref=<code>`). Одноразово:
- * резолвим в id реферера и гасим cookie. Возвращает referrerId для проставления
- * при создании веб-пользователя. Best-effort: выключенная программа/неизвестный
- * код/сбой → null (захвата нет, чат работает). Гейтится REFERRAL_ENABLED.
- */
-async function consumeRefCookie(): Promise<string | null> {
-  if (!serverEnv.REFERRAL_ENABLED) return null;
-  const store = await cookies();
-  // Cookie ставит middleware (уже валидированным), но значение клиент-управляемо —
-  // ревалидируем формат/длину перед запросом к БД (находка security).
-  const code = parseReferralCode(store.get('ref')?.value);
-  if (!code) return null;
-  try {
-    const referrerId = await resolveReferralCode(getDb(), code);
-    log.info({ event: referrerId ? 'web-chat.referral.captured' : 'web-chat.referral.code_unknown' });
-    return referrerId;
-  } catch (err) {
-    // НЕ гасим cookie здесь: при сбое БД реферер не должен пропасть — повторим на
-    // следующем сообщении. Cookie гасится только после успешного резолва ctx (POST).
-    log.warn({ event: 'web-chat.referral.resolve_failed', err });
-    Sentry.captureException(err, { tags: { source: 'web-chat.referral' } });
-    return null;
-  }
-}
-
-/** Гасит ref-cookie одноразово — вызывается ТОЛЬКО после успешного создания/upsert
- * пользователя (ctx != null), иначе реферер мог бы потеряться при сбое БД. */
-async function clearRefCookie(): Promise<void> {
-  const store = await cookies();
-  if (store.get('ref')) store.delete('ref');
-}
 
 /** Upsert user/conversation для веб-сессии. `null` при недоступной БД (degrade). */
 async function resolveContext(

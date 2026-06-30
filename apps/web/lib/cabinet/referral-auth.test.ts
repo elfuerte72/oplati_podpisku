@@ -15,17 +15,28 @@ vi.mock('../chat/session.ts', () => ({
   getOrCreateWebSessionId: () => session.fn(),
 }));
 
+// Захват реферера из cookie (общий модуль) — мокаем, чтобы не трогать cookies()/env.
+const capture = vi.hoisted(() => ({ referrer: null as string | null }));
+vi.mock('../referral/capture.ts', () => ({
+  consumeRefCookie: vi.fn(async () => capture.referrer),
+  clearRefCookie: vi.fn(async () => {}),
+}));
+
 const dbState = vi.hoisted(() => ({
   user: { id: 'u-web', created: false },
   profile: { telegramLinked: false } as { telegramLinked: boolean } | null,
   throws: false,
+  lastInput: null as { webSessionId: string; referredBy?: string | null } | null,
 }));
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
-  getOrCreateUserByWebSessionId: vi.fn(async () => {
-    if (dbState.throws) throw new Error('db down');
-    return dbState.user;
-  }),
+  getOrCreateUserByWebSessionId: vi.fn(
+    async (_db: unknown, input: { webSessionId: string; referredBy?: string | null }) => {
+      dbState.lastInput = input;
+      if (dbState.throws) throw new Error('db down');
+      return dbState.user;
+    },
+  ),
   getUserProfileById: vi.fn(async () => dbState.profile),
 }));
 
@@ -34,9 +45,11 @@ import { resolveReferralRequester } from './referral-auth.ts';
 beforeEach(() => {
   vi.clearAllMocks();
   session.fn.mockResolvedValue('web-sess-1');
+  capture.referrer = null;
   dbState.user = { id: 'u-web', created: false };
   dbState.profile = { telegramLinked: false };
   dbState.throws = false;
+  dbState.lastInput = null;
 });
 
 describe('resolveReferralRequester — мини-апп (initData)', () => {
@@ -82,6 +95,18 @@ describe('resolveReferralRequester — сайт (web-сессия)', () => {
     dbState.profile = { telegramLinked: true };
     const res = await resolveReferralRequester(undefined);
     expect(res.ok && res.requester.telegramLinked).toBe(true);
+  });
+
+  it('захватывает реферера из cookie и передаёт в создание юзера (greptile P1)', async () => {
+    capture.referrer = 'partner-9';
+    await resolveReferralRequester(undefined);
+    expect(dbState.lastInput).toEqual({ webSessionId: 'web-sess-1', referredBy: 'partner-9' });
+  });
+
+  it('без реферера в cookie → referredBy null (но юзер всё равно создаётся)', async () => {
+    capture.referrer = null;
+    await resolveReferralRequester(undefined);
+    expect(dbState.lastInput).toEqual({ webSessionId: 'web-sess-1', referredBy: null });
   });
 
   it('профиль не найден → telegramLinked=false (консервативно)', async () => {
