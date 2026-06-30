@@ -77,6 +77,14 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         if (tg.colorScheme === 'light' || tg.colorScheme === 'dark') {
           document.documentElement.dataset.theme = tg.colorScheme;
         }
+        // Подгоняем chrome Telegram (шапка/фон/низ) под фирменный --bg, иначе
+        // поверх halftone видны чёрные полосы Telegram (фидбек владельца).
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+        if (bg) {
+          tg.setBackgroundColor?.(bg);
+          tg.setHeaderColor?.(bg);
+          tg.setBottomBarColor?.(bg);
+        }
       } catch {
         // методы SDK не критичны — продолжаем
       }

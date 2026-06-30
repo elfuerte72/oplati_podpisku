@@ -49,17 +49,20 @@ const SOFT =
 export function PartnerCabinet({
   initData,
   previewSnapshot,
+  initialScreen,
   onBack,
 }: {
   initData?: string;
   /** Тест/превью-seam: если задан — рендерим без сетевого запроса. */
   previewSnapshot?: ReferralSnapshot;
+  /** Тест/превью-seam: стартовый экран (по умолчанию дашборд). */
+  initialScreen?: Screen;
   /** Если задан — в топбаре кнопка «назад» (мини-апп: возврат к заказам). */
   onBack?: () => void;
 } = {}) {
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [snap, setSnap] = useState<ReferralSnapshot | null>(previewSnapshot ?? null);
-  const [screen, setScreen] = useState<Screen>('dashboard');
+  const [screen, setScreen] = useState<Screen>(initialScreen ?? 'dashboard');
   const [modalOpen, setModalOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -115,8 +118,8 @@ export function PartnerCabinet({
   const title = NAV.find((n) => n.key === screen)?.label ?? '';
 
   return (
-    <div className="halftone min-h-screen text-[var(--text)]" style={LEVEL_VARS}>
-      <div className="mx-auto flex w-full max-w-[1180px]">
+    <div className="halftone min-h-screen w-full min-w-0 overflow-x-hidden bg-[var(--bg)] text-[var(--text)]" style={LEVEL_VARS}>
+      <div className="mx-auto flex w-full min-w-0 max-w-[1180px]">
         {/* ── Sidebar (desktop) ── */}
         <aside className="sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] py-5 lg:flex">
           <div className="flex items-center gap-2.5 px-4 pb-4">
@@ -145,7 +148,7 @@ export function PartnerCabinet({
         </aside>
 
         {/* ── Main ── */}
-        <main className="min-h-screen flex-1 pb-24 lg:pb-0">
+        <main className="min-h-screen min-w-0 flex-1 pb-24 lg:pb-0">
           {/* Topbar */}
           <header className="sticky top-0 z-10 flex items-center justify-between border-b-[2.5px] border-[var(--shadow-ink)] bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-5 py-4 backdrop-blur">
             <div className="flex items-center gap-2.5">
@@ -567,11 +570,11 @@ function LinkScreen({ snap, onCopied }: { snap: ReferralSnapshot; onCopied: () =
         <div className="mb-5 font-body text-[13px] text-[var(--text-muted)]">
           Делись — и зарабатывай с каждой оплаты в твоей сети
         </div>
-        <div className={`mx-auto mb-4 flex max-w-[460px] items-center justify-between gap-2.5 p-2.5 pl-4 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
-          <span className="truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
+        <div className={`mx-auto mb-4 flex w-full max-w-[460px] items-center justify-between gap-2.5 p-2.5 pl-4 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
+          <span className="min-w-0 flex-1 truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
             {link || 'ссылка готовится…'}
           </span>
-          <ComicButton onClick={copy} disabled={!link} className="!px-3.5 !py-2 text-[13px]">
+          <ComicButton onClick={copy} disabled={!link} className="shrink-0 !px-3.5 !py-2 text-[13px]">
             Скопировать
           </ComicButton>
         </div>
