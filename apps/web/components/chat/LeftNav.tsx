@@ -71,16 +71,8 @@ export function LeftNav() {
           </svg>
         }
       />
-      <NavItem
-        href="/partner"
-        label="Партнёрская программа"
-        icon={
-          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
-            <circle cx="9" cy="8" r="3" strokeLinejoin="round" />
-            <path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 7.5a3 3 0 0 1 0 5M17 19a5 5 0 0 0-2.5-4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        }
-      />
+      {/* «Партнёрская программа» оставлена ОДНОЙ кнопкой в правой панели профиля
+          (ProfilePanel) — здесь дубль убран по фидбеку владельца. */}
       <NavItem
         label="Обучение"
         badge="Скоро"
