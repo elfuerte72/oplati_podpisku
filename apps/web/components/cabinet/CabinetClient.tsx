@@ -15,9 +15,10 @@ import {
   type OrderDetail,
   type Snapshot,
 } from './cabinet-api';
-import { ProfileHeader } from './ProfileHeader';
+import { Mascot } from '@/components/chat/Mascot';
+
+import { CardHero } from './CardHero';
 import { OrderRow } from './OrderRow';
-import { CardsSection } from './CardsSection';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
 type Phase = 'loading' | 'no-telegram' | 'error' | 'ready';
@@ -39,10 +40,10 @@ function errorTextFor(error: string): string {
   }
 }
 
-export function CabinetClient() {
-  const [phase, setPhase] = useState<Phase>('loading');
+export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot } = {}) {
+  const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [errorText, setErrorText] = useState('');
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(previewSnapshot ?? null);
   const [view, setView] = useState<'list' | 'detail' | 'referral'>('list');
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -58,6 +59,7 @@ export function CabinetClient() {
 
   // ─── Инициализация: SDK Telegram → snapshot ──────────────────────────────
   useEffect(() => {
+    if (previewSnapshot) return; // превью/QA-seam: рендер без Telegram
     let cancelled = false;
     void (async () => {
       const tg = await loadTelegramWebApp();
@@ -92,7 +94,7 @@ export function CabinetClient() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [previewSnapshot]);
 
   const reloadSnapshot = useCallback(async () => {
     const res = await fetchSnapshot(initDataRef.current);
@@ -221,26 +223,24 @@ export function CabinetClient() {
     return <PartnerCabinet initData={initData} onBack={() => setView('list')} />;
   }
 
-  return (
-    <main className="mx-auto w-full max-w-md space-y-5 p-4">
-      <ProfileHeader profile={snapshot.profile} />
+  const firstName = snapshot.profile.displayName?.trim().split(/\s+/)[0];
+  const greeting = firstName ? `Привет, ${firstName}!` : 'Привет!';
+  // Основная карта: активная, иначе самая свежая по дате выпуска.
+  const primaryCard =
+    snapshot.cards.find((c) => c.status === 'active') ??
+    [...snapshot.cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ??
+    null;
 
-      <button
-        type="button"
-        onClick={() => setView('referral')}
-        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
-      >
-        <span className="text-[22px]">🤝</span>
-        <span className="flex-1">
-          <span className="block font-display text-[15px] font-bold text-[var(--color-paper)]">
-            Партнёрская программа
-          </span>
-          <span className="block font-body text-[12px] text-[var(--color-paper)] opacity-90">
-            Приглашай и зарабатывай с каждой оплаты
-          </span>
-        </span>
-        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
-      </button>
+  return (
+    <main className="mx-auto w-full max-w-md space-y-4 p-4">
+      {/* Компактная шапка вместо громоздкого ProfileHeader. */}
+      <header className="flex items-center gap-3 pt-1">
+        <Mascot pose="idle" size={40} />
+        <div className="min-w-0">
+          <p className="font-body text-xs text-[var(--text-muted)]">Личный кабинет</p>
+          <h1 className="truncate font-display text-xl font-bold text-[var(--text)]">{greeting}</h1>
+        </div>
+      </header>
 
       {notice && (
         <p className="rounded-[12px] border-2 border-[var(--color-stamp)] px-3 py-2 font-body text-sm text-[var(--color-stamp)]">
@@ -248,22 +248,33 @@ export function CabinetClient() {
         </p>
       )}
 
-      <section className="space-y-3">
-        <h2 className="font-display text-sm font-bold uppercase tracking-wider text-[var(--text-muted)]">
-          Заказы
-        </h2>
-        {snapshot.orders.length === 0 ? (
-          <p className="font-body text-sm text-[var(--text-muted)]">
-            Здесь появятся твои заказы. Напиши боту, что хочешь оплатить — и Оплатишка всё оформит.
-          </p>
-        ) : (
-          snapshot.orders.map((order) => (
-            <OrderRow key={order.orderId} order={order} onOpen={openOrder} />
-          ))
-        )}
-      </section>
+      {/* Карта клиента — главный акцент. */}
+      <CardHero card={primaryCard} />
 
-      <CardsSection cards={snapshot.cards} />
+      {/* Отдельная кнопка на реферальную программу. */}
+      <button
+        type="button"
+        onClick={() => setView('referral')}
+        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+      >
+        <span className="text-[20px]">🤝</span>
+        <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
+          Партнёрская программа
+        </span>
+        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
+      </button>
+
+      {/* Заказы — лёгкий компактный список. */}
+      {snapshot.orders.length > 0 && (
+        <section className="space-y-2.5">
+          <h2 className="px-1 font-display text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
+            Заказы
+          </h2>
+          {snapshot.orders.map((order) => (
+            <OrderRow key={order.orderId} order={order} onOpen={openOrder} />
+          ))}
+        </section>
+      )}
     </main>
   );
 }

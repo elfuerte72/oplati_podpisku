@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 
 export default function CabinetPage() {
   return (
-    <div className="halftone min-h-full flex-1">
+    <div className="halftone min-h-full min-w-0 flex-1">
       <CabinetClient />
     </div>
   );
