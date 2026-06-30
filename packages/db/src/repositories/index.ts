@@ -96,6 +96,7 @@ export {
   createCard,
   findActiveByUserId,
   findCardsByUserIdForCabinet,
+  findCardByIdForUser,
   findRecyclableCard,
   markIdle,
   markRecycled,

@@ -64,6 +64,7 @@ function mapOrderSummary(order: OrderRow, serviceName: string | null): OrderSumm
 
 function mapCard(card: Card): CardView {
   return {
+    id: card.id,
     panMasked: card.panMasked,
     status: card.status,
     statusLabel: CARD_STATUS_LABELS[card.status],

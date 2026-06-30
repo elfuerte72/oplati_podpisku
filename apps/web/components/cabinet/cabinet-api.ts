@@ -22,12 +22,18 @@ const orderSummarySchema = z.object({
 });
 
 const cardViewSchema = z.object({
+  id: z.string(),
   panMasked: z.string(),
   status: z.string(),
   statusLabel: z.string(),
   balanceUsdCents: z.number(),
   createdAt: z.string(),
 });
+
+const cardDetailsResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), number: z.string(), exp: z.string(), cvc: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
 
 const paymentViewSchema = z.object({
   amountKopecks: z.number(),
@@ -103,6 +109,7 @@ const operatorResultSchema = z.discriminatedUnion('ok', [
 
 export type OrderSummary = z.infer<typeof orderSummarySchema>;
 export type CardView = z.infer<typeof cardViewSchema>;
+export type CardDetailsResult = z.infer<typeof cardDetailsResultSchema>;
 export type PaymentView = z.infer<typeof paymentViewSchema>;
 export type OrderEventView = z.infer<typeof eventViewSchema>;
 export type CabinetProfile = z.infer<typeof profileSchema>;
@@ -158,6 +165,17 @@ export async function fetchOrderDetail(
   const resp = await callCabinet({ action: 'order', initData, orderId });
   const result = parseOrError(resp, orderDetailResponseSchema);
   return result.ok ? { ok: true, data: result.data.order } : result;
+}
+
+/**
+ * Разовый показ реквизитов карты (номер/срок/CVC). Сервер тянет их живым
+ * запросом из PaySpace и НЕ хранит. Ответ не кэшируется (no-store на роуте).
+ */
+export async function fetchCardDetails(initData: string, cardId: string): Promise<CardDetailsResult> {
+  const resp = await callCabinet({ action: 'card-details', initData, cardId });
+  const parsed = resp ? cardDetailsResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return parsed.data;
+  return { ok: false, error: 'network_error' };
 }
 
 /** Действия возвращают свой discriminated-результат (ok:true/false) как есть. */

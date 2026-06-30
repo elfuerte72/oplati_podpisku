@@ -10,6 +10,7 @@ import {
   doOperator,
   doPay,
   doRepeat,
+  fetchCardDetails,
   fetchOrderDetail,
   fetchSnapshot,
   type OrderDetail,
@@ -17,7 +18,7 @@ import {
 } from './cabinet-api';
 import { Mascot } from '@/components/chat/Mascot';
 
-import { CardHero } from './CardHero';
+import { CardHero, type CardDetails } from './CardHero';
 import { OrderRow } from './OrderRow';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
@@ -50,6 +51,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const [busy, setBusy] = useState<'pay' | 'repeat' | 'operator' | null>(null);
   const [actionMsg, setActionMsg] = useState<DetailActionMessage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Реквизиты карты, показанные по кнопке (живой fetch, не хранятся). Сбрасываются
+  // при уходе с экрана списка — чтобы не висели открытыми.
+  const [cardDetails, setCardDetails] = useState<CardDetails | null>(null);
+  const [revealingCard, setRevealingCard] = useState(false);
 
   const tgRef = useRef<TelegramWebApp | null>(null);
   const initDataRef = useRef<string>('');
@@ -109,9 +114,23 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     if (res.ok) setSnapshot(res.data);
   }, []);
 
+  const revealCard = useCallback(async (cardId: string) => {
+    setRevealingCard(true);
+    const res = await fetchCardDetails(initDataRef.current, cardId);
+    setRevealingCard(false);
+    if (res.ok) {
+      setCardDetails({ number: res.number, exp: res.exp, cvc: res.cvc });
+    } else {
+      setNotice('Не удалось показать реквизиты. Попробуй ещё раз.');
+    }
+  }, []);
+
+  const hideCard = useCallback(() => setCardDetails(null), []);
+
   const openOrder = useCallback(async (orderId: string) => {
     setActionMsg(null);
     setNotice(null);
+    setCardDetails(null); // прячем реквизиты при уходе со списка
     setDetailLoading(true);
     setView('detail');
     setDetail(null);
@@ -257,12 +276,21 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       )}
 
       {/* Карта клиента — главный акцент. */}
-      <CardHero card={primaryCard} />
+      <CardHero
+        card={primaryCard}
+        details={cardDetails}
+        revealing={revealingCard}
+        onReveal={primaryCard ? () => revealCard(primaryCard.id) : undefined}
+        onHide={hideCard}
+      />
 
       {/* Отдельная кнопка на реферальную программу. */}
       <button
         type="button"
-        onClick={() => setView('referral')}
+        onClick={() => {
+          setCardDetails(null);
+          setView('referral');
+        }}
         className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
       >
         <span className="text-[20px]">🤝</span>
