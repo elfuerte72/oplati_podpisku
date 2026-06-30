@@ -1,10 +1,5 @@
 import type { CardView } from './cabinet-api';
 
-/** USD-центы → «$12.34». */
-function formatUsd(cents: number): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
-}
-
 const STATUS_DOT: Record<string, string> = {
   active: 'var(--success)',
   idle: 'var(--color-skin)',
@@ -49,16 +44,13 @@ export function CardHero({ card }: { card: CardView | null }) {
       {/* chip */}
       <span className="h-7 w-10 rounded-[6px] border-2 border-[var(--shadow-ink)] bg-[var(--color-skin)]" />
 
-      {/* PAN */}
+      {/* PAN (маска) */}
       <p className="font-display text-xl font-bold tracking-[0.18em]">{card.panMasked}</p>
 
-      {/* bottom: баланс + тип */}
-      <div className="flex items-end justify-between">
-        <span>
-          <span className="block font-body text-[11px] uppercase tracking-wider opacity-80">Баланс</span>
-          <span className="font-display text-xl font-bold">{formatUsd(card.balanceUsdCents)}</span>
-        </span>
+      {/* bottom: тип карты + где взять полные реквизиты */}
+      <div className="flex items-end justify-between gap-2">
         <span className="font-body text-[11px] uppercase tracking-wider opacity-80">Виртуальная карта</span>
+        <span className="font-body text-[11px] opacity-70">Реквизиты — в сообщении бота</span>
       </div>
     </div>
   );
