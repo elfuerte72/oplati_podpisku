@@ -73,7 +73,7 @@ export function LeftNav() {
       />
       <NavItem
         href="/partner"
-        label="Партнёрам"
+        label="Партнёрская программа"
         icon={
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
             <circle cx="9" cy="8" r="3" strokeLinejoin="round" />
