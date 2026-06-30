@@ -120,6 +120,19 @@ export type CardInfoResult = {
   productCode: string | null;
 };
 
+/**
+ * Полные реквизиты карты для разового показа клиенту по запросу. НИКОГДА не
+ * логировать, не сохранять в БД, не отправлять в Sentry — только в ответ
+ * клиенту по защищённому каналу (инвариант безопасности реквизитов).
+ */
+export type CardSecrets = {
+  /** Полный PAN (16 цифр). */
+  cardNo: string;
+  cvv: string;
+  /** Срок MM/YY. */
+  expDate: string;
+};
+
 export type VccBalanceResult = {
   balanceUsdCents: number;
   pendingUsdCents: number;
@@ -300,6 +313,22 @@ export class PaySpaceClient {
       cardType: data.cardType ?? null,
       productCode: data.productCode ?? null,
     };
+  }
+
+  /**
+   * Полные реквизиты карты (GET /vcc/card/info/) — номер/CVV/срок БЕЗ маски. В
+   * отличие от `getCardInfo` ничего не маскирует: только для разового показа
+   * клиенту по запросу. Возвращаемое НЕ логируем и не сохраняем (инвариант
+   * безопасности). `request` тело ответа не логирует (только method/path).
+   */
+  async getCardSecrets(cardId: string): Promise<CardSecrets> {
+    const data = await this.request({
+      method: 'GET',
+      path: '/vcc/card/info/',
+      query: { card_id: cardId },
+      schema: paySpaceCardInfoDataSchema,
+    });
+    return { cardNo: data.cardNo, cvv: data.cvv, expDate: data.expDate };
   }
 
   /** Баланс VCC-аккаунта (GET /vcc/user/balance/) — наш фонд под выпуск карт. */

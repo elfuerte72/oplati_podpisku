@@ -39,6 +39,7 @@
   --bubble-user: #268b89;
   --shadow-ink: #0b0a0d;
   --link: #7e8be0;
+  --success: #2fa39e;
 
   --shadow-comic: 4px 4px 0 var(--shadow-ink);
   --shadow-comic-lg: 6px 6px 0 var(--shadow-ink);
@@ -56,6 +57,7 @@
   --bubble-user: #5b9c99;
   --shadow-ink: #16151a;
   --link: #2e3a8c;
+  --success: #1f7a76;
 }
 
 html,

@@ -5,6 +5,11 @@ vi.mock('../jobs/dispatcher.ts', () => ({
   dispatchIssueCard: vi.fn(),
   dispatchPaymentConfirmed: vi.fn(),
 }));
+// Реферальные начисления тестируются отдельно (referral/accrue.test.ts) — здесь
+// no-op, чтобы тест webhook оставался сфокусированным на платёжном пути.
+vi.mock('../referral/accrue.ts', () => ({
+  accrueReferralForPayment: vi.fn(),
+}));
 
 type Pay = {
   id: string;
@@ -51,6 +56,7 @@ vi.mock('@sentry/nextjs', () => ({
 import * as db from '@oplati/db';
 import { processInvoicePaid, processInvoiceTerminal } from './handlers.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
+import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 type MockedDb = typeof db & {
   __setPayment: (p: Pay | null) => void;
@@ -85,6 +91,30 @@ describe('processInvoicePaid', () => {
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
     expect(dispatchIssueCard).toHaveBeenCalledWith('order-1');
     expect(dispatchPaymentConfirmed).toHaveBeenCalledWith('order-1');
+  });
+
+  it('начисляет реферал при успешном переходе в paid', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    await processInvoicePaid({ data, rawPayload: {} });
+    expect(accrueReferralForPayment).toHaveBeenCalledWith({ orderId: 'order-1', paymentId: 'pay-1' });
+  });
+
+  it('НЕ начисляет реферал, если переход в paid запрещён (cancelled/expired)', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    // Заказ в терминальном статусе → transitionOrder бросает → paidOk=false.
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('forbidden transition'));
+    await processInvoicePaid({ data, rawPayload: {} });
+    expect(accrueReferralForPayment).not.toHaveBeenCalled();
   });
 
   it('идемпотентен — повторный paid (платёж уже succeeded) skip', async () => {

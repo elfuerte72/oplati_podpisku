@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { formatRub } from '@/components/comic';
@@ -181,6 +182,15 @@ export function ProfilePanel({
             </button>
           )}
         </div>
+
+        {/* Партнёрская программа — десктоп открывает кабинет /partner; мобильный
+            браузер страница /partner сама уводит в Telegram (мини-апп). */}
+        <Link
+          href="/partner"
+          className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-2.5 font-display font-bold text-[var(--color-paper)] shadow-[var(--shadow-comic)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+        >
+          🤝 Партнёрская программа
+        </Link>
 
         {/* Поддержка — открывает бота в Telegram (там команда /support, пока mock). */}
         {supportUrl && (

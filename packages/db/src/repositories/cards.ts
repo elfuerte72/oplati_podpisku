@@ -103,6 +103,32 @@ export async function findCardsByUserIdForCabinet(db: DB, userId: string): Promi
 }
 
 /**
+ * Карта по id с проверкой владельца (ownership) — для разового показа реквизитов
+ * в кабинете. `recycled` исключаем (карта могла уйти другому клиенту — реквизиты
+ * прежнему показывать нельзя). `null`, если карты нет, чужая или recycled.
+ * Read-only; полные реквизиты тянем отдельно из PaySpace по `providerCardId`.
+ */
+export async function findCardByIdForUser(
+  db: DB,
+  cardId: string,
+  userId: string,
+): Promise<Card | null> {
+  const rows = await db
+    .select()
+    .from(cards)
+    .where(
+      and(
+        eq(cards.id, cardId),
+        eq(cards.userId, userId),
+        sql`${cards.status} IN ('active', 'idle')`,
+      ),
+    )
+    .limit(1);
+  const row = rows[0];
+  return row ? mapRowToCard(row) : null;
+}
+
+/**
  * Recycled-карта для повторного использования: status='recycled' (см. `recycle-cards`
  * cron). Берём первую попавшуюся; в issue-card job переписываем userId на нового
  * владельца и переводим в active.

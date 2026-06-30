@@ -7,6 +7,7 @@ import { checkRateLimit } from '@/lib/ratelimit';
 import { resolveCabinetUser } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
 import { payOrder, repeatOrder, requestOperator } from '@/lib/cabinet/actions';
+import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
 
 /**
  * POST /api/cabinet — бэкенд личного кабинета Telegram Mini App.
@@ -35,6 +36,11 @@ const requestSchema = z.discriminatedUnion('action', [
   orderAction.extend({ action: z.literal('pay') }),
   orderAction.extend({ action: z.literal('repeat') }),
   orderAction.extend({ action: z.literal('operator') }),
+  z.object({
+    action: z.literal('card-details'),
+    initData: z.string().min(1),
+    cardId: z.string().uuid(),
+  }),
 ]);
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
@@ -98,6 +104,13 @@ export async function POST(req: Request): Promise<NextResponse> {
         const result = await requestOperator(userId, body.orderId);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
+      }
+      case 'card-details': {
+        // Разовый показ реквизитов: live-fetch из PaySpace, в БД не хранятся.
+        // no-store — ответ с реквизитами не должен кэшироваться нигде по пути.
+        const result = await getCardSecretsForUser(userId, body.cardId);
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status, headers: { 'cache-control': 'no-store' } });
       }
     }
   } catch (err) {

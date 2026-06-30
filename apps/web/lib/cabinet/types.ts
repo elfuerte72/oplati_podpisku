@@ -80,6 +80,8 @@ export type OrderSummary = {
 };
 
 export type CardView = {
+  /** id карты в нашей БД — для запроса реквизитов (`card-details`); не секрет. */
+  id: string;
   panMasked: string;
   status: CardStatus;
   statusLabel: string;

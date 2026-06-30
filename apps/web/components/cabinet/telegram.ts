@@ -16,6 +16,12 @@ export type TelegramWebApp = {
   expand: () => void;
   openLink: (url: string, options?: { try_instant_view?: boolean }) => void;
   openTelegramLink?: (url: string) => void;
+  /** Цвет фона мини-аппа (chrome) — выставляем под фирменный noir/paper. */
+  setBackgroundColor?: (color: string) => void;
+  /** Цвет шапки Telegram над мини-аппом. */
+  setHeaderColor?: (color: string) => void;
+  /** Цвет нижней панели (новые клиенты Telegram). */
+  setBottomBarColor?: (color: string) => void;
   HapticFeedback?: {
     notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
     impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;

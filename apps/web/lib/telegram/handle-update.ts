@@ -13,9 +13,11 @@ import {
   getOrderById,
   LINK_TOKEN_PREFIX,
   loadRecentMessages,
+  resolveReferralCode,
   transitionOrder,
   type MessageHistoryItem,
 } from '@oplati/db';
+import { parseReferralCode, REFERRAL_DEEPLINK_PREFIX } from '@oplati/types';
 import {
   classifyMessage,
   GREETING,
@@ -41,6 +43,7 @@ import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
+import { serverEnv } from '@/lib/env';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
@@ -124,6 +127,7 @@ type PersistContext = {
 async function persistInbound(
   update: TelegramUpdate,
   message: TelegramMessage,
+  opts?: { referredBy?: string | null },
 ): Promise<PersistContext | null> {
   if (!message.from?.id) {
     log.warn({
@@ -155,6 +159,9 @@ async function persistInbound(
         telegramId,
         displayName,
         language: message.from.language_code ?? 'ru',
+        // referred_by ставится только при создании строки (см. репозиторий);
+        // для не-/start апдейтов opts отсутствует → реферер не трогается.
+        referredBy: opts?.referredBy ?? null,
       },
       dbLog,
     );
@@ -315,7 +322,19 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       return;
     }
 
-    const ctx = await persistInbound(update, message);
+    // Реферальный deep-link: /start ref_<code>. Резолвим реферера ДО persist,
+    // чтобы getOrCreateUserByTelegramId проставил referred_by при СОЗДАНИИ строки
+    // (immutable — повторный заход существующего юзера дерево не меняет).
+    // Best-effort: любой сбой/неизвестный код → null (приветствие не ломаем).
+    // Префикс ref_ обязателен (bare-код в /start рефералом не считаем), но
+    // регистронезависимо — Telegram/клиенты могут прислать REF_ (находка ревью).
+    const referredBy =
+      serverEnv.REFERRAL_ENABLED &&
+      startPayload.toLowerCase().startsWith(REFERRAL_DEEPLINK_PREFIX)
+        ? await resolveReferrerFromStart(startPayload, update.update_id)
+        : null;
+
+    const ctx = await persistInbound(update, message, { referredBy });
     if (ctx) {
       await safeAppendMessage(
         ctx,
@@ -636,6 +655,32 @@ async function handleLinkDeepLink(
   }
 
   await sendSafely(chatId, replyText, update.update_id);
+}
+
+/**
+ * Резолв реферера из payload `/start ref_<code>`. Best-effort: неизвестный код
+ * или сбой БД → `null` (захвата нет, приветствие всё равно уходит). Самореферал
+ * по Telegram структурно невозможен — существующий юзер попадает в ON CONFLICT
+ * и referred_by не трогается; новый юзер своего кода ещё не имеет.
+ */
+async function resolveReferrerFromStart(
+  startPayload: string,
+  updateId: number,
+): Promise<string | null> {
+  const code = parseReferralCode(startPayload);
+  if (!code) return null;
+  try {
+    const referrerId = await resolveReferralCode(getDb(), code);
+    log.info({
+      event: referrerId ? 'telegram.referral.captured' : 'telegram.referral.code_unknown',
+      updateId,
+    });
+    return referrerId;
+  } catch (err) {
+    log.warn({ event: 'telegram.referral.resolve_failed', updateId, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.referral' } });
+    return null;
+  }
 }
 
 /**

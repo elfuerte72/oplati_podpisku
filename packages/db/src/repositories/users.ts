@@ -28,6 +28,12 @@ export type GetOrCreateUserByTelegramIdInput = {
   telegramId: string;
   displayName?: string | null;
   language?: string;
+  /**
+   * Реферер (id пригласившего партнёра). Проставляется ТОЛЬКО при создании
+   * строки — `ON CONFLICT DO UPDATE` его не трогает (immutable + только-при-
+   * создании, см. D-REF-9). Резолвится из deep-link `ref_<code>` до вызова.
+   */
+  referredBy?: string | null;
 };
 
 export type GetOrCreateUserByTelegramIdResult = {
@@ -40,7 +46,7 @@ export async function getOrCreateUserByTelegramId(
   input: GetOrCreateUserByTelegramIdInput,
   log: RepoLogger = noopLogger,
 ): Promise<GetOrCreateUserByTelegramIdResult> {
-  const { telegramId, displayName, language } = input;
+  const { telegramId, displayName, language, referredBy } = input;
   const telegramIdHash = hashTelegramId(telegramId);
   const startedAt = Date.now();
 
@@ -48,15 +54,20 @@ export async function getOrCreateUserByTelegramId(
     event: 'db.users.upsert.start',
     telegramIdHash,
     hasDisplayName: displayName !== undefined && displayName !== null,
+    hasReferrer: referredBy !== undefined && referredBy !== null,
     language: language ?? 'ru',
   });
 
+  // referred_by — только в INSERT-ветке; DO UPDATE его не упоминает, поэтому при
+  // повторном /start (ON CONFLICT) реферер существующего юзера не перезаписывается.
   const rows = await db.execute<{ id: string; created: boolean }>(sql`
-    INSERT INTO users (telegram_id, display_name, language)
+    INSERT INTO users (telegram_id, display_name, language, referred_by, referred_by_set_at)
     VALUES (
       ${telegramId},
       ${displayName ?? null},
-      ${language ?? 'ru'}
+      ${language ?? 'ru'},
+      ${referredBy ?? null},
+      ${referredBy ? new Date() : null}
     )
     ON CONFLICT (telegram_id) WHERE telegram_id IS NOT NULL
     DO UPDATE SET
@@ -123,6 +134,8 @@ export async function getUserTelegramId(db: DB, userId: string): Promise<string 
 export type GetOrCreateUserByWebSessionIdInput = {
   webSessionId: string;
   language?: string;
+  /** Реферер — только при создании строки (immutable), см. телеграм-аналог. */
+  referredBy?: string | null;
 };
 
 export type GetOrCreateUserByWebSessionIdResult = {
@@ -135,15 +148,23 @@ export async function getOrCreateUserByWebSessionId(
   input: GetOrCreateUserByWebSessionIdInput,
   log: RepoLogger = noopLogger,
 ): Promise<GetOrCreateUserByWebSessionIdResult> {
-  const { webSessionId, language } = input;
+  const { webSessionId, language, referredBy } = input;
   const sessionHash = hashSessionId(webSessionId);
   const startedAt = Date.now();
 
-  log.debug({ event: 'db.users.web.upsert.start', sessionHash, language: language ?? 'ru' });
+  log.debug({
+    event: 'db.users.web.upsert.start',
+    sessionHash,
+    hasReferrer: referredBy !== undefined && referredBy !== null,
+    language: language ?? 'ru',
+  });
 
   const rows = await db.execute<{ id: string; created: boolean }>(sql`
-    INSERT INTO users (web_session_id, language)
-    VALUES (${webSessionId}, ${language ?? 'ru'})
+    INSERT INTO users (web_session_id, language, referred_by, referred_by_set_at)
+    VALUES (
+      ${webSessionId}, ${language ?? 'ru'}, ${referredBy ?? null},
+      ${referredBy ? new Date() : null}
+    )
     ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL
     DO UPDATE SET updated_at = now()
     RETURNING id, (xmax = 0) AS created

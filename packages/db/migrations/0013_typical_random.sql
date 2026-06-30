@@ -1,0 +1,2 @@
+ALTER TABLE "users" ADD COLUMN "referred_by_set_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_no_self_referral" CHECK ("users"."referred_by" IS NULL OR "users"."referred_by" <> "users"."id");

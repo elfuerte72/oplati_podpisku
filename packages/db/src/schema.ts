@@ -12,6 +12,7 @@ import {
   date,
   index,
   uniqueIndex,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type { OrderParameters, PricingPolicy } from '@oplati/types';
 
@@ -98,6 +99,21 @@ export const users = pgTable(
     phone: text('phone'),
     email: text('email'),
     notes: text('notes'),
+    // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
+    // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
+    // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —
+    // персональный код для deep-link `?start=ref_<code>`; lazy, UNIQUE (NULL
+    // допускает множество строк). onDelete: set null — удаление реферера не
+    // должно ронять строки рефералов (FK restrict здесь не нужен).
+    referredBy: uuid('referred_by').references((): AnyPgColumn => users.id, {
+      onDelete: 'set null',
+    }),
+    referralCode: text('referral_code').unique(),
+    // Когда установлен referred_by — для гейта recovery-начислений против ретро-
+    // атрибуции (D-REF-9): merge может проставить реферера ПОСЛЕ оплаты заказов,
+    // и без этой отметки recovery-cron back-pay'нул бы комиссию на исторические
+    // заказы. Гейт: начисляем только если order.paid_at >= referred_by_set_at.
+    referredBySetAt: timestamp('referred_by_set_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -108,9 +124,16 @@ export const users = pgTable(
     webSessionIdx: uniqueIndex('users_web_session_id_idx')
       .on(t.webSessionId)
       .where(sql`${t.webSessionId} IS NOT NULL`),
+    referredByIdx: index('users_referred_by_idx').on(t.referredBy),
     identityCheck: check(
       'users_identity_present',
       sql`${t.telegramId} IS NOT NULL OR ${t.webSessionId} IS NOT NULL`,
+    ),
+    // Defense-in-depth для денежного дерева: запрет self-edge на уровне БД
+    // (immutability-after-set остаётся app-enforced).
+    noSelfReferral: check(
+      'users_no_self_referral',
+      sql`${t.referredBy} IS NULL OR ${t.referredBy} <> ${t.id}`,
     ),
   }),
 ).enableRLS();
@@ -345,6 +368,111 @@ export const cards = pgTable(
     userIdx: index('cards_user_id_idx').on(t.userId),
     // Частичный индекс — ускоряет findRecyclableCard / recycle cron.
     idleIdx: index('cards_idle_idx').on(t.status).where(sql`${t.status} = 'idle'`),
+  }),
+).enableRLS();
+
+// ─── Referral (партнёрская программа) ─────────────────────────────────────
+// Append-only ledger начислений + профиль партнёра + заявки на вывод. Деньги —
+// USD-центы integer. RLS deny-by-default (service_role обходит); партнёр читает
+// своё через server-side кабинет (как cards). См. SPEC.md §5, plan.md Этап B.
+
+export const referralAccrualKindEnum = pgEnum('referral_accrual_kind', [
+  'commission',
+  'circle_bonus',
+  'sprint_new_refs',
+  'sprint_turnover_boost',
+  'serial_bonus',
+]);
+
+export const referralAccrualStatusEnum = pgEnum('referral_accrual_status', [
+  'accrued',
+  'reversed',
+]);
+
+export const referralPayoutStatusEnum = pgEnum('referral_payout_status', [
+  'requested',
+  'processing',
+  'paid',
+  'rejected',
+]);
+
+// Профиль партнёра (1:1 с users, ленивое создание). Круг/ставка/множитель пишет
+// месячный крон (Этап C); при отсутствии строки начисление считает по кругу 0.
+export const referralPartners = pgTable('referral_partners', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  // 0 = Клиент .. 3 = Топ-партнёр (храповик — не понижается, Этап C)
+  currentCircle: integer('current_circle').default(0).notNull(),
+  // зафиксированная ставка L1 в bps (400 = 4%)
+  lockedRateL1Bps: integer('locked_rate_l1_bps').default(400).notNull(),
+  // временный +1% буст на следующий месяц (Этап C): действует до даты включительно
+  boostUntil: date('boost_until'),
+  boostRateBps: integer('boost_rate_bps'),
+  // 5+ активных рефералов L2 → ставка L2 2%→2.5% (Этап C)
+  teamMultiplier: boolean('team_multiplier').default(false).notNull(),
+  // антифрод-блок: исключает из начисления и замораживает вывод (Этап E)
+  suspended: boolean('suspended').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}).enableRLS();
+
+// Append-only ledger начислений. НИКОГДА не UPDATE/DELETE — reversal = новая
+// строка со status='reversed'. Идемпотентность commission — UNIQUE(payment_id,
+// beneficiary, level); NULL payment_id (бонусы) не конфликтуют (NULL distinct).
+export const referralAccruals = pgTable(
+  'referral_accruals',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    beneficiaryUserId: uuid('beneficiary_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // кто оплатил (null для бонусов)
+    sourceUserId: uuid('source_user_id').references(() => users.id, { onDelete: 'set null' }),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    paymentId: uuid('payment_id').references(() => payments.id, { onDelete: 'set null' }),
+    // 1..3 уровень сети; 0 для бонусов (circle/sprint/serial)
+    level: integer('level').notNull(),
+    kind: referralAccrualKindEnum('kind').notNull(),
+    rateBps: integer('rate_bps').notNull(),
+    amountUsdCents: integer('amount_usd_cents').notNull(),
+    status: referralAccrualStatusEnum('status').default('accrued').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    beneficiaryIdx: index('referral_accruals_beneficiary_idx').on(t.beneficiaryUserId),
+    // Идемпотентность commission: один платёж → ровно одна строка на (beneficiary, level).
+    paymentBeneficiaryLevelIdx: uniqueIndex('referral_accruals_payment_beneficiary_level_idx').on(
+      t.paymentId,
+      t.beneficiaryUserId,
+      t.level,
+    ),
+    // Recovery/orderHasAccruals пробят по order_id — индекс (находка код-ревью, перф).
+    orderIdx: index('referral_accruals_order_id_idx').on(t.orderId),
+    // Деньги неотрицательны (defense-in-depth): начисления всегда > 0 (план дропает
+    // floor-в-ноль), reversal — положительная строка со status='reversed'.
+    amountNonNeg: check('referral_accruals_amount_nonneg', sql`${t.amountUsdCents} >= 0`),
+  }),
+).enableRLS();
+
+// Заявки на вывод. Исполнение — Этап E (способ выплат D-REF-6). destination —
+// контракт зависит от способа (крипто-адрес/карта), пока jsonb.
+export const referralPayouts = pgTable(
+  'referral_payouts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    amountUsdCents: integer('amount_usd_cents').notNull(),
+    status: referralPayoutStatusEnum('status').default('requested').notNull(),
+    destination: jsonb('destination').$type<Record<string, unknown>>(),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => ({
+    userIdx: index('referral_payouts_user_idx').on(t.userId),
+    amountPositive: check('referral_payouts_amount_positive', sql`${t.amountUsdCents} > 0`),
   }),
 ).enableRLS();
 

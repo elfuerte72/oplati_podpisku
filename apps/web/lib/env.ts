@@ -117,6 +117,15 @@ const serverEnvSchema = z.object({
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
 
+  // Реферальная (партнёрская) программа. Глобальный kill-switch: '1'/'true' —
+  // захват реферера и начисления включены; по умолчанию ВЫКЛЮЧЕНО (фаза катится
+  // поэтапно, см. plan.md). REFERRAL_MIN_PAYOUT_USD_CENTS — минимум на вывод
+  // ($10 = 1000 центов), Этап D/E.
+  REFERRAL_ENABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
+  REFERRAL_MIN_PAYOUT_USD_CENTS: z.coerce.number().int().positive().default(1000),
+
   // Fallback USDT→RUB курс, если L&P /rates временно недоступен (сейчас именно
   // так: договор по фикс-курсу не подписан → /rates отдаёт RATE_NOT_FOUND, и
   // ВСЕ заказы идут на этом fallback'е). Значение — актуальный рыночный курс в

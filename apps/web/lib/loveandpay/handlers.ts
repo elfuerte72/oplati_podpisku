@@ -14,6 +14,7 @@ import type { LoveAndPayInvoiceStatus, LoveAndPayWebhookData } from '@oplati/typ
 
 import { childLogger } from '../logger.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
+import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 /**
  * Общие хендлеры обработки L&P-событий (как из webhook, так и из cron poll-payment).
@@ -117,6 +118,10 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
   // transitionOrder вернёт noop (так как from === to). Если status в `in_fulfillment`
   // или `completed` — allowedTransitions запретит, бросит OrderTransitionError,
   // что мы здесь же ловим: повторно отметить order paid в этих кейсах не нужно.
+  // Перешёл ли заказ в paid. noop (already paid, from===to) не бросает → true.
+  // catch ловит ТОЛЬКО запрещённый переход (cancelled/expired→paid) — заказ реально
+  // не оплачен, на нём нельзя ни fulfillment, ни реферальное начисление.
+  let paidOk = true;
   try {
     await transitionOrder(db, {
       orderId: payment.orderId,
@@ -132,6 +137,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       },
     });
   } catch (err) {
+    paidOk = false;
     // Сюда попадаем ТОЛЬКО при запрещённом переходе (noop from===to не бросает).
     // Платёж уже claimed-succeeded, но заказ нельзя двинуть в `paid` — например,
     // он cancelled/expired (клиент оплатил по «мёртвому» счёту). Деньги получены,
@@ -155,6 +161,15 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
   // После успешной оплаты — запускаем issue-card. Sync-fallback через
   // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.
   dispatchIssueCard(payment.orderId);
+
+  // Реферальные начисления (из маржи). Только если заказ реально перешёл в paid
+  // (находка ревью: не начислять на cancelled/expired при «мёртвом» счёте).
+  // At-most-once: сюда попадает только победитель claim; внутри — graceful +
+  // идемпотентность по UNIQUE. Inline await (а не dispatch): дёшево, и
+  // гарантированно отрабатывает до 200 OK (setImmediate Vercel может заморозить).
+  if (paidOk) {
+    await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
+  }
 
   log.info({
     event: 'loveandpay.handlers.invoice_paid_processed',

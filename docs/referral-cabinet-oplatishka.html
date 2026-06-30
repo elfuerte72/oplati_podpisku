@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Партнёрский кабинет · Оплатишка</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Balsamiq+Sans:wght@400;700&family=Rubik:wght@400;500;600&display=swap&subset=cyrillic,latin" rel="stylesheet">
+<style>
+/* ════════════════════════════════════════════════════════════════════
+   Оплатишка — партнёрский кабинет. Прототип D0 (дизайн-проход).
+   Токены сняты из .claude/skills/oplatishka-design (комикс-нуар).
+   Сигнатура: контур 2.5px solid ink + жёсткая тень 4px 4px 0 ink.
+   ════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* brand raw */
+  --teal: #268B89;
+  --teal-light: #5B9C99;
+  --teal-deep: #306874;
+  --paper: #FBFCF7;
+  --noir: #0F0D11;
+  --brown: #6E4E4C;
+  --glasses: #2E3A8C;
+  --skin: #E7C1A9;
+  --stamp: #C2362F;
+  --success: #2FA39E;
+
+  /* dark = default (комикс-нуар) */
+  --bg: #0F0D11;
+  --surface: #1A1A20;
+  --surface-2: #23232B;
+  --surface-3: #2C2C35;
+  --text: #FBFCF7;
+  --text-muted: #A9A7AE;
+  --text-dim: #6E6C74;
+  --ink: #0B0A0D;
+  --link: #7E8BE0;
+
+  /* акценты уровней сети (3 различимых, все на бренде, читаемы на noir) */
+  --lv1: #5B9C99;   /* teal-light */
+  --lv2: #7E8BE0;   /* glasses light */
+  --lv3: #E7C1A9;   /* skin */
+
+  --shadow-comic: 4px 4px 0 var(--ink);
+  --shadow-comic-lg: 6px 6px 0 var(--ink);
+  --shadow-comic-sm: 2px 2px 0 var(--ink);
+  --border-comic: 2.5px solid var(--ink);
+  --radius-card: 18px;
+  --radius-bubble: 22px;
+
+  --font-display: 'Balsamiq Sans', system-ui, sans-serif;
+  --font-body: 'Rubik', system-ui, sans-serif;
+  --ease-pop: cubic-bezier(.2,.9,.25,1.3);
+}
+
+[data-theme="light"] {
+  --bg: #FBFCF7;
+  --surface: #FFFFFF;
+  --surface-2: #F1F2EC;
+  --surface-3: #E7E8E0;
+  --text: #16151A;
+  --text-muted: #5B5A60;
+  --text-dim: #8C8B92;
+  --ink: #16151A;
+  --link: #2E3A8C;
+  --lv1: #268B89;
+  --lv2: #2E3A8C;
+  --lv3: #6E4E4C;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.halftone {
+  background-image: radial-gradient(var(--ink-dot, rgba(255,255,255,0.05)) 2px, transparent 2px);
+  background-size: 7px 7px;
+}
+[data-theme="light"] .halftone { --ink-dot: rgba(0,0,0,0.06); }
+
+/* ── LAYOUT ── */
+.app { display: flex; min-height: 100vh; }
+
+/* ── SIDEBAR (комикс-панель) ── */
+.sidebar {
+  width: 232px; flex-shrink: 0;
+  background: var(--surface);
+  border-right: var(--border-comic);
+  display: flex; flex-direction: column;
+  padding: 20px 0;
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 10;
+}
+.sidebar-logo { padding: 0 18px 18px; margin-bottom: 14px; }
+.logo-mark { display: flex; align-items: center; gap: 10px; }
+.logo-icon {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: var(--teal);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-sm);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.logo-icon img { width: 100%; height: 100%; object-fit: cover; }
+.logo-name { font-family: var(--font-display); font-size: 17px; font-weight: 700; color: var(--text); line-height: 1; }
+.logo-sub { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+
+.nav { flex: 1; padding: 0 12px; display: flex; flex-direction: column; gap: 4px; }
+.nav-section-label {
+  font-family: var(--font-display);
+  font-size: 11px; font-weight: 700; color: var(--text-dim);
+  letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 14px 10px 4px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-body); font-size: 14px; font-weight: 500;
+  cursor: pointer; transition: all .15s var(--ease-pop);
+  border: 2.5px solid transparent; background: none; width: 100%; text-align: left;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item.active {
+  background: var(--teal); color: var(--paper);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-sm);
+  font-weight: 700;
+}
+.nav-item .nav-icon { font-size: 18px; width: 22px; text-align: center; flex-shrink: 0; }
+.nav-badge {
+  margin-left: auto; background: var(--surface-3); color: var(--text);
+  font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+  border: 2px solid var(--ink);
+}
+.nav-item.active .nav-badge { background: var(--paper); color: var(--teal-deep); }
+
+.sidebar-user {
+  margin: 14px 12px 0; padding: 12px;
+  background: var(--surface-2);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-sm);
+  border-radius: 14px;
+  display: flex; align-items: center; gap: 11px;
+}
+.user-avatar {
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--teal); color: var(--paper);
+  border: 2.5px solid var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.user-name { font-size: 13px; font-weight: 600; }
+.user-level { font-size: 11px; color: var(--success); font-weight: 500; }
+
+/* ── MAIN ── */
+.main { margin-left: 232px; flex: 1; min-height: 100vh; display: flex; flex-direction: column; }
+
+/* ── TOPBAR ── */
+.topbar {
+  padding: 16px 28px;
+  border-bottom: var(--border-comic);
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 5;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+}
+.topbar-title { font-family: var(--font-display); font-size: 22px; font-weight: 700; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.streak-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface); color: var(--skin);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic-sm);
+  border-radius: 999px; padding: 5px 12px;
+  font-size: 12px; font-weight: 600;
+}
+.btn-comic {
+  font-family: var(--font-display); font-weight: 700; font-size: 14px;
+  background: var(--teal); color: var(--paper);
+  border: var(--border-comic); box-shadow: var(--shadow-comic);
+  border-radius: var(--radius-card); padding: 9px 18px;
+  cursor: pointer; transition: transform .15s var(--ease-pop), box-shadow .15s var(--ease-pop);
+}
+.btn-comic:hover { transform: scale(1.05); box-shadow: var(--shadow-comic-lg); }
+.btn-comic:active { transform: translate(3px,3px); box-shadow: none; }
+.btn-comic.surface { background: var(--surface); color: var(--text); }
+.theme-toggle {
+  width: 40px; height: 40px; border-radius: 12px;
+  background: var(--surface); border: var(--border-comic); box-shadow: var(--shadow-comic-sm);
+  cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center;
+  transition: transform .15s var(--ease-pop);
+}
+.theme-toggle:active { transform: translate(2px,2px); box-shadow: none; }
+
+/* ── CONTENT ── */
+.content { padding: 24px 28px 60px; flex: 1; max-width: 1100px; }
+
+/* ── SCREENS ── */
+.screen { display: none; }
+.screen.active { display: block; animation: comic-pop .25s var(--ease-pop); }
+@keyframes comic-pop { 0% { transform: translateY(8px) scale(.98); opacity: 0; } 100% { transform: translateY(0) scale(1); opacity: 1; } }
+
+/* ── COMIC CARD ── */
+.card {
+  background: var(--surface);
+  border: var(--border-comic); box-shadow: var(--shadow-comic);
+  border-radius: var(--radius-card);
+  padding: 20px;
+}
+.card-title {
+  font-family: var(--font-display); font-size: 14px; font-weight: 700;
+  color: var(--text); margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+/* ── HERO (дашборд) ── */
+.hero {
+  position: relative; overflow: hidden;
+  background: var(--surface);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-lg);
+  border-radius: var(--radius-card);
+  padding: 24px; margin-bottom: 18px;
+}
+.hero-grid { display: grid; grid-template-columns: 1fr 168px; gap: 18px; align-items: start; }
+.hero-bubble {
+  position: relative;
+  background: var(--bubble, #1F2A2A);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-sm);
+  border-radius: var(--radius-bubble); border-bottom-right-radius: 6px;
+  padding: 12px 16px; font-size: 13px; color: var(--text);
+  margin-bottom: 18px; max-width: 360px;
+}
+[data-theme="light"] .hero-bubble { --bubble: #FFFFFF; }
+.hero-bubble::after {
+  content: ''; position: absolute; right: -9px; bottom: 10px;
+  width: 14px; height: 14px; background: var(--bubble, #1F2A2A);
+  border-right: 2.5px solid var(--ink); border-bottom: 2.5px solid var(--ink);
+  clip-path: polygon(0 0, 100% 100%, 100% 0); transform: rotate(0deg);
+}
+.mascot-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.mascot-img { width: 150px; height: auto; filter: drop-shadow(4px 6px 0 rgba(0,0,0,.35)); }
+
+/* circle stamp */
+.circle-stamp {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-display); font-weight: 700; font-size: 13px;
+  color: var(--teal-light); text-transform: uppercase; letter-spacing: .04em;
+  border: 3px solid var(--teal-light); border-radius: 10px;
+  padding: 4px 12px; transform: rotate(-2deg);
+}
+.hero-amount { font-family: var(--font-display); font-size: 46px; font-weight: 700; line-height: 1; margin: 14px 0 2px; }
+.hero-amount-sub { font-size: 13px; color: var(--text-dim); margin-bottom: 18px; }
+
+.progress-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+.progress-labels .done { color: var(--success); font-weight: 600; }
+.progress-track {
+  height: 14px; background: var(--surface-2);
+  border: 2.5px solid var(--ink); border-radius: 999px;
+  overflow: hidden; position: relative;
+}
+.progress-fill {
+  height: 100%; width: 0;
+  background: repeating-linear-gradient(45deg, var(--teal) 0 8px, var(--teal-light) 8px 16px);
+  border-radius: 999px; transition: width 1.2s var(--ease-pop);
+}
+.progress-milestone { position: absolute; top: -3px; height: calc(100% + 6px); width: 3px; background: var(--success); border-radius: 2px; }
+
+.hero-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-top: 20px; }
+.hstat {
+  background: var(--surface-2);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic-sm);
+  border-radius: 14px; padding: 13px 14px;
+}
+.hstat-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.hstat-value { font-family: var(--font-display); font-size: 24px; font-weight: 700; line-height: 1; }
+.hstat-sub { font-size: 11px; margin-top: 4px; }
+
+/* lock stamp («навсегда») */
+.lock-stamp {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-display); font-weight: 700; font-size: 10px;
+  color: var(--success); text-transform: uppercase; letter-spacing: .03em;
+  border: 2px solid var(--success); border-radius: 6px;
+  padding: 1px 6px; transform: rotate(-3deg);
+}
+
+/* ── GRID ── */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; margin-bottom: 18px; }
+
+/* ── SPRINT ── */
+.sprint { border-color: var(--ink); }
+.sprint .card-title { color: var(--skin); }
+.sprint-timer {
+  margin-left: auto; font-family: var(--font-body); font-size: 11px; font-weight: 600; color: var(--text-muted);
+  background: var(--surface-2); border: 2px solid var(--ink); border-radius: 8px; padding: 2px 8px;
+}
+.sprint-goals { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sprint-goal { background: var(--surface-2); border: 2.5px solid var(--ink); border-radius: 12px; padding: 12px; }
+.sg-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.sg-val { font-family: var(--font-display); font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+.sg-track { height: 8px; background: var(--surface-3); border: 2px solid var(--ink); border-radius: 999px; overflow: hidden; margin-bottom: 7px; }
+.sg-fill { height: 100%; border-radius: 999px; }
+.sg-status { font-size: 11px; color: var(--skin); font-weight: 500; }
+
+/* ── RATES ── */
+.rate-row { display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 2px dashed var(--surface-3); }
+.rate-row:last-child { border: none; }
+.rate-lv { font-size: 13px; font-weight: 500; color: var(--text); }
+.rate-desc { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+.rate-val { font-family: var(--font-display); font-size: 26px; font-weight: 700; }
+.rate-row.locked { opacity: .5; }
+
+/* ── NETWORK CARDS ── */
+.net-card {
+  background: var(--surface);
+  border: var(--border-comic); box-shadow: var(--shadow-comic);
+  border-radius: var(--radius-card); padding: 16px;
+}
+.net-lv { font-family: var(--font-display); font-size: 12px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; }
+.net-count { font-family: var(--font-display); font-size: 38px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+.net-active { font-size: 12px; font-weight: 500; margin-bottom: 6px; }
+.net-earn { font-size: 12px; color: var(--text-muted); }
+.net-earn strong { color: var(--text); font-weight: 600; }
+.mini-prog { height: 6px; background: var(--surface-2); border: 2px solid var(--ink); border-radius: 999px; margin-top: 10px; overflow: hidden; }
+.mini-fill { height: 100%; border-radius: 999px; }
+
+/* ── SECTION HEAD ── */
+.section-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; }
+.section-title { font-family: var(--font-display); font-size: 16px; font-weight: 700; }
+.section-link { font-size: 13px; color: var(--link); cursor: pointer; background: none; border: none; font-family: var(--font-body); font-weight: 500; }
+.section-link:hover { text-decoration: underline; }
+
+/* ── TRANSACTIONS ── */
+.tx-list { display: flex; flex-direction: column; gap: 8px; }
+.tx-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic-sm);
+  border-radius: 14px; padding: 11px 14px;
+  transition: transform .12s var(--ease-pop);
+}
+.tx-item:hover { transform: translate(-1px,-1px); box-shadow: var(--shadow-comic); }
+.tx-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 2.5px solid var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 13px; font-weight: 700; flex-shrink: 0;
+}
+.tx-info { flex: 1; min-width: 0; }
+.tx-name { font-size: 13px; font-weight: 600; }
+.tx-meta { font-size: 11px; color: var(--text-dim); }
+.tx-right { text-align: right; }
+.tx-earn { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--success); }
+.tx-earn.out { color: var(--text-dim); }
+.tx-date { font-size: 11px; color: var(--text-dim); }
+
+/* ── TIMELINE (путь к кругу) ── */
+.timeline { display: flex; flex-direction: column; }
+.tl-item { display: flex; gap: 14px; }
+.tl-left { display: flex; flex-direction: column; align-items: center; }
+.tl-dot {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 2.5px solid var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 14px; font-weight: 700; flex-shrink: 0; z-index: 1;
+}
+.tl-line { width: 3px; flex: 1; background: var(--surface-3); margin: 4px 0; min-height: 18px; }
+.tl-body {
+  flex: 1; margin-bottom: 14px;
+  background: var(--surface-2);
+  border: 2.5px solid var(--ink); border-radius: 14px;
+  padding: 12px 16px;
+}
+.tl-body.pending { border-style: dashed; opacity: .65; }
+.tl-title { font-family: var(--font-display); font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+.tl-sub { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+.tl-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-display); font-size: 11px; font-weight: 700;
+  padding: 3px 10px; border-radius: 8px; border: 2px solid currentColor;
+}
+
+/* ── LINK SCREEN ── */
+.link-hero {
+  position: relative; overflow: hidden; text-align: center;
+  background: var(--surface);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-lg);
+  border-radius: var(--radius-card); padding: 28px 24px; margin-bottom: 18px;
+}
+.link-mascot { width: 96px; margin: 0 auto 6px; display: block; filter: drop-shadow(3px 4px 0 rgba(0,0,0,.3)); }
+.link-big { font-family: var(--font-display); font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+.link-sub { font-size: 13px; color: var(--text-dim); margin-bottom: 22px; }
+.link-box {
+  background: var(--surface-2);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic-sm);
+  border-radius: 14px; padding: 10px 10px 10px 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  max-width: 460px; margin: 0 auto 18px;
+}
+.link-url { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--teal-light); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.share-btn {
+  background: var(--surface-2); color: var(--text);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic-sm);
+  border-radius: 12px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: var(--font-body);
+  display: flex; align-items: center; gap: 7px;
+  transition: transform .12s var(--ease-pop);
+}
+.share-btn:hover { transform: translate(-1px,-1px); box-shadow: var(--shadow-comic); }
+.share-btn:active { transform: translate(2px,2px); box-shadow: none; }
+
+/* ── TABS ── */
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.tab-btn {
+  background: var(--surface); color: var(--text-muted);
+  border: 2.5px solid var(--ink); border-radius: 999px;
+  padding: 7px 16px; font-family: var(--font-display); font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: all .12s var(--ease-pop);
+}
+.tab-btn.active { background: var(--teal); color: var(--paper); box-shadow: var(--shadow-comic-sm); }
+
+/* ── STATS ── */
+.stat-big { font-family: var(--font-display); font-size: 44px; font-weight: 700; line-height: 1; }
+.bars { display: flex; align-items: flex-end; gap: 8px; height: 92px; margin-top: 16px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.bar { width: 100%; border: 2.5px solid var(--ink); border-radius: 8px 8px 0 0; transition: height .8s var(--ease-pop); }
+.bar-label { font-size: 10px; color: var(--text-dim); font-weight: 500; }
+.bar-val { font-family: var(--font-display); font-size: 11px; font-weight: 700; color: var(--text-muted); }
+
+.month-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.month-row .m { font-size: 12px; color: var(--text-dim); width: 34px; font-weight: 500; }
+.month-track { flex: 1; height: 12px; background: var(--surface-2); border: 2px solid var(--ink); border-radius: 999px; overflow: hidden; }
+.month-fill { height: 100%; border-radius: 999px; }
+.month-row .v { font-size: 12px; font-weight: 600; width: 42px; text-align: right; }
+
+/* ── MODAL ── */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 100; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface);
+  border: var(--border-comic); box-shadow: var(--shadow-comic-lg);
+  border-radius: var(--radius-card); padding: 26px; width: 400px; max-width: 100%;
+  animation: comic-pop .25s var(--ease-pop);
+}
+.modal-title { font-family: var(--font-display); font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.modal-sub { font-size: 13px; color: var(--text-dim); margin-bottom: 18px; }
+.modal-balance { background: var(--surface-2); border: 2.5px solid var(--ink); border-radius: 14px; padding: 14px 16px; margin-bottom: 16px; }
+.modal-balance-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.modal-balance-value { font-family: var(--font-display); font-size: 30px; font-weight: 700; color: var(--success); }
+.modal-input-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
+.modal-input {
+  width: 100%; background: var(--surface-2); color: var(--text);
+  border: 2.5px solid var(--ink); border-radius: 12px; padding: 11px 14px;
+  font-family: var(--font-display); font-size: 18px; font-weight: 700;
+  outline: none; margin-bottom: 16px;
+}
+.modal-input:focus { border-color: var(--teal); }
+.modal-btns { display: flex; gap: 10px; }
+.modal-btns .btn-comic { flex: 1; }
+.modal-btns .btn-comic.surface { flex: .8; }
+
+/* ── TOAST ── */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--surface); color: var(--success);
+  border: 2.5px solid var(--ink); box-shadow: var(--shadow-comic);
+  border-radius: 14px; padding: 12px 20px;
+  font-family: var(--font-display); font-size: 14px; font-weight: 700;
+  z-index: 200; display: none;
+}
+.toast.show { display: block; animation: comic-pop .25s var(--ease-pop); }
+
+/* ── gate-note (привязка Telegram) ── */
+.gate {
+  display: flex; align-items: center; gap: 14px;
+  background: var(--surface); border: 2.5px dashed var(--stamp);
+  border-radius: var(--radius-card); padding: 14px 18px; margin-bottom: 18px;
+}
+.gate-icon { font-size: 26px; }
+.gate-text { flex: 1; font-size: 13px; }
+.gate-text strong { font-family: var(--font-display); }
+
+/* ── responsive note ── */
+.mobile-note {
+  position: fixed; bottom: 12px; right: 12px; z-index: 50;
+  background: var(--surface-2); border: 2px solid var(--ink); border-radius: 10px;
+  padding: 6px 10px; font-size: 11px; color: var(--text-dim);
+}
+@media (max-width: 920px) {
+  .sidebar { display: none; }
+  .main { margin-left: 0; }
+  .hero-grid { grid-template-columns: 1fr; }
+  .mascot-wrap { display: none; }
+  .grid2, .grid3, .sprint-goals, .hero-stats { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ════ SIDEBAR ════ -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">
+        <div class="logo-icon"><img src="../apps/web/public/mascot/idle.png" alt="Оплатишка"></div>
+        <div>
+          <div class="logo-name">Оплатишка</div>
+          <div class="logo-sub">Партнёрская программа</div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <p class="nav-section-label">Кабинет</p>
+      <button class="nav-item active" onclick="show('dashboard', this)"><span class="nav-icon">🏠</span> Дашборд</button>
+      <button class="nav-item" onclick="show('network', this)"><span class="nav-icon">🕸️</span> Моя сеть <span class="nav-badge">76</span></button>
+      <button class="nav-item" onclick="show('link', this)"><span class="nav-icon">🔗</span> Моя ссылка</button>
+
+      <p class="nav-section-label">Деньги</p>
+      <button class="nav-item" onclick="show('history', this)"><span class="nav-icon">🧾</span> История</button>
+      <button class="nav-item" onclick="show('stats', this)"><span class="nav-icon">📈</span> Статистика</button>
+    </nav>
+
+    <div class="sidebar-user">
+      <div class="user-avatar">АК</div>
+      <div>
+        <div class="user-name">Алексей К.</div>
+        <div class="user-level">● Партнёр · 6%</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ════ MAIN ════ -->
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="topbar-title">Дашборд</div>
+      <div class="topbar-right">
+        <div class="streak-pill">🔥 3 месяца подряд</div>
+        <button class="btn-comic" onclick="openModal()">Вывести</button>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Сменить тему">◐</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- ══════ DASHBOARD ══════ -->
+      <section class="screen active" id="screen-dashboard">
+
+        <div class="hero halftone">
+          <div class="hero-grid">
+            <div>
+              <div class="circle-stamp">⬤ Круг 2 · Партнёр</div>
+              <div class="hero-amount">$1 800</div>
+              <div class="hero-amount-sub">Оборот сети · июнь 2026</div>
+
+              <div class="progress-labels">
+                <span>$0</span>
+                <span class="done">✓ Круг 2 — $2 000</span>
+                <span>Круг 3 — $5 000</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-milestone" style="left:40%"></div>
+                <div class="progress-fill" id="hero-prog"></div>
+              </div>
+
+              <div class="hero-stats">
+                <div class="hstat">
+                  <div class="hstat-label">Ваша ставка</div>
+                  <div class="hstat-value" style="color:var(--teal-light)">6%</div>
+                  <div class="hstat-sub"><span class="lock-stamp">🔒 навсегда</span></div>
+                </div>
+                <div class="hstat">
+                  <div class="hstat-label">Заработано в июне</div>
+                  <div class="hstat-value">$148</div>
+                  <div class="hstat-sub" style="color:var(--success)">↑ +$23 к маю</div>
+                </div>
+                <div class="hstat">
+                  <div class="hstat-label">Баланс к выводу</div>
+                  <div class="hstat-value" style="color:var(--success)">$312</div>
+                  <div class="hstat-sub" style="color:var(--text-dim)">мин. вывод $10</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mascot-wrap">
+              <div class="hero-bubble">Сеть растёт! Ещё <strong>$3&nbsp;200</strong> — и ты Топ&#8209;партнёр на 7%.</div>
+              <img class="mascot-img" src="../apps/web/public/mascot/wave.png" alt="Оплатишка">
+            </div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card sprint">
+            <div class="card-title">⚡ Спринт июня <span class="sprint-timer">⏱ 12 дней</span></div>
+            <div class="sprint-goals">
+              <div class="sprint-goal">
+                <div class="sg-label">Новых рефералов</div>
+                <div class="sg-val">7 / 10</div>
+                <div class="sg-track"><div class="sg-fill" style="width:70%;background:var(--teal)"></div></div>
+                <div class="sg-status">Ещё 3 → бонус $30</div>
+              </div>
+              <div class="sprint-goal">
+                <div class="sg-label">150% плана</div>
+                <div class="sg-val">$1 800 / $3 000</div>
+                <div class="sg-track"><div class="sg-fill" style="width:60%;background:var(--lv2)"></div></div>
+                <div class="sg-status">Ещё $1 200 → +1% буст</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">📊 Ваши ставки</div>
+            <div class="rate-row">
+              <div><div class="rate-lv">1-й уровень</div><div class="rate-desc">Прямые рефералы</div></div>
+              <div class="rate-val" style="color:var(--lv1)">6%</div>
+            </div>
+            <div class="rate-row">
+              <div><div class="rate-lv">2-й уровень</div><div class="rate-desc">Друзья рефералов</div></div>
+              <div class="rate-val" style="color:var(--lv2)">2%</div>
+            </div>
+            <div class="rate-row">
+              <div><div class="rate-lv">3-й уровень</div><div class="rate-desc">Друзья друзей</div></div>
+              <div class="rate-val" style="color:var(--lv3)">1%</div>
+            </div>
+            <div class="rate-row locked">
+              <div><div class="rate-lv">🔒 Круг 3 — Топ-партнёр</div><div class="rate-desc">Открывается за $5 000</div></div>
+              <div class="rate-val" style="color:var(--text-muted)">7%</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div class="section-title">Моя сеть</div>
+          <button class="section-link" onclick="show('network', navItem('network'))">Подробнее →</button>
+        </div>
+        <div class="grid3">
+          <div class="net-card">
+            <div class="net-lv">Уровень 1</div>
+            <div class="net-count" style="color:var(--lv1)">23</div>
+            <div class="net-active" style="color:var(--success)">18 активных</div>
+            <div class="net-earn">Доход: <strong>$108/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:78%;background:var(--lv1)"></div></div>
+          </div>
+          <div class="net-card">
+            <div class="net-lv">Уровень 2</div>
+            <div class="net-count" style="color:var(--lv2)">41</div>
+            <div class="net-active" style="color:var(--skin)">29 активных</div>
+            <div class="net-earn">Доход: <strong>$34/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:70%;background:var(--lv2)"></div></div>
+          </div>
+          <div class="net-card">
+            <div class="net-lv">Уровень 3</div>
+            <div class="net-count" style="color:var(--lv3)">12</div>
+            <div class="net-active" style="color:var(--text-dim)">8 активных</div>
+            <div class="net-earn">Доход: <strong>$6/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:66%;background:var(--lv3)"></div></div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div class="section-title">Последние начисления</div>
+          <button class="section-link" onclick="show('history', navItem('history'))">Все →</button>
+        </div>
+        <div class="tx-list">
+          <div class="tx-item">
+            <div class="tx-avatar" style="background:color-mix(in srgb,var(--lv1) 22%,transparent);color:var(--lv1)">МА</div>
+            <div class="tx-info"><div class="tx-name">Михаил А.</div><div class="tx-meta">Ур. 1 · Netflix $15.99</div></div>
+            <div class="tx-right"><div class="tx-earn">+$0.96</div><div class="tx-date">Сегодня, 14:32</div></div>
+          </div>
+          <div class="tx-item">
+            <div class="tx-avatar" style="background:color-mix(in srgb,var(--lv2) 22%,transparent);color:var(--lv2)">ОК</div>
+            <div class="tx-info"><div class="tx-name">Ольга К.</div><div class="tx-meta">Ур. 2 · Spotify $9.99</div></div>
+            <div class="tx-right"><div class="tx-earn">+$0.20</div><div class="tx-date">Вчера, 09:15</div></div>
+          </div>
+          <div class="tx-item">
+            <div class="tx-avatar" style="background:color-mix(in srgb,var(--lv1) 22%,transparent);color:var(--lv1)">ДВ</div>
+            <div class="tx-info"><div class="tx-name">Дмитрий В.</div><div class="tx-meta">Ур. 1 · ChatGPT Plus $20</div></div>
+            <div class="tx-right"><div class="tx-earn">+$1.20</div><div class="tx-date">25 июн, 18:40</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ NETWORK ══════ -->
+      <section class="screen" id="screen-network">
+        <div class="grid3">
+          <div class="net-card" style="border-color:var(--ink)">
+            <div class="net-lv" style="color:var(--lv1)">Уровень 1 · 6% с оплат</div>
+            <div class="net-count" style="color:var(--lv1);font-size:44px">23</div>
+            <div class="net-active" style="color:var(--success)">18 активных · 5 спят</div>
+            <div class="net-earn">Оборот: <strong>$1 800/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--success)">$108/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:78%;background:var(--lv1)"></div></div>
+          </div>
+          <div class="net-card" style="border-color:var(--ink)">
+            <div class="net-lv" style="color:var(--lv2)">Уровень 2 · 2% с оплат</div>
+            <div class="net-count" style="color:var(--lv2);font-size:44px">41</div>
+            <div class="net-active" style="color:var(--skin)">29 активных · 12 спят</div>
+            <div class="net-earn">Оборот: <strong>$1 700/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--success)">$34/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:70%;background:var(--lv2)"></div></div>
+          </div>
+          <div class="net-card" style="border-color:var(--ink)">
+            <div class="net-lv" style="color:var(--lv3)">Уровень 3 · 1% с оплат</div>
+            <div class="net-count" style="color:var(--lv3);font-size:44px">12</div>
+            <div class="net-active" style="color:var(--text-dim)">8 активных · 4 спят</div>
+            <div class="net-earn">Оборот: <strong>$600/мес</strong></div>
+            <div class="net-earn">Ваш доход: <strong style="color:var(--success)">$6/мес</strong></div>
+            <div class="mini-prog"><div class="mini-fill" style="width:66%;background:var(--lv3)"></div></div>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="section-title">Путь к Кругу 3</div></div>
+        <div class="card">
+          <div class="timeline">
+            <div class="tl-item">
+              <div class="tl-left"><div class="tl-dot" style="background:color-mix(in srgb,var(--success) 24%,transparent);color:var(--success)">✓</div><div class="tl-line"></div></div>
+              <div class="tl-body">
+                <div class="tl-title">Круг 1 · Старт</div>
+                <div class="tl-sub">Оборот $500/мес · выполнен в апреле 2026</div>
+                <span class="tl-pill" style="color:var(--success)">🔒 4% навсегда</span>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-left"><div class="tl-dot" style="background:color-mix(in srgb,var(--teal-light) 24%,transparent);color:var(--teal-light)">✓</div><div class="tl-line"></div></div>
+              <div class="tl-body">
+                <div class="tl-title">Круг 2 · Партнёр</div>
+                <div class="tl-sub">Оборот $2 000/мес · выполнен в мае 2026 · бонус $50 получен</div>
+                <span class="tl-pill" style="color:var(--teal-light)">🔒 6% навсегда</span>
+              </div>
+            </div>
+            <div class="tl-item">
+              <div class="tl-left"><div class="tl-dot" style="background:var(--surface-3);color:var(--text-dim)">3</div></div>
+              <div class="tl-body pending">
+                <div class="tl-title">Круг 3 · Топ-партнёр</div>
+                <div class="tl-sub">Оборот $5 000/мес · осталось $3 200 (≈ 32 клиента)</div>
+                <span class="tl-pill" style="color:var(--text-muted)">7% + бонус $150 + маркетинг</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ LINK ══════ -->
+      <section class="screen" id="screen-link">
+        <div class="link-hero halftone">
+          <img class="link-mascot" src="../apps/web/public/mascot/presenting.png" alt="Оплатишка">
+          <div class="link-big">Твоя реферальная ссылка</div>
+          <div class="link-sub">Делись — и зарабатывай с каждой оплаты в твоей сети</div>
+          <div class="link-box">
+            <span class="link-url">oplatishka.ru/r/k7m2p9</span>
+            <button class="btn-comic" onclick="copyLink(this)" style="padding:7px 14px;font-size:13px">Скопировать</button>
+          </div>
+          <div class="share-row">
+            <button class="share-btn">✈️ Telegram</button>
+            <button class="share-btn">💬 WhatsApp</button>
+            <button class="share-btn">📸 Stories</button>
+            <button class="share-btn">🔗 Ссылка</button>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">💸 Сколько ты получаешь</div>
+            <div class="rate-row">
+              <span class="rate-lv">Кто оплатил по твоей ссылке</span>
+              <span class="rate-val" style="color:var(--lv1)">6%</span>
+            </div>
+            <div class="rate-row">
+              <span class="rate-lv">Кого пригласили твои рефералы</span>
+              <span class="rate-val" style="color:var(--lv2)">2%</span>
+            </div>
+            <div class="rate-row">
+              <span class="rate-lv">Третье поколение сети</span>
+              <span class="rate-val" style="color:var(--lv3)">1%</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">📈 Статистика ссылки</div>
+            <div class="hstat" style="margin-bottom:10px">
+              <div class="hstat-label">Переходов по ссылке</div>
+              <div class="hstat-value">247</div>
+            </div>
+            <div class="hstat">
+              <div class="hstat-label">Зарегистрировались</div>
+              <div class="hstat-value">23 <span style="font-size:14px;color:var(--success);font-family:var(--font-body)">9.3%</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════ HISTORY ══════ -->
+      <section class="screen" id="screen-history">
+        <div class="tabs">
+          <button class="tab-btn active" onclick="tab(this)">Все</button>
+          <button class="tab-btn" onclick="tab(this)">Начисления</button>
+          <button class="tab-btn" onclick="tab(this)">Бонусы</button>
+          <button class="tab-btn" onclick="tab(this)">Выводы</button>
+        </div>
+        <div class="tx-list">
+          <div class="tx-item"><div class="tx-avatar" style="background:color-mix(in srgb,var(--lv1) 22%,transparent);color:var(--lv1)">МА</div><div class="tx-info"><div class="tx-name">Михаил А.</div><div class="tx-meta">Ур. 1 · Netflix $15.99</div></div><div class="tx-right"><div class="tx-earn">+$0.96</div><div class="tx-date">28 июн, 14:32</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:color-mix(in srgb,var(--lv2) 22%,transparent);color:var(--lv2)">ОК</div><div class="tx-info"><div class="tx-name">Ольга К.</div><div class="tx-meta">Ур. 2 · Spotify $9.99</div></div><div class="tx-right"><div class="tx-earn">+$0.20</div><div class="tx-date">27 июн, 09:15</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:color-mix(in srgb,var(--lv1) 22%,transparent);color:var(--lv1)">ДВ</div><div class="tx-info"><div class="tx-name">Дмитрий В.</div><div class="tx-meta">Ур. 1 · ChatGPT Plus $20</div></div><div class="tx-right"><div class="tx-earn">+$1.20</div><div class="tx-date">25 июн, 18:40</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:color-mix(in srgb,var(--lv3) 22%,transparent);color:var(--lv3)">СМ</div><div class="tx-info"><div class="tx-name">Сергей М.</div><div class="tx-meta">Ур. 3 · Adobe CC $54.99</div></div><div class="tx-right"><div class="tx-earn">+$0.55</div><div class="tx-date">24 июн, 11:20</div></div></div>
+          <div class="tx-item" style="border-color:var(--success)"><div class="tx-avatar" style="background:color-mix(in srgb,var(--success) 22%,transparent);color:var(--success)">🎁</div><div class="tx-info"><div class="tx-name">Серийный бонус</div><div class="tx-meta">3 месяца подряд · Круг 2</div></div><div class="tx-right"><div class="tx-earn">+$75.00</div><div class="tx-date">1 июн, 00:01</div></div></div>
+          <div class="tx-item"><div class="tx-avatar" style="background:color-mix(in srgb,var(--lv1) 22%,transparent);color:var(--lv1)">НП</div><div class="tx-info"><div class="tx-name">Наталья П.</div><div class="tx-meta">Ур. 1 · YouTube Premium $13.99</div></div><div class="tx-right"><div class="tx-earn">+$0.84</div><div class="tx-date">23 июн, 16:05</div></div></div>
+          <div class="tx-item" style="opacity:.7"><div class="tx-avatar" style="background:var(--surface-3);color:var(--text-dim)">↑</div><div class="tx-info"><div class="tx-name">Вывод средств</div><div class="tx-meta">USDT · TRC-20</div></div><div class="tx-right"><div class="tx-earn out">−$200.00</div><div class="tx-date">20 июн, 14:00</div></div></div>
+        </div>
+      </section>
+
+      <!-- ══════ STATS ══════ -->
+      <section class="screen" id="screen-stats">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-title">💰 Общий доход</div>
+            <div class="stat-big" style="color:var(--success)">$876</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px">за всё время</div>
+            <div class="bars" id="income-bars"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">🌱 Рост сети</div>
+            <div class="stat-big" style="color:var(--lv1)">76</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px">всего рефералов</div>
+            <div class="bars" id="net-bars"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📅 Доход по месяцам</div>
+          <div class="month-row"><span class="m">Янв</span><div class="month-track"><div class="month-fill" style="width:20%;background:var(--teal)"></div></div><span class="v">$48</span></div>
+          <div class="month-row"><span class="m">Фев</span><div class="month-track"><div class="month-fill" style="width:30%;background:var(--teal)"></div></div><span class="v">$72</span></div>
+          <div class="month-row"><span class="m">Мар</span><div class="month-track"><div class="month-fill" style="width:35%;background:var(--teal)"></div></div><span class="v">$84</span></div>
+          <div class="month-row"><span class="m">Апр</span><div class="month-track"><div class="month-fill" style="width:42%;background:var(--teal)"></div></div><span class="v">$101</span></div>
+          <div class="month-row"><span class="m">Май</span><div class="month-track"><div class="month-fill" style="width:52%;background:var(--teal-light)"></div></div><span class="v">$125</span></div>
+          <div class="month-row"><span class="m" style="color:var(--teal-light);font-weight:600">Июн</span><div class="month-track"><div class="month-fill" style="width:62%;background:repeating-linear-gradient(45deg,var(--teal) 0 8px,var(--teal-light) 8px 16px)"></div></div><span class="v" style="color:var(--success);font-weight:700">$148</span></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ════ MODAL ════ -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <div class="modal-title">Вывести деньги</div>
+    <div class="modal-sub">Средства поступят в течение 1–3 рабочих дней</div>
+    <div class="modal-balance">
+      <div class="modal-balance-label">Доступно к выводу</div>
+      <div class="modal-balance-value">$312.45</div>
+    </div>
+    <div class="modal-input-label">Сумма вывода (минимум $10)</div>
+    <input class="modal-input" type="number" value="100">
+    <div class="modal-btns">
+      <button class="btn-comic surface" onclick="closeModal()">Отмена</button>
+      <button class="btn-comic" onclick="confirmWithdraw()">Вывести</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">✓ Заявка на вывод отправлена</div>
+<div class="mobile-note">≤920px → нижняя навигация (мини-апп)</div>
+
+<script>
+const TITLES = { dashboard:'Дашборд', network:'Моя сеть', link:'Моя ссылка', history:'История', stats:'Статистика' };
+
+function show(name, btn) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  document.getElementById('topbar-title').textContent = TITLES[name];
+  if (name === 'dashboard') animateHero();
+}
+function navItem(name) { return document.querySelector('.nav-item[onclick*="' + name + '"]'); }
+function tab(btn) { btn.parentNode.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); }
+
+function openModal() { document.getElementById('modal').classList.add('open'); }
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+function confirmWithdraw() {
+  closeModal();
+  const t = document.getElementById('toast');
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2600);
+}
+function copyLink(btn) {
+  const o = btn.textContent;
+  btn.textContent = '✓ Готово';
+  setTimeout(() => { btn.textContent = o; }, 1800);
+}
+function toggleTheme() {
+  const h = document.documentElement;
+  h.setAttribute('data-theme', h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+}
+
+function animateHero() {
+  const p = document.getElementById('hero-prog');
+  if (p) { p.style.width = '0'; setTimeout(() => { p.style.width = '36%'; }, 120); }
+}
+
+function buildBars(id, data, color) {
+  const c = document.getElementById(id); if (!c) return;
+  c.innerHTML = '';
+  const months = ['Янв','Фев','Мар','Апр','Май','Июн'];
+  const max = Math.max(...data);
+  data.forEach((v, i) => {
+    const col = document.createElement('div');
+    col.className = 'bar-col';
+    const h = Math.round((v / max) * 64) + 8;
+    const c2 = i === data.length - 1 ? color : 'color-mix(in srgb,' + color + ' ' + (40 + i*10) + '%, transparent)';
+    col.innerHTML = '<div class="bar-val">' + v + '</div><div class="bar" style="height:' + h + 'px;background:' + c2 + '"></div><div class="bar-label">' + months[i] + '</div>';
+    c.appendChild(col);
+  });
+}
+
+window.addEventListener('load', () => {
+  buildBars('income-bars', [48,72,84,101,125,148], 'var(--success)');
+  buildBars('net-bars', [5,12,20,38,58,76], 'var(--lv1)');
+  const h = location.hash.replace('#', '');
+  if (h && TITLES[h]) show(h, navItem(h)); else animateHero();
+});
+</script>
+</body>
+</html>

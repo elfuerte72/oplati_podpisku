@@ -54,9 +54,49 @@ export {
 export { pingDb } from './health.ts';
 
 export {
+  generateReferralCode,
+  resolveReferralCode,
+  ensureReferralCode,
+  setReferrerOnce,
+  getReferralAncestors,
+  type SetReferrerResult,
+} from './referrals.ts';
+
+export {
+  getPartnerProfile,
+  insertCommissionAccruals,
+  getReferralBalanceUsdCents,
+  orderHasAccruals,
+  findOrdersMissingReferralAccruals,
+  type PartnerProfile,
+  type CommissionAccrualInsert,
+  type OrderMissingAccrual,
+} from './referral-accruals.ts';
+
+export {
+  getReferralNetwork,
+  getReferralIncomeByLevel,
+  getReferralEarnings,
+  getReferralMonthlyIncome,
+  getNewReferralsThisMonth,
+  getReferralLedger,
+  getReferralPayouts,
+  createReferralPayout,
+  type CreateReferralPayoutResult,
+  type ReferralNetworkLevel,
+  type ReferralLevelIncome,
+  type ReferralEarnings,
+  type ReferralMonthlyIncomePoint,
+  type ReferralNewReferrals,
+  type ReferralLedgerRow,
+  type ReferralPayoutRow,
+} from './referral-cabinet.ts';
+
+export {
   createCard,
   findActiveByUserId,
   findCardsByUserIdForCabinet,
+  findCardByIdForUser,
   findRecyclableCard,
   markIdle,
   markRecycled,
