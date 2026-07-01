@@ -9,6 +9,8 @@
 > **Программа на проде ВКЛЮЧЕНА — мягкий старт (2026-06-30):** `REFERRAL_ENABLED=1` задан на Production scope. Работают захват рефералов, начисления комиссий, кабинет (сеть/баланс/код, заявки на вывод). **НЕ работают** (ждут этапов C/E): автоповышение кругов (все на «Клиент» 4% — нет крона C) и **исполнение выплат** (заявки копятся, деньги НЕ уходят — нет E + не выбран D-REF-6). Безопасно (всё аддитивно, деньги не двигаются до E). Выключатель — убрать `REFERRAL_ENABLED` с Production scope.
 > Решения `D-REF-*` зафиксированы в [`SPEC.md`](SPEC.md) §2. **D-REF-1 подтверждён владельцем 2026-06-30** (6% «Партнёр» = оборот $2000). Открыт только **D-REF-6** (способ выплат) — нужен к Этапу E.
 > **Статус (2026-07-01): Этап C реализован в коде** (прогрессия кругов + спринт/серийные бонусы + командный множитель + уведомления — месячный крон `referral-rollup`). Все тесты зелёные (types 72, web 217), typecheck/lint чистые. **Осталось операционно по C:** применить миграцию `0015` к общей БД и задеплоить (крон стоит на 1-е число месяца). **ОСТАЁТСЯ по программе:** **Этап E (исполнение выплат + антифрод)** — блокирован решением **D-REF-6** (способ выплат).
+>
+> **Статус (2026-07-01, позже): Этап C задеплоен на прод** (PR #36, миграция `0015` применена к общей БД). **Этап E — каркас (E1) реализован в коде** (PR #38): способы выплат `card_rub`/`crypto_usdt`, комиссия вывода 3.5%/1% (`computePayoutFee`), маскирование PAN + отсев Луна (CVV не собираем), схемы реквизитов input→stored, машина статусов заявки, `transitionReferralPayout`, `PayoutExecutor` + `MockPayoutExecutor` + чистая оркестрация `settlePayout`, миграция `0016` (колонки `method`/`fee_usd_cents`). Тесты: types 91, web 224; typecheck/lint чисто. **D-REF-6 частично решён владельцем** (см. ниже). **ОСТАЁТСЯ по E:** реальный `PayoutExecutor` (нужен ответ «кто выплачивает» + payout-API L&P), форма реквизитов в кабинете, подключение `settlePayout` к операторскому endpoint/крону, антифрод (E3).
 
 ## Как я понял правила (модель)
 
@@ -60,7 +62,7 @@
 - **D-REF-3 — окно оборота для круга.** Месячное (раздел 4: «$X/мес»), статус — навсегда (храповик). Подтвердить, что засчитывается оборот за календарный месяц.
 - **D-REF-4 — валюта базы начисления.** USD (`original_amount`) vs RUB (`amount_rub`). *Рекомендация:* USD-центы (документ в долларах). Подтвердить.
 - **D-REF-5 — «активный реферал».** Определение для спринта «10 новых активных» и командного множителя. *Рекомендация:* реферал с ≥1 оплаченным заказом (`paid`/`in_fulfillment`/`completed`). Подтвердить.
-- **D-REF-6 — способ и валюта выплат.** Куда выводим $10+? Крипто (USDT)? На карту? Вручную оператором или через провайдера? *За владельцем* — определяет таблицу `referral_payouts` и интеграцию (Этап E).
+- **D-REF-6 — способ и валюта выплат. 🟡 ЧАСТИЧНО РЕШЕНО ВЛАДЕЛЬЦЕМ (2026-07-01).** Выплаты — **в рублях (на карту)** ИЛИ **в крипте (USDT)**. Комиссия вывода: **3.5%** карта / **1%** крипта (удерживается из брутто-суммы заявки). Для карты собираем **только номер карты (PAN) + ФИО** — «св коды» в переписке = номер карты (сленг), CVV НЕ собираем (для выплаты не нужен, PCI-запрет; см. `referral-payout.ts`). **ОТКРЫТО:** кто исполняет выплату — есть ли у Love&Pay payout-API (контракт не выдумываем, ждём подтверждения владельца/живого вызова) + сеть USDT (дефолт TRC20). Пока `PayoutExecutor` = mock, реальный перевод денег не идёт. Это определяет реализацию `referral_payouts.destination` (уже в коде: schema+маска) и адаптер исполнения.
 - **D-REF-7 — временный +1% буст.** Применяется к L1 или ко всей цепочке? Один календарный месяц. *Рекомендация:* +1% к L1-ставке beneficiary на следующий месяц.
 - **D-REF-8 — командный множитель.** L2-ставка 2%→2.5% — на каком тарифе действует (только Партнёр/Топ, у кого L2=2%) и пересчитывается ли ежемесячно. *Рекомендация:* пересчёт в месячном кроне, флаг на партнёре.
 - **D-REF-9 — ретроактивность / старт.** Стартуем с пустой сетью: существующие `users` без реферера, дерево строится только из новых переходов по ссылкам. Привязывать ли задним числом существующих клиентов к пригласившим — *рекомендация:* нет. Подтвердить.
@@ -74,14 +76,14 @@
 - **`users`** — расширить: `referred_by uuid` (self-FK, nullable, **immutable** после установки), `referral_code text UNIQUE` (короткий, генерируется при создании партнёрского профиля или лениво). Захват реферера — при создании пользователя.
 - **`referral_partners`** — партнёрский профиль (1:1 с user, ленивое создание): `user_id PK`, `current_circle smallint` (0=Клиент..3), `locked_rate_l1_bps integer` (зафиксированная ставка храповика, в bps), `boost_until date` + `boost_rate_bps` (временный +1%), `team_multiplier boolean` (5+ активных L2), `suspended boolean` (антифрод-блок), `created_at`.
 - **`referral_accruals`** — append-only ledger начислений: `id`, `beneficiary_user_id`, `source_user_id` (кто оплатил; null для бонусов), `order_id`/`payment_id` (null для бонусов), `level smallint` (1..3; 0 для бонусов), `kind` enum (`commission` | `circle_bonus` | `sprint_new_refs` | `sprint_turnover_boost` | `serial_bonus`), `rate_bps integer`, `amount_usd_cents integer`, `status` enum (`accrued` | `reversed`), `created_at`. **`UNIQUE(payment_id, beneficiary_user_id, level)`** для `commission` (идемпотентность).
-- **`referral_payouts`** — заявки на вывод: `id`, `user_id`, `amount_usd_cents`, `status` enum (`requested` | `processing` | `paid` | `rejected`), `destination jsonb` (зависит от D-REF-6), `requested_at`, `settled_at`. Баланс к выводу = ledger − выплаты.
+- **`referral_payouts`** — заявки на вывод: `id`, `user_id`, `amount_usd_cents` (брутто), `status` enum (`requested` | `processing` | `paid` | `rejected`), `method` enum (`card_rub` | `crypto_usdt`, nullable — E1), `fee_usd_cents` (удержанная комиссия, nullable — E1), `destination jsonb` (маска PAN+ФИО / крипто-адрес, БЕЗ полного PAN и CVV), `requested_at`, `settled_at`. Баланс к выводу = ledger − выплаты; партнёр получает `amount − fee`.
 - **`referral_monthly_stats`** — агрегаты для прогрессии (пишет месячный крон): `user_id`, `month date`, `network_turnover_usd_cents`, `new_active_referrals`, `plan_met boolean`, `computed_at`. `PK(user_id, month)`.
 
 ## План работ (этапы)
 
 ### Этап 0 — решения владельца (вне кода) — ✅ почти все
 - [x] `D-REF-1..5, 7..11` зафиксированы (D-REF-1 подтверждён владельцем 2026-06-30).
-- [ ] **D-REF-6 (способ и валюта выплат)** — единственный открытый, нужен к Этапу E.
+- [~] **D-REF-6 (способ и валюта выплат)** — 🟡 частично решён (2026-07-01): RUB-карта / крипта USDT, комиссия 3.5%/1%, только PAN+ФИО (без CVV). **Открыто:** кто исполняет выплату (payout-API L&P?) + сеть USDT.
 
 ### Этап A — фундамент: захват сети + реферальный код (без денег) — ✅ СДЕЛАНО
 
@@ -168,13 +170,27 @@
 - [x] **Кнопка «Партнёрская программа» на сайте** (под личным профилем): десктоп → `/partner`, мобильный браузер → редирект в Telegram-бота (server-side UA).
 - [x] Merge в `main` + прод-деплой; рефералка на проде дремлет (флаг off).
 
-### Этап E — выплаты + антифрод — 🔜 ОСТАЁТСЯ (нужен D-REF-6)
-- [ ] **Решение D-REF-6** (способ/валюта выплат: крипта USDT / карта / вручную) — определяет `referral_payouts.destination` и интеграцию.
-- [ ] Обработка выплат: ручной оператор или провайдер → переходы статуса `referral_payouts` (`requested→processing→paid|rejected`), отражение в балансе.
+### Этап E — выплаты + антифрод — 🟡 В РАБОТЕ (E1 каркас сделан; E2/E3 ждут D-REF-6)
+
+**E1 — каркас (mock-исполнитель, движения денег нет) — ✅ СДЕЛАНО (PR #38, 2026-07-01)**
+
+> Чистое ядро — `packages/types/src/referral-payout.ts`: способы `card_rub`/`crypto_usdt`, комиссия вывода `computePayoutFee` (3.5%/1%, floor, инвариант `net+fee=gross`), `maskPan`+`isValidLuhn` (PAN маскируется на входе, CVV не собираем — PCI), схемы `payoutDestinationInput/Stored` + `toStoredPayoutDestination`, машина статусов `PAYOUT_ALLOWED_TRANSITIONS`. БД — миграция `0016` (enum `referral_payout_method`, колонки `method`/`fee_usd_cents`, nullable). Репозиторий — `createReferralPayout` принимает method/fee/destination, `transitionReferralPayout` (условный UPDATE, `settled_at` на терминале). Исполнитель — `apps/web/lib/referral/payout-executor.ts`: интерфейс `PayoutExecutor` + `MockPayoutExecutor` + чистая оркестрация `settlePayout` (клейм `requested→processing`, execute, `→paid|rejected`). Врезка — `requestReferralPayout`+route принимают optional `destination`. Тесты: types 91, web 224.
+
+- [x] Способы/комиссия/маскирование/схемы/машина статусов в `@oplati/types` (+ 19 тестов).
+- [x] Миграция `0016`: enum + колонки `method`/`fee_usd_cents` (применена к общей БД).
+- [x] `createReferralPayout` пишет method/fee/destination; `transitionReferralPayout`.
+- [x] `PayoutExecutor` + mock + `settlePayout` (+ 4 теста); врезка `destination` в запрос (+ 2 теста).
+
+**E2 — реальное исполнение — 🔜 ОСТАЁТСЯ (нужен ответ «кто выплачивает»)**
+- [ ] Реальный `PayoutExecutor` вместо mock: L&P payout-API (если есть — контракт снять живым вызовом/докой) для `card_rub` и/или крипто-провайдер для `crypto_usdt`.
+- [ ] Форма реквизитов в кабинете (`PartnerCabinet`): ввод карта (PAN+ФИО) / крипто-адрес → `destination` в `POST /api/cabinet/referral` (бэкенд уже принимает).
+- [ ] Подключить `settlePayout` к операторскому endpoint или крону (сейчас нигде не вызывается — семафор), отражение переходов в балансе.
+
+**E3 — антифрод + операционка — 🔜 ОСТАЁТСЯ**
 - [ ] Антифрод: `suspended`-флаг → исключение из начисления + заморозка вывода (уже учтён в коде A/B/D); reversal начислений (append `reversed` строк); clawback.
 - [ ] Мониторинг накрутки: эвристики (кластеры по IP, всплески регистраций, возвраты платежей) → Sentry-алёрты; админ-действия block/unblock/reverse.
 - [ ] Уведомление об изменении условий (за 30 дней) — шаблон в боте + кабинете.
-- [ ] Обновить `docs/architecture.md` и `docs/CHANGELOG.md`.
+- [x] Обновить `docs/architecture.md` и `docs/CHANGELOG.md` (каркас E1 — 2026-07-01).
 
 ### Этап F — боевой запуск (после C+E)
 - [ ] Задать `REFERRAL_ENABLED=1` на **Production** scope в Vercel + redeploy.
@@ -199,5 +215,6 @@
 | `REFERRAL_ENABLED` | глобальный выключатель программы | ✅ в коде (default off). **На Production задан `=1` (мягкий старт 2026-06-30)** — захват/начисления/кабинет живут; прогрессия и выплаты ждут C/E. Также `=1` на Preview (ветка `feat/referral-program`). Выключить = `vercel env rm REFERRAL_ENABLED production` |
 | `REFERRAL_MIN_PAYOUT_USD_CENTS` | минимум на вывод | ✅ в коде, default `1000` ($10) |
 | (ставки/пороги/бонусы) | конфиг тарифов и кругов | ✅ `REFERRAL_RATE_TABLE` в `@oplati/types` (не env) |
+| (комиссия вывода) | 3.5% карта / 1% крипта | ✅ `REFERRAL_PAYOUT_FEE_BPS` в `@oplati/types` (не env, Этап E) |
 
 > Имя бота для реферальных ссылок (`t.me/<bot>?start=ref_<code>`) берётся из существующей конфигурации Telegram; отдельный env не нужен.
