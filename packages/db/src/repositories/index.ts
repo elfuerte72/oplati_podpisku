@@ -93,6 +93,16 @@ export {
 } from './referral-cabinet.ts';
 
 export {
+  listReferralRollupCandidates,
+  getMonthlyRollupInput,
+  getPriorConsecutiveMetMonths,
+  applyMonthlyProgression,
+  type MonthlyRollupInput,
+  type ApplyMonthlyProgressionParams,
+  type ApplyMonthlyProgressionResult,
+} from './referral-progression.ts';
+
+export {
   createCard,
   findActiveByUserId,
   findCardsByUserIdForCabinet,

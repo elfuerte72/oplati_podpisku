@@ -265,7 +265,7 @@ function Dashboard({ snap, onScreen }: { snap: ReferralSnapshot; onScreen: (s: S
         <div className="grid gap-5 md:grid-cols-[1fr_168px]">
           <div>
             <span className="inline-flex -rotate-2 items-center gap-2 rounded-[10px] border-[3px] border-[var(--color-teal-light)] px-3 py-1 font-display text-[13px] font-bold uppercase tracking-wide text-[var(--color-teal-light)]">
-              ⬤ Круг {snap.circle.circle} · {snap.circle.label}
+              ⬤ Статус · {snap.circle.label}
             </span>
             <div className="mt-3 font-display text-[46px] font-bold leading-none">
               {formatUsd(snap.progress.networkTurnoverThisMonthUsdCents)}
@@ -451,7 +451,7 @@ function Network({ snap }: { snap: ReferralSnapshot }) {
   return (
     <div className="space-y-4">
       <NetworkCards snap={snap} />
-      <SectionHead title="Путь к следующему кругу" />
+      <SectionHead title="Путь к следующему статусу" />
       <CircleTimeline snap={snap} />
     </div>
   );
@@ -495,8 +495,8 @@ function NetCard({ lvl, compact }: { lvl: ReferralLevelView; compact?: boolean }
 }
 
 function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
-  // Достигнутые круги (≤ текущего) + следующий как pending. Бонусы/маркетинг —
-  // из таблицы кругов на стороне снапшота недоступны детально, показываем суть.
+  // Достигнутые статусы (≤ текущего) + следующий как pending. Бонусы/маркетинг —
+  // из таблицы статусов на стороне снапшота недоступны детально, показываем суть.
   const items: { n: number; label: string; done: boolean; rate: string; note: string }[] = [];
   for (let c = 1; c <= 3; c++) {
     const done = c <= snap.circle.circle;
@@ -505,7 +505,7 @@ function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
     items.push({
       n: c,
       label:
-        c === 1 ? 'Круг 1 · Старт' : c === 2 ? 'Круг 2 · Партнёр' : 'Круг 3 · Топ-партнёр',
+        c === 1 ? 'Статус 1 · Старт' : c === 2 ? 'Статус 2 · Партнёр' : 'Статус 3 · Топ-партнёр',
       done,
       rate: c === 1 ? '4%' : c === 2 ? '6%' : '7%',
       note: done ? 'зафиксирована навсегда' : 'осталось набрать оборот',
@@ -607,7 +607,7 @@ function LinkScreen({ snap, onCopied }: { snap: ReferralSnapshot; onCopied: () =
           ))}
         </section>
         <section className={`p-5 ${CARD}`}>
-          <div className="mb-3.5 font-display text-[14px] font-bold">🏆 Твой круг</div>
+          <div className="mb-3.5 font-display text-[14px] font-bold">🏆 Твой статус</div>
           <div className={`mb-2.5 p-3 ${SOFT}`}>
             <div className="font-body text-[11px] text-[var(--text-muted)]">Текущий статус</div>
             <div className="font-display text-[22px] font-bold">{snap.circle.label}</div>
