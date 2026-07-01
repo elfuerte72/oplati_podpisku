@@ -91,6 +91,11 @@ export async function rollupReferralMonth(opts?: { now?: Date }): Promise<Rollup
   let upgrades = 0;
   let errors = 0;
 
+  // Кандидаты обрабатываются последовательно (≈4 round-trip'а на партнёра). При
+  // масштабе проекта (~50 заказов/день → десятки партнёров с сетью) это укладывается
+  // в 300s maxDuration с большим запасом, а изоляция ошибок и per-partner
+  // идемпотентность-транзакция читаются проще, чем батч. Наблюдение перфа (Greptile
+  // P2): при росте до сотен+ партнёров — вернуться к батчингу reads/apply.
   for (const userId of candidates) {
     try {
       const [input, profile, prior] = await Promise.all([
@@ -137,7 +142,7 @@ export async function rollupReferralMonth(opts?: { now?: Date }): Promise<Rollup
         if (plan.circleUpgraded) upgrades++;
         // boostGranted оценивается независимо (оборот ≥150% порога) и может быть
         // true без повышения/бонусов (партнёр уже на макс. статусе) — иначе
-        // партнёр получил бы +1%, но молча, без уведомления (находка CodeRabbit).
+        // партнёр получил бы +1%, но молча, без уведомления (находка CodeRabbit + Greptile P1).
         if (plan.circleUpgraded || plan.bonuses.length > 0 || plan.boostGranted) {
           await notifyPartnerProgression(db, userId, plan);
         }
