@@ -1,10 +1,6 @@
 import 'server-only';
 
-import {
-  canTransitionPayout,
-  type PayoutDestinationStored,
-  type PayoutStatus,
-} from '@oplati/types';
+import { type PayoutDestinationStored, type PayoutStatus } from '@oplati/types';
 
 /**
  * Исполнение заявки на вывод — СЕМАФОР Этапа E. Реальный адаптер (Love&Pay
@@ -77,16 +73,30 @@ export async function settlePayout(
 ): Promise<SettlePayoutOutcome> {
   const { executor, transition } = deps;
 
-  if (!canTransitionPayout('requested', 'processing')) {
-    // Инвариант машины статусов — не должен случиться; страхуемся от регресса.
-    throw new Error('settlePayout: переход requested→processing запрещён машиной статусов');
-  }
+  // Атомарный клейм requested→processing (защита от двойного исполнения:
+  // проигравший клейм видит applied=false → skipped). Все переходы здесь —
+  // статические валидные литералы (машина статусов покрыта тестами @oplati/types);
+  // БД-переход дополнительно форсит WHERE status=from.
   const claimed = await transition(input.payoutId, 'requested', 'processing');
   if (!claimed.applied) {
     return { status: 'skipped', reason: 'not_claimable' };
   }
 
-  const result = await executor.execute(input);
+  let result: PayoutExecutionResult;
+  try {
+    result = await executor.execute(input);
+  } catch (err) {
+    // Исполнитель БРОСИЛ вместо контрактного {ok:false} — неожиданный сбой. Не
+    // оставляем заявку висеть в 'processing': переводим в 'rejected' (освобождает
+    // сумму в балансе — учитываются только requested|processing|paid — партнёр
+    // может повторить), затем пробрасываем ошибку для Sentry (правило проекта:
+    // неожиданное не глотаем). ВНИМАНИЕ E2: реальный исполнитель обязан быть
+    // идемпотентным (ключ выплаты на стороне провайдера), иначе ретрай после
+    // неоднозначного сбоя («ушло, но упал ответ») задвоит перевод.
+    await transition(input.payoutId, 'processing', 'rejected');
+    throw err;
+  }
+
   if (result.ok) {
     await transition(input.payoutId, 'processing', 'paid');
     return { status: 'paid', providerRef: result.providerRef };

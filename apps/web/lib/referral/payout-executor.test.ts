@@ -78,4 +78,26 @@ describe('settlePayout', () => {
       { from: 'processing', to: 'rejected' },
     ]);
   });
+
+  it('исполнитель БРОСИЛ → processing→rejected и ошибка пробрасывается (не застревает в processing)', async () => {
+    const { fn, calls } = makeTransition(true);
+    const boom = new Error('provider crashed');
+    const executor: PayoutExecutor = {
+      kind: 'throwing',
+      execute: vi.fn(async () => {
+        throw boom;
+      }),
+    };
+    await expect(
+      settlePayout(
+        { payoutId: 'p1', netUsdCents: 1930, destination },
+        { executor, transition: fn },
+      ),
+    ).rejects.toThrow('provider crashed');
+    // Заявка не осталась в processing: перед пробросом переведена в rejected.
+    expect(calls).toEqual([
+      { from: 'requested', to: 'processing' },
+      { from: 'processing', to: 'rejected' },
+    ]);
+  });
 });

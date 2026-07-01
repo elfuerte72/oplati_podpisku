@@ -13,7 +13,7 @@
 - **Каркас выплат партнёрам** (mock-исполнитель, движения денег НЕТ). Чистое ядро `packages/types/src/referral-payout.ts`: способы `card_rub`/`crypto_usdt`, комиссия вывода `computePayoutFee` (3.5% карта / 1% крипта, floor, удержание из брутто), маскирование PAN `maskPan` + отсев `isValidLuhn` (**CVV не собираем** — для выплаты не нужен, PCI-запрет), схемы реквизитов `payoutDestinationInput→Stored` (полный PAN не хранится/не логируется), машина статусов заявки `PAYOUT_ALLOWED_TRANSITIONS`.
 - Миграция `0016`: enum `referral_payout_method` + колонки `method`/`fee_usd_cents` в `referral_payouts` (nullable). Применена к общей БД.
 - `transitionReferralPayout` (условный UPDATE `requested→processing→paid|rejected`, `settled_at` на терминале). `PayoutExecutor` + `MockPayoutExecutor` + чистая оркестрация `settlePayout` (`apps/web/lib/referral/payout-executor.ts`). `requestReferralPayout` + `POST /api/cabinet/referral` принимают опциональные реквизиты.
-- Тесты: types 91 (+19), web 224 (+6).
+- Тесты: types 91 (+19), web 225 (+7).
 
 ### Decided
 
