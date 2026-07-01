@@ -135,7 +135,10 @@ export async function rollupReferralMonth(opts?: { now?: Date }): Promise<Rollup
         applied++;
         bonuses += res.bonusesInserted;
         if (plan.circleUpgraded) upgrades++;
-        if (plan.circleUpgraded || plan.bonuses.length > 0) {
+        // boostGranted оценивается независимо (оборот ≥150% порога) и может быть
+        // true без повышения/бонусов (партнёр уже на макс. статусе) — иначе
+        // партнёр получил бы +1%, но молча, без уведомления (находка CodeRabbit).
+        if (plan.circleUpgraded || plan.bonuses.length > 0 || plan.boostGranted) {
           await notifyPartnerProgression(db, userId, plan);
         }
       }

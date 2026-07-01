@@ -10,9 +10,11 @@ vi.mock('../logger.ts', () => ({
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 type RollupInput = { networkTurnoverUsdCents: number; newActiveReferrals: number; activeL2Count: number };
+type Profile = { circle: number; lockedRateL1Bps: number; teamMultiplier: boolean; boostBps: number; suspended: boolean };
 const dbState = vi.hoisted(() => ({
   candidates: [] as string[],
   input: {} as Record<string, RollupInput>,
+  profile: null as Profile | null,
   telegramId: null as string | null,
   applied: true,
   throwInputFor: new Set<string>(),
@@ -25,7 +27,7 @@ vi.mock('@oplati/db', () => ({
     if (dbState.throwInputFor.has(userId)) throw new Error('boom');
     return dbState.input[userId] ?? { networkTurnoverUsdCents: 0, newActiveReferrals: 0, activeL2Count: 0 };
   }),
-  getPartnerProfile: vi.fn(async () => null),
+  getPartnerProfile: vi.fn(async () => dbState.profile),
   getPriorConsecutiveMetMonths: vi.fn(async () => 0),
   applyMonthlyProgression: vi.fn(async () =>
     dbState.applied ? { applied: true, bonusesInserted: 1 } : { applied: false },
@@ -63,6 +65,7 @@ describe('rollupReferralMonth', () => {
     hoisted.env.REFERRAL_ENABLED = true;
     dbState.candidates = [];
     dbState.input = {};
+    dbState.profile = null;
     dbState.telegramId = null;
     dbState.applied = true;
     dbState.throwInputFor = new Set();
@@ -113,6 +116,19 @@ describe('rollupReferralMonth', () => {
     expect(res.applied).toBe(1);
     expect(res.upgrades).toBe(0);
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('только буст (макс. статус, без бонусов) — уведомляет о бусте', async () => {
+    // Партнёр уже на круге 3 (Топ), оборот ≥150% порога ($5000×1.5 = $7500),
+    // без новых активных и не серийный месяц → boostGranted, но не upgrade/бонус.
+    dbState.candidates = ['u1'];
+    dbState.profile = { circle: 3, lockedRateL1Bps: 700, teamMultiplier: false, boostBps: 0, suspended: false };
+    dbState.input = { u1: { networkTurnoverUsdCents: 750_000, newActiveReferrals: 0, activeL2Count: 0 } };
+    dbState.telegramId = '12345';
+    const res = await rollupReferralMonth({ now });
+    expect(res.upgrades).toBe(0); // на макс. статусе повышения нет
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('12345', expect.stringContaining('буст'));
   });
 
   it('ошибка по одному партнёру не валит прогон', async () => {
