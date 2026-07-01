@@ -133,10 +133,12 @@ export function ProfilePanel({
         {/* Маскот — свободно, без плашки; статичный, реагирует только сменой позы */}
         <div className="relative flex flex-col items-center gap-1 pt-1 lg:pt-3">
           <Mascot pose={pose} size={160} />
-          <span className="font-display text-lg font-bold text-[var(--text)]">Оплатишка</span>
-          <span className="font-body text-xs text-[var(--text-muted)]" role="status">
-            {typing ? 'печатает…' : 'твой помощник по оплате'}
-          </span>
+          <span className="wordmark mt-1 font-display text-2xl font-bold leading-none">Оплатишка</span>
+          {typing && (
+            <span className="font-body text-xs text-[var(--text-muted)]" role="status">
+              печатает…
+            </span>
+          )}
         </div>
 
         {/* Личный профиль */}

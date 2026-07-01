@@ -59,6 +59,14 @@ export function IntroOverlay() {
     } catch {
       // не записалось — покажем интро ещё раз в следующий визит, не страшно
     }
+    // Снимаем анти-FOUC-флаг (см. intro-init в layout + правило в globals.css):
+    // shell был скрыт под оверлеем — теперь показываем его. Ставится флаг только
+    // первому визиту, поэтому у вернувшихся снимать нечего.
+    try {
+      document.documentElement.removeAttribute('data-intro-pending');
+    } catch {
+      // атрибут не критичен — не роняем закрытие интро
+    }
     setDismissed(true);
   }, []);
 

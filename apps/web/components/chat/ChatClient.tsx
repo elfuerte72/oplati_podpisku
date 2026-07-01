@@ -475,7 +475,7 @@ export function ChatClient() {
   };
 
   return (
-    <div className="flex h-[100dvh] overflow-hidden bg-[var(--bg)]">
+    <div className="app-shell flex h-[100dvh] overflow-hidden bg-[var(--bg)]">
       {celebrating && <Confetti />}
 
       <LeftNav />
@@ -486,19 +486,11 @@ export function ChatClient() {
         <header className="shrink-0 border-b-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
           <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">
             <div className="relative flex items-center gap-3">
-              {/* Маскот в шапке — только когда правая панель скрыта (один видимый маскот). */}
+              {/* Маскот в шапке — только на мобильном (на десктопе он в правой панели).
+                  Текст-заголовок убран по фидбеку: имя живёт в правой панели-карточке. */}
               <span className="lg:hidden">
                 <Mascot pose={pose} size={44} />
               </span>
-              <div className="leading-tight">
-                <span className="block font-display text-lg font-bold text-[var(--text)]">
-                  Оплатишка
-                </span>
-                <span className="flex items-center gap-1.5 font-body text-xs text-[var(--text-muted)]">
-                  <span className="h-2 w-2 rounded-full bg-[var(--accent)]" aria-hidden />
-                  online
-                </span>
-              </div>
             </div>
             <div className="flex items-center gap-2">
               <button

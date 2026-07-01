@@ -84,6 +84,28 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Анти-FOUC интро: до пейнта скрипт intro-init помечает <html data-intro-pending>,
+   если пользователь ещё не видел интро. Прячем главный shell (остаётся видимым
+   лишь фон body = --bg), пока оверлей интро не смонтируется и не закроется, —
+   иначе первый кадр показывает главный экран, и лишь следующий тик рисует интро.
+   Флаг снимает IntroOverlay при закрытии; у вернувшихся пользователей он не
+   ставится вовсе, поэтому shell виден сразу. */
+html[data-intro-pending] .app-shell {
+  visibility: hidden;
+}
+
+/* Стикер-wordmark имени «Оплатишка»: кремовая заливка + жирная чёрная
+   комикс-обводка (paint-order — обводка под заливкой, буквы не «съедаются») +
+   смещённая teal-тень (pop-art). Имитирует брендовый bubble-логотип без
+   растрового ассета; читается и на тёмной, и на светлой теме. */
+.wordmark {
+  color: var(--color-paper);
+  -webkit-text-stroke: 3px var(--color-ink);
+  paint-order: stroke fill;
+  text-shadow: 2px 2px 0 var(--color-teal-primary);
+  letter-spacing: 0.02em;
+}
+
 /* Комикс-скроллбар: teal-ползунок «таблеткой» с чернильным контуром, без
    стандартной серой дорожки. Webkit-ветка — Chromium/Safari; стандартные
    свойства — фолбэк для Firefox (Chrome 121+ игнорирует ::-webkit-scrollbar,

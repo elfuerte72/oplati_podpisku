@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useCallback, useMemo, useState } from 'react';
 
 import { ComicButton } from '@/components/comic';
@@ -143,16 +144,20 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
 
   return (
     <div className="flex min-h-[55dvh] flex-col items-center justify-center gap-6 py-6 text-center">
-      <div className="space-y-2">
-        <h2 className="font-display text-3xl font-bold text-[var(--text)] sm:text-4xl">
-          Привет! Я Оплатишка
-        </h2>
-        <p className="mx-auto max-w-sm font-body text-[var(--text-muted)]">
-          Оплачу любую иностранную подписку — рублями.
-        </p>
-      </div>
-
-      {!listOpen && <ComicButton onClick={openList}>Выбрать сервис</ComicButton>}
+      {!listOpen && (
+        <div className="flex flex-col items-center gap-6">
+          <Image
+            src="/intro/services.webp"
+            alt="Логотипы сервисов: ChatGPT, Claude, Spotify, Netflix, YouTube, Airbnb — и любой другой"
+            width={1200}
+            height={1191}
+            priority
+            sizes="(min-width: 640px) 360px, 70vw"
+            className="w-full max-w-[260px] sm:max-w-[340px] [filter:drop-shadow(4px_4px_0_rgba(11,10,13,0.35))]"
+          />
+          <ComicButton onClick={openList}>Выбрать сервис</ComicButton>
+        </div>
+      )}
 
       {listOpen && !selected && loading && (
         <p className="font-body text-sm text-[var(--text-muted)]">Открываю каталог…</p>

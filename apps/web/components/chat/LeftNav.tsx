@@ -61,17 +61,13 @@ function NavItem({
   );
 }
 
-/** Левый навбар: «Оплатишка» (чат, активно) + «Обучение» (курсы — скоро, mock). */
+/** Левый навбар: «Чат» (активно) + «VPN»/«Обучение» (скоро, mock). */
 export function LeftNav() {
   return (
-    <nav className="hidden w-60 shrink-0 flex-col gap-2 border-r-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-3 md:flex">
-      <div className="mb-2 px-2 py-2">
-        <span className="font-display text-xl font-bold text-[var(--text)]">Оплати подписки</span>
-      </div>
-
+    <nav className="hidden w-60 shrink-0 flex-col gap-2 border-r-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-3 pt-4 md:flex">
       <NavItem
         active
-        label="Оплатишка"
+        label="Чат"
         icon={
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
             <path
