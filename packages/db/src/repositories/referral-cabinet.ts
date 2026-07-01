@@ -1,5 +1,12 @@
 import { sql } from 'drizzle-orm';
 
+import {
+  isTerminalPayoutStatus,
+  type PayoutMethod,
+  type PayoutStatus,
+  type PayoutDestinationStored,
+} from '@oplati/types';
+
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
@@ -307,9 +314,20 @@ export type CreateReferralPayoutResult =
   | { ok: true; payoutId: string }
   | { ok: false; reason: 'insufficient_balance'; balanceUsdCents: number };
 
+/** Реквизиты и удержанная комиссия вывода (Этап E). Все поля опциональны:
+ *  заявку можно создать без destination (способ выплат уточняется — D-REF-6). */
+export type CreateReferralPayoutOptions = {
+  method?: PayoutMethod | null;
+  feeUsdCents?: number | null;
+  /** Уже замаскированные реквизиты (`toStoredPayoutDestination`) — БЕЗ полного PAN. */
+  destination?: PayoutDestinationStored | null;
+};
+
 /**
- * Атомарно создаёт заявку на вывод (status='requested', destination=null — способ
- * выплат D-REF-6 за владельцем, Этап E).
+ * Атомарно создаёт заявку на вывод (status='requested'). `method`/`feeUsdCents`/
+ * `destination` опциональны (Этап E): при отсутствии реквизитов пишутся NULL —
+ * исполнение ждёт способ выплат (D-REF-6). `destination` уже замаскирован
+ * вызывающим (полного PAN здесь быть не может — инвариант PCI).
  *
  * Антигонка (находка greptile P1, TOCTOU): баланс-чек и INSERT — в ОДНОЙ
  * транзакции под per-user advisory-локом `pg_advisory_xact_lock(hashtext(userId))`.
@@ -318,14 +336,16 @@ export type CreateReferralPayoutResult =
  * (перевывод/порча ledger'а). Теперь вторая заявка ждёт коммита первой, видит её
  * `requested`-строку в балансе и корректно отклоняется. Баланс считается тем же
  * выражением, что `getReferralBalanceUsdCents` (канон), но внутри транзакции.
- * CHECK `amount > 0` в схеме — последний рубеж.
+ * `amount_usd_cents` — брутто (вычитается из баланса); net = amount − fee уходит
+ * партнёру. CHECK `amount > 0` в схеме — последний рубеж.
  */
 export async function createReferralPayout(
   db: DB,
-  params: { userId: string; amountUsdCents: number },
+  params: { userId: string; amountUsdCents: number } & CreateReferralPayoutOptions,
   log: RepoLogger = noopLogger,
 ): Promise<CreateReferralPayoutResult> {
-  const { userId, amountUsdCents } = params;
+  const { userId, amountUsdCents, method, feeUsdCents, destination } = params;
+  const destinationJson = destination ? JSON.stringify(destination) : null;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId})::bigint)`);
 
@@ -351,15 +371,49 @@ export async function createReferralPayout(
     }
 
     const rows = await tx.execute<{ id: string }>(sql`
-      INSERT INTO referral_payouts (user_id, amount_usd_cents, status)
-      VALUES (${userId}, ${amountUsdCents}, 'requested')
+      INSERT INTO referral_payouts
+        (user_id, amount_usd_cents, status, method, fee_usd_cents, destination)
+      VALUES (
+        ${userId}, ${amountUsdCents}, 'requested',
+        ${method ?? null}, ${feeUsdCents ?? null}, ${destinationJson}::jsonb
+      )
       RETURNING id
     `);
     const id = rows[0]?.id;
     if (!id) {
       throw new Error('createReferralPayout: пустой RETURNING — INSERT не вернул id');
     }
-    log.info({ event: 'db.referral.payout_requested', userId, amountUsdCents });
+    log.info({ event: 'db.referral.payout_requested', userId, amountUsdCents, method: method ?? null });
     return { ok: true, payoutId: id };
   });
+}
+
+export type TransitionReferralPayoutResult = { applied: boolean; status: PayoutStatus };
+
+/**
+ * Переводит заявку по статусной машине (`requested→processing→paid|rejected`)
+ * условным UPDATE `WHERE id AND status=from` — at-most-once, идемпотентно к
+ * повторам/гонкам (проигравший видит `applied=false`, не дублирует эффект).
+ * Терминальный статус (`paid`/`rejected`) проставляет `settled_at`. Валидность
+ * самого перехода проверяет вызывающий (`canTransitionPayout` в @oplati/types) —
+ * здесь только атомарная фиксация. Реальное исполнение выплаты — Этап E.
+ */
+export async function transitionReferralPayout(
+  db: DB,
+  params: { payoutId: string; from: PayoutStatus; to: PayoutStatus },
+  log: RepoLogger = noopLogger,
+): Promise<TransitionReferralPayoutResult> {
+  const { payoutId, from, to } = params;
+  const rows = await db.execute<{ id: string }>(sql`
+    UPDATE referral_payouts
+    SET status = ${to},
+        settled_at = ${isTerminalPayoutStatus(to) ? sql`now()` : sql`settled_at`}
+    WHERE id = ${payoutId} AND status = ${from}
+    RETURNING id
+  `);
+  const applied = rows.length > 0;
+  if (applied) {
+    log.info({ event: 'db.referral.payout_transitioned', payoutId, from, to });
+  }
+  return { applied, status: applied ? to : from };
 }

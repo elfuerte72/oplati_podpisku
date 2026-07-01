@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { PayoutDestinationInput } from '@oplati/types';
+
 const hoisted = vi.hoisted(() => ({
   env: { REFERRAL_ENABLED: true, REFERRAL_MIN_PAYOUT_USD_CENTS: 1000 },
 }));
@@ -10,9 +12,16 @@ vi.mock('../logger.ts', () => ({
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn() }));
 
 type Profile = { suspended: boolean } | null;
+type CreatedPayout = {
+  userId: string;
+  amountUsdCents: number;
+  method?: string | null;
+  feeUsdCents?: number | null;
+  destination?: Record<string, unknown> | null;
+};
 
 vi.mock('@oplati/db', () => {
-  const state: { profile: Profile; balance: number; created: Array<{ userId: string; amountUsdCents: number }> } = {
+  const state: { profile: Profile; balance: number; created: CreatedPayout[] } = {
     profile: null,
     balance: 0,
     created: [],
@@ -22,7 +31,7 @@ vi.mock('@oplati/db', () => {
     getPartnerProfile: vi.fn(async () => state.profile),
     // Атомарный контракт: проверка баланса + вставка внутри. Мок воспроизводит
     // решение по балансу (как реальная транзакция под advisory-локом).
-    createReferralPayout: vi.fn(async (_db: unknown, p: { userId: string; amountUsdCents: number }) => {
+    createReferralPayout: vi.fn(async (_db: unknown, p: CreatedPayout) => {
       if (p.amountUsdCents > state.balance) {
         return { ok: false as const, reason: 'insufficient_balance' as const, balanceUsdCents: state.balance };
       }
@@ -52,13 +61,18 @@ import { requestReferralPayout } from './referral-actions.ts';
 type MockedDb = typeof db & {
   __setProfile: (p: Profile) => void;
   __setBalance: (b: number) => void;
-  __created: () => Array<{ userId: string; amountUsdCents: number }>;
+  __created: () => CreatedPayout[];
   __reset: () => void;
 };
 const m = db as unknown as MockedDb;
 
-const req = (over: Partial<{ telegramLinked: boolean; amountUsdCents: number }> = {}) =>
-  requestReferralPayout({ userId: 'u1', telegramLinked: true, amountUsdCents: 2000, ...over });
+const req = (
+  over: Partial<{
+    telegramLinked: boolean;
+    amountUsdCents: number;
+    destination: PayoutDestinationInput | null;
+  }> = {},
+) => requestReferralPayout({ userId: 'u1', telegramLinked: true, amountUsdCents: 2000, ...over });
 
 describe('requestReferralPayout — гейты и валидация', () => {
   beforeEach(() => {
@@ -104,16 +118,87 @@ describe('requestReferralPayout — гейты и валидация', () => {
     expect(m.__created()).toHaveLength(0);
   });
 
-  it('валидная заявка → ok + запись в referral_payouts', async () => {
+  it('валидная заявка без реквизитов → ok, method/fee = null, net = вся сумма', async () => {
     m.__setBalance(5000);
     const r = await req({ amountUsdCents: 2000 });
-    expect(r).toEqual({ ok: true, payoutId: 'payout-1', amountUsdCents: 2000 });
-    expect(m.__created()).toEqual([{ userId: 'u1', amountUsdCents: 2000 }]);
+    expect(r).toEqual({
+      ok: true,
+      payoutId: 'payout-1',
+      amountUsdCents: 2000,
+      feeUsdCents: 0,
+      netUsdCents: 2000,
+    });
+    expect(m.__created()).toEqual([
+      { userId: 'u1', amountUsdCents: 2000, method: null, feeUsdCents: null, destination: null },
+    ]);
   });
 
   it('ровно минимум проходит (граница ≥)', async () => {
     m.__setBalance(1000);
     const r = await req({ amountUsdCents: 1000 });
     expect(r).toMatchObject({ ok: true });
+  });
+});
+
+describe('requestReferralPayout — реквизиты и комиссия вывода', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.__reset();
+    hoisted.env.REFERRAL_ENABLED = true;
+    hoisted.env.REFERRAL_MIN_PAYOUT_USD_CENTS = 1000;
+    m.__setBalance(5000);
+  });
+
+  it('карта РФ: комиссия 3.5%, PAN замаскирован, CVV не хранится', async () => {
+    const destination: PayoutDestinationInput = {
+      method: 'card_rub',
+      pan: '4242 4242 4242 4242',
+      holderName: 'IVAN IVANOV',
+    };
+    const r = await req({ amountUsdCents: 2000, destination });
+    // 3.5% от 2000 = 70 → net 1930
+    expect(r).toEqual({
+      ok: true,
+      payoutId: 'payout-1',
+      amountUsdCents: 2000,
+      feeUsdCents: 70,
+      netUsdCents: 1930,
+    });
+    const created = m.__created()[0]!;
+    expect(created.method).toBe('card_rub');
+    expect(created.feeUsdCents).toBe(70);
+    // В БД уходит только маска + last4 + ФИО — полного PAN нет.
+    expect(created.destination).toEqual({
+      method: 'card_rub',
+      panMasked: '****4242',
+      last4: '4242',
+      holderName: 'IVAN IVANOV',
+    });
+    expect(JSON.stringify(created.destination)).not.toContain('4242424242424242');
+  });
+
+  it('крипта USDT: комиссия 1%, адрес и сеть сохраняются', async () => {
+    const destination: PayoutDestinationInput = {
+      method: 'crypto_usdt',
+      address: 'TQ5Rk8m9WcNvY2p3aBcDeFgHiJkLmNoPqR',
+      network: 'trc20',
+    };
+    const r = await req({ amountUsdCents: 2000, destination });
+    // 1% от 2000 = 20 → net 1980
+    expect(r).toEqual({
+      ok: true,
+      payoutId: 'payout-1',
+      amountUsdCents: 2000,
+      feeUsdCents: 20,
+      netUsdCents: 1980,
+    });
+    const created = m.__created()[0]!;
+    expect(created.method).toBe('crypto_usdt');
+    expect(created.feeUsdCents).toBe(20);
+    expect(created.destination).toEqual({
+      method: 'crypto_usdt',
+      address: 'TQ5Rk8m9WcNvY2p3aBcDeFgHiJkLmNoPqR',
+      network: 'trc20',
+    });
   });
 });

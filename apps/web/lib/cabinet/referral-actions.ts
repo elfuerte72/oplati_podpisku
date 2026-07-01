@@ -1,6 +1,11 @@
 import 'server-only';
 
 import { getDb, getPartnerProfile, createReferralPayout } from '@oplati/db';
+import {
+  computePayoutFee,
+  toStoredPayoutDestination,
+  type PayoutDestinationInput,
+} from '@oplati/types';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
@@ -8,7 +13,14 @@ import { childLogger } from '../logger.ts';
 const log = childLogger('referral-payout');
 
 export type RequestPayoutResult =
-  | { ok: true; payoutId: string; amountUsdCents: number }
+  | {
+      ok: true;
+      payoutId: string;
+      amountUsdCents: number;
+      /** Удержанная комиссия и сумма к получению (0/полная при заявке без реквизитов). */
+      feeUsdCents: number;
+      netUsdCents: number;
+    }
   | {
       ok: false;
       error:
@@ -42,8 +54,11 @@ export async function requestReferralPayout(params: {
   userId: string;
   telegramLinked: boolean;
   amountUsdCents: number;
+  /** Реквизиты (Этап E). Опциональны: заявку можно подать до формы реквизитов.
+   *  Полный PAN здесь маскируется и в БД не попадает (см. toStoredPayoutDestination). */
+  destination?: PayoutDestinationInput | null;
 }): Promise<RequestPayoutResult> {
-  const { userId, telegramLinked, amountUsdCents } = params;
+  const { userId, telegramLinked, amountUsdCents, destination } = params;
 
   if (!serverEnv.REFERRAL_ENABLED) return { ok: false, error: 'disabled' };
   if (!telegramLinked) return { ok: false, error: 'telegram_link_required' };
@@ -57,6 +72,13 @@ export async function requestReferralPayout(params: {
     return { ok: false, error: 'below_minimum', minPayoutUsdCents };
   }
 
+  // Комиссия вывода и маскирование реквизитов — только когда способ задан. Без
+  // destination заявка создаётся с method/fee = NULL (fee 0, net = вся сумма).
+  const fee = destination ? computePayoutFee(destination.method, amountUsdCents) : null;
+  const storedDestination = destination ? toStoredPayoutDestination(destination) : null;
+  const feeUsdCents = fee?.feeUsdCents ?? 0;
+  const netUsdCents = fee?.netUsdCents ?? amountUsdCents;
+
   const db = getDb();
 
   const partner = await getPartnerProfile(db, userId);
@@ -68,10 +90,26 @@ export async function requestReferralPayout(params: {
   // Баланс-чек + вставка — атомарно внутри createReferralPayout (advisory-лок на
   // userId, находка greptile P1 TOCTOU). Отдельного пред-чтения баланса нет — оно
   // было гонко-уязвимым. Неожиданные ошибки пробрасываются в catch роута (→ 500).
-  const result = await createReferralPayout(db, { userId, amountUsdCents }, log);
+  const result = await createReferralPayout(
+    db,
+    {
+      userId,
+      amountUsdCents,
+      method: destination?.method ?? null,
+      feeUsdCents: destination ? feeUsdCents : null,
+      destination: storedDestination,
+    },
+    log,
+  );
   if (!result.ok) {
     return { ok: false, error: 'insufficient_balance', balanceUsdCents: result.balanceUsdCents };
   }
-  log.info({ event: 'referral.payout.requested', userId, amountUsdCents, payoutId: result.payoutId });
-  return { ok: true, payoutId: result.payoutId, amountUsdCents };
+  log.info({
+    event: 'referral.payout.requested',
+    userId,
+    amountUsdCents,
+    method: destination?.method ?? null,
+    payoutId: result.payoutId,
+  });
+  return { ok: true, payoutId: result.payoutId, amountUsdCents, feeUsdCents, netUsdCents };
 }
