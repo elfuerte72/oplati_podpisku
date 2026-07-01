@@ -12,6 +12,7 @@ import {
   date,
   index,
   uniqueIndex,
+  primaryKey,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type { OrderParameters, PricingPolicy } from '@oplati/types';
@@ -473,6 +474,35 @@ export const referralPayouts = pgTable(
   (t) => ({
     userIdx: index('referral_payouts_user_idx').on(t.userId),
     amountPositive: check('referral_payouts_amount_positive', sql`${t.amountUsdCents} > 0`),
+  }),
+).enableRLS();
+
+// Помесячные агрегаты прогрессии (Этап C) — пишет крон `referral-rollup` один раз
+// на партнёра за месяц. PK(user_id, month) даёт естественную идемпотентность
+// (повторный запуск месяца — ON CONFLICT DO NOTHING). `month` — первое число
+// месяца (UTC). Оборот сети USD-центы integer (месячный объём << int32-предела для
+// масштаба проекта; в духе «деньги — integer»). `consecutive_met_months` — длина
+// серии выполненных планов, включая этот месяц (для серийного бонуса).
+export const referralMonthlyStats = pgTable(
+  'referral_monthly_stats',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    month: date('month').notNull(),
+    networkTurnoverUsdCents: integer('network_turnover_usd_cents').default(0).notNull(),
+    newActiveReferrals: integer('new_active_referrals').default(0).notNull(),
+    activeL2: integer('active_l2').default(0).notNull(),
+    planMet: boolean('plan_met').default(false).notNull(),
+    consecutiveMetMonths: integer('consecutive_met_months').default(0).notNull(),
+    computedAt: timestamp('computed_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.month] }),
+    turnoverNonNeg: check(
+      'referral_monthly_stats_turnover_nonneg',
+      sql`${t.networkTurnoverUsdCents} >= 0`,
+    ),
   }),
 ).enableRLS();
 

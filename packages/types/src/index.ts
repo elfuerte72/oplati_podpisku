@@ -98,6 +98,23 @@ export {
   type EffectiveReferralRates,
 } from './referral.ts';
 
+export {
+  REFERRAL_SPRINT_NEW_REFS_GOAL,
+  REFERRAL_SPRINT_NEW_REFS_BONUS_USD_CENTS,
+  REFERRAL_TURNOVER_BOOST_RATIO_PERCENT,
+  REFERRAL_TURNOVER_BOOST_BPS,
+  REFERRAL_TEAM_MULTIPLIER_MIN_ACTIVE_L2,
+  REFERRAL_SERIAL_PERIOD_MONTHS,
+  REFERRAL_SERIAL_BONUS_USD_CENTS,
+  highestCircleForTurnover,
+  planThresholdUsdCents,
+  planMonthlyProgression,
+  type MonthlyProgressionInput,
+  type MonthlyProgressionResult,
+  type ProgressionBonus,
+  type ProgressionBonusKind,
+} from './referral-progression.ts';
+
 // ─── Order parameters (гибкая структура) ──────────────────────────────────
 
 export const orderParameters = z.object({

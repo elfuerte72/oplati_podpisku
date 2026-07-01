@@ -6,6 +6,7 @@
     { "path": "/api/cron/renewal-reminder", "schedule": "0 7 * * *" },
     { "path": "/api/cron/recycle-cards", "schedule": "30 3 * * *" },
     { "path": "/api/cron/keepalive", "schedule": "0 */6 * * *" },
-    { "path": "/api/cron/referral-recovery", "schedule": "15 * * * *" }
+    { "path": "/api/cron/referral-recovery", "schedule": "15 * * * *" },
+    { "path": "/api/cron/referral-rollup", "schedule": "0 2 1 * *" }
   ]
 }
