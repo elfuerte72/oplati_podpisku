@@ -167,13 +167,13 @@ function fmtUsd(cents: number): string {
 }
 
 const BONUS_LABEL: Record<string, string> = {
-  circle_bonus: 'Бонус за достижение круга',
+  circle_bonus: 'Бонус за достижение статуса',
   sprint_new_refs: 'Бонус спринта «новые активные»',
   serial_bonus: 'Серийный бонус',
 };
 
 /**
- * Уведомляет партнёра в Telegram о повышении круга и/или начисленных бонусах.
+ * Уведомляет партнёра в Telegram о повышении статуса и/или начисленных бонусах.
  * Никогда не бросает: сбой доставки логируется, но НЕ откатывает уже применённую
  * прогрессию (она в БД). Веб-партнёра без Telegram молча пропускаем.
  */
@@ -193,7 +193,7 @@ async function notifyPartnerProgression(
         maximumFractionDigits: 2,
       });
       lines.push(
-        `Поздравляем! Вы достигли круга «${label}» — ставка ${ratePct}% зафиксирована навсегда.`,
+        `Поздравляем! Вы достигли статуса «${label}» — ставка ${ratePct}% зафиксирована навсегда.`,
       );
     }
     for (const b of plan.bonuses) {

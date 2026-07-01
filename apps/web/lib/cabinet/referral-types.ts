@@ -132,7 +132,7 @@ const PAYOUT_STATUS_LABELS: Record<string, string> = {
 };
 
 const BONUS_TITLES: Record<string, string> = {
-  circle_bonus: 'Бонус за круг',
+  circle_bonus: 'Бонус за статус',
   sprint_new_refs: 'Спринт: новые рефералы',
   sprint_turnover_boost: 'Спринт: буст оборота',
   serial_bonus: 'Серийный бонус',
