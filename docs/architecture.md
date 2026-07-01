@@ -4,7 +4,7 @@
 
 ## Что это за продукт
 
-«Оплати подписку» — сервис оплаты иностранных подписок для русскоязычных пользователей. Клиент пишет в Telegram-бот или веб-чат, что хочет оплатить (Netflix, ChatGPT Plus, любой другой сервис), — AI-агент «Оплатишка» находит актуальную цену, создаёт заказ с комиссией 10%, выставляет счёт в RUB через Love&Pay. После оплаты исполнение пока ручное (оператор), в разработке — автоматическая выдача виртуальных USD-карт через PaySpace.
+«Оплати подписку» — сервис оплаты иностранных подписок для русскоязычных пользователей. Клиент пишет в Telegram-бот или веб-чат, что хочет оплатить (Netflix, ChatGPT Plus, любой другой сервис), — AI-агент «Оплатишка» находит актуальную цену, создаёт заказ (комиссия `COMMISSION_PERCENT`: на проде 30%, дефолт в коде 10%), выставляет счёт в RUB через Love&Pay. После оплаты — автоматическая выдача виртуальных USD-карт через PaySpace (**на проде включена**; при недоступности ключей — ручное исполнение оператором). Есть трёхуровневая партнёрская (реферальная) программа — вознаграждение партнёрам с оплат их сети (Этапы A–D на проде, soft-start за флагом `REFERRAL_ENABLED`).
 
 ## Архитектурный паттерн: Modular Monolith
 
@@ -22,7 +22,7 @@
 │                          │   ToolHandlers ──→ Supabase  │
 │                          │                              │
 │  Love&Pay ──→ /api/payments/loveandpay (webhook)        │
-│  Vercel Cron ──→ /api/cron/* (5 джобов)                 │
+│  Vercel Cron ──→ /api/cron/* (7 джобов)                 │
 └─────────────────────────────────────────────────────────┘
          │                    │                  │
    @oplati/agent         @oplati/db        @oplati/types
@@ -52,8 +52,8 @@
 
 Drizzle ORM поверх Supabase Postgres (подключение через pooler, `prepare: false`).
 
-- `src/schema.ts` — вся схема: 10 таблиц + enum'ы. RLS включён везде, кроме публичного каталога `services`.
-- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert), `cards`, `health` (`pingDb`).
+- `src/schema.ts` — вся схема: 16 таблиц + enum'ы. RLS включён везде, кроме публичного каталога `services` (public-read активных записей).
+- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert), `cards`, `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
 - `drizzle/` — forward-only миграции; `scripts/seed-catalog.ts` — идемпотентный seed каталога.
 - `repositories/logger.ts` — интерфейс `RepoLogger` (pino-shape), чтобы пакет не зависел от pino.
 
@@ -77,12 +77,15 @@ app/
     payments/create/              создание инвойса L&P (internal, X-Internal-Token)
     payments/loveandpay/          webhook L&P
     orders/confirm/ + status/     подтверждение и статус заказа
-    cron/                         5 cron-эндпоинтов (авторизация CRON_SECRET)
+    cabinet/ + cabinet/referral/  API мини-аппа + партнёрского кабинета (POST, initData|cookie)
+    cron/                         7 cron-эндпоинтов (авторизация CRON_SECRET)
     admin/telegram-webhook/       управление webhook бота без раскрытия токена
     health/route.ts               liveness
+  partner/page.tsx                веб-страница партнёрского кабинета /partner
 components/
   chat/                           компоненты чата (сообщения, инпут, панель заказа)
   comic/                          комикс-примитивы (halftone, маскот, штамп «ОПЛАЧЕНО»)
+  cabinet/ + partner/             мини-апп кабинет + PartnerCabinet (5 экранов рефералки)
 lib/
   env.ts / env.server.ts          Zod-валидация env, lazy; server-only re-export
   logger.ts                       pino + redact PII + childLogger(module)
@@ -91,7 +94,9 @@ lib/
   telegram/                       grammY bot singleton, handle-update (диспатч), templates
   tool-handlers/                  реализация ToolHandlers (мост agent → db)
   loveandpay/                     клиент, HMAC-подпись, webhook-handlers (+ Vitest)
-  pay-space/                      клиент PaySpace (createCard/topupCard/getCard) — фаза 2
+  pay-space/                      клиент PaySpace (createCard/topupCard/getCard) — на проде включён
+  referral/                       захват реферера (capture) + начисление (accrue)
+  cabinet/                        снапшот/auth/payout партнёрского кабинета
   jobs/                           логика cron-джобов + dispatcher
   chat/                           cookie-сессия и история веб-чата
 instrumentation.ts                Sentry server/edge + fail-fast env
@@ -138,14 +143,28 @@ draft → clarifying → kyc_required ⇄ clarifying
 | `renewal-reminder` | 07:00 UTC | напоминания о продлении подписки |
 | `recycle-cards` | 03:30 UTC | карты: 90 дней простоя → `idle`, 180 → `recycled` |
 | `keepalive` | каждые 6 ч | `SELECT 1` — анти-автопауза Supabase free tier |
+| `referral-recovery` | каждый час | добор пропущенных реферальных начислений (бэкстоп) |
+| `referral-rollup` | 1-е число, 02:00 UTC | месячная прогрессия статусов партнёров (гейт `REFERRAL_ENABLED`) |
 
 ### 5. Эскалация оператору (частично)
 
 `request_human` пишет `handoff_requested` в `order_events` (дедуп 5 минут, защита от чужого orderId) и говорит клиенту SLA в зависимости от рабочих часов. Целевая схема — Telegram forum-topics (topic = заказ, `/ai_back` возвращает AI) — **не реализована**.
 
-### 6. Виртуальные карты PaySpace (фаза 2, выпуск выключен)
+### 6. Виртуальные карты PaySpace (на проде включён)
 
-После `paid` job `issue-card` должен выдать клиенту реквизиты USD-карты: topup активной карты → переиспользование recycled → выпуск новой через PaySpace, затем `paid → in_fulfillment → completed` (actor `system`). Сейчас без `PAYSPACE_API_KEY` + `PAYSPACE_ACCOUNT_ID` срабатывает guard `skipped_no_paypace` — заказ остаётся в `paid` для ручного исполнения. Блокеры: контракт PaySpace не подтверждён живым вызовом; не решён триггер заморозки карты. Полные PAN/CVC никогда не попадают в БД/логи — только `pan_masked`; реквизиты клиенту уходят единственным путём — сообщением в Telegram.
+После `paid` job `issue-card` выдаёт клиенту реквизиты USD-карты: **атомарный claim `paid → in_fulfillment` до операций** (at-most-once) → topup активной карты юзера ИЛИ выпуск новой через PaySpace (cross-client reuse убран — `release` необратим) → карта выпускается на цену + буфер `PAYSPACE_CARD_BUFFER_PERCENT` (20%, запас на VAT/FX/foreign-fee) → реквизиты клиенту в Telegram → `completed` (actor `system`). Контракт PaySpace подтверждён живым вызовом (заморозки в API нет — только withdraw/topup/release). Без `PAYSPACE_API_KEY` срабатывает guard `skipped_no_paypace` — заказ остаётся в `paid` для ручного исполнения; **на проде ключи стоят, выпуск боевой.** Операционный гейт беты — баланс VCC-субаккаунта (на карту нужно `цена + буфер + $4 issue-fee`); при низком балансе `createCard`/`topup` падает уже ПОСЛЕ приёма рублей → заказ `failed` (алёрт `vcc_balance.low`). Полные PAN/CVC никогда не попадают в БД/логи — только `pan_masked`; реквизиты клиенту уходят единственным путём — сообщением в Telegram. Recovery — cron `poll-payment` (`findStuckPaidOrders`).
+
+### 7. Реферальная (партнёрская) программа
+
+Трёхуровневая сеть: партнёр получает % с каждой успешной оплаты клиентов в его нижестоящей сети (L1/L2/L3). Всё за флагом `REFERRAL_ENABLED` (kill-switch); на проде soft-start. Термин **«статус»** в UI = **`circle`** в коде и БД (0=Клиент..3=Топ-партнёр) — историческое имя, не путать при поиске.
+
+- **Захват сети (Этап A).** `users.referred_by` (self-FK, **immutable** после установки) ставится только при создании user: бот `/start ref_<code>`, сайт `?ref=<code>` → cookie. Дерево до 3 уровней — `getReferralAncestors`. Коды — Crockford-base32, лениво (`ensureReferralCode`). Merge при привязке TG↔web наследует реферера.
+- **Начисление (Этап B).** `accrueReferralForPayment` в `processInvoicePaid` сразу **после** `claimPaymentSucceeded` (at-most-once на победителе гонки webhook↔poll). Обход 3 предков, ставка по статусу/уровню (`REFERRAL_RATE_TABLE` в `@oplati/types`), INSERT строк `commission` в append-only `referral_accruals`. Идемпотентность — `UNIQUE(payment_id, beneficiary, level)`. Инвариант: **сумма начислений заказа ≤ его комиссия** (платим из маржи). База — `original_amount` (USD-центы). Пропуски добирает cron `referral-recovery`. `suspended`-партнёр исключён.
+- **Прогрессия (Этап C).** Cron `referral-rollup` (1-е число месяца) по каждому партнёру: оборот сети за месяц → **храповик статуса** (порог $500/$2000/$5000 → повышение `current_circle` + фиксация ставки L1 навсегда, не понижается), бонусы достижения ($50/$150) / спринт («10+ новых активных» $30) / серия ($25/$75/$200 за 3 мес. подряд), спринт-буст (+1% при ≥150% порога), командный множитель (L2 2%→2.5% при 5+ активных L2), уведомления в бот. Чистое ядро — `planMonthlyProgression`; идемпотентность на партнёра-за-месяц — `PK(user_id, month)` в `referral_monthly_stats` (INSERT ON CONFLICT DO NOTHING → мутации только на первом заходе).
+- **Кабинет (Этап D).** Веб-страница `/partner` + Telegram-мини-апп используют один `PartnerCabinet` (5 экранов: дашборд/сеть/ссылка/история/статистика, стиль Оплатишки) и один бэкенд `POST /api/cabinet/referral` (`action: snapshot|payout`; auth — initData мини-аппа ИЛИ web-cookie). Витрина ставок = расчёт (`effectiveReferralRates`, один источник правды).
+- **Выплаты (Этап E) — НЕ реализованы.** Заявки на вывод копятся в `referral_payouts` (мин. `REFERRAL_MIN_PAYOUT_USD_CENTS`, баланс = ledger − выплаты, гейты TG-привязки/`suspended`), но **исполнение + антифрод (reversal/clawback/детект накрутки) ждут решения способа выплат `D-REF-6`**. Деньги пока не двигаются — всё аддитивно и безопасно.
+
+Модель данных: `referral_partners` (профиль/статус), `referral_accruals` (append-only ledger, reversal = новая строка), `referral_payouts` (заявки), `referral_monthly_stats` (агрегаты прогрессии). Границы пакетов те же: расчёт — `@oplati/types` (чистые функции), доступ к БД — `@oplati/db`, оркестрация/API — `apps/web`.
 
 ## Окружения и деплой
 
