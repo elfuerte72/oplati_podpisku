@@ -2,6 +2,8 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { payoutDestinationInputSchema } from '@oplati/types';
+
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
@@ -37,6 +39,9 @@ const requestSchema = z.discriminatedUnion('action', [
     action: z.literal('payout'),
     initData: z.string().min(1).optional(),
     amountUsdCents: z.number().int().positive(),
+    // Реквизиты (Этап E). Опциональны, пока форма реквизитов не подключена и способ
+    // выплат не выбран (D-REF-6). Полный PAN валидируется, но не хранится (маскируется).
+    destination: payoutDestinationInputSchema.optional(),
   }),
 ]);
 
@@ -122,6 +127,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           userId,
           telegramLinked,
           amountUsdCents: body.amountUsdCents,
+          destination: body.destination ?? null,
         });
         return NextResponse.json(result, { status: 200 });
       }

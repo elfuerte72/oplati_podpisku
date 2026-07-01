@@ -397,6 +397,12 @@ export const referralPayoutStatusEnum = pgEnum('referral_payout_status', [
   'rejected',
 ]);
 
+// Способ выплаты (Этап E): карта РФ (RUB) или USDT-кошелёк (крипта).
+export const referralPayoutMethodEnum = pgEnum('referral_payout_method', [
+  'card_rub',
+  'crypto_usdt',
+]);
+
 // Профиль партнёра (1:1 с users, ленивое создание). Круг/ставка/множитель пишет
 // месячный крон (Этап C); при отсутствии строки начисление считает по кругу 0.
 export const referralPartners = pgTable('referral_partners', {
@@ -467,6 +473,12 @@ export const referralPayouts = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     amountUsdCents: integer('amount_usd_cents').notNull(),
     status: referralPayoutStatusEnum('status').default('requested').notNull(),
+    // Способ выплаты и удержанная комиссия вывода (Этап E). NULL до заполнения
+    // реквизитов: заявку можно создать без destination (способ выплат D-REF-6),
+    // тогда method/fee проставит будущая форма реквизитов. amount_usd_cents —
+    // брутто (вычитается из баланса); net = amount − fee уходит партнёру.
+    method: referralPayoutMethodEnum('method'),
+    feeUsdCents: integer('fee_usd_cents'),
     destination: jsonb('destination').$type<Record<string, unknown>>(),
     requestedAt: timestamp('requested_at', { withTimezone: true }).defaultNow().notNull(),
     settledAt: timestamp('settled_at', { withTimezone: true }),

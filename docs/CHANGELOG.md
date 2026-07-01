@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-07-01 — Реферальная программа: каркас выплат (Этап E1)
+
+### Added
+
+- **Каркас выплат партнёрам** (mock-исполнитель, движения денег НЕТ). Чистое ядро `packages/types/src/referral-payout.ts`: способы `card_rub`/`crypto_usdt`, комиссия вывода `computePayoutFee` (3.5% карта / 1% крипта, floor, удержание из брутто), маскирование PAN `maskPan` + отсев `isValidLuhn` (**CVV не собираем** — для выплаты не нужен, PCI-запрет), схемы реквизитов `payoutDestinationInput→Stored` (полный PAN не хранится/не логируется), машина статусов заявки `PAYOUT_ALLOWED_TRANSITIONS`.
+- Миграция `0016`: enum `referral_payout_method` + колонки `method`/`fee_usd_cents` в `referral_payouts` (nullable). Применена к общей БД.
+- `transitionReferralPayout` (условный UPDATE `requested→processing→paid|rejected`, `settled_at` на терминале). `PayoutExecutor` + `MockPayoutExecutor` + чистая оркестрация `settlePayout` (`apps/web/lib/referral/payout-executor.ts`). `requestReferralPayout` + `POST /api/cabinet/referral` принимают опциональные реквизиты.
+- Тесты: types 91 (+19), web 225 (+7).
+
+### Decided
+
+- **D-REF-6 частично** (владелец, 2026-07-01): выплаты в рублях (карта) ИЛИ крипте (USDT), комиссия вывода 3.5% / 1%, для карты собираем только номер + ФИО (без CVV). Открыто: кто исполняет выплату (payout-API L&P?) + сеть USDT — реальный `PayoutExecutor` ждёт этого.
+
 ## 2026-07-01 — Реферальная программа: прогрессия статусов (Этап C)
 
 ### Added

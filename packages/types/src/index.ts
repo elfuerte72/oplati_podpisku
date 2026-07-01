@@ -115,6 +115,27 @@ export {
   type ProgressionBonusKind,
 } from './referral-progression.ts';
 
+export {
+  PAYOUT_METHODS,
+  REFERRAL_PAYOUT_FEE_BPS,
+  computePayoutFee,
+  isValidLuhn,
+  maskPan,
+  USDT_NETWORKS,
+  payoutDestinationInputSchema,
+  payoutDestinationStoredSchema,
+  toStoredPayoutDestination,
+  PAYOUT_STATUSES,
+  PAYOUT_ALLOWED_TRANSITIONS,
+  canTransitionPayout,
+  isTerminalPayoutStatus,
+  type PayoutMethod,
+  type UsdtNetwork,
+  type PayoutDestinationInput,
+  type PayoutDestinationStored,
+  type PayoutStatus,
+} from './referral-payout.ts';
+
 // ─── Order parameters (гибкая структура) ──────────────────────────────────
 
 export const orderParameters = z.object({
