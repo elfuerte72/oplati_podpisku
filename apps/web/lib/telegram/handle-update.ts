@@ -1306,6 +1306,18 @@ async function handleSupportCallback(
     // Уже ждём описание — не дублируем (callback уже подтверждён answerCallbackQuery).
     return;
   }
+  // Снимаем кнопку «Поддержка» с исходного сообщения (оставляя «Выбрать сервис»),
+  // чтобы повторный/одновременный тап не плодил дубли — тот же приём, что снятие
+  // кнопок у confirm/cancel. С idempotent-проверкой выше закрывает и гонку тапов.
+  if (cb.message) {
+    try {
+      await getBot().api.editMessageReplyMarkup(chatId, cb.message.message_id, {
+        reply_markup: new InlineKeyboard().text(CATALOG_OPEN_BUTTON, 'cat'),
+      });
+    } catch (err) {
+      log.debug({ event: 'telegram.support.unmark_failed', updateId, err });
+    }
+  }
   await safeAppendMessage(
     ctx,
     'assistant',
