@@ -20,10 +20,14 @@
  *
  * Цены — справочные на момент ресёрча; владелец сверяет перед production.
  *
- * Airbnb уникален: pricing_policy.tiers содержит dummy-tier с originalAmount=1
- * (≤ 1 цента — маркер «индивидуальная цена», см. lib/catalog/build.ts). Кнопочный
- * флоу для таких сервисов запрашивает сумму у клиента; фактическая стоимость
- * заполняется в orders.amount_rub под каждый заказ.
+ * Сервисы «пополнения» (App Store, архивный Steam) уникальны: pricing_policy.tiers
+ * содержит dummy-tier с originalAmount=1 (≤ 1 цента — маркер «индивидуальная
+ * цена», см. lib/catalog/build.ts). Кнопочный флоу для таких сервисов запрашивает
+ * сумму у клиента; фактическая стоимость заполняется в orders.amount_rub под
+ * каждый заказ.
+ *
+ * Убранные из витрины сервисы живут в ARCHIVED_CATALOG (is_active=false) —
+ * записи сохранены для быстрого восстановления.
  */
 
 import postgres from 'postgres';
@@ -245,6 +249,59 @@ const CATALOG: readonly CatalogEntry[] = [
     ]),
   },
 
+  // ─── Productivity ───────────────────────────────────────────────────────────
+  {
+    slug: 'apple-app-store',
+    name: 'App Store (пополнение)',
+    description: 'Пополнение баланса Apple ID / App Store — сумму вводит клиент',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+  },
+  {
+    slug: 'icloud-plus-200gb',
+    name: 'iCloud+',
+    description: 'Облачное хранилище Apple',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('50GB', 0.99),
+      usd('200GB', 2.99),
+      usd('2TB', 9.99),
+      usd('6TB', 29.99),
+      usd('12TB', 59.99),
+    ]),
+  },
+  {
+    slug: 'figma-professional',
+    name: 'Figma',
+    description: 'Figma — дизайн (платное место)',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Full seat', 16),
+      usd('Dev seat', 12),
+      usd('Collab seat', 3),
+    ]),
+  },
+  {
+    slug: 'zoom-pro',
+    name: 'Zoom',
+    description: 'Zoom Workplace Pro — видеоконференции',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
+  },
+];
+
+/**
+ * Архив витрины (решение владельца 2026-07-02: сузить каталог). Эти сервисы
+ * УБРАНЫ из витрины (is_active=false), но записи сохранены здесь целиком —
+ * для восстановления достаточно перенести entry обратно в CATALOG (архивный
+ * slug деактивируется автоматически, пока лежит в этом списке). История
+ * заказов не трогается: деактивация вместо DELETE.
+ */
+const ARCHIVED_CATALOG: readonly CatalogEntry[] = [
   // ─── Gaming ────────────────────────────────────────────────────────────────
   {
     slug: 'playstation-plus',
@@ -334,38 +391,12 @@ const CATALOG: readonly CatalogEntry[] = [
     ]),
   },
   {
-    slug: 'icloud-plus-200gb',
-    name: 'iCloud+',
-    description: 'Облачное хранилище Apple',
-    category: 'productivity',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('50GB', 0.99),
-      usd('200GB', 2.99),
-      usd('2TB', 9.99),
-      usd('6TB', 29.99),
-      usd('12TB', 59.99),
-    ]),
-  },
-  {
     slug: 'notion-plus',
     name: 'Notion',
     description: 'Notion — рабочее пространство',
     category: 'productivity',
     requiresKyc: false,
     pricingPolicy: policy([usd('Plus', 12), usd('Business', 24)]),
-  },
-  {
-    slug: 'figma-professional',
-    name: 'Figma',
-    description: 'Figma — дизайн (платное место)',
-    category: 'productivity',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('Full seat', 16),
-      usd('Dev seat', 12),
-      usd('Collab seat', 3),
-    ]),
   },
   {
     slug: 'adobe-creative-cloud',
@@ -379,14 +410,6 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('All Apps', 54.99),
       usd('All Apps Pro', 69.99),
     ]),
-  },
-  {
-    slug: 'zoom-pro',
-    name: 'Zoom',
-    description: 'Zoom Workplace Pro — видеоконференции',
-    category: 'productivity',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
   },
 
   // ─── Social ──────────────────────────────────────────────────────────────────
@@ -464,15 +487,17 @@ async function main(): Promise<void> {
       );
     }
 
-    if (DEPRECATED_SLUGS.length > 0) {
+    // Деактивация: легаси-дубли + архив витрины (см. ARCHIVED_CATALOG).
+    const inactiveSlugs = [...DEPRECATED_SLUGS, ...ARCHIVED_CATALOG.map((e) => e.slug)];
+    if (inactiveSlugs.length > 0) {
       const deactivated = await db
         .update(services)
         .set({ isActive: false })
-        .where(inArray(services.slug, [...DEPRECATED_SLUGS]))
+        .where(inArray(services.slug, inactiveSlugs))
         .returning({ slug: services.slug });
       logger.info(
         { slugs: deactivated.map((r) => r.slug) },
-        'deprecated services deactivated',
+        'deprecated/archived services deactivated',
       );
     }
 

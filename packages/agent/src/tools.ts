@@ -31,7 +31,7 @@ export const tools: Anthropic.ToolUnion[] = [
         query: {
           type: 'string',
           description:
-            'Название сервиса или ключевое слово (например "claude", "chatgpt", "spotify", "netflix", "airbnb", "icloud", "notion", "figma", "patreon").',
+            'Название сервиса или ключевое слово (например "claude", "chatgpt", "spotify", "netflix", "app store", "icloud", "figma", "patreon").',
         },
       },
       required: ['query'],

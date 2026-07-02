@@ -119,6 +119,7 @@ const POPULAR_ORDER: readonly string[] = [
   'spotify-premium',
   'netflix-premium',
   'youtube-premium',
+  'apple-app-store',
   'discord-nitro',
   'playstation-plus',
   'xbox-game-pass',
