@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Партнёрская программа Оплатишки — как это работает</title>
+<meta name="robots" content="noindex" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Balsamiq+Sans:wght@400;700&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0f0d11;
+    --surface: #17151b;
+    --surface-2: #1e1c24;
+    --text: #f3f1ea;
+    --text-muted: #a09caa;
+    --teal: #268b89;
+    --teal-soft: #33a3a0;
+    --paper: #fbfcf7;
+    --ink: #0b0a0d;
+    --gold: #e8b64a;
+    --radius: 18px;
+    --shadow: 5px 5px 0 var(--ink);
+    --shadow-lg: 8px 8px 0 var(--ink);
+    --font-display: 'Balsamiq Sans', system-ui, sans-serif;
+    --font-body: 'Rubik', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  .halftone::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.05) 2px, transparent 2px);
+    background-size: 8px 8px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .slide {
+    position: relative;
+    min-height: 100vh;
+    scroll-snap-align: start;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 72px 20px;
+    overflow: hidden;
+  }
+  .inner { position: relative; z-index: 1; width: 100%; max-width: 960px; }
+  .kicker {
+    display: inline-block;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--teal-soft);
+    border: 3px solid var(--teal);
+    border-radius: 10px;
+    padding: 5px 12px;
+    transform: rotate(-2deg);
+    margin-bottom: 20px;
+  }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(34px, 6vw, 60px); line-height: 1.04; }
+  h2 { font-family: var(--font-display); font-weight: 700; font-size: clamp(26px, 4.4vw, 40px); line-height: 1.1; margin-bottom: 14px; }
+  h3 { font-family: var(--font-display); font-weight: 700; font-size: 18px; margin-bottom: 6px; }
+  .lead { font-size: clamp(15px, 2.2vw, 19px); color: var(--text-muted); margin: 14px 0; max-width: 640px; }
+  .hint { font-size: 14px; color: var(--text-muted); margin-top: 26px; }
+  .wordmark {
+    background: var(--paper); color: var(--ink);
+    padding: 0 10px; border-radius: 8px;
+    border: 3px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--teal);
+    display: inline-block; transform: rotate(-1deg);
+  }
+  .bounce { display: inline-block; animation: bob 1.4s ease-in-out infinite; }
+  @keyframes bob { 0%,100%{ transform: translateY(0) } 50%{ transform: translateY(6px) } }
+  .card {
+    position: relative;
+    background: var(--surface);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+  }
+  .grid { display: grid; gap: 16px; }
+  .cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .badge-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: color-mix(in srgb, var(--teal) 24%, transparent);
+    color: var(--teal-soft);
+    border: 3px solid var(--ink);
+    font-family: var(--font-display); font-weight: 700; font-size: 18px;
+    margin-bottom: 10px;
+  }
+  .teal { color: var(--teal-soft); }
+  .gold { color: var(--gold); }
+  .note { font-size: 14px; color: var(--text-muted); margin-top: 20px; }
+  .footnote { font-size: 12px; color: var(--text-muted); margin-top: 22px; }
+  code { background: var(--surface-2); border: 2px solid var(--ink); border-radius: 6px; padding: 2px 7px; font-size: 13px; color: var(--teal-soft); }
+  .you-node {
+    display: inline-flex; flex-direction: column; align-items: center;
+    background: var(--teal); color: var(--paper);
+    border: 3px solid var(--ink); border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 14px 26px; font-family: var(--font-display); font-weight: 700; font-size: 20px;
+  }
+  .you-node small { font-weight: 400; font-size: 12px; opacity: 0.85; margin-top: 2px; }
+  .friends { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+  .friend {
+    background: var(--surface-2); border: 3px solid var(--ink); border-radius: 12px;
+    padding: 10px 16px; font-family: var(--font-display); font-weight: 700; font-size: 14px;
+  }
+  .friend small { display: block; font-weight: 400; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .connector { text-align: center; color: var(--teal); font-size: 22px; line-height: 1; margin: 6px 0; }
+  .lvl { text-align: center; }
+  .lvl .lab { font-family: var(--font-display); font-weight: 700; font-size: 13px; color: var(--text-muted); }
+  .who { font-size: 12px; color: var(--text-muted); margin: 4px 0 8px; }
+  .big-rate { font-family: var(--font-display); font-weight: 700; font-size: 44px; color: var(--teal-soft); }
+  .rate { font-family: var(--font-display); font-weight: 700; color: var(--teal-soft); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); display: inline-block; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
+  .val { color: var(--teal-soft); font-family: var(--font-display); font-weight: 700; }
+  input[type=range] { width: 100%; accent-color: var(--teal); }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 8px 0; cursor: pointer; }
+  .result { background: var(--surface-2); }
+  .status-line { font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+  .status-line em { font-style: normal; font-family: var(--font-display); font-weight: 700; color: var(--gold); }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 2px dashed var(--surface); font-size: 14px; }
+  .bonus-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .bonus-tags span { font-size: 11px; background: color-mix(in srgb, var(--gold) 18%, transparent); color: var(--gold); border: 2px solid var(--gold); border-radius: 6px; padding: 2px 7px; }
+  .total { margin-top: 12px; padding-top: 12px; border-top: 3px solid var(--ink); text-align: center; }
+  .t-lab { font-size: 12px; color: var(--text-muted); }
+  .t-amt { font-family: var(--font-display); font-weight: 700; font-size: 40px; color: var(--teal-soft); }
+  .progress { position: fixed; top: 0; left: 0; height: 4px; background: var(--teal); z-index: 50; width: 0; transition: width 0.15s; }
+  .dots { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 40; }
+  .dots a { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--text-muted); display: block; transition: all 0.2s; }
+  .dots a.active { background: var(--teal); border-color: var(--teal); transform: scale(1.3); }
+  @media (max-width: 820px) {
+    .cols-2, .cols-3 { grid-template-columns: 1fr; }
+    .dots { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+<nav class="dots" id="dots"></nav>
+
+<!-- 1 — HERO -->
+<section class="slide halftone" id="s1">
+  <div class="inner">
+    <span class="kicker">Партнёрская программа</span>
+    <h1>Приводи друзей —<br />зарабатывай с <span class="wordmark">Оплатишкой</span></h1>
+    <p class="lead">Один простой уровень: каждый, кого ты пригласил, приносит тебе процент со своих оплат. Растущие статусы, бонусы, вывод на карту или в крипту.</p>
+    <p class="hint"><b>Как это работает</b> — листай вниз <span class="bounce">↓</span> или стрелки ← →</p>
+  </div>
+</section>
+
+<!-- 2 — СУТЬ (один уровень) -->
+<section class="slide halftone" id="s2">
+  <div class="inner">
+    <span class="kicker">Суть</span>
+    <h2>Ты и твои друзья — один уровень</h2>
+    <p class="lead">Ты приглашаешь людей по личной ссылке. С каждой их оплаты тебе капает процент. Никаких сетей, уровней и сложных схем — только те, кого ты привёл лично.</p>
+    <div style="text-align:center; margin-top:10px">
+      <div class="you-node">ТЫ<small>партнёр</small></div>
+      <div class="connector">┌────────┼────────┐</div>
+      <div class="friends">
+        <div class="friend">Друг 1<small>твой процент с оплат</small></div>
+        <div class="friend">Друг 2<small>твой процент с оплат</small></div>
+        <div class="friend">Друг 3<small>твой процент с оплат</small></div>
+      </div>
+    </div>
+    <p class="note">Друг платит ровно столько же — твой процент идёт из комиссии Оплатишки, а не из его кармана.</p>
+  </div>
+</section>
+
+<!-- 3 — СТАРТ / ССЫЛКА -->
+<section class="slide halftone" id="s3">
+  <div class="inner">
+    <span class="kicker">С чего начать</span>
+    <h2>Всё начинается со ссылки</h2>
+    <div class="grid cols-3">
+      <div class="card"><div class="badge-num">1</div><h3>Берёшь ссылку</h3><p>В кабинете партнёра — личная ссылка с твоим кодом.</p></div>
+      <div class="card"><div class="badge-num">2</div><h3>Друг переходит</h3><p>Открывает бота Оплатишки в Telegram по твоей ссылке.</p></div>
+      <div class="card"><div class="badge-num">3</div><h3>Он — твой реферал</h3><p>Закрепляется за тобой <b>навсегда</b>: реферер не меняется.</p></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Ссылка через Telegram</h3>
+      <p><code>t.me/бот?start=ref_ТВОЙКОД</code> — друг закрепляется за тобой, как только откроет бота.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4 — СТАВКА -->
+<section class="slide halftone" id="s4">
+  <div class="inner">
+    <span class="kicker">Ставка</span>
+    <h2>Один процент — с каждой оплаты</h2>
+    <p class="lead">Базовая ставка — <b class="teal">4%</b> с любой оплаты приглашённого тобой друга. Со статусом она растёт — дальше.</p>
+    <div class="card" style="text-align:center; max-width:420px; margin:0 auto">
+      <div class="lab" style="font-family:var(--font-display); font-weight:700; color:var(--text-muted); font-size:13px">Твои прямые друзья</div>
+      <div class="big-rate" style="font-size:64px">4%</div>
+      <div class="who">с каждой их оплаты, начисляется в баланс</div>
+    </div>
+    <p class="note">Пример: друг оплатил Netflix <b>$15.99</b> → тебе <b class="teal">4% = $0.64</b>. Считается с суммы оплаты (в USD).</p>
+  </div>
+</section>
+
+<!-- 5 — СТАТУСЫ -->
+<section class="slide halftone" id="s5">
+  <div class="inner">
+    <span class="kicker">Статусы</span>
+    <h2>Чем больше сеть — тем выше ставка</h2>
+    <p class="lead">Статус растёт по обороту оплат твоих рефералов за месяц. Поднялся — ставка фиксируется навсегда и уже не падает.</p>
+    <div class="grid cols-3">
+      <div class="card">
+        <h3>Старт</h3>
+        <p><span class="pill"><span class="dot"></span>для всех</span></p>
+        <p style="margin-top:12px"><span class="rate" style="font-size:28px">4%</span></p>
+      </div>
+      <div class="card" style="border-color:var(--teal)">
+        <h3 class="teal">Партнёр</h3>
+        <p><span class="pill"><span class="dot"></span>оборот ≥ $2 000 / мес</span></p>
+        <p style="margin-top:12px"><span class="rate" style="font-size:28px">6%</span><br /><small class="gold">+ $50 разово</small></p>
+      </div>
+      <div class="card" style="border-color:var(--gold)">
+        <h3 class="gold">Топ-партнёр</h3>
+        <p><span class="pill"><span class="dot"></span>оборот ≥ $5 000 / мес</span></p>
+        <p style="margin-top:12px"><span class="rate" style="font-size:28px">7%</span><br /><small class="gold">+ $150 разово</small></p>
+      </div>
+    </div>
+    <p class="note">Оборот считается по оплатам твоих рефералов за календарный месяц. Ставка, однажды поднятая, закрепляется <b>навсегда</b>.</p>
+  </div>
+</section>
+
+<!-- 6 — БОНУСЫ -->
+<section class="slide halftone" id="s6">
+  <div class="inner">
+    <span class="kicker">Бонусы</span>
+    <h2>Сверх процента — 4 усилителя</h2>
+    <div class="grid cols-2">
+      <div class="card"><h3 class="gold">Достижение статуса</h3><p>Разовый бонус при подъёме: <b class="gold">+$50</b> (Партнёр), <b class="gold">+$150</b> (Топ-партнёр).</p></div>
+      <div class="card"><h3 class="gold">Спринт новых</h3><p><b>10+</b> новых активных рефералов за месяц → <b class="gold">+$30</b>.</p></div>
+      <div class="card"><h3 class="gold">Серия</h3><p><b>3 месяца подряд</b> с выполненным планом → <b class="gold">+$25 / $75 / $200</b> (по статусу).</p></div>
+      <div class="card"><h3 class="gold">Буст оборота</h3><p>Оборот сети <b>≥ 150%</b> плана → <b class="gold">+1%</b> к ставке на следующий месяц.</p></div>
+    </div>
+    <p class="note">Статусы и бонусы пересчитываются автоматически по итогам каждого месяца.</p>
+  </div>
+</section>
+
+<!-- 7 — КАЛЬКУЛЯТОР -->
+<section class="slide halftone" id="s7">
+  <div class="inner">
+    <span class="kicker">Живой расчёт</span>
+    <h2>Прикинь свой доход</h2>
+    <p class="lead">Двигай ползунок — считает по реальным формулам программы (один уровень).</p>
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="field">
+          <label>Оборот оплат твоих рефералов за месяц · <span class="val" id="vTurnover">$2000</span></label>
+          <input type="range" id="turnover" min="0" max="12000" step="100" value="2000" />
+        </div>
+        <label class="toggle"><input type="checkbox" id="sprint" /> 10+ новых активных за месяц (спринт +$30)</label>
+        <label class="toggle"><input type="checkbox" id="boost" /> оборот ≥150% плана (буст +1% к ставке)</label>
+      </div>
+      <div class="card result">
+        <div class="status-line">Статус: <em id="rStatus">—</em></div>
+        <div class="row"><span>Ставка <b id="rRate" class="rate"></b></span><b id="rBase">$0</b></div>
+        <div class="bonus-tags" id="bonusTags"></div>
+        <div class="total">
+          <div class="t-lab">Доход за месяц ≈</div>
+          <div class="t-amt" id="eTotal">$0</div>
+        </div>
+      </div>
+    </div>
+    <p class="footnote">Начисления — в USD (в баланс), выводятся на карту (₽) или в USDT. Оценка: комиссия с оборота без разовых бонусов достижения статуса; в проде каждая оплата округляется вниз до цента отдельно.</p>
+  </div>
+</section>
+
+<!-- 8 — ВЫПЛАТЫ -->
+<section class="slide halftone" id="s8">
+  <div class="inner">
+    <span class="kicker">Вывод</span>
+    <h2>Забираешь заработанное</h2>
+    <div class="grid cols-2">
+      <div class="card"><h3>💳 На карту РФ</h3><p>Комиссия вывода <b>3.5%</b> — удерживается из суммы вывода.</p></div>
+      <div class="card"><h3>🪙 В крипте (USDT)</h3><p>Сети TRC20 / ERC20 / TON. Комиссия <b>1%</b>.</p></div>
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><h3>Безопасно</h3><p>Полный номер карты и CVV мы не храним и не логируем — сохраняется только маска <code>****1234</code>. Номер проверяется по алгоритму Луна.</p></div>
+      <div class="card"><h3>Прозрачно</h3><p>Статусы заявки: <b>запрошена → в обработке → выплачено</b> (или отклонена). Понижений нет, каждая заявка закрывается один раз.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 — ГАРАНТИИ -->
+<section class="slide halftone" id="s9">
+  <div class="inner">
+    <span class="kicker">Честный расчёт</span>
+    <h2>Почему цифрам можно верить</h2>
+    <div class="grid cols-3">
+      <div class="card"><h3>Учитывается один раз</h3><p>Каждая оплата попадает в неизменяемый журнал начислений с защитой от дублей.</p></div>
+      <div class="card"><h3>Программа устойчива</h3><p>Инвариант: сумма всех начислений по заказу никогда не больше комиссии Оплатишки.</p></div>
+      <div class="card"><h3>Автопрогрессия</h3><p>Статусы и бонусы пересчитываются кроном по итогам каждого месяца — без ручной магии.</p></div>
+    </div>
+    <p class="lead" style="margin-top:34px">Кабинет партнёра — <code>/partner</code> на сайте и в Telegram-мини-аппе: ссылка, сеть, начисления, вывод.</p>
+    <p class="footnote">Демонстрация механики партнёрской программы Оплатишки. Все ставки, пороги и бонусы — из рабочих правил (одноуровневая программа).</p>
+  </div>
+</section>
+
+<script>
+(function () {
+  // ── Константы из кода (packages/types/src/referral*.ts) — USD-центы, bps ──
+  // Одноуровневая программа: ставка L1 по статусу, пороги оборота сети.
+  var STATUSES = [
+    { threshold: 0,      l1: 400, bonus: 0,     label: 'Старт' },
+    { threshold: 200000, l1: 600, bonus: 5000,  label: 'Партнёр' },
+    { threshold: 500000, l1: 700, bonus: 15000, label: 'Топ-партнёр' },
+  ];
+  var BOOST_BPS = 100;      // +1% буст ставки
+  var SPRINT_BONUS = 3000;  // +$30 за 10 новых активных
+
+  function highestStatus(totalCents) {
+    var s = 0;
+    for (var i = 1; i < STATUSES.length; i++) if (totalCents >= STATUSES[i].threshold) s = i;
+    return s;
+  }
+  function accrue(baseCents, bps) { return baseCents <= 0 || bps <= 0 ? 0 : Math.floor(baseCents * bps / 10000); }
+  function usd(cents) { return '$' + (cents / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 }); }
+  function pct(bps) { return (bps / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%'; }
+
+  var els = {
+    turnover: document.getElementById('turnover'),
+    vTurnover: document.getElementById('vTurnover'),
+    sprint: document.getElementById('sprint'),
+    boost: document.getElementById('boost'),
+    rStatus: document.getElementById('rStatus'),
+    rRate: document.getElementById('rRate'),
+    rBase: document.getElementById('rBase'),
+    bonusTags: document.getElementById('bonusTags'),
+    eTotal: document.getElementById('eTotal'),
+  };
+
+  function recalc() {
+    var turnoverCents = Number(els.turnover.value) * 100;
+    els.vTurnover.textContent = usd(turnoverCents);
+
+    var sIdx = highestStatus(turnoverCents);
+    var status = STATUSES[sIdx];
+    var rate = status.l1 + (els.boost.checked ? BOOST_BPS : 0);
+
+    var base = accrue(turnoverCents, rate);
+    var bonuses = 0;
+    var tags = [];
+    if (els.sprint.checked) { bonuses += SPRINT_BONUS; tags.push('Спринт +' + usd(SPRINT_BONUS)); }
+    if (els.boost.checked) { tags.push('Буст +1% к ставке'); }
+
+    els.rStatus.textContent = status.label;
+    els.rRate.textContent = pct(rate);
+    els.rBase.textContent = usd(base);
+    els.bonusTags.innerHTML = tags.map(function (t) { return '<span>' + t + '</span>'; }).join('');
+    els.eTotal.textContent = usd(base + bonuses);
+  }
+
+  els.turnover.addEventListener('input', recalc);
+  els.sprint.addEventListener('change', recalc);
+  els.boost.addEventListener('change', recalc);
+  recalc();
+
+  // ── Навигация: точки + прогресс + стрелки ──
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var dots = document.getElementById('dots');
+  slides.forEach(function (s, i) {
+    var a = document.createElement('a');
+    a.href = '#' + s.id;
+    a.setAttribute('aria-label', 'Слайд ' + (i + 1));
+    dots.appendChild(a);
+  });
+  var dotEls = Array.prototype.slice.call(dots.children);
+  var progress = document.getElementById('progress');
+
+  function onScroll() {
+    var h = document.documentElement.scrollHeight - window.innerHeight;
+    progress.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + '%';
+    var idx = Math.round(window.scrollY / window.innerHeight);
+    dotEls.forEach(function (d, i) { d.classList.toggle('active', i === idx); });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  document.addEventListener('keydown', function (e) {
+    var idx = Math.round(window.scrollY / window.innerHeight);
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown') {
+      if (slides[idx + 1]) { e.preventDefault(); slides[idx + 1].scrollIntoView(); }
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+      if (slides[idx - 1]) { e.preventDefault(); slides[idx - 1].scrollIntoView(); }
+    }
+  });
+})();
+</script>
+</body>
+</html>

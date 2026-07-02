@@ -24,15 +24,15 @@ import { formatBps, formatLedgerDate, formatMonthShort, formatUsd } from './form
  * одну сводку рефералов и единственную ссылку-приглашение — Telegram deep-link.
  */
 
-type Screen = 'dashboard' | 'network' | 'link' | 'history' | 'stats';
+// Кабинет упрощён (2026-07-02): всё на одном дашборде (ссылка, сеть, доход,
+// статус, история — прокруткой) + отдельная страница «Как это работает».
+// Маркетинговый лендинг для приглашения друзей — /partner-presentation.html.
+type Screen = 'dashboard' | 'how';
 type Phase = 'loading' | 'error' | 'disabled' | 'ready';
 
 const NAV: { key: Screen; icon: string; label: string }[] = [
   { key: 'dashboard', icon: '🏠', label: 'Дашборд' },
-  { key: 'network', icon: '👥', label: 'Рефералы' },
-  { key: 'link', icon: '🔗', label: 'Ссылка' },
-  { key: 'history', icon: '🧾', label: 'История' },
-  { key: 'stats', icon: '📈', label: 'Статистика' },
+  { key: 'how', icon: '💡', label: 'Как это работает' },
 ];
 
 // Локальные акценты — бренд-токены (teal-light / glasses-light).
@@ -179,11 +179,10 @@ export function PartnerCabinet({
           </header>
 
           <div className="mx-auto max-w-[920px] px-5 py-6">
-            {screen === 'dashboard' && <Dashboard snap={snap} onScreen={setScreen} />}
-            {screen === 'network' && <Network snap={snap} />}
-            {screen === 'link' && <LinkScreen snap={snap} onCopied={() => showToast('Ссылка скопирована')} />}
-            {screen === 'history' && <History snap={snap} />}
-            {screen === 'stats' && <Stats snap={snap} />}
+            {screen === 'dashboard' && (
+              <Dashboard snap={snap} onCopied={() => showToast('Ссылка скопирована')} onHow={() => setScreen('how')} />
+            )}
+            {screen === 'how' && <HowItWorks snap={snap} />}
           </div>
         </main>
       </div>
@@ -254,7 +253,15 @@ function NavButton({
 
 // ─── DASHBOARD ──────────────────────────────────────────────────────────────
 
-function Dashboard({ snap, onScreen }: { snap: ReferralSnapshot; onScreen: (s: Screen) => void }) {
+function Dashboard({
+  snap,
+  onCopied,
+  onHow,
+}: {
+  snap: ReferralSnapshot;
+  onCopied: () => void;
+  onHow: () => void;
+}) {
   const progressPct = Math.min(100, snap.progress.progressBps / 100);
   return (
     <div className="space-y-4">
@@ -337,16 +344,29 @@ function Dashboard({ snap, onScreen }: { snap: ReferralSnapshot; onScreen: (s: S
         </div>
       </section>
 
+      {/* Ссылка-приглашение — ключевое действие партнёра, сразу под hero. */}
+      <LinkCard snap={snap} onCopied={onCopied} onHow={onHow} />
+
+      {/* Сеть рефералов. */}
+      <SectionHead title="Мои рефералы" />
+      <NetworkCard snap={snap} />
+
       <div className="grid gap-4 md:grid-cols-2">
         <SprintCard snap={snap} />
         <RateCard snap={snap} />
       </div>
 
-      <SectionHead title="Мои рефералы" action="Подробнее →" onAction={() => onScreen('network')} />
-      <NetworkCard snap={snap} compact />
+      {/* Доход по месяцам. */}
+      <SectionHead title="Доход по месяцам" />
+      <MonthlyIncomeChart snap={snap} />
 
-      <SectionHead title="Последние начисления" action="Все →" onAction={() => onScreen('history')} />
-      <HistoryList entries={snap.history.slice(0, 4)} empty="Здесь появятся начисления с оплат твоей сети." />
+      {/* Путь к статусу. */}
+      <SectionHead title="Путь к статусу" />
+      <CircleTimeline snap={snap} />
+
+      {/* Полная история начислений. */}
+      <SectionHead title="История начислений" />
+      <HistoryList entries={snap.history} empty="Здесь появятся начисления с оплат твоей сети." />
     </div>
   );
 }
@@ -443,17 +463,7 @@ function RateCard({ snap }: { snap: ReferralSnapshot }) {
   );
 }
 
-// ─── NETWORK ────────────────────────────────────────────────────────────────
-
-function Network({ snap }: { snap: ReferralSnapshot }) {
-  return (
-    <div className="space-y-4">
-      <NetworkCard snap={snap} />
-      <SectionHead title="Путь к следующему статусу" />
-      <CircleTimeline snap={snap} />
-    </div>
-  );
-}
+// ─── NETWORK / LINK / CHARTS (составные части дашборда) ──────────────────────
 
 function NetworkCard({ snap, compact }: { snap: ReferralSnapshot; compact?: boolean }) {
   const n = snap.network;
@@ -551,9 +561,17 @@ function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
   );
 }
 
-// ─── LINK ───────────────────────────────────────────────────────────────────
+// ─── LINK CARD ──────────────────────────────────────────────────────────────
 
-function LinkScreen({ snap, onCopied }: { snap: ReferralSnapshot; onCopied: () => void }) {
+function LinkCard({
+  snap,
+  onCopied,
+  onHow,
+}: {
+  snap: ReferralSnapshot;
+  onCopied: () => void;
+  onHow: () => void;
+}) {
   // Единственный канал приглашения — Telegram deep-link: реферал закрепляется,
   // когда друг запускает бота по ссылке (веб-захвата больше нет).
   const link = snap.telegramLink ?? '';
@@ -567,27 +585,28 @@ function LinkScreen({ snap, onCopied }: { snap: ReferralSnapshot; onCopied: () =
     void navigator.clipboard?.writeText(link).then(onCopied).catch(() => onCopied());
   }, [link, onCopied]);
   return (
-    <div className="space-y-4">
-      <section className={`relative overflow-hidden p-7 text-center ${CARD} !shadow-[6px_6px_0_var(--shadow-ink)]`}>
-        <Image
-          src={mascotSrc('presenting')}
-          alt="Оплатишка"
-          width={96}
-          height={96}
-          className="mx-auto mb-1.5 h-auto w-24 object-contain [filter:drop-shadow(3px_4px_0_rgba(0,0,0,0.3))]"
-        />
-        <div className="font-display text-[26px] font-bold">Твоя ссылка-приглашение</div>
-        <div className="mb-5 font-body text-[13px] text-[var(--text-muted)]">
-          Работает через Telegram: друг открывает бота по ссылке — и закрепляется за тобой
-        </div>
-        <div className={`mx-auto mb-4 flex w-full max-w-[460px] items-center justify-between gap-2.5 p-2.5 pl-4 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
-          <span className="min-w-0 flex-1 truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
-            {link || 'ссылка готовится…'}
-          </span>
-          <ComicButton onClick={copy} disabled={!link} className="shrink-0 !px-3.5 !py-2 text-[13px]">
-            Скопировать
-          </ComicButton>
-        </div>
+    <section className={`relative overflow-hidden p-7 text-center ${CARD} !shadow-[6px_6px_0_var(--shadow-ink)]`}>
+      <Image
+        src={mascotSrc('presenting')}
+        alt="Оплатишка"
+        width={96}
+        height={96}
+        className="mx-auto mb-1.5 h-auto w-24 object-contain [filter:drop-shadow(3px_4px_0_rgba(0,0,0,0.3))]"
+      />
+      <div className="font-display text-[26px] font-bold">Твоя ссылка-приглашение</div>
+      <div className="mb-5 font-body text-[13px] text-[var(--text-muted)]">
+        Работает через Telegram: друг открывает бота по ссылке — и закрепляется за тобой.
+        Ты получаешь {formatBps(snap.rates.l1Bps)} с каждой его оплаты — всегда.
+      </div>
+      <div className={`mx-auto mb-4 flex w-full max-w-[460px] items-center justify-between gap-2.5 p-2.5 pl-4 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
+        <span className="min-w-0 flex-1 truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
+          {link || 'ссылка готовится…'}
+        </span>
+        <ComicButton onClick={copy} disabled={!link} className="shrink-0 !px-3.5 !py-2 text-[13px]">
+          Скопировать
+        </ComicButton>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5">
         {shareUrl && (
           <a
             href={shareUrl}
@@ -598,55 +617,56 @@ function LinkScreen({ snap, onCopied }: { snap: ReferralSnapshot; onCopied: () =
             ✈️ Поделиться в Telegram
           </a>
         )}
-      </section>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className={`p-5 ${CARD}`}>
-          <div className="mb-3.5 font-display text-[14px] font-bold">💡 Как это работает</div>
-          {[
-            { n: '1', t: 'Отправь другу свою ссылку в Telegram' },
-            { n: '2', t: 'Друг открывает бота и оплачивает любую подписку' },
-            {
-              n: '3',
-              t: `Ты получаешь ${formatBps(snap.rates.l1Bps)} с каждой его оплаты — всегда`,
-            },
-          ].map((r) => (
-            <div key={r.n} className="flex items-center gap-3 border-b-2 border-dashed border-[var(--surface-3)] py-2.5 last:border-0">
-              <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[2.5px] border-[var(--shadow-ink)] font-display text-[14px] font-bold"
-                style={{ background: 'color-mix(in srgb, var(--acc) 22%, transparent)', color: 'var(--acc)' }}
-              >
-                {r.n}
-              </span>
-              <span className="font-body text-[13px]">{r.t}</span>
-            </div>
-          ))}
-        </section>
-        <section className={`p-5 ${CARD}`}>
-          <div className="mb-3.5 font-display text-[14px] font-bold">🏆 Твой статус</div>
-          <div className={`mb-2.5 p-3 ${SOFT}`}>
-            <div className="font-body text-[11px] text-[var(--text-muted)]">Текущий статус</div>
-            <div className="font-display text-[22px] font-bold">{snap.circle.label}</div>
-          </div>
-          <div className={`p-3 ${SOFT}`}>
-            <div className="font-body text-[11px] text-[var(--text-muted)]">Заработано всего</div>
-            <div className="font-display text-[22px] font-bold text-[var(--success)]">{formatUsd(snap.earnedTotalUsdCents)}</div>
-          </div>
-        </section>
+        <button
+          type="button"
+          onClick={onHow}
+          className="inline-flex items-center gap-1.5 font-body text-[13px] text-[var(--link)] underline-offset-2 hover:underline"
+        >
+          💡 Как работает программа →
+        </button>
       </div>
-    </div>
+    </section>
   );
 }
 
-// ─── HISTORY ────────────────────────────────────────────────────────────────
+// ─── MONTHLY INCOME CHART ───────────────────────────────────────────────────
 
-function History({ snap }: { snap: ReferralSnapshot }) {
+function MonthlyIncomeChart({ snap }: { snap: ReferralSnapshot }) {
+  const maxMonthly = Math.max(1, ...snap.monthlyIncome.map((m) => m.usdCents));
   return (
-    <div className="space-y-3">
-      <HistoryList entries={snap.history} empty="Пока пусто. Начисления появятся после первых оплат в твоей сети." />
-    </div>
+    <section className={`p-5 ${CARD}`}>
+      <div className="flex items-end justify-between">
+        <div>
+          <div className="font-display text-[14px] font-bold">💰 Общий доход</div>
+          <div className="font-display text-[38px] font-bold leading-none text-[var(--success)]">
+            {formatUsd(snap.earnedTotalUsdCents)}
+          </div>
+          <div className="mt-1 font-body text-[12px] text-[var(--text-muted)]">за всё время</div>
+        </div>
+      </div>
+      <div className="mt-4 flex h-[92px] items-end gap-2">
+        {snap.monthlyIncome.map((m, i) => (
+          <div key={m.month} className="flex flex-1 flex-col items-center gap-1.5">
+            <span className="font-display text-[11px] font-bold text-[var(--text-muted)]">
+              {m.usdCents > 0 ? formatUsd(m.usdCents) : ''}
+            </span>
+            <div
+              className="w-full rounded-t-[8px] border-[2.5px] border-[var(--shadow-ink)]"
+              style={{
+                height: `${Math.max(6, (m.usdCents / maxMonthly) * 64)}px`,
+                background:
+                  i === snap.monthlyIncome.length - 1 ? 'var(--success)' : 'color-mix(in srgb, var(--success) 45%, transparent)',
+              }}
+            />
+            <span className="font-body text-[10px] text-[var(--text-muted)]">{formatMonthShort(m.month)}</span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
+
+// ─── HISTORY LIST ───────────────────────────────────────────────────────────
 
 function HistoryList({ entries, empty }: { entries: ReferralHistoryEntry[]; empty: string }) {
   if (entries.length === 0) {
@@ -707,67 +727,100 @@ function initials(name: string): string {
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '★';
 }
 
-// ─── STATS ──────────────────────────────────────────────────────────────────
+// ─── HOW IT WORKS ───────────────────────────────────────────────────────────
 
-function Stats({ snap }: { snap: ReferralSnapshot }) {
-  const maxMonthly = Math.max(1, ...snap.monthlyIncome.map((m) => m.usdCents));
-  const activePct = snap.network.total > 0 ? (snap.network.active / snap.network.total) * 100 : 0;
+function HowItWorks({ snap }: { snap: ReferralSnapshot }) {
+  const steps = [
+    { n: '1', t: 'Возьми свою ссылку на дашборде и отправь другу в Telegram.' },
+    { n: '2', t: 'Друг открывает бота по ссылке и оплачивает любую подписку.' },
+    { n: '3', t: `Ты получаешь ${formatBps(snap.rates.l1Bps)} с каждой его оплаты — сразу в баланс.` },
+  ];
+  const statuses = [
+    { label: 'Старт', threshold: 'от $0', rate: '4%', note: 'старт для всех' },
+    { label: 'Партнёр', threshold: 'сеть ≥ $2 000 / мес', rate: '6%', note: '+ $50 бонус' },
+    { label: 'Топ-партнёр', threshold: 'сеть ≥ $5 000 / мес', rate: '7%', note: '+ $150 бонус' },
+  ];
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className={`p-5 ${CARD}`}>
-          <div className="mb-1 font-display text-[14px] font-bold">💰 Общий доход</div>
-          <div className="font-display text-[44px] font-bold leading-none text-[var(--success)]">
-            {formatUsd(snap.earnedTotalUsdCents)}
-          </div>
-          <div className="mt-1 font-body text-[12px] text-[var(--text-muted)]">за всё время</div>
-          <div className="mt-4 flex h-[92px] items-end gap-2">
-            {snap.monthlyIncome.map((m, i) => (
-              <div key={m.month} className="flex flex-1 flex-col items-center gap-1.5">
-                <span className="font-display text-[11px] font-bold text-[var(--text-muted)]">
-                  {m.usdCents > 0 ? formatUsd(m.usdCents) : ''}
-                </span>
-                <div
-                  className="w-full rounded-t-[8px] border-[2.5px] border-[var(--shadow-ink)]"
-                  style={{
-                    height: `${Math.max(6, (m.usdCents / maxMonthly) * 64)}px`,
-                    background:
-                      i === snap.monthlyIncome.length - 1 ? 'var(--success)' : 'color-mix(in srgb, var(--success) 45%, transparent)',
-                  }}
-                />
-                <span className="font-body text-[10px] text-[var(--text-muted)]">{formatMonthShort(m.month)}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className={`p-5 ${CARD}`}>
-          <div className="mb-1 font-display text-[14px] font-bold">🌱 Мои рефералы</div>
-          <div className="font-display text-[44px] font-bold leading-none" style={{ color: 'var(--acc)' }}>
-            {snap.network.total}
-          </div>
-          <div className="mt-1 font-body text-[12px] text-[var(--text-muted)]">приглашено всего</div>
-          <div className="mt-5 space-y-3">
-            <div className="flex items-center gap-3">
-              <span className="w-20 font-body text-[12px] text-[var(--text-muted)]">Активных</span>
-              <div className="h-3 flex-1 overflow-hidden rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)]">
-                <div className="h-full rounded-full" style={{ width: `${activePct}%`, background: 'var(--acc)' }} />
-              </div>
-              <span className="w-10 text-right font-display text-[13px] font-bold">{snap.network.active}</span>
-            </div>
-            <div className="flex items-center justify-between border-t-2 border-dashed border-[var(--surface-3)] pt-3">
-              <span className="font-body text-[12px] text-[var(--text-muted)]">Оплаты рефералов за месяц</span>
-              <span className="font-display text-[15px] font-bold">{formatUsd(snap.network.turnoverThisMonthUsdCents)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="font-body text-[12px] text-[var(--text-muted)]">Твой доход с них за всё время</span>
-              <span className="font-display text-[15px] font-bold text-[var(--success)]">
-                {formatUsd(snap.network.incomeAllTimeUsdCents)}
+      {/* Суть — одноуровневая программа. */}
+      <section className={`p-6 ${CARD}`}>
+        <div className="font-display text-[20px] font-bold">Как это работает</div>
+        <p className="mt-1.5 font-body text-[13px] text-[var(--text-muted)]">
+          Простая партнёрская программа в один уровень: ты получаешь процент с оплат тех, кого
+          пригласил лично. Никаких сетей и уровней — только твои друзья. Друг платит ровно
+          столько же, твой процент — из комиссии Оплатишки, а не из его кармана.
+        </p>
+        <div className="mt-4 space-y-2.5">
+          {steps.map((s) => (
+            <div key={s.n} className={`flex items-center gap-3 p-3 ${SOFT}`}>
+              <span
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[2.5px] border-[var(--shadow-ink)] font-display text-[14px] font-bold"
+                style={{ background: 'color-mix(in srgb, var(--acc) 22%, transparent)', color: 'var(--acc)' }}
+              >
+                {s.n}
               </span>
+              <span className="font-body text-[13px]">{s.t}</span>
             </div>
-          </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Ставка растёт со статусом. */}
+      <section className={`p-6 ${CARD}`}>
+        <div className="font-display text-[16px] font-bold">Чем больше сеть — тем выше ставка</div>
+        <p className="mt-1 mb-4 font-body text-[13px] text-[var(--text-muted)]">
+          Статус растёт по обороту оплат твоих рефералов за месяц. Поднялся — ставка фиксируется
+          навсегда и уже не падает.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {statuses.map((s) => (
+            <div key={s.label} className={`p-4 ${SOFT}`}>
+              <div className="font-display text-[15px] font-bold">{s.label}</div>
+              <div className="mt-0.5 font-body text-[11px] text-[var(--text-muted)]">{s.threshold}</div>
+              <div className="mt-2 font-display text-[28px] font-bold leading-none" style={{ color: 'var(--acc)' }}>
+                {s.rate}
+              </div>
+              <div className="mt-1 font-body text-[11px] text-[var(--color-skin)]">{s.note}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Бонусы и выплаты. */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <section className={`p-6 ${CARD}`}>
+          <div className="mb-3 font-display text-[16px] font-bold">🎁 Бонусы</div>
+          <ul className="space-y-2 font-body text-[13px]">
+            <li>• <strong>Достижение статуса</strong> — разовый бонус $50 / $150.</li>
+            <li>• <strong>Спринт</strong> — 10+ новых активных рефералов за месяц → +$30.</li>
+            <li>• <strong>Серия</strong> — 3 месяца подряд с планом → +$25 / $75 / $200.</li>
+            <li>• <strong>Буст</strong> — оборот ≥150% плана → +1% к ставке на месяц.</li>
+          </ul>
+        </section>
+        <section className={`p-6 ${CARD}`}>
+          <div className="mb-3 font-display text-[16px] font-bold">💸 Выплаты</div>
+          <ul className="space-y-2 font-body text-[13px]">
+            <li>• На карту РФ — комиссия вывода <strong>3.5%</strong>.</li>
+            <li>• В крипте (USDT) — комиссия <strong>1%</strong>.</li>
+            <li>• Минимальная сумма вывода — <strong>{formatUsd(snap.minPayoutUsdCents)}</strong>.</li>
+            <li>• Полный номер карты и CVV мы не храним — только маска.</li>
+          </ul>
         </section>
       </div>
+
+      {/* Полная презентация (маркетинговый лендинг для друзей). */}
+      <a
+        href="/partner-presentation.html"
+        target="_blank"
+        rel="noreferrer"
+        className={`flex items-center justify-between p-5 ${CARD} transition-transform hover:-translate-y-0.5`}
+      >
+        <div>
+          <div className="font-display text-[15px] font-bold">📊 Открыть презентацию</div>
+          <div className="font-body text-[12px] text-[var(--text-muted)]">Красивое объяснение программы — можно показать другу</div>
+        </div>
+        <span className="font-display text-[20px]">→</span>
+      </a>
     </div>
   );
 }
