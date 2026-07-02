@@ -22,19 +22,15 @@ export type ReferralCircleView = {
   achievementBonusUsdCents: number;
 };
 
-/** Эффективные ставки цепочки (bps) + ставка топ-круга для «заблокированного». */
+/** Эффективная ставка партнёра (bps) + ставка топ-статуса для «заблокированной». */
 export type ReferralRatesView = {
   l1Bps: number;
-  l2Bps: number;
-  l3Bps: number;
-  /** Ставка L1 топ-круга (для строки «🔒 Круг 3 — 7%»). */
+  /** Ставка топ-статуса (для строки «🔒 Топ-партнёр — 7%»). */
   topL1Bps: number;
 };
 
-/** Один уровень сети: размер, активность, оборот и доход партнёра с него. */
-export type ReferralLevelView = {
-  level: number;
-  rateBps: number;
+/** Сводка рефералов (программа одноуровневая): размер, активность, оборот и доход. */
+export type ReferralNetworkView = {
   total: number;
   active: number;
   turnoverThisMonthUsdCents: number;
@@ -42,11 +38,11 @@ export type ReferralLevelView = {
   incomeAllTimeUsdCents: number;
 };
 
-/** Прогресс к следующему кругу (по обороту сети за месяц). */
+/** Прогресс к следующему статусу (по обороту рефералов за месяц). */
 export type ReferralProgressView = {
   networkTurnoverThisMonthUsdCents: number;
   nextThresholdUsdCents: number | null;
-  /** 0..10000 (bps пути до следующего круга); 10000 на топ-круге. */
+  /** 0..10000 (bps пути до следующего статуса); 10000 на топ-статусе. */
   progressBps: number;
 };
 
@@ -73,8 +69,6 @@ export type ReferralHistoryEntry = {
   kind: ReferralHistoryKind;
   title: string;
   subtitle: string;
-  /** Уровень сети (1..3) для commission; null для бонусов/выводов. */
-  level: number | null;
   /** USD-центы; отрицательные — вывод. */
   amountUsdCents: number;
   status: string;
@@ -93,9 +87,10 @@ export type ReferralSnapshot = {
   /** Личность подтверждена Telegram — требуется для выводов. */
   telegramLinked: boolean;
   referralCode: string | null;
-  /** Ссылка для веб-захвата: `<APP_URL>?ref=<code>`. */
-  webLink: string | null;
-  /** Deep-link бота: `t.me/<bot>?start=ref_<code>`. */
+  /**
+   * Deep-link бота: `t.me/<bot>?start=ref_<code>` — ЕДИНСТВЕННЫЙ канал
+   * приглашения (веб-захват `?ref=` удалён 2026-07-02).
+   */
   telegramLink: string | null;
 
   circle: ReferralCircleView;
@@ -112,8 +107,8 @@ export type ReferralSnapshot = {
 
   progress: ReferralProgressView;
   sprint: ReferralSprintView;
-  /** Ровно 3 уровня (отсутствующие — нулями). */
-  levels: ReferralLevelView[];
+  /** Сводка прямых рефералов (единственный уровень программы). */
+  network: ReferralNetworkView;
   /** Доход помесячно — 6 точек (старые→новые), пропуски нулями. */
   monthlyIncome: { month: string; usdCents: number }[];
   history: ReferralHistoryEntry[];
@@ -138,11 +133,6 @@ const BONUS_TITLES: Record<string, string> = {
   serial_bonus: 'Серийный бонус',
 };
 
-function commissionSubtitle(row: ReferralLedgerRow): string {
-  const what = row.serviceName ?? row.customDescription ?? 'оплата';
-  return `Ур. ${row.level} · ${what}`;
-}
-
 /** Маппинг строки ledger'а в запись истории. */
 export function ledgerToHistoryEntry(row: ReferralLedgerRow): ReferralHistoryEntry {
   const reversed = row.status === 'reversed';
@@ -150,8 +140,7 @@ export function ledgerToHistoryEntry(row: ReferralLedgerRow): ReferralHistoryEnt
     return {
       kind: 'commission',
       title: row.sourceName ?? 'Реферал',
-      subtitle: commissionSubtitle(row),
-      level: row.level,
+      subtitle: row.serviceName ?? row.customDescription ?? 'оплата',
       amountUsdCents: row.amountUsdCents,
       status: row.status,
       statusLabel: ACCRUAL_STATUS_LABELS[row.status] ?? row.status,
@@ -163,7 +152,6 @@ export function ledgerToHistoryEntry(row: ReferralLedgerRow): ReferralHistoryEnt
     kind: (row.kind as ReferralHistoryKind) ?? 'circle_bonus',
     title: BONUS_TITLES[row.kind] ?? 'Бонус',
     subtitle: '',
-    level: null,
     amountUsdCents: row.amountUsdCents,
     status: row.status,
     statusLabel: ACCRUAL_STATUS_LABELS[row.status] ?? row.status,
@@ -178,7 +166,6 @@ export function payoutToHistoryEntry(row: ReferralPayoutRow): ReferralHistoryEnt
     kind: 'payout',
     title: 'Вывод средств',
     subtitle: PAYOUT_STATUS_LABELS[row.status] ?? row.status,
-    level: null,
     amountUsdCents: -row.amountUsdCents,
     status: row.status,
     statusLabel: PAYOUT_STATUS_LABELS[row.status] ?? row.status,

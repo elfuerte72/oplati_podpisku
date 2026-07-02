@@ -19,95 +19,79 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * Деньги — USD-центы integer. Суммы кастуются `::bigint` + `Number` (без
  * переполнения на больших оборотах, в духе инварианта «деньги — integer»).
  *
- * Заметка по сети: обход дерева `referred_by` ограничен глубиной 3 (`level < 3`
- * в рекурсивном CTE), так что запрос всегда останавливается — даже если бы в
- * данных оказался цикл (immutable-referrer + CHECK самореферала их исключают).
- * «Состоявшаяся покупка» реферала = заказ в статусах paid/in_fulfillment/completed.
+ * Программа одноуровневая (упрощение 2026-07-02): «сеть» = прямые рефералы
+ * (`referred_by = userId`), без рекурсивного обхода. «Состоявшаяся покупка»
+ * реферала = заказ в статусах paid/in_fulfillment/completed.
  */
 
 const PURCHASED = sql`('paid','in_fulfillment','completed')`;
 const MONTH_START = sql`date_trunc('month', now())`;
 
-export type ReferralNetworkLevel = {
-  level: number;
+export type ReferralNetworkSummary = {
   total: number;
   active: number;
   turnoverThisMonthUsdCents: number;
 };
 
 /**
- * Сводка сети по 3 уровням: всего рефералов, активных (≥1 покупка) и оборот их
- * заказов за текущий месяц (USD-центы). Один рекурсивный обход дерева вниз.
- * Возвращает по строке на уровень, где есть хоть один реферал (уровни без сети
- * опускаются — заполняет нулями вызывающий код).
+ * Сводка прямых рефералов: всего, активных (≥1 покупка) и оборот их заказов за
+ * текущий месяц (USD-центы). Программа одноуровневая — без обхода дерева.
  */
-export async function getReferralNetwork(db: DB, userId: string): Promise<ReferralNetworkLevel[]> {
+export async function getReferralNetwork(
+  db: DB,
+  userId: string,
+): Promise<ReferralNetworkSummary> {
   const rows = await db.execute<{
-    level: number;
     total: string | number;
     active: string | number;
     turnover_month: string | number;
   }>(sql`
-    WITH RECURSIVE net AS (
-      SELECT id, 1 AS level FROM users WHERE referred_by = ${userId}
-      UNION ALL
-      SELECT u.id, n.level + 1
-      FROM users u
-      JOIN net n ON u.referred_by = n.id
-      WHERE n.level < 3
-    )
     SELECT
-      n.level,
       COUNT(*) AS total,
       COUNT(*) FILTER (WHERE act.is_active) AS active,
       COALESCE(SUM(mt.turnover), 0)::bigint AS turnover_month
-    FROM net n
+    FROM users u
     LEFT JOIN LATERAL (
       SELECT EXISTS (
         SELECT 1 FROM orders o
-        WHERE o.user_id = n.id AND o.status IN ${PURCHASED}
+        WHERE o.user_id = u.id AND o.status IN ${PURCHASED}
       ) AS is_active
     ) act ON true
     LEFT JOIN LATERAL (
       SELECT COALESCE(SUM(o.original_amount), 0) AS turnover
       FROM orders o
-      WHERE o.user_id = n.id
+      WHERE o.user_id = u.id
         AND o.status IN ${PURCHASED}
         AND o.original_amount IS NOT NULL
         AND o.paid_at >= ${MONTH_START}
     ) mt ON true
-    GROUP BY n.level
-    ORDER BY n.level
+    WHERE u.referred_by = ${userId}
   `);
-  return rows.map((r) => ({
-    level: Number(r.level),
-    total: Number(r.total),
-    active: Number(r.active),
-    turnoverThisMonthUsdCents: Number(r.turnover_month),
-  }));
+  const r = rows[0];
+  return {
+    total: Number(r?.total ?? 0),
+    active: Number(r?.active ?? 0),
+    turnoverThisMonthUsdCents: Number(r?.turnover_month ?? 0),
+  };
 }
 
-export type ReferralLevelIncome = {
-  level: number;
+export type ReferralIncome = {
   allTimeUsdCents: number;
   thisMonthUsdCents: number;
 };
 
 /**
- * Доход партнёра по уровням сети из commission-начислений: за всё время и за
- * текущий месяц (accrued − reversed). Только `kind='commission'`, уровни 1..3.
+ * Доход партнёра из commission-начислений: за всё время и за текущий месяц
+ * (accrued − reversed). Только `kind='commission'`; уровень не фильтруем —
+ * исторические начисления уровней 2–3 (до упрощения программы) остаются
+ * заработком партнёра.
  */
-export async function getReferralIncomeByLevel(
-  db: DB,
-  userId: string,
-): Promise<ReferralLevelIncome[]> {
+export async function getReferralIncome(db: DB, userId: string): Promise<ReferralIncome> {
   const rows = await db.execute<{
-    level: number;
     all_time: string | number;
     this_month: string | number;
   }>(sql`
     SELECT
-      level,
       (
         COALESCE(SUM(amount_usd_cents) FILTER (WHERE status = 'accrued'), 0)
         - COALESCE(SUM(amount_usd_cents) FILTER (WHERE status = 'reversed'), 0)
@@ -119,15 +103,12 @@ export async function getReferralIncomeByLevel(
     FROM referral_accruals
     WHERE beneficiary_user_id = ${userId}
       AND kind = 'commission'
-      AND level BETWEEN 1 AND 3
-    GROUP BY level
-    ORDER BY level
   `);
-  return rows.map((r) => ({
-    level: Number(r.level),
-    allTimeUsdCents: Number(r.all_time),
-    thisMonthUsdCents: Number(r.this_month),
-  }));
+  const r = rows[0];
+  return {
+    allTimeUsdCents: Number(r?.all_time ?? 0),
+    thisMonthUsdCents: Number(r?.this_month ?? 0),
+  };
 }
 
 export type ReferralEarnings = { totalUsdCents: number; thisMonthUsdCents: number };

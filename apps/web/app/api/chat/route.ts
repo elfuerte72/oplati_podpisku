@@ -26,13 +26,11 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
-import { serverEnv } from '@/lib/env';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { toAgentHistory } from '@/lib/chat/history';
-import { consumeRefCookie, clearRefCookie } from '@/lib/referral/capture';
 
 /**
  * POST /api/chat — веб-чат (тот же AI-агент, что и Telegram).
@@ -85,15 +83,14 @@ function getClientIp(req: Request): string {
 type WebChatContext = { userId: string; conversationId: string };
 
 /** Upsert user/conversation для веб-сессии. `null` при недоступной БД (degrade). */
-async function resolveContext(
-  webSessionId: string,
-  referredBy: string | null,
-): Promise<WebChatContext | null> {
+async function resolveContext(webSessionId: string): Promise<WebChatContext | null> {
   try {
     const db = getDb();
+    // Захват реферера через веб удалён (2026-07-02): рефералы фиксируются
+    // ТОЛЬКО при /start бота по deep-link `ref_<code>` — referredBy тут всегда null.
     const user = await getOrCreateUserByWebSessionId(
       db,
-      { webSessionId, language: 'ru', referredBy },
+      { webSessionId, language: 'ru', referredBy: null },
       dbLog,
     );
     const conversation = await getOrCreateActiveConversation(
@@ -164,16 +161,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const webSessionId = await getOrCreateWebSessionId();
-  const referredBy = await consumeRefCookie();
-  const ctx = await resolveContext(webSessionId, referredBy);
-  // Гасим ref-cookie только после успешного резолва ctx (создание/upsert юзера) —
-  // при сбое БД cookie сохраняется и реферер досчитается на следующем сообщении.
-  // Гейт REFERRAL_ENABLED: пока программа выключена, cookie НЕ гасится и переживёт
-  // выкатку (захват случится при включении). Когда включена, cookie гасится даже
-  // при неизвестном коде — это ОК: код выдаётся лениво (ensureReferralCode при
-  // открытии кабинета), и партнёр получает ссылку уже с существующим кодом, так
-  // что «код расшарен до выдачи» в нашей модели не возникает (находка greptile #4).
-  if (ctx && serverEnv.REFERRAL_ENABLED) await clearRefCookie();
+  const ctx = await resolveContext(webSessionId);
 
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });
 

@@ -153,7 +153,7 @@ export async function setReferrerOnce(
  * Цепочка предков-партнёров (до `maxLevel`) по дереву `referred_by`. Используется
  * при начислении (Этап B). Делегирует обход чистому `walkReferralAncestors`
  * (@oplati/types, протестирован), резолвя родителя одним SELECT за уровень —
- * для глубины 3 это ≤3 запроса.
+ * в одноуровневой программе (REFERRAL_MAX_LEVEL=1) это один запрос.
  */
 export async function getReferralAncestors(
   db: DB,
