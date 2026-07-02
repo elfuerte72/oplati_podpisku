@@ -61,7 +61,23 @@ describe('validateInitData', () => {
       expect(res.user.id).toBe(USER.id);
       expect(res.user.first_name).toBe('Иван');
       expect(res.authDate.getTime()).toBe(Math.floor(now / 1000) * 1000);
+      // без startapp — start_param отсутствует
+      expect(res.startParam).toBeNull();
     }
+  });
+
+  it('start_param из подписанного initData доступен (startapp deep-link)', () => {
+    const initData = signInitData({ ...freshFields(now), start_param: 'ref_w9srx2t7' });
+    const res = validateInitData(initData, BOT_TOKEN, { nowMs: now });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.startParam).toBe('ref_w9srx2t7');
+  });
+
+  it('подмена start_param при сохранённой подписи → bad_signature (он в data_check_string)', () => {
+    const initData = signInitData({ ...freshFields(now), start_param: 'ref_w9srx2t7' });
+    const evil = initData.replace('ref_w9srx2t7', 'ref_attacker1');
+    const res = validateInitData(evil, BOT_TOKEN, { nowMs: now });
+    expect(res.ok).toBe(false);
   });
 
   it('подделанный hash → bad_signature', () => {

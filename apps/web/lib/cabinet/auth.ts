@@ -12,6 +12,7 @@ import {
   telegramUserDisplayName,
   type InitDataFailureReason,
 } from '../telegram/init-data.ts';
+import { captureReferralFromStartParam } from './referral-capture.ts';
 
 /**
  * Резолв пользователя кабинета по `initData` Mini App: проверяем подпись,
@@ -60,6 +61,9 @@ export async function resolveCabinetUser(initData: string): Promise<ResolveCabin
       },
       dbLog,
     );
+    // Реферальный захват из `startapp=ref_<code>` — best-effort, не влияет на auth
+    // (helper сам глотает ошибки и гейтит по REFERRAL_ENABLED / покупкам).
+    await captureReferralFromStartParam({ userId: id, startParam: validated.startParam });
     return { ok: true, user: { userId: id, telegramId, user: validated.user } };
   } catch (err) {
     log.error({ event: 'cabinet.auth.db_failed', err });

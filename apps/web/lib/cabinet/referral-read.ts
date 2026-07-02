@@ -41,6 +41,12 @@ export type ReferralSnapshotContext = {
   telegramLinked: boolean;
   /** Username бота для deep-link (единственный канал приглашения); null если недоступен. */
   botUsername: string | null;
+  /**
+   * Short name Mini App (BotFather /newapp). Задан → приглашение = прямая ссылка
+   * на приложение `?startapp=ref_<code>` (код доезжает в мини-апп); null →
+   * fallback на bot-deep-link `?start=ref_<code>` (только при нажатии «Начать»).
+   */
+  miniAppShortName: string | null;
   /** Минимум на вывод (USD-центы), `REFERRAL_MIN_PAYOUT_USD_CENTS`. */
   minPayoutUsdCents: number;
 };
@@ -180,11 +186,15 @@ export async function buildReferralSnapshot(
   const suspended = partner?.suspended ?? false;
   const canPayout = ctx.telegramLinked && !suspended && balance >= ctx.minPayoutUsdCents;
 
-  // Приглашение — только через Telegram deep-link: реферал фиксируется при
-  // первом /start бота (веб-захват `?ref=` удалён 2026-07-02).
+  // Приглашение — Telegram deep-link. Если зарегистрирован Mini App short name —
+  // прямая ссылка на приложение (`?startapp=ref_`): код доезжает в
+  // initData.start_param и захватывается при входе в приложение (как реально
+  // ходят клиенты). Иначе — bot-deep-link `?start=ref_` (нужно нажать «Начать»).
   const telegramLink =
     referralCode && ctx.botUsername
-      ? `https://t.me/${ctx.botUsername}?start=ref_${referralCode}`
+      ? ctx.miniAppShortName
+        ? `https://t.me/${ctx.botUsername}/${ctx.miniAppShortName}?startapp=ref_${referralCode}`
+        : `https://t.me/${ctx.botUsername}?start=ref_${referralCode}`
       : null;
 
   return {

@@ -454,6 +454,23 @@ export async function countRecentOrdersByUser(
   return rows[0]?.count ?? 0;
 }
 
+/**
+ * Есть ли у пользователя хотя бы один «состоявшийся» заказ (оплачен/исполняется/
+ * завершён). Гейт позднего захвата реферера: устоявшегося покупателя нельзя
+ * задним числом привязать к чужой реф-ссылке (антифрод). `paid_at` не смотрим —
+ * достаточно факта покупки.
+ */
+export async function hasPurchasedOrders(db: DB, userId: string): Promise<boolean> {
+  const rows = await db.execute<{ exists: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM orders
+      WHERE user_id = ${userId}
+        AND status IN ('paid', 'in_fulfillment', 'completed')
+    ) AS exists
+  `);
+  return rows[0]?.exists ?? false;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const code = (err as { code?: string }).code;

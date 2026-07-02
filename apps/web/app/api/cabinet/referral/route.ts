@@ -81,6 +81,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       enabled: false,
       telegramLinked: false,
       botUsername: null,
+      miniAppShortName: null,
       minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
     };
     const snapshot = await buildReferralSnapshot('', ctx);
@@ -111,6 +112,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           enabled: true,
           telegramLinked,
           botUsername: await resolveBotUsername(),
+          miniAppShortName: serverEnv.TELEGRAM_MINIAPP_SHORTNAME ?? null,
           minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
         };
         const snapshot = await buildReferralSnapshot(userId, ctx);

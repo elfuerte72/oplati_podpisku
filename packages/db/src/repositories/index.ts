@@ -136,6 +136,7 @@ export {
   findOrdersForRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
+  hasPurchasedOrders,
   type OrderRow,
   type OrderEventRow,
   type CreateDraftOrderInput,
