@@ -145,18 +145,39 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
 
   const start = useCallback(async () => {
     setPhase('starting');
+    // КРИТИЧНО (мобильные): вкладку под бота открываем СИНХРОННО в обработчике
+    // клика — ДО await. Если открыть `window.open` после `await fetch`, браузер
+    // теряет user-activation и блокирует попап (Safari/Chrome на iOS/Android) —
+    // кнопка «ничего не делает», Telegram не открывается. Сначала открываем
+    // about:blank в user-gesture, затем перенаправляем на deep-link.
+    // 'noopener' здесь НЕ ставим намеренно: с ним window.open вернул бы null, а
+    // нам нужна ссылка на окно, чтобы сменить его location (opener гасим вручную).
+    const preopened =
+      typeof window !== 'undefined' ? window.open('about:blank', '_blank') : null;
     try {
       const res = await fetchWithTimeout('/api/auth/telegram/link', { method: 'POST' });
       const data = (await res.json()) as StartResponse;
       if (data.ok && data.url) {
-        // Открываем бота в новой вкладке/приложении; на этой странице ждём поллингом.
-        window.open(data.url, '_blank', 'noopener,noreferrer');
+        if (preopened && !preopened.closed) {
+          try {
+            preopened.opener = null;
+          } catch {
+            // некоторые браузеры запрещают запись opener — не критично
+          }
+          preopened.location.replace(data.url);
+        } else {
+          // Попап заблокирован даже синхронно (редко) — уводим текущую вкладку;
+          // возврат на сайт поймает привязку через visibilitychange-recheck.
+          window.location.href = data.url;
+        }
         setPhase('waiting');
         startPoll();
       } else {
+        preopened?.close();
         setPhase('error');
       }
     } catch {
+      preopened?.close();
       setPhase('error');
     }
   }, [startPoll]);
