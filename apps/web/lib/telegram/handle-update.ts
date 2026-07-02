@@ -30,7 +30,7 @@ import {
   type ToolCallLog,
 } from '@oplati/agent';
 import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@oplati/types';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, Keyboard } from 'grammy';
 
 import {
   BUDGET_EXCEEDED_TEXT,
@@ -370,13 +370,20 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       );
     }
 
-    await sendSafely(chatId, GREETING, update.update_id, buildCatalogOpenKeyboard());
+    await sendSafely(chatId, GREETING, update.update_id, buildMainReplyKeyboard());
     return;
   }
 
   // /menu — открыть кнопочный каталог в любой момент (зеркало кнопки «Выбрать
   // сервис» на сайте). Навигация без AI — обрабатываем до rate-limit/агента.
-  if (text === '/menu' || text.startsWith('/menu ') || text.startsWith('/menu@')) {
+  // Сюда же попадает нажатие постоянной reply-кнопки «Выбрать сервис» (она шлёт
+  // свой лейбл обычным текстом) — так меню открывается одинаково из команды и кнопки.
+  if (
+    text === '/menu' ||
+    text.startsWith('/menu ') ||
+    text.startsWith('/menu@') ||
+    text === CATALOG_OPEN_BUTTON
+  ) {
     log.info({ event: 'telegram.menu', chatId, telegramUserId });
     await showCatalogList(chatId, undefined, update.update_id);
     return;
@@ -398,7 +405,15 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   // /support — обращение в поддержку (interim-handoff оператору). ПОСЛЕ
   // rate-limit: inline-форма `/support <текст>` сразу шлёт человеку, спам недопустим.
-  if (text === '/support' || text.startsWith('/support ') || text.startsWith('/support@')) {
+  // Нажатие постоянной reply-кнопки «Написать в поддержку» шлёт свой лейбл текстом
+  // без префикса — extractSupportInline вернёт null, и handleSupportCommand уйдёт в
+  // двухшаговый флоу (попросит описать проблему), а не отправит пустое обращение.
+  if (
+    text === '/support' ||
+    text.startsWith('/support ') ||
+    text.startsWith('/support@') ||
+    text === SUPPORT_BUTTON
+  ) {
     await handleSupportCommand(update, message, chatId, text);
     return;
   }
@@ -735,12 +750,17 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
     .text('Отменить', `cancel:${orderId}`);
 }
 
-/** Кнопки под приветствием /start: «Выбрать сервис» + «Написать в поддержку». */
-function buildCatalogOpenKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
-    .text(CATALOG_OPEN_BUTTON, 'cat')
-    .row()
-    .text(SUPPORT_BUTTON, 'support');
+/**
+ * Постоянная нижняя reply-клавиатура: «Выбрать сервис» + «Написать в поддержку».
+ * `is_persistent` держит её раскрытой под полем ввода, поэтому меню и поддержка
+ * доступны в любой момент. Синяя кнопка-меню (☰) при этом остаётся под mini app
+ * «Кабинет» — reply-клавиатура её не занимает, так что кабинет живёт сверху, а
+ * меню/поддержка снизу. Тексты кнопок совпадают с командами-перехватами в
+ * handleTextUpdate (`text === CATALOG_OPEN_BUTTON` → каталог, `=== SUPPORT_BUTTON`
+ * → флоу поддержки), поэтому reply-кнопки шлют обычный текст, а не /start.
+ */
+function buildMainReplyKeyboard(): Keyboard {
+  return new Keyboard().text(CATALOG_OPEN_BUTTON).text(SUPPORT_BUTTON).resized().persistent();
 }
 
 /** Кнопка «<< Назад к списку» (вернуться к выбору сервиса). */
@@ -1461,7 +1481,7 @@ async function sendSafely(
   chatId: number,
   text: string,
   updateId: number,
-  replyMarkup?: InlineKeyboard,
+  replyMarkup?: InlineKeyboard | Keyboard,
 ): Promise<void> {
   try {
     await getBot().api.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);

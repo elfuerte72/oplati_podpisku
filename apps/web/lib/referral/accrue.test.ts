@@ -17,6 +17,7 @@ type Order = {
   id: string;
   userId: string;
   originalAmount: number | null;
+  originalCurrency?: string | null;
   commissionPercent: number | null;
 };
 type Profile = {
@@ -149,6 +150,22 @@ describe('accrueReferralForPayment', () => {
     m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
     m.__setAncestors([]);
     await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+    expect(m.__insertCalls()).toHaveLength(0);
+  });
+
+  it('не-USD валюта заказа → не начисляет (guard от дрейфа базы)', async () => {
+    m.__setOrder({
+      id: 'o1',
+      userId: 'src',
+      originalAmount: 2000,
+      originalCurrency: 'EUR',
+      commissionPercent: 30,
+    });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 2 }));
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
     expect(m.__insertCalls()).toHaveLength(0);
   });
 

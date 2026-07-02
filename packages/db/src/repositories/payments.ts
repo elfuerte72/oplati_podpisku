@@ -1,7 +1,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 
 import { payments } from '../schema.ts';
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
 import type { PaymentProvider, PaymentStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
@@ -115,61 +115,28 @@ export type MarkPaymentSucceededInput = {
   recoveredViaPolling?: boolean;
 };
 
-export async function markPaymentSucceeded(
-  db: DB,
-  input: MarkPaymentSucceededInput,
-  log: RepoLogger = noopLogger,
-): Promise<PaymentRow> {
-  const {
-    paymentId,
-    webhookReceivedAt = new Date(),
-    rawPayload = null,
-    recoveredViaPolling = false,
-  } = input;
-
-  const updated = await db
-    .update(payments)
-    .set({
-      status: 'succeeded',
-      completedAt: new Date(),
-      webhookReceivedAt,
-      recoveredViaPolling,
-      ...(rawPayload !== null ? { rawPayload } : {}),
-    })
-    .where(eq(payments.id, paymentId))
-    .returning();
-
-  const row = updated[0];
-  if (!row) {
-    throw new Error(`markPaymentSucceeded: payment ${paymentId} не найден`);
-  }
-
-  log.info({
-    event: 'db.payments.succeeded',
-    paymentId,
-    orderId: row.orderId,
-    provider: row.provider,
-    recoveredViaPolling,
-  });
-
-  return row;
-}
-
 /**
  * Атомарный claim платежа: переводит `pending → succeeded` ОДНИМ условным
  * UPDATE и возвращает строку только тому вызову, который реально сделал переход.
  *
  * Зачем: webhook L&P и cron `poll-payment` могут обработать один и тот же invoice
- * почти одновременно. `markPaymentSucceeded` (безусловный UPDATE by id) пропустил
- * бы оба вызова дальше — к двойному `dispatchIssueCard` и двойному топ-апу карты
- * (реальная двойная трата). Здесь `WHERE id=? AND status='pending'` гарантирует,
- * что строку получит ровно один параллельный вызов; второй увидит `null` и должен
- * остановиться ДО любых побочных эффектов (issue-card, уведомление).
+ * почти одновременно. Безусловный UPDATE by id пропустил бы оба вызова дальше —
+ * к двойному `dispatchIssueCard` и двойному топ-апу карты (реальная двойная
+ * трата). Здесь `WHERE id=? AND status='pending'` гарантирует, что строку получит
+ * ровно один параллельный вызов; второй увидит `null` и должен остановиться ДО
+ * любых побочных эффектов (issue-card, уведомление).
+ *
+ * Этот же claim — наша anti-replay защита webhook'а: подпись L&P не содержит
+ * timestamp/nonce, повтор перехваченного payload гасится именно идемпотентностью
+ * claim'а. Не убирать условие `status='pending'` при рефакторинге.
+ *
+ * Принимает `DBLike`: вызывается из транзакции `processInvoicePaid` (claim +
+ * переход заказа atomically — сбой перехода откатывает и claim).
  *
  * Возвращает `null`, если платёж уже не `pending` (повтор/гонка) или не найден.
  */
 export async function claimPaymentSucceeded(
-  db: DB,
+  db: DBLike,
   input: MarkPaymentSucceededInput,
   log: RepoLogger = noopLogger,
 ): Promise<PaymentRow | null> {
@@ -268,6 +235,24 @@ export async function findPaymentByProviderRef(
     .select()
     .from(payments)
     .where(and(eq(payments.provider, provider), eq(payments.providerRef, providerRef)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Действующий (pending) платёж заказа. Частичный unique
+ * `payments_one_pending_per_order_idx` гарантирует не больше одного. Используется
+ * в `payments/create` для идемпотентного ответа проигравшему гонку конкурентному
+ * confirm_order (вместо второго живого инвойса).
+ */
+export async function findPendingPaymentByOrderId(
+  db: DB,
+  orderId: string,
+): Promise<PaymentRow | null> {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.orderId, orderId), eq(payments.status, 'pending')))
     .limit(1);
   return rows[0] ?? null;
 }

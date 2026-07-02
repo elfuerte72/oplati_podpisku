@@ -27,7 +27,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { childLogger } from '@/lib/logger';
-import { checkRateLimit } from '@/lib/ratelimit';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { toAgentHistory } from '@/lib/chat/history';
@@ -69,16 +69,6 @@ const AI_DOWN_TEXT =
 
 const RATE_LIMITED_TEXT =
   'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.';
-
-/** Клиентский IP для rate-limit. На Vercel приходит в `x-forwarded-for`. */
-function getClientIp(req: Request): string {
-  const xff = req.headers.get('x-forwarded-for');
-  if (xff) {
-    const first = xff.split(',')[0]?.trim();
-    if (first) return first;
-  }
-  return req.headers.get('x-real-ip') ?? 'unknown';
-}
 
 type WebChatContext = { userId: string; conversationId: string };
 

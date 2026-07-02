@@ -10,7 +10,11 @@ import {
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
-import type { LoveAndPayInvoiceStatus, LoveAndPayWebhookData } from '@oplati/types';
+import {
+  OrderTransitionError,
+  type LoveAndPayInvoiceStatus,
+  type LoveAndPayWebhookData,
+} from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
@@ -95,17 +99,70 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     return { kind: 'amount_mismatch', paymentId: payment.id, expectedKopecks: payment.amountRub, gotKopecks };
   }
 
-  // Атомарный claim `pending → succeeded`: строку получит ровно ОДИН из
-  // конкурентных вызовов (webhook vs poll-payment, повторные ретраи L&P).
-  // Второй увидит null и обязан остановиться ДО любых побочных эффектов —
-  // иначе issue-card и топ-ап карты выполнятся дважды (двойная трата денег).
-  const claimed = await claimPaymentSucceeded(db, {
-    paymentId: payment.id,
-    webhookReceivedAt: new Date(),
-    rawPayload,
-    recoveredViaPolling,
+  // Claim платежа (`pending → succeeded`) и переход заказа в `paid` — В ОДНОЙ
+  // транзакции (находка аудита C1). Раньше это были два отдельных запроса, и
+  // транзиентный сбой БД между ними давал payment=succeeded при заказе в
+  // pending_payment: ретраи webhook'а получали idempotent_skip, poll видел
+  // «не pending» — а cron expire-payments хоронил ОПЛАЧЕННЫЙ заказ в expired.
+  // Теперь сбой перехода откатывает и claim → payment остаётся pending →
+  // poll-payment повторит обработку в ≤5 минут.
+  //
+  // Claim по-прежнему at-most-once: строку получит ровно ОДИН из конкурентных
+  // вызовов (webhook vs poll, ретраи L&P); проигравший останавливается ДО
+  // любых побочных эффектов — иначе двойной топ-ап карты (двойная трата).
+  //
+  // Запрещённый переход (OrderTransitionError — «оплата мёртвого счёта»,
+  // cancelled/expired) — легитимная аномалия: claim фиксируем (деньги реально
+  // приняты), fulfillment/начисления не запускаем, алертим.
+  type PaidTxOutcome = { claimed: false } | { claimed: true; paidOk: boolean };
+  const outcome: PaidTxOutcome = await db.transaction(async (tx) => {
+    const claimed = await claimPaymentSucceeded(tx, {
+      paymentId: payment.id,
+      webhookReceivedAt: new Date(),
+      rawPayload,
+      recoveredViaPolling,
+    });
+    if (!claimed) return { claimed: false };
+
+    // Переход pending_payment → paid. Если order уже paid (race с другим путём) —
+    // transitionOrder вернёт noop (from === to), не бросая.
+    try {
+      await transitionOrder(tx, {
+        orderId: payment.orderId,
+        toStatus: 'paid',
+        actorType: 'payment_provider',
+        eventType: 'payment_succeeded',
+        payload: {
+          paymentId: payment.id,
+          provider: 'loveandpay',
+          invoiceId: data.id,
+          invoiceNumber: data.invoiceNumber,
+          recoveredViaPolling,
+        },
+      });
+    } catch (err) {
+      if (!(err instanceof OrderTransitionError)) {
+        // Транзиентный сбой (обрыв соединения, timeout) — НЕ аномалия статуса.
+        // Re-throw откатывает транзакцию вместе с claim'ом: платёж остаётся
+        // pending, poll-payment повторит. Границы webhook/cron это ловят → 200.
+        throw err;
+      }
+      log.error({
+        event: 'loveandpay.handlers.paid_transition_failed',
+        orderId: payment.orderId,
+        err,
+      });
+      Sentry.captureException(err, {
+        level: 'error',
+        tags: { source: 'loveandpay.handlers', step: 'transition_paid' },
+        extra: { orderId: payment.orderId, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
+      });
+      return { claimed: true, paidOk: false };
+    }
+    return { claimed: true, paidOk: true };
   });
-  if (!claimed) {
+
+  if (!outcome.claimed) {
     log.info({
       event: 'loveandpay.handlers.idempotent_skip',
       paymentId: payment.id,
@@ -114,60 +171,23 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'already_processed' };
   }
 
-  // Переход pending_payment → paid. Если order уже paid (race с другим путём) —
-  // transitionOrder вернёт noop (так как from === to). Если status в `in_fulfillment`
-  // или `completed` — allowedTransitions запретит, бросит OrderTransitionError,
-  // что мы здесь же ловим: повторно отметить order paid в этих кейсах не нужно.
-  // Перешёл ли заказ в paid. noop (already paid, from===to) не бросает → true.
-  // catch ловит ТОЛЬКО запрещённый переход (cancelled/expired→paid) — заказ реально
-  // не оплачен, на нём нельзя ни fulfillment, ни реферальное начисление.
-  let paidOk = true;
-  try {
-    await transitionOrder(db, {
-      orderId: payment.orderId,
-      toStatus: 'paid',
-      actorType: 'payment_provider',
-      eventType: 'payment_succeeded',
-      payload: {
-        paymentId: payment.id,
-        provider: 'loveandpay',
-        invoiceId: data.id,
-        invoiceNumber: data.invoiceNumber,
-        recoveredViaPolling,
-      },
-    });
-  } catch (err) {
-    paidOk = false;
-    // Сюда попадаем ТОЛЬКО при запрещённом переходе (noop from===to не бросает).
-    // Платёж уже claimed-succeeded, но заказ нельзя двинуть в `paid` — например,
-    // он cancelled/expired (клиент оплатил по «мёртвому» счёту). Деньги получены,
-    // fulfillment не пойдёт — это аномалия, алертим (не глотаем как warn).
-    log.error({
-      event: 'loveandpay.handlers.paid_transition_failed',
-      orderId: payment.orderId,
-      err,
-    });
-    Sentry.captureException(err, {
-      level: 'error',
-      tags: { source: 'loveandpay.handlers', step: 'transition_paid' },
-      extra: { orderId: payment.orderId, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
-    });
-  }
+  // Побочные эффекты — только когда заказ реально перешёл в paid (находка
+  // аудита I4: раньше «Оплата получена, обрабатываем заказ» уходило и клиенту,
+  // оплатившему мёртвый счёт, хотя обработка не начиналась). Аномальный кейс
+  // (paidOk=false) уже заалерчен выше — им занимается оператор.
+  if (outcome.paidOk) {
+    // Уведомляем пользователя в Telegram, что оплата получена — срабатывает всегда
+    // при переходе в `paid` (даже если PaySpace не настроен и карта не выпускается).
+    dispatchPaymentConfirmed(payment.orderId);
 
-  // Уведомляем пользователя в Telegram, что оплата получена — срабатывает всегда
-  // при переходе в `paid` (даже если PaySpace не настроен и карта не выпускается).
-  dispatchPaymentConfirmed(payment.orderId);
+    // После успешной оплаты — запускаем issue-card. Sync-fallback через
+    // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.
+    dispatchIssueCard(payment.orderId);
 
-  // После успешной оплаты — запускаем issue-card. Sync-fallback через
-  // setImmediate; реальный Trigger.dev задеплоится в отдельном milestone.
-  dispatchIssueCard(payment.orderId);
-
-  // Реферальные начисления (из маржи). Только если заказ реально перешёл в paid
-  // (находка ревью: не начислять на cancelled/expired при «мёртвом» счёте).
-  // At-most-once: сюда попадает только победитель claim; внутри — graceful +
-  // идемпотентность по UNIQUE. Inline await (а не dispatch): дёшево, и
-  // гарантированно отрабатывает до 200 OK (setImmediate Vercel может заморозить).
-  if (paidOk) {
+    // Реферальные начисления (из маржи). At-most-once: сюда попадает только
+    // победитель claim; внутри — graceful + идемпотентность по UNIQUE. Inline
+    // await (а не dispatch): дёшево, и гарантированно отрабатывает до 200 OK
+    // (setImmediate Vercel может заморозить).
     await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
   }
 

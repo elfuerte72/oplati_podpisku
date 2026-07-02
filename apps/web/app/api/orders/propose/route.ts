@@ -10,6 +10,7 @@ import {
 
 import { proposeFromCatalog, type ProposeFromCatalogError } from '@/lib/catalog/propose';
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 
 /**
@@ -51,6 +52,18 @@ const ERROR_STATUS: Record<ProposeFromCatalogError, number> = {
 };
 
 export async function POST(req: Request): Promise<NextResponse> {
+  // Rate-limit по IP ДО резолва сессии и любых записей в БД (находка
+  // security-аудита): без него скриптовый клиент без cookie получал свежую
+  // сессию — и свежий суточный кап — на каждый запрос, т.е. неограниченный
+  // рост users/conversations/orders.
+  const rl = await checkRateLimit('web-order', getClientIp(req));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: 'rate_limited', text: 'Слишком много запросов — попробуйте через минуту.' },
+      { status: 429 },
+    );
+  }
+
   let raw: unknown;
   try {
     raw = await req.json();

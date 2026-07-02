@@ -42,6 +42,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, skipped: 'not_configured' }, { status: 200 });
   }
 
+  // Секрет в query (`?s=`) — осознанный компромисс: экшен «webhook» в Sentry
+  // не умеет кастомные заголовки, поэтому header-only сломал бы алёрты.
+  // Trade-off: значение попадает в access-логи Vercel — при подозрении на утечку
+  // ротировать SENTRY_ALERT_WEBHOOK_SECRET (+ обновить URL в alert rule Sentry).
   const provided =
     new URL(req.url).searchParams.get('s') ?? req.headers.get('x-alert-token') ?? '';
   if (!provided || !timingSafeEqualStr(provided, secret)) {

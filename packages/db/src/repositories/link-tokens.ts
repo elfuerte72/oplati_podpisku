@@ -169,6 +169,33 @@ export async function consumeLinkToken(
           await tx.execute(
             sql`UPDATE referral_payouts SET user_id = ${byTelegram.id} WHERE user_id = ${byWebSession.id}`,
           );
+          // Месячная статистика прогрессии (PK user_id+month, FK ON DELETE cascade):
+          // без переноса DELETE молча снёс бы историю партнёра-веб-строки, включая
+          // серию consecutive_met_months (срыв серийного бонуса) — находка аудита I1.
+          // Конфликтные месяцы (строка есть у обеих) осознанно оставляем
+          // telegram-строке: слияние агрегатов дало бы двойной счёт оборота.
+          await tx.execute(sql`
+            UPDATE referral_monthly_stats SET user_id = ${byTelegram.id}
+            WHERE user_id = ${byWebSession.id}
+              AND NOT EXISTS (
+                SELECT 1 FROM referral_monthly_stats t
+                WHERE t.user_id = ${byTelegram.id} AND t.month = referral_monthly_stats.month
+              )
+          `);
+          // Профили партнёра есть у ОБЕИХ строк → храповик не должен теряться с
+          // web-профилем (cascade-delete): переносим максимум круга/ставки на
+          // telegram-профиль; suspended — OR (антифрод-блок переживает merge).
+          // Буст (boost_until/boost_rate_bps) не сливаем: короткоживущий, его
+          // перевыдаст ближайший rollup.
+          await tx.execute(sql`
+            UPDATE referral_partners t SET
+              current_circle = GREATEST(t.current_circle, s.current_circle),
+              locked_rate_l1_bps = GREATEST(t.locked_rate_l1_bps, s.locked_rate_l1_bps),
+              suspended = t.suspended OR s.suspended,
+              updated_at = now()
+            FROM referral_partners s
+            WHERE t.user_id = ${byTelegram.id} AND s.user_id = ${byWebSession.id}
+          `);
           await tx.execute(sql`
             UPDATE referral_partners SET user_id = ${byTelegram.id}
             WHERE user_id = ${byWebSession.id}

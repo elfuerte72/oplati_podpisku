@@ -52,6 +52,14 @@ export async function accrueReferralForPayment(params: {
       log.info({ event: 'referral.accrue.no_base', orderId });
       return;
     }
+    // Guard от дрейфа валют (находка аудита): original_amount трактуется как
+    // USD-центы; если когда-нибудь появятся заказы в другой валюте, начислять
+    // по ним как по USD нельзя. NULL считаем USD (текущие пути пишут 'USD').
+    const originalCurrency = order.originalCurrency ?? 'USD';
+    if (originalCurrency !== 'USD') {
+      log.warn({ event: 'referral.accrue.non_usd_base', orderId, currency: originalCurrency });
+      return;
+    }
     const sourceUserId = order.userId;
 
     // Программа одноуровневая: начисляем только прямому рефереру
