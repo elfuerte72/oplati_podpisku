@@ -9,8 +9,8 @@ vi.mock('../logger.ts', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
-type RollupInput = { networkTurnoverUsdCents: number; newActiveReferrals: number; activeL2Count: number };
-type Profile = { circle: number; lockedRateL1Bps: number; teamMultiplier: boolean; boostBps: number; suspended: boolean };
+type RollupInput = { networkTurnoverUsdCents: number; newActiveReferrals: number };
+type Profile = { circle: number; lockedRateL1Bps: number; boostBps: number; suspended: boolean };
 const dbState = vi.hoisted(() => ({
   candidates: [] as string[],
   input: {} as Record<string, RollupInput>,
@@ -25,7 +25,7 @@ vi.mock('@oplati/db', () => ({
   listReferralRollupCandidates: vi.fn(async () => dbState.candidates),
   getMonthlyRollupInput: vi.fn(async (_db: unknown, userId: string) => {
     if (dbState.throwInputFor.has(userId)) throw new Error('boom');
-    return dbState.input[userId] ?? { networkTurnoverUsdCents: 0, newActiveReferrals: 0, activeL2Count: 0 };
+    return dbState.input[userId] ?? { networkTurnoverUsdCents: 0, newActiveReferrals: 0 };
   }),
   getPartnerProfile: vi.fn(async () => dbState.profile),
   getPriorConsecutiveMetMonths: vi.fn(async () => 0),
@@ -80,7 +80,7 @@ describe('rollupReferralMonth', () => {
 
   it('повышает круг и считает бонусы (оборот $2000)', async () => {
     dbState.candidates = ['u1'];
-    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0, activeL2Count: 0 } };
+    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0 } };
     const res = await rollupReferralMonth({ now });
     expect(res.scanned).toBe(1);
     expect(res.applied).toBe(1);
@@ -91,7 +91,7 @@ describe('rollupReferralMonth', () => {
 
   it('идемпотентно: applied=false → не считается и не уведомляет', async () => {
     dbState.candidates = ['u1'];
-    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0, activeL2Count: 0 } };
+    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0 } };
     dbState.applied = false;
     dbState.telegramId = '12345';
     const res = await rollupReferralMonth({ now });
@@ -102,7 +102,7 @@ describe('rollupReferralMonth', () => {
 
   it('уведомляет партнёра с Telegram при повышении круга', async () => {
     dbState.candidates = ['u1'];
-    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0, activeL2Count: 0 } };
+    dbState.input = { u1: { networkTurnoverUsdCents: 200_000, newActiveReferrals: 0 } };
     dbState.telegramId = '12345';
     await rollupReferralMonth({ now });
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -122,8 +122,8 @@ describe('rollupReferralMonth', () => {
     // Партнёр уже на круге 3 (Топ), оборот ≥150% порога ($5000×1.5 = $7500),
     // без новых активных и не серийный месяц → boostGranted, но не upgrade/бонус.
     dbState.candidates = ['u1'];
-    dbState.profile = { circle: 3, lockedRateL1Bps: 700, teamMultiplier: false, boostBps: 0, suspended: false };
-    dbState.input = { u1: { networkTurnoverUsdCents: 750_000, newActiveReferrals: 0, activeL2Count: 0 } };
+    dbState.profile = { circle: 3, lockedRateL1Bps: 700, boostBps: 0, suspended: false };
+    dbState.input = { u1: { networkTurnoverUsdCents: 750_000, newActiveReferrals: 0 } };
     dbState.telegramId = '12345';
     const res = await rollupReferralMonth({ now });
     expect(res.upgrades).toBe(0); // на макс. статусе повышения нет
@@ -134,8 +134,8 @@ describe('rollupReferralMonth', () => {
   it('ошибка по одному партнёру не валит прогон', async () => {
     dbState.candidates = ['u1', 'bad', 'u3'];
     dbState.input = {
-      u1: { networkTurnoverUsdCents: 0, newActiveReferrals: 0, activeL2Count: 0 },
-      u3: { networkTurnoverUsdCents: 0, newActiveReferrals: 0, activeL2Count: 0 },
+      u1: { networkTurnoverUsdCents: 0, newActiveReferrals: 0 },
+      u3: { networkTurnoverUsdCents: 0, newActiveReferrals: 0 },
     };
     dbState.throwInputFor = new Set(['bad']);
     const res = await rollupReferralMonth({ now });
