@@ -1282,6 +1282,14 @@ async function handleSupportCommand(
  * Нажатие inline-кнопки «Написать в поддержку» (callback `support`). Ставит тот
  * же pending-флаг, что и `/support` без аргументов, и просит описать проблему
  * новым сообщением (приветствие/каталог не редактируем — оставляем контекст).
+ *
+ * Callback-путь не проходит через message-rate-limit, поэтому идемпотентен к
+ * «дребезгу» кнопки: если описание уже ждём (флаг — последняя assistant-meta),
+ * повторные нажатия не плодят строки в БД и повторные подсказки (находка greptile).
+ *
+ * Осознанно: если пользователь был в custom-amount флоу (ждали сумму) и нажал
+ * поддержку — это явная смена намерения, флаг поддержки перекрывает ожидание
+ * суммы, и следующее сообщение уходит оператору (а не оформляет заказ).
  */
 async function handleSupportCallback(
   cb: TelegramCallbackQuery,
@@ -1291,6 +1299,11 @@ async function handleSupportCallback(
   const ctx = await resolveCallbackContext(cb, updateId);
   if (!ctx) {
     await sendSafely(chatId, SUPPORT_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+  const meta = await readPendingMeta(ctx.conversationId, updateId);
+  if (meta?.[AWAITING_SUPPORT_META_KEY] === true) {
+    // Уже ждём описание — не дублируем (callback уже подтверждён answerCallbackQuery).
     return;
   }
   await safeAppendMessage(

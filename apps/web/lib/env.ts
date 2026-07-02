@@ -77,7 +77,11 @@ const serverEnvSchema = z.object({
   // Куда бот пересылает обращения из /support (interim-handoff, пока нет
   // forum-topics). Не задан → дефолт в коде (telegram_id владельца). Оператор
   // ОБЯЗАН один раз запустить бота (/start), иначе Telegram не даст слать ему DM.
-  SUPPORT_OPERATOR_CHAT_ID: optionalEnvString(),
+  // Формат — числовой chat_id (может быть отрицательным для групп) или @username;
+  // мусорное значение fail-fast на старте, а не молчаливым сбоем sendMessage.
+  SUPPORT_OPERATOR_CHAT_ID: optionalEnvString(
+    z.string().regex(/^(-?\d+|@[A-Za-z0-9_]{4,})$/, 'must be a numeric chat id or @username'),
+  ),
 
   // Платежи (Sprint 2)
   YOOKASSA_SHOP_ID: optionalEnvString(),

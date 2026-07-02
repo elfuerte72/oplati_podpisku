@@ -45,4 +45,14 @@ describe('buildSupportOperatorMessage', () => {
     expect(msg).not.toContain('a'.repeat(SUPPORT_MESSAGE_MAX_LEN + 1));
     expect(msg.length).toBeLessThan(4096);
   });
+
+  it('не превышает лимит Telegram после экранирования (раздувание & → &amp;)', () => {
+    // «&» раздувается в 5× при escape — обрезка ДО escape роняла бы sendMessage.
+    const msg = buildSupportOperatorMessage({ telegramId: 7, description: '&'.repeat(4000) });
+    expect(msg.length).toBeLessThanOrEqual(4096);
+    expect(msg.endsWith('…')).toBe(true);
+    // Тело не должно содержать «поломанную» сущность (одиночный & без ;).
+    const body = msg.slice(msg.indexOf('<b>Сообщение:</b>\n') + '<b>Сообщение:</b>\n'.length);
+    expect(body.replace(/&amp;/g, '').replace(/…$/, '')).not.toContain('&');
+  });
 });
