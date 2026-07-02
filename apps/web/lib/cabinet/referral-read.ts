@@ -106,6 +106,44 @@ function disabledSnapshot(ctx: ReferralSnapshotContext): ReferralSnapshot {
 }
 
 /**
+ * Формирует Telegram deep-link приглашения из реф-кода. Есть short name Mini App
+ * → прямая ссылка на приложение (`?startapp=ref_`, код доезжает в мини-апп);
+ * иначе — bot deep-link (`?start=ref_`, нужно нажать «Начать»). Нет кода или
+ * bot-username → `null` (ссылку не показываем).
+ */
+export function formatReferralTelegramLink(
+  referralCode: string | null,
+  botUsername: string | null,
+  miniAppShortName: string | null,
+): string | null {
+  if (!referralCode || !botUsername) return null;
+  return miniAppShortName
+    ? `https://t.me/${botUsername}/${miniAppShortName}?startapp=ref_${referralCode}`
+    : `https://t.me/${botUsername}?start=ref_${referralCode}`;
+}
+
+/**
+ * Лёгкий резолв реф-ссылки для ГЛАВНОГО меню мини-аппа (карточка «Скопировать»):
+ * только `ensureReferralCode` + формат, без тяжёлого партнёрского снапшота
+ * (сеть/доход/статусы). За флагом `REFERRAL_ENABLED` — иначе `null` (карточку не
+ * рисуем). Graceful: сбой выдачи кода не валит снапшот кабинета (ссылка = null).
+ */
+export async function getReferralLinkForCabinet(
+  userId: string,
+  ctx: { enabled: boolean; botUsername: string | null; miniAppShortName: string | null },
+): Promise<string | null> {
+  if (!ctx.enabled) return null;
+  let referralCode: string | null = null;
+  try {
+    referralCode = await ensureReferralCode(getDb(), userId);
+  } catch (err) {
+    log.error({ event: 'referral.cabinet.link_code_failed', userId, err });
+    Sentry.captureException(err, { tags: { source: 'referral.cabinet' } });
+  }
+  return formatReferralTelegramLink(referralCode, ctx.botUsername, ctx.miniAppShortName);
+}
+
+/**
  * Полный снимок партнёрского кабинета для `userId`. Одна реализация на обе
  * поверхности (веб-страница `/partner` + секция мини-аппа). Лениво выдаёт
  * реферальный код (`ensureReferralCode`) — это «пробуждение» программы для
@@ -186,16 +224,13 @@ export async function buildReferralSnapshot(
   const suspended = partner?.suspended ?? false;
   const canPayout = ctx.telegramLinked && !suspended && balance >= ctx.minPayoutUsdCents;
 
-  // Приглашение — Telegram deep-link. Если зарегистрирован Mini App short name —
-  // прямая ссылка на приложение (`?startapp=ref_`): код доезжает в
-  // initData.start_param и захватывается при входе в приложение (как реально
-  // ходят клиенты). Иначе — bot-deep-link `?start=ref_` (нужно нажать «Начать»).
-  const telegramLink =
-    referralCode && ctx.botUsername
-      ? ctx.miniAppShortName
-        ? `https://t.me/${ctx.botUsername}/${ctx.miniAppShortName}?startapp=ref_${referralCode}`
-        : `https://t.me/${ctx.botUsername}?start=ref_${referralCode}`
-      : null;
+  // Приглашение — Telegram deep-link (short name Mini App → прямая ссылка на
+  // приложение; иначе bot-deep-link). Формат общий с главным меню кабинета.
+  const telegramLink = formatReferralTelegramLink(
+    referralCode,
+    ctx.botUsername,
+    ctx.miniAppShortName,
+  );
 
   return {
     enabled: true,

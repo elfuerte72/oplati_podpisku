@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { formatRub } from '@/components/comic/format';
+import {
+  IconArrowRight,
+  IconCart,
+  IconCheck,
+  IconCopy,
+  IconLink,
+  IconSend,
+  IconUsers,
+} from '@/components/comic/icons';
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
@@ -41,6 +50,38 @@ function errorTextFor(error: string): string {
   }
 }
 
+/**
+ * Копирование в буфер с fallback под Telegram WebView, где `navigator.clipboard`
+ * часто заблокирован (не https-контекст доверия / нет permission). Возвращает
+ * `true`, если хоть один способ сработал — вызывающий решает, что показать.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  // Основной путь — Clipboard API. Reject (в Telegram WebView он часто
+  // заблокирован) обрабатываем вторым коллбэком .then, без bare catch — при
+  // неудаче падаем на execCommand ниже.
+  if (navigator.clipboard?.writeText) {
+    const ok = await navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false,
+    );
+    if (ok) return true;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot } = {}) {
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [errorText, setErrorText] = useState('');
@@ -55,6 +96,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // при уходе с экрана списка — чтобы не висели открытыми.
   const [cardDetails, setCardDetails] = useState<CardDetails | null>(null);
   const [revealingCard, setRevealingCard] = useState(false);
+  const [refCopied, setRefCopied] = useState(false);
 
   const tgRef = useRef<TelegramWebApp | null>(null);
   const initDataRef = useRef<string>('');
@@ -300,11 +342,11 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         }}
         className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--accent)] px-4 py-3.5 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
       >
-        <span className="text-[20px]">🛒</span>
+        <IconCart size={22} className="shrink-0 text-[var(--color-paper)]" />
         <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
-          Оплатить подписку
+          Выбрать сервис
         </span>
-        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
+        <IconArrowRight size={18} className="shrink-0 text-[var(--color-paper)]" />
       </button>
 
       {/* Карта клиента — главный акцент. */}
@@ -325,12 +367,70 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         }}
         className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
       >
-        <span className="text-[20px]">🤝</span>
+        <IconUsers size={22} className="shrink-0 text-[var(--color-paper)]" />
         <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
           Партнёрская программа
         </span>
-        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
+        <IconArrowRight size={18} className="shrink-0 text-[var(--color-paper)]" />
       </button>
+
+      {/* Реф-ссылка в главном меню — быстрый «скопировать/поделиться» без захода
+          в партнёрский дашборд. Показываем, только если программа включена и
+          ссылка резолвится (см. /api/cabinet snapshot → referralLink). */}
+      {snapshot.referralLink && (
+        <div className="rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-4 shadow-[var(--shadow-comic)]">
+          <div className="flex items-center gap-2">
+            <IconLink size={18} className="shrink-0 text-[var(--color-teal-light)]" />
+            <span className="font-display text-sm font-bold text-[var(--text)]">
+              Зови друзей — получай процент
+            </span>
+          </div>
+          <p className="mt-1 font-body text-xs text-[var(--text-muted)]">
+            Друг открывает бота по твоей ссылке и закрепляется за тобой.
+          </p>
+          <div className="mt-3 flex items-center rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--bg)] px-3 py-2">
+            <span className="min-w-0 flex-1 truncate font-display text-[13px] font-bold text-[var(--color-teal-light)]">
+              {snapshot.referralLink}
+            </span>
+          </div>
+          <div className="mt-2.5 flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const link = snapshot.referralLink;
+                if (!link) return;
+                void copyToClipboard(link).then((ok) => {
+                  if (ok) {
+                    setRefCopied(true);
+                    setTimeout(() => setRefCopied(false), 1600);
+                  } else {
+                    setNotice('Не удалось скопировать. Выдели ссылку выше и скопируй вручную.');
+                  }
+                });
+              }}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--accent)] px-3 py-2 font-display text-[13px] font-bold text-[var(--color-paper)] shadow-[2px_2px_0_var(--shadow-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              {refCopied ? <IconCheck size={16} /> : <IconCopy size={16} />}
+              {refCopied ? 'Скопировано' : 'Скопировать'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const link = snapshot.referralLink;
+                if (!link) return;
+                const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!')}`;
+                const tg = tgRef.current;
+                if (tg?.openTelegramLink) tg.openTelegramLink(shareUrl);
+                else window.open(shareUrl, '_blank');
+              }}
+              className="flex items-center justify-center gap-1.5 rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2 font-display text-[13px] font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+            >
+              <IconSend size={16} />
+              Поделиться
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Списка заказов (истории покупок) в кабинете осознанно НЕТ — решение
           владельца 2026-07-02: только действие «оплатить» + карта + партнёрка.

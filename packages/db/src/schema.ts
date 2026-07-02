@@ -262,6 +262,11 @@ export const orders = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     // Снапшот процента комиссии на момент создания заказа (10 = 10%)
     commissionPercent: integer('commission_percent'),
+    // Снапшот разовой надбавки за выпуск карты (RUB-копейки), уже включённой в
+    // amount_rub. NULL — заказ создан до появления фичи; 0 — надбавки не было
+    // (повторная оплата: карта уже выпущена, топап без issue-fee); >0 — первая
+    // оплата, клиент оплатил $4 issue-fee (по курсу заказа).
+    cardIssueFeeKopecks: integer('card_issue_fee_kopecks'),
     // FK на cards.id — выставляется issue-card job-ом после успешной оплаты.
     // Lazy reference: cards объявлена ниже в этом же файле, стрелочная функция спасает от hoisting.
     cardId: uuid('card_id').references(() => cards.id, { onDelete: 'set null' }),

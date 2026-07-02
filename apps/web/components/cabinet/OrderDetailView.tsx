@@ -1,5 +1,6 @@
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatExpires, formatRub } from '@/components/comic/format';
+import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
 
 import { StatusBadge } from './StatusBadge';
 import type { OrderDetail } from './cabinet-api';
@@ -26,6 +27,47 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 /**
+ * Разбивка суммы заказа. `cardIssueFeeKopecks` — снимок разовой надбавки за
+ * выпуск карты (уже включён в `totalKopecks`):
+ *  - `> 0` — первая оплата: показываем «Подписка + Выпуск карты = Итого»;
+ *  - `= 0` — повторная: «Сумма» + заметка «карта уже есть»;
+ *  - `null` — заказ до фичи: просто «Сумма» (как раньше).
+ */
+function PriceBreakdown({
+  totalKopecks,
+  cardIssueFeeKopecks,
+}: {
+  totalKopecks: number;
+  cardIssueFeeKopecks: number | null;
+}) {
+  if (cardIssueFeeKopecks !== null && cardIssueFeeKopecks > 0) {
+    return (
+      <>
+        <Row label="Подписка" value={formatRub(totalKopecks - cardIssueFeeKopecks)} />
+        <Row label="Выпуск карты" value={`+ ${formatRub(cardIssueFeeKopecks)}`} />
+        <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
+        <div className="flex justify-between gap-4 font-display text-base font-bold">
+          <dt className="text-[var(--text)]">Итого</dt>
+          <dd className="text-[var(--text)]">{formatRub(totalKopecks)}</dd>
+        </div>
+      </>
+    );
+  }
+  if (cardIssueFeeKopecks === 0) {
+    return (
+      <>
+        <Row label="Сумма" value={formatRub(totalKopecks)} />
+        <div className="flex items-center gap-1.5 pt-0.5 font-body text-xs text-[var(--success)]">
+          <IconCheck size={14} className="shrink-0" />
+          <span>Карта уже есть — платишь только за подписку</span>
+        </div>
+      </>
+    );
+  }
+  return <Row label="Сумма" value={formatRub(totalKopecks)} />;
+}
+
+/**
  * Экран деталей заказа: сводка, действия (оплатить / повторить / оператор),
  * таймлайн событий, платежи и карта. Действия проксируются наверх в
  * CabinetClient (там Telegram WebApp для открытия платёжной ссылки).
@@ -44,9 +86,10 @@ export function OrderDetailView({
       <button
         type="button"
         onClick={onBack}
-        className="font-display text-sm font-bold text-[var(--link)]"
+        className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)]"
       >
-        ‹ В кабинет
+        <IconArrowLeft size={16} />
+        В кабинет
       </button>
 
       <div
@@ -68,10 +111,10 @@ export function OrderDetailView({
         <dl className="space-y-1">
           <Row label="Создан" value={formatExpires(order.createdAt)} />
           {order.amountKopecks !== null && (
-            <Row label="Сумма" value={formatRub(order.amountKopecks)} />
-          )}
-          {order.commissionPercent !== null && (
-            <Row label="Комиссия" value={`${order.commissionPercent}%`} />
+            <PriceBreakdown
+              totalKopecks={order.amountKopecks}
+              cardIssueFeeKopecks={order.cardIssueFeeKopecks}
+            />
           )}
           {order.paidAt && <Row label="Оплачен" value={formatExpires(order.paidAt)} />}
           {order.fulfilledAt && <Row label="Выполнен" value={formatExpires(order.fulfilledAt)} />}

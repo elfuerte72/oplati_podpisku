@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatRub } from '@/components/comic/format';
+import { IconArrowLeft } from '@/components/comic/icons';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { ServiceLogo } from '@/components/chat/ServiceLogos';
@@ -140,9 +141,10 @@ export function CatalogView({ initData, onBack, onCreated }: CatalogViewProps) {
       <button
         type="button"
         onClick={selected ? () => { setSelected(null); setNotice(null); } : onBack}
-        className="font-display text-sm font-bold text-[var(--link)]"
+        className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)]"
       >
-        {selected ? '‹ Назад к списку' : '‹ В кабинет'}
+        <IconArrowLeft size={16} />
+        {selected ? 'Назад к списку' : 'В кабинет'}
       </button>
 
       {!selected && (

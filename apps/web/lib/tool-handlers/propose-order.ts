@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import {
   countRecentOrdersByUser,
   createDraftOrder,
+  findActiveByUserId,
   getDb,
   getServiceById,
 } from '@oplati/db';
@@ -221,7 +222,21 @@ export async function proposeOrder(input: {
   // Перемножаем как (amountUsdCents * rate) и округляем до integer (копеек).
   const subtotalKopecks = Math.round(amountUsdCents * rate);
   const commissionKopecks = Math.round((subtotalKopecks * commissionPercent) / 100);
-  const totalKopecks = subtotalKopecks + commissionKopecks;
+
+  // Разовая надбавка за выпуск карты: клиент оплачивает $4 issue-fee ТОЛЬКО когда
+  // у него нет активной карты (issue-card выпустит новую → PaySpace спишет fee).
+  // Есть активная карта → топап без fee → надбавки нет. Проверка на момент propose —
+  // прогноз: активная карта может уйти в idle между заказом и оплатой (тогда fee
+  // реально спишется, а мы его не взяли — редкий убыток), либо два неоплаченных
+  // заказа подряд оба увидят «карты нет» (клиент переплатит один fee). Для старта
+  // принимаем зазор. Fee=0 в env → фичу не трогаем (лишний запрос к БД не делаем).
+  const cardIssueFeeUsdCents = serverEnv.CARD_ISSUE_FEE_USD_CENTS;
+  const hasActiveCard =
+    cardIssueFeeUsdCents > 0 ? (await findActiveByUserId(db, userId)) !== null : true;
+  const cardIssueFeeKopecks =
+    cardIssueFeeUsdCents > 0 && !hasActiveCard ? Math.round(cardIssueFeeUsdCents * rate) : 0;
+
+  const totalKopecks = subtotalKopecks + commissionKopecks + cardIssueFeeKopecks;
 
   // Пол платёжного терминала L&P: заказ дешевле минимума всё равно не оплатить
   // (`/api/payments/create` вернёт `below_min_amount`). Ловим ЗДЕСЬ, до создания
@@ -263,6 +278,7 @@ export async function proposeOrder(input: {
       rateFixedAt: new Date(),
       expiresAt,
       commissionPercent,
+      cardIssueFeeKopecks,
       requiresKyc: serviceRequiresKyc,
       parameters: isCustom
         ? {
@@ -297,6 +313,7 @@ export async function proposeOrder(input: {
     rate,
     subtotalKopecks,
     commissionKopecks,
+    cardIssueFeeKopecks,
     totalKopecks,
   });
 

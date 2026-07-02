@@ -1,0 +1,1 @@
+ALTER TABLE "orders" ADD COLUMN "card_issue_fee_kopecks" integer;

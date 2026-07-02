@@ -2,9 +2,26 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
+import {
+  IconArrowLeft,
+  IconArrowRight,
+  IconArrowUp,
+  IconBolt,
+  IconBulb,
+  IconChart,
+  IconCheck,
+  IconFire,
+  IconGift,
+  IconHome,
+  IconLink,
+  IconLock,
+  IconMoney,
+  IconSend,
+  IconStar,
+} from '@/components/comic/icons';
 import { mascotSrc } from '@/components/chat/Mascot';
 import type {
   ReferralHistoryEntry,
@@ -35,8 +52,8 @@ const PRESENTATION_URL = '/partner-presentation.html';
 /** Главный сайт Оплатишки (веб-чат) — возврат из кабинета. */
 const HOME_URL = '/';
 
-const NAV: { key: Screen; icon: string; label: string }[] = [
-  { key: 'dashboard', icon: '🏠', label: 'Дашборд' },
+const NAV: { key: Screen; icon: ReactNode; label: string }[] = [
+  { key: 'dashboard', icon: <IconHome size={18} />, label: 'Дашборд' },
 ];
 
 // Локальные акценты — бренд-токены (teal-light / glasses-light).
@@ -146,7 +163,7 @@ export function PartnerCabinet({
               rel="noreferrer"
               className="flex w-full items-center gap-2.5 rounded-[12px] border-[2.5px] border-transparent px-3 py-2.5 text-left font-body text-[14px] font-medium text-[var(--text-muted)] transition-transform hover:bg-[var(--surface-2)]"
             >
-              <span className="w-5 text-center text-[18px]">💡</span>
+              <span className="flex w-5 items-center justify-center"><IconBulb size={18} /></span>
               Как это работает
             </a>
           </nav>
@@ -155,12 +172,12 @@ export function PartnerCabinet({
             href={HOME_URL}
             className="mx-3 mb-1 flex items-center gap-2.5 rounded-[12px] px-3 py-2.5 font-body text-[13px] font-medium text-[var(--text-muted)] transition-transform hover:bg-[var(--surface-2)]"
           >
-            <span className="w-5 text-center text-[16px]">←</span>
+            <span className="flex w-5 items-center justify-center"><IconArrowLeft size={16} /></span>
             На сайт Оплатишки
           </Link>
           <div className={`mx-3 mt-2 flex items-center gap-2.5 p-3 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
             <span className="flex h-9 w-9 items-center justify-center rounded-full border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] font-display text-[13px] font-bold text-[var(--color-paper)]">
-              {snap.telegramLinked ? '★' : '?'}
+              {snap.telegramLinked ? <IconStar size={16} /> : '?'}
             </span>
             <span className="text-[12px]">
               <span className="block font-body font-semibold">{snap.circle.label}</span>
@@ -179,9 +196,9 @@ export function PartnerCabinet({
                   type="button"
                   onClick={onBack}
                   aria-label="Назад к заказам"
-                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
                 >
-                  ←
+                  <IconArrowLeft size={18} />
                 </button>
               ) : (
                 // Веб-кабинет: возврат на главный сайт Оплатишки.
@@ -189,16 +206,16 @@ export function PartnerCabinet({
                   href={HOME_URL}
                   aria-label="На сайт Оплатишки"
                   title="На сайт Оплатишки"
-                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
                 >
-                  ←
+                  <IconArrowLeft size={18} />
                 </Link>
               )}
               <h1 className="font-display text-[22px] font-bold">{title}</h1>
             </div>
             <div className="flex items-center gap-3">
               <span className="hidden items-center gap-1.5 rounded-full border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-3 py-1 text-[12px] font-semibold text-[var(--color-skin)] shadow-[2px_2px_0_var(--shadow-ink)] sm:flex">
-                🔥 {snap.circle.label}
+                <IconFire size={13} /> {snap.circle.label}
               </span>
               <ComicButton
                 onClick={() => setModalOpen(true)}
@@ -237,16 +254,20 @@ export function PartnerCabinet({
           rel="noreferrer"
           className="flex flex-1 flex-col items-center gap-0.5 py-2.5 font-body text-[10px] text-[var(--text-muted)]"
         >
-          <span className="text-[18px]">💡</span>
+          <IconBulb size={18} />
           Как работает
         </a>
-        <Link
-          href={HOME_URL}
-          className="flex flex-1 flex-col items-center gap-0.5 py-2.5 font-body text-[10px] text-[var(--text-muted)]"
-        >
-          <span className="text-[18px]">←</span>
-          На сайт
-        </Link>
+        {/* «На сайт» — только в вебе (onBack не задан). В мини-аппе открывать
+            внешнюю ссылку внутри приложения бессмысленно, поэтому скрываем. */}
+        {!onBack && (
+          <Link
+            href={HOME_URL}
+            className="flex flex-1 flex-col items-center gap-0.5 py-2.5 font-body text-[10px] text-[var(--text-muted)]"
+          >
+            <IconArrowLeft size={18} />
+            На сайт
+          </Link>
+        )}
       </nav>
 
       {modalOpen && (
@@ -263,8 +284,8 @@ export function PartnerCabinet({
       )}
 
       {toast && (
-        <div className="fixed bottom-24 left-1/2 z-30 -translate-x-1/2 rounded-[14px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-5 py-3 font-display text-[14px] font-bold text-[var(--success)] shadow-[var(--shadow-comic)] lg:bottom-6">
-          ✓ {toast}
+        <div className="fixed bottom-24 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-[14px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-5 py-3 font-display text-[14px] font-bold text-[var(--success)] shadow-[var(--shadow-comic)] lg:bottom-6">
+          <IconCheck size={15} /> {toast}
         </div>
       )}
     </div>
@@ -276,7 +297,7 @@ function NavButton({
   active,
   onClick,
 }: {
-  item: { icon: string; label: string };
+  item: { icon: ReactNode; label: string };
   active: boolean;
   onClick: () => void;
 }) {
@@ -349,7 +370,7 @@ function Dashboard({
               <Stat label="Твоя ставка" value={formatBps(snap.rates.l1Bps)} valueColor="var(--acc)">
                 {snap.rateLockedForever && (
                   <span className="inline-flex -rotate-3 items-center gap-1 rounded-[6px] border-2 border-[var(--success)] px-1.5 py-px font-display text-[10px] font-bold uppercase text-[var(--success)]">
-                    🔒 навсегда
+                    <IconLock size={11} /> навсегда
                   </span>
                 )}
               </Stat>
@@ -452,7 +473,9 @@ function SprintCard({ snap }: { snap: ReferralSnapshot }) {
       : 0;
   return (
     <section className={`p-5 ${CARD}`}>
-      <div className="mb-3.5 font-display text-[14px] font-bold text-[var(--color-skin)]">⚡ Спринт месяца</div>
+      <div className="mb-3.5 flex items-center gap-1.5 font-display text-[14px] font-bold text-[var(--color-skin)]">
+        <IconBolt size={16} /> Спринт месяца
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className={`p-3 ${SOFT}`}>
           <div className="font-body text-[11px] text-[var(--text-muted)]">Новых рефералов</div>
@@ -481,14 +504,16 @@ function RateCard({ snap }: { snap: ReferralSnapshot }) {
   const atTop = snap.circle.nextThresholdUsdCents === null;
   return (
     <section className={`p-5 ${CARD}`}>
-      <div className="mb-3.5 font-display text-[14px] font-bold">📊 Твоя ставка</div>
+      <div className="mb-3.5 flex items-center gap-1.5 font-display text-[14px] font-bold">
+        <IconChart size={16} /> Твоя ставка
+      </div>
       <div className="flex items-end gap-2.5">
         <div className="font-display text-[52px] font-bold leading-none" style={{ color: 'var(--acc)' }}>
           {formatBps(snap.rates.l1Bps)}
         </div>
         {snap.rateLockedForever && (
           <span className="mb-1 inline-flex -rotate-3 items-center gap-1 rounded-[6px] border-2 border-[var(--success)] px-1.5 py-px font-display text-[10px] font-bold uppercase text-[var(--success)]">
-            🔒 навсегда
+            <IconLock size={11} /> навсегда
           </span>
         )}
       </div>
@@ -498,7 +523,9 @@ function RateCard({ snap }: { snap: ReferralSnapshot }) {
       </p>
       {!atTop && (
         <div className="mt-3 flex items-center justify-between border-t-2 border-dashed border-[var(--surface-3)] pt-2.5 opacity-60">
-          <div className="font-body text-[13px]">🔒 Максимум — статус «Топ-партнёр»</div>
+          <div className="flex items-center gap-1.5 font-body text-[13px]">
+            <IconLock size={14} /> Максимум — статус «Топ-партнёр»
+          </div>
           <div className="font-display text-[24px] font-bold text-[var(--text-muted)]">{formatBps(snap.rates.topL1Bps)}</div>
         </div>
       )}
@@ -579,7 +606,7 @@ function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
                 color: it.done ? 'var(--color-teal-light)' : 'var(--text-muted)',
               }}
             >
-              {it.done ? '✓' : it.n}
+              {it.done ? <IconCheck size={15} /> : it.n}
             </span>
             {i < items.length - 1 && <span className="my-1 w-[3px] flex-1 bg-[var(--surface-3)]" />}
           </div>
@@ -594,7 +621,7 @@ function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
               className="inline-flex items-center gap-1 rounded-[8px] border-2 px-2.5 py-0.5 font-display text-[11px] font-bold"
               style={{ color: it.done ? 'var(--color-teal-light)' : 'var(--text-muted)' }}
             >
-              {it.done ? '🔒 ' : ''}
+              {it.done && <IconLock size={11} />}
               {it.rate} {it.done ? 'навсегда' : ''}
             </span>
           </div>
@@ -655,7 +682,7 @@ function LinkCard({
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 font-body text-[13px] text-[var(--link)] underline-offset-2 hover:underline"
           >
-            ✈️ Поделиться в Telegram
+            <IconSend size={14} /> Поделиться в Telegram
           </a>
         )}
         <a
@@ -664,7 +691,7 @@ function LinkCard({
           rel="noreferrer"
           className="inline-flex items-center gap-1.5 font-body text-[13px] text-[var(--link)] underline-offset-2 hover:underline"
         >
-          💡 Как работает программа →
+          <IconBulb size={14} /> Как работает программа <IconArrowRight size={13} />
         </a>
       </div>
     </section>
@@ -679,7 +706,9 @@ function MonthlyIncomeChart({ snap }: { snap: ReferralSnapshot }) {
     <section className={`p-5 ${CARD}`}>
       <div className="flex items-end justify-between">
         <div>
-          <div className="font-display text-[14px] font-bold">💰 Общий доход</div>
+          <div className="flex items-center gap-1.5 font-display text-[14px] font-bold">
+            <IconMoney size={16} /> Общий доход
+          </div>
           <div className="font-display text-[38px] font-bold leading-none text-[var(--success)]">
             {formatUsd(snap.earnedTotalUsdCents)}
           </div>
@@ -740,7 +769,13 @@ function HistoryList({ entries, empty }: { entries: ReferralHistoryEntry[]; empt
                     : 'var(--success)',
             }}
           >
-            {e.kind === 'payout' ? '↑' : e.kind === 'commission' ? initials(e.title) : '🎁'}
+            {e.kind === 'payout' ? (
+              <IconArrowUp size={16} />
+            ) : e.kind === 'commission' ? (
+              initials(e.title)
+            ) : (
+              <IconGift size={16} />
+            )}
           </span>
           <div className="min-w-0 flex-1">
             <div className="truncate font-body text-[13px] font-semibold">{e.title}</div>
@@ -795,7 +830,7 @@ function SectionHead({ title, action, onAction }: { title: string; action?: stri
 function TelegramGate() {
   return (
     <div className="flex items-center gap-3.5 rounded-[var(--radius-card)] border-[2.5px] border-dashed border-[var(--color-stamp)] bg-[var(--surface)] px-4 py-3.5">
-      <span className="text-[26px]">🔗</span>
+      <span className="shrink-0 text-[var(--color-stamp)]"><IconLink size={26} /></span>
       <div className="flex-1 font-body text-[13px]">
         <strong className="font-display">Привяжи Telegram</strong> — чтобы выводить заработок. Реферальная
         ссылка уже работает, но баланс выводится только привязанному аккаунту.
@@ -903,9 +938,9 @@ function Centered({ title, text, onBack }: { title?: string; text: string; onBac
           type="button"
           onClick={onBack}
           aria-label="Назад к заказам"
-          className="absolute left-4 top-4 flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+          className="absolute left-4 top-4 flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
         >
-          ←
+          <IconArrowLeft size={18} />
         </button>
       )}
       <Image

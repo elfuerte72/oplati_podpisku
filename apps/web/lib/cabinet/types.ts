@@ -106,6 +106,13 @@ export type OrderDetail = OrderSummary & {
   originalAmount: number | null;
   originalCurrency: string | null;
   commissionPercent: number | null;
+  /**
+   * Снимок разовой надбавки за выпуск карты (RUB-копейки), уже включённой в
+   * `amountKopecks`. `null` — заказ до фичи; `0` — повторная оплата (карта уже
+   * есть); `>0` — первая оплата с оплаченным issue-fee. Экран заказа рисует по
+   * нему разбивку «Подписка / Выпуск карты / Итого».
+   */
+  cardIssueFeeKopecks: number | null;
   paidAt: string | null;
   fulfilledAt: string | null;
   events: OrderEventView[];

@@ -58,6 +58,8 @@ export type CreateDraftOrderInput = {
   rateFixedAt?: Date | null;
   expiresAt?: Date | null;
   commissionPercent?: number | null;
+  /** Снимок надбавки за выпуск карты (RUB-копейки), уже включённой в amountRub. */
+  cardIssueFeeKopecks?: number | null;
   parameters?: OrderParameters | null;
   requiresKyc?: boolean;
 };
@@ -93,6 +95,7 @@ export async function createDraftOrder(
           rateFixedAt: input.rateFixedAt ?? null,
           expiresAt: input.expiresAt ?? null,
           commissionPercent: input.commissionPercent ?? null,
+          cardIssueFeeKopecks: input.cardIssueFeeKopecks ?? null,
           parameters: input.parameters ?? null,
           requiresKyc: input.requiresKyc ?? false,
         })

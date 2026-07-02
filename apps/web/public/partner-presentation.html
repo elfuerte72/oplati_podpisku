@@ -28,8 +28,8 @@
     --font-display: 'Balsamiq Sans', system-ui, sans-serif;
     --font-body: 'Rubik', system-ui, sans-serif;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+  * { box-sizing: border-box; margin: 0; padding: 0; min-width: 0; }
+  html { scroll-snap-type: y proximity; scroll-behavior: smooth; }
   body {
     background: var(--bg);
     color: var(--text);
@@ -37,6 +37,8 @@
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
+  img, svg, code, pre { max-width: 100%; }
+  h1, h2, h3, p { overflow-wrap: anywhere; }
   .halftone::before {
     content: '';
     position: absolute; inset: 0;
@@ -48,6 +50,7 @@
   .slide {
     position: relative;
     min-height: 100vh;
+    min-height: 100dvh;
     scroll-snap-align: start;
     display: flex;
     align-items: center;
@@ -108,7 +111,7 @@
   .gold { color: var(--gold); }
   .note { font-size: 14px; color: var(--text-muted); margin-top: 20px; }
   .footnote { font-size: 12px; color: var(--text-muted); margin-top: 22px; }
-  code { background: var(--surface-2); border: 2px solid var(--ink); border-radius: 6px; padding: 2px 7px; font-size: 13px; color: var(--teal-soft); }
+  code { background: var(--surface-2); border: 2px solid var(--ink); border-radius: 6px; padding: 2px 7px; font-size: 13px; color: var(--teal-soft); overflow-wrap: anywhere; word-break: break-word; max-width: 100%; }
   .you-node {
     display: inline-flex; flex-direction: column; align-items: center;
     background: var(--teal); color: var(--paper);
@@ -123,7 +126,7 @@
     padding: 10px 16px; font-family: var(--font-display); font-weight: 700; font-size: 14px;
   }
   .friend small { display: block; font-weight: 400; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-  .connector { text-align: center; color: var(--teal); font-size: 22px; line-height: 1; margin: 6px 0; }
+  .connector { text-align: center; color: var(--teal); font-size: 22px; line-height: 1; margin: 6px 0; max-width: 100%; overflow-x: auto; white-space: nowrap; }
   .lvl { text-align: center; }
   .lvl .lab { font-family: var(--font-display); font-weight: 700; font-size: 13px; color: var(--text-muted); }
   .who { font-size: 12px; color: var(--text-muted); margin: 4px 0 8px; }
@@ -164,6 +167,11 @@
     .dots { display: none; }
     .slide-mascot { height: 120px; }
     .mascot-hero { position: static; margin: 20px auto 0; display: block; width: 190px; }
+  }
+  /* Узкий вьюпорт (Telegram WebView, телефоны): мягкая прокрутка без залипания снапа. */
+  @media (max-width: 600px) {
+    html { scroll-snap-type: none; }
+    .connector { font-size: 18px; }
   }
 </style>
 </head>
