@@ -337,6 +337,17 @@ export function ChatClient() {
     }
   }, [clearing, sending, setPoseSettling]);
 
+  // «Выбрать сервис» из тулбара: во время диалога возвращает экран выбора
+  // каталога в ленту (в отличие от корзины — БЕЗ очистки истории). Если внизу
+  // уже открыт стартовый экран — не дублируем.
+  const openServiceCatalog = useCallback(() => {
+    setItems((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1]?.kind === 'start') return prev;
+      return [...prev, { kind: 'start', id: nextId() }];
+    });
+    setPoseSettling('presenting', 2000);
+  }, [setPoseSettling]);
+
   // Кнопочный флоу стартового экрана: заказ создан без AI — карточка в ленту,
   // дальше обычный чат (подтверждение/оплата — существующий confirmOrder).
   const handleOrderCreated = useCallback(
@@ -493,6 +504,18 @@ export function ChatClient() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={openServiceCatalog}
+                aria-label="Выбрать сервис"
+                title="Вернуться к выбору сервиса"
+                className="inline-flex h-9 items-center gap-1.5 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-3 text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+              >
+                <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="hidden text-sm font-semibold sm:inline">Сервисы</span>
+              </button>
               <button
                 type="button"
                 onClick={() => void clearChat()}
