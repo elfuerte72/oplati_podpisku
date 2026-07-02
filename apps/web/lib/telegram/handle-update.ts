@@ -17,7 +17,7 @@ import {
   transitionOrder,
   type MessageHistoryItem,
 } from '@oplati/db';
-import { parseReferralCode, REFERRAL_DEEPLINK_PREFIX } from '@oplati/types';
+import { parseReferralCode, REFERRAL_DEEPLINK_PREFIX, type TelegramUser } from '@oplati/types';
 import {
   classifyMessage,
   GREETING,
@@ -64,12 +64,27 @@ import {
   catalogTierPrompt,
   MEDIA_REPLY,
   orderCardText,
-  SUPPORT_MOCK_TEXT,
+  buildSupportOperatorMessage,
+  SUPPORT_ASK_TEXT,
+  SUPPORT_BUTTON,
+  SUPPORT_FAIL_TEXT,
+  SUPPORT_SENT_TEXT,
+  SUPPORT_UNAVAILABLE_TEXT,
   type MediaKind,
 } from './templates';
 
 /** Ключ pending-state в meta assistant-сообщения: «жду сумму для этого slug». */
 const AWAITING_AMOUNT_META_KEY = 'awaiting_amount_for_slug';
+
+/** Ключ pending-state в meta assistant-сообщения: «жду описание проблемы для /support». */
+const AWAITING_SUPPORT_META_KEY = 'awaiting_support_message';
+
+/**
+ * Дефолтный получатель обращений /support, если `SUPPORT_OPERATOR_CHAT_ID` не
+ * задан в env (telegram_id владельца). Оператор должен один раз запустить бота,
+ * иначе Telegram запретит слать ему личные сообщения.
+ */
+const DEFAULT_SUPPORT_OPERATOR_CHAT_ID = '379336096';
 
 /**
  * Диспатч одиночного Telegram update.
@@ -367,14 +382,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     return;
   }
 
-  // /support — вызов оператора. Пока MOCK (handoff не реализован): отвечаем
-  // заглушкой без AI, до rate-limit. См. SUPPORT_MOCK_TEXT.
-  if (text === '/support' || text.startsWith('/support ') || text.startsWith('/support@')) {
-    log.info({ event: 'telegram.support', chatId, telegramUserId });
-    await sendSafely(chatId, SUPPORT_MOCK_TEXT, update.update_id);
-    return;
-  }
-
   // Per-identity rate-limit ДО persist/роутера/агента: режет DoS-на-бюджет от
   // одного пользователя. `/start` и привязка обрабатываются выше и не затронуты.
   const rlIdentity = String(telegramUserId ?? chatId);
@@ -386,6 +393,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.',
       update.update_id,
     );
+    return;
+  }
+
+  // /support — обращение в поддержку (interim-handoff оператору). ПОСЛЕ
+  // rate-limit: inline-форма `/support <текст>` сразу шлёт человеку, спам недопустим.
+  if (text === '/support' || text.startsWith('/support ') || text.startsWith('/support@')) {
+    await handleSupportCommand(update, message, chatId, text);
     return;
   }
 
@@ -410,11 +424,22 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       update.update_id,
     );
 
+    // Pending-state читаем ОДИН раз (meta последнего assistant-сообщения) и
+    // диспатчим: ожидание описания для /support ИЛИ ожидание суммы для
+    // custom-amount сервиса. Оба — быстрый путь мимо AI.
+    const pendingMeta = await readPendingMeta(ctx.conversationId, update.update_id);
+
+    // Флоу поддержки: бот ранее попросил описать проблему — этот текст пересылаем
+    // оператору.
+    if (await tryHandlePendingSupport(ctx, message, chatId, text, pendingMeta, update.update_id)) {
+      return;
+    }
+
     // Кнопочный флоу: если бот ранее попросил сумму для custom-amount сервиса
     // (Airbnb и т.п.) — следующий текст трактуем как эту сумму и оформляем
     // заказ напрямую, мимо AI (ноль токенов). Не сумма-подобный текст — сброс
     // ожидания и обычный путь через агента.
-    if (await tryHandlePendingAmount(ctx, chatId, text, update.update_id)) {
+    if (await tryHandlePendingAmount(ctx, chatId, text, pendingMeta, update.update_id)) {
       return;
     }
   }
@@ -710,9 +735,12 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
     .text('Отменить', `cancel:${orderId}`);
 }
 
-/** Кнопка «Выбрать сервис» под приветствием /start. */
+/** Кнопки под приветствием /start: «Выбрать сервис» + «Написать в поддержку». */
 function buildCatalogOpenKeyboard(): InlineKeyboard {
-  return new InlineKeyboard().text(CATALOG_OPEN_BUTTON, 'cat');
+  return new InlineKeyboard()
+    .text(CATALOG_OPEN_BUTTON, 'cat')
+    .row()
+    .text(SUPPORT_BUTTON, 'support');
 }
 
 /** Кнопка «<< Назад к списку» (вернуться к выбору сервиса). */
@@ -856,6 +884,7 @@ async function resolveCallbackContext(
  *   - `noop`         → заголовок темы в каталоге (кнопка-разделитель, no-op);
  *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
  *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
+ *   - `support`      → обращение в поддержку: просим описать проблему;
  *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
  *   - `tier:<slug>:<idx>` → выбран тариф: создать заказ → кнопки confirm/cancel;
  *   - `confirm:<orderId>` → confirmOrder (создание L&P invoice) + ссылка оплаты;
@@ -899,6 +928,9 @@ async function handleCallbackQuery(
       return;
     case 'own':
       await showOrEdit(chatId, messageId, CATALOG_OWN_VARIANT_TEXT, updateId);
+      return;
+    case 'support':
+      await handleSupportCallback(cb, chatId, updateId);
       return;
     case 'svc': {
       const slug = parts[1];
@@ -1049,24 +1081,35 @@ async function handleTierSelected(
 }
 
 /**
+ * Читает pending-state — meta последнего assistant-сообщения диалога. Сбой чтения
+ * не должен блокировать обычный путь, поэтому возвращаем `null` (ожиданий нет).
+ */
+async function readPendingMeta(
+  conversationId: string,
+  updateId: number,
+): Promise<Record<string, unknown> | null> {
+  try {
+    return await getLastAssistantMessageMeta(getDb(), conversationId, dbLog);
+  } catch (err) {
+    log.warn({ event: 'telegram.pending_meta.failed', updateId, err });
+    return null;
+  }
+}
+
+/**
  * Кнопочный флоу: если бот ранее (выбор custom-amount сервиса) попросил сумму —
  * следующий текст трактуем как неё и оформляем заказ напрямую, мимо AI.
  * Возвращает `true`, если сообщение обработано здесь (caller прекращает обычный
- * путь). pending-state читается из meta последнего assistant-сообщения.
+ * путь). `meta` — pending-state (meta последнего assistant-сообщения), прочитан
+ * вызывающим один раз.
  */
 async function tryHandlePendingAmount(
   ctx: PersistContext,
   chatId: number,
   text: string,
+  meta: Record<string, unknown> | null,
   updateId: number,
 ): Promise<boolean> {
-  let meta: Record<string, unknown> | null = null;
-  try {
-    meta = await getLastAssistantMessageMeta(getDb(), ctx.conversationId, dbLog);
-  } catch (err) {
-    log.warn({ event: 'telegram.pending_amount.meta_failed', updateId, err });
-    return false; // сбой чтения не должен блокировать обычный путь
-  }
   const slug = meta?.[AWAITING_AMOUNT_META_KEY];
   if (typeof slug !== 'string' || slug.length === 0) {
     return false;
@@ -1113,6 +1156,174 @@ async function tryHandlePendingAmount(
     updateId,
     buildConfirmKeyboard(result.card.orderId),
   );
+  return true;
+}
+
+// ─── Поддержка (/support) — interim-handoff оператору ───────────────────────
+
+/** «/support <текст>» / «/support@bot <текст>» → «<текст>»; «/support» → null. */
+function extractSupportInline(text: string): string | null {
+  const match = text.match(/^\/support(?:@\S+)?\s+([\s\S]+)$/);
+  const body = match?.[1]?.trim();
+  return body && body.length > 0 ? body : null;
+}
+
+/**
+ * Пересылает обращение оператору в личку (Telegram ID из
+ * `SUPPORT_OPERATOR_CHAT_ID`, иначе дефолт в коде). parse_mode HTML — сообщение
+ * собирает чистый `buildSupportOperatorMessage` (экранирование + обрезка).
+ * Возвращает `false` при сбое (в т.ч. 403 — оператор не запускал бота), чтобы
+ * caller честно сообщил пользователю о неудаче.
+ */
+async function notifyOperator(operatorMessage: string, updateId: number): Promise<boolean> {
+  const target = serverEnv.SUPPORT_OPERATOR_CHAT_ID ?? DEFAULT_SUPPORT_OPERATOR_CHAT_ID;
+  try {
+    await getBot().api.sendMessage(target, operatorMessage, { parse_mode: 'HTML' });
+    log.info({ event: 'telegram.support.notified', updateId });
+    return true;
+  } catch (err) {
+    if (err instanceof GrammyError && err.error_code === 403) {
+      // Оператор не запускал бота (или заблокировал) — DM невозможен. Критично.
+      log.error({ event: 'telegram.support.operator_unreachable', updateId, target });
+    } else {
+      log.error({ event: 'telegram.support.notify_failed', updateId, err });
+    }
+    Sentry.captureException(err, { tags: { source: 'telegram.support' } });
+    return false;
+  }
+}
+
+/**
+ * Собирает данные пользователя + описание и шлёт оператору. `from` берётся из
+ * входящего сообщения (личность отправителя, подделать нельзя). `null`/без id —
+ * невозможно идентифицировать клиента, обращение не отправляем.
+ */
+async function submitSupportRequest(
+  from: TelegramUser | undefined,
+  description: string,
+  updateId: number,
+): Promise<boolean> {
+  if (!from?.id) {
+    log.warn({ event: 'telegram.support.no_from', updateId });
+    return false;
+  }
+  const operatorMessage = buildSupportOperatorMessage({
+    telegramId: from.id,
+    firstName: from.first_name,
+    lastName: from.last_name,
+    username: from.username,
+    description,
+  });
+  return notifyOperator(operatorMessage, updateId);
+}
+
+/**
+ * Команда `/support`. Два режима:
+ *   - inline «/support <текст>» — пересылаем оператору сразу (работает даже при
+ *     недоступной БД: личность берём из update, история — best-effort);
+ *   - «/support» без аргументов — просим описать проблему и ставим pending-флаг
+ *     в meta assistant-сообщения (следующий текст подхватит tryHandlePendingSupport).
+ *
+ * Уже за rate-limit'ом (вызывается из основного диспатчера после проверки).
+ */
+async function handleSupportCommand(
+  update: TelegramUpdate,
+  message: TelegramMessage,
+  chatId: number,
+  text: string,
+): Promise<void> {
+  const updateId = update.update_id;
+  log.info({ event: 'telegram.support.command', chatId, telegramUserId: message.from?.id });
+
+  const inline = extractSupportInline(text);
+  if (inline) {
+    const ok = await submitSupportRequest(message.from, inline, updateId);
+    const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
+    const ctx = await persistInbound(update, message);
+    if (ctx) {
+      await safeAppendMessage(
+        ctx,
+        'user',
+        text,
+        { telegram_update_id: updateId, telegram_message_id: message.message_id },
+        updateId,
+      );
+      await safeAppendMessage(ctx, 'assistant', reply, { source: 'support' }, updateId);
+    }
+    await sendSafely(chatId, reply, updateId);
+    return;
+  }
+
+  // Двухшаговый флоу: нужен conversationId, чтобы записать pending-флаг.
+  const ctx = await persistInbound(update, message);
+  if (!ctx) {
+    // БД недоступна — флаг сохранить негде. Направляем на inline-форму (без БД).
+    await sendSafely(chatId, SUPPORT_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+  await safeAppendMessage(
+    ctx,
+    'user',
+    text,
+    { telegram_update_id: updateId, telegram_message_id: message.message_id },
+    updateId,
+  );
+  await safeAppendMessage(
+    ctx,
+    'assistant',
+    SUPPORT_ASK_TEXT,
+    { source: 'support', [AWAITING_SUPPORT_META_KEY]: true },
+    updateId,
+  );
+  await sendSafely(chatId, SUPPORT_ASK_TEXT, updateId);
+}
+
+/**
+ * Нажатие inline-кнопки «Написать в поддержку» (callback `support`). Ставит тот
+ * же pending-флаг, что и `/support` без аргументов, и просит описать проблему
+ * новым сообщением (приветствие/каталог не редактируем — оставляем контекст).
+ */
+async function handleSupportCallback(
+  cb: TelegramCallbackQuery,
+  chatId: number,
+  updateId: number,
+): Promise<void> {
+  const ctx = await resolveCallbackContext(cb, updateId);
+  if (!ctx) {
+    await sendSafely(chatId, SUPPORT_UNAVAILABLE_TEXT, updateId);
+    return;
+  }
+  await safeAppendMessage(
+    ctx,
+    'assistant',
+    SUPPORT_ASK_TEXT,
+    { source: 'support', [AWAITING_SUPPORT_META_KEY]: true },
+    updateId,
+  );
+  await sendSafely(chatId, SUPPORT_ASK_TEXT, updateId);
+}
+
+/**
+ * Флоу поддержки: если бот ранее попросил описать проблему (pending-флаг в meta),
+ * этот текст трактуем как описание и пересылаем оператору. Возвращает `true`,
+ * если сообщение обработано здесь. `meta` прочитан вызывающим один раз.
+ */
+async function tryHandlePendingSupport(
+  ctx: PersistContext,
+  message: TelegramMessage,
+  chatId: number,
+  text: string,
+  meta: Record<string, unknown> | null,
+  updateId: number,
+): Promise<boolean> {
+  if (meta?.[AWAITING_SUPPORT_META_KEY] !== true) {
+    return false;
+  }
+  const ok = await submitSupportRequest(message.from, text, updateId);
+  const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
+  // Ответ без флага — ожидание сброшено (успех) либо не зацикливаем на сбое.
+  await safeAppendMessage(ctx, 'assistant', reply, { source: 'support' }, updateId);
+  await sendSafely(chatId, reply, updateId);
   return true;
 }
 

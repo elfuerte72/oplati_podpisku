@@ -99,6 +99,19 @@ export async function POST(req: Request): Promise<NextResponse> {
       // message — текстовые сообщения; callback_query — нажатия inline-кнопок.
       allowed_updates: ['message', 'callback_query'],
     });
+
+    // Команды в нативном меню бота (кнопка ☰). Best-effort: сбой не должен
+    // валить регистрацию webhook (он уже установлен выше, повтор идемпотентен).
+    try {
+      await bot.api.setMyCommands([
+        { command: 'menu', description: 'Выбрать сервис для оплаты' },
+        { command: 'support', description: 'Написать в поддержку' },
+      ]);
+    } catch (cmdErr) {
+      log.warn({ event: 'admin.telegram.set_commands.failed', err: cmdErr });
+      Sentry.captureException(cmdErr, { tags: { source: 'admin.telegram-webhook', step: 'commands' } });
+    }
+
     const info = await bot.api.getWebhookInfo();
 
     log.info({

@@ -23,6 +23,8 @@ const telegramUserSchema = z.object({
   language_code: z.string().optional(),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
+  // @username — нужен, чтобы оператор мог кликнуть по обращению в /support.
+  username: z.string().optional(),
   is_bot: z.boolean().optional(),
 });
 

@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-07-02 — Поддержка в боте: /support → пересылка оператору (interim-handoff)
+
+### Added
+
+- **Команда `/support` в Telegram-боте**: двухшаговый флоу — бот вежливо просит описать проблему, следующее сообщение пользователя пересылается оператору в личку. Плюс однострочная форма `/support <текст>` (работает даже при недоступной БД) и inline-кнопка «Написать в поддержку» под приветствием (`callback_data: support`).
+- Получатель обращений — env `SUPPORT_OPERATOR_CHAT_ID` (не задан → дефолт `379336096` в коде — telegram_id владельца). **Оператор обязан один раз запустить бота**, иначе Telegram вернёт 403 на попытку DM (бот честно ответит пользователю об ошибке).
+- Сообщение оператору собирает чистая `buildSupportOperatorMessage` (`templates.ts`, parse_mode HTML): имя, `@username`, Telegram ID, кликабельный `tg://user?id=`, текст обращения. Пользовательский ввод экранируется (анти-инъекция разметки), описание обрезается до 3500 символов (лимит Telegram 4096).
+- `setMyCommands` в админ-эндпоинте вебхука регистрирует `/menu` и `/support` в нативном меню бота (кнопка ☰), best-effort.
+- Pending-state (`awaiting_support_message`) — тот же паттерн meta assistant-сообщения, что и custom-amount; чтение meta в диспатчере унифицировано (`readPendingMeta`, один запрос на сообщение).
+- `username` добавлен в `telegramUserSchema` (`@oplati/types`).
+
+### Changed
+
+- `/support` перенесён из mock-заглушки (`SUPPORT_MOCK_TEXT` удалён) в реальный handoff; обработка — ПОСЛЕ rate-limit (inline-форма шлёт человеку, спам недопустим).
+
+### Tests
+
+- `buildSupportOperatorMessage`: экранирование HTML, подстановки-заглушки, обрезка (web 230, +4). typecheck/lint/build зелёные.
+
 ## 2026-07-02 — Рефералка упрощена до 1 уровня; каталог сужен + пополнение App Store
 
 ### Changed
