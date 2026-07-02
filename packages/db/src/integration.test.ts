@@ -21,6 +21,7 @@ import {
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
+import { getOrCreateUserByTelegramId } from './repositories/users.ts';
 import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
@@ -323,6 +324,35 @@ describe('findExpiredPendingOrders (guard оплаченного заказа, C
     const ids = expired.map((o) => o.id);
     expect(ids).not.toContain(paidCase.order.id);
     expect(ids).toContain(plainCase.order.id);
+  });
+});
+
+describe('getOrCreateUserByTelegramId (реферальный захват при создании)', () => {
+  it('передан referredBy → INSERT ставит referred_by + referred_by_set_at', async () => {
+    // Регресс на баг: referred_by_set_at передавался как JS Date в raw-запрос и
+    // ронял весь INSERT (кэш не хешил Date) → реферал НЕ фиксировался. Теперь now().
+    const referrer = await makeUser();
+    const res = await getOrCreateUserByTelegramId(db, {
+      telegramId: `tg-cap-${++seq}`,
+      referredBy: referrer.id,
+    });
+    expect(res.created).toBe(true);
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, res.id)),
+      'captured user',
+    );
+    expect(row.referredBy).toBe(referrer.id);
+    expect(row.referredBySetAt).toBeInstanceOf(Date);
+  });
+
+  it('без referredBy → referred_by и referred_by_set_at остаются null', async () => {
+    const res = await getOrCreateUserByTelegramId(db, { telegramId: `tg-nocap-${++seq}` });
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, res.id)),
+      'user',
+    );
+    expect(row.referredBy).toBeNull();
+    expect(row.referredBySetAt).toBeNull();
   });
 });
 
