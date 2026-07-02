@@ -25,14 +25,18 @@ import { formatBps, formatLedgerDate, formatMonthShort, formatUsd } from './form
  */
 
 // Кабинет упрощён (2026-07-02): всё на одном дашборде (ссылка, сеть, доход,
-// статус, история — прокруткой) + отдельная страница «Как это работает».
-// Маркетинговый лендинг для приглашения друзей — /partner-presentation.html.
-type Screen = 'dashboard' | 'how';
+// статус, история — прокруткой). «Как это работает» ведёт прямо на
+// маркетинговый лендинг-презентацию (для показа другу).
+type Screen = 'dashboard';
 type Phase = 'loading' | 'error' | 'disabled' | 'ready';
+
+/** Маркетинговый лендинг партнёрской программы (public/, открывается в новой вкладке). */
+const PRESENTATION_URL = '/partner-presentation.html';
+/** Главный сайт Оплатишки (веб-чат) — возврат из кабинета. */
+const HOME_URL = '/';
 
 const NAV: { key: Screen; icon: string; label: string }[] = [
   { key: 'dashboard', icon: '🏠', label: 'Дашборд' },
-  { key: 'how', icon: '💡', label: 'Как это работает' },
 ];
 
 // Локальные акценты — бренд-токены (teal-light / glasses-light).
@@ -135,8 +139,26 @@ export function PartnerCabinet({
             {NAV.map((n) => (
               <NavButton key={n.key} item={n} active={screen === n.key} onClick={() => setScreen(n.key)} />
             ))}
+            {/* «Как это работает» — прямой переход на презентацию (внешняя вкладка). */}
+            <a
+              href={PRESENTATION_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="flex w-full items-center gap-2.5 rounded-[12px] border-[2.5px] border-transparent px-3 py-2.5 text-left font-body text-[14px] font-medium text-[var(--text-muted)] transition-transform hover:bg-[var(--surface-2)]"
+            >
+              <span className="w-5 text-center text-[18px]">💡</span>
+              Как это работает
+            </a>
           </nav>
-          <div className={`mx-3 mt-3 flex items-center gap-2.5 p-3 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
+          {/* Возврат на главный сайт Оплатишки. */}
+          <Link
+            href={HOME_URL}
+            className="mx-3 mb-1 flex items-center gap-2.5 rounded-[12px] px-3 py-2.5 font-body text-[13px] font-medium text-[var(--text-muted)] transition-transform hover:bg-[var(--surface-2)]"
+          >
+            <span className="w-5 text-center text-[16px]">←</span>
+            На сайт Оплатишки
+          </Link>
+          <div className={`mx-3 mt-2 flex items-center gap-2.5 p-3 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
             <span className="flex h-9 w-9 items-center justify-center rounded-full border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] font-display text-[13px] font-bold text-[var(--color-paper)]">
               {snap.telegramLinked ? '★' : '?'}
             </span>
@@ -152,7 +174,7 @@ export function PartnerCabinet({
           {/* Topbar */}
           <header className="sticky top-0 z-10 flex items-center justify-between border-b-[2.5px] border-[var(--shadow-ink)] bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-5 py-4 backdrop-blur">
             <div className="flex items-center gap-2.5">
-              {onBack && (
+              {onBack ? (
                 <button
                   type="button"
                   onClick={onBack}
@@ -161,6 +183,16 @@ export function PartnerCabinet({
                 >
                   ←
                 </button>
+              ) : (
+                // Веб-кабинет: возврат на главный сайт Оплатишки.
+                <Link
+                  href={HOME_URL}
+                  aria-label="На сайт Оплатишки"
+                  title="На сайт Оплатишки"
+                  className="flex h-9 w-9 items-center justify-center rounded-[10px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] font-display text-[16px] shadow-[2px_2px_0_var(--shadow-ink)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+                >
+                  ←
+                </Link>
               )}
               <h1 className="font-display text-[22px] font-bold">{title}</h1>
             </div>
@@ -179,10 +211,7 @@ export function PartnerCabinet({
           </header>
 
           <div className="mx-auto max-w-[920px] px-5 py-6">
-            {screen === 'dashboard' && (
-              <Dashboard snap={snap} onCopied={() => showToast('Ссылка скопирована')} onHow={() => setScreen('how')} />
-            )}
-            {screen === 'how' && <HowItWorks snap={snap} />}
+            <Dashboard snap={snap} onCopied={() => showToast('Ссылка скопирована')} />
           </div>
         </main>
       </div>
@@ -202,6 +231,22 @@ export function PartnerCabinet({
             {n.label}
           </button>
         ))}
+        <a
+          href={PRESENTATION_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="flex flex-1 flex-col items-center gap-0.5 py-2.5 font-body text-[10px] text-[var(--text-muted)]"
+        >
+          <span className="text-[18px]">💡</span>
+          Как работает
+        </a>
+        <Link
+          href={HOME_URL}
+          className="flex flex-1 flex-col items-center gap-0.5 py-2.5 font-body text-[10px] text-[var(--text-muted)]"
+        >
+          <span className="text-[18px]">←</span>
+          На сайт
+        </Link>
       </nav>
 
       {modalOpen && (
@@ -256,11 +301,9 @@ function NavButton({
 function Dashboard({
   snap,
   onCopied,
-  onHow,
 }: {
   snap: ReferralSnapshot;
   onCopied: () => void;
-  onHow: () => void;
 }) {
   const progressPct = Math.min(100, snap.progress.progressBps / 100);
   return (
@@ -345,7 +388,7 @@ function Dashboard({
       </section>
 
       {/* Ссылка-приглашение — ключевое действие партнёра, сразу под hero. */}
-      <LinkCard snap={snap} onCopied={onCopied} onHow={onHow} />
+      <LinkCard snap={snap} onCopied={onCopied} />
 
       {/* Сеть рефералов. */}
       <SectionHead title="Мои рефералы" />
@@ -566,11 +609,9 @@ function CircleTimeline({ snap }: { snap: ReferralSnapshot }) {
 function LinkCard({
   snap,
   onCopied,
-  onHow,
 }: {
   snap: ReferralSnapshot;
   onCopied: () => void;
-  onHow: () => void;
 }) {
   // Единственный канал приглашения — Telegram deep-link: реферал закрепляется,
   // когда друг запускает бота по ссылке (веб-захвата больше нет).
@@ -617,13 +658,14 @@ function LinkCard({
             ✈️ Поделиться в Telegram
           </a>
         )}
-        <button
-          type="button"
-          onClick={onHow}
+        <a
+          href={PRESENTATION_URL}
+          target="_blank"
+          rel="noreferrer"
           className="inline-flex items-center gap-1.5 font-body text-[13px] text-[var(--link)] underline-offset-2 hover:underline"
         >
           💡 Как работает программа →
-        </button>
+        </a>
       </div>
     </section>
   );
@@ -725,107 +767,6 @@ function HistoryList({ entries, empty }: { entries: ReferralHistoryEntry[]; empt
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/);
   return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || '★';
-}
-
-// ─── HOW IT WORKS ───────────────────────────────────────────────────────────
-
-function HowItWorks({ snap }: { snap: ReferralSnapshot }) {
-  const steps = [
-    { n: '1', t: 'Возьми свою ссылку на дашборде и отправь другу в Telegram.' },
-    { n: '2', t: 'Друг открывает бота по ссылке и оплачивает любую подписку.' },
-    { n: '3', t: `Ты получаешь ${formatBps(snap.rates.l1Bps)} с каждой его оплаты — сразу в баланс.` },
-  ];
-  // Статусы и пороги — зеркало REFERRAL_RATE_TABLE (@oplati/types): 4 ступени,
-  // держать синхронно (иначе кабинет покажет «Клиент», а объяснение — «Старт»).
-  const statuses = [
-    { label: 'Клиент', threshold: 'старт для всех', rate: '4%', note: 'базовая ставка' },
-    { label: 'Старт', threshold: 'сеть ≥ $500 / мес', rate: '4%', note: 'ставка закрепляется' },
-    { label: 'Партнёр', threshold: 'сеть ≥ $2 000 / мес', rate: '6%', note: '+ $50 бонус' },
-    { label: 'Топ-партнёр', threshold: 'сеть ≥ $5 000 / мес', rate: '7%', note: '+ $150 бонус' },
-  ];
-  return (
-    <div className="space-y-4">
-      {/* Суть — одноуровневая программа. */}
-      <section className={`p-6 ${CARD}`}>
-        <div className="font-display text-[20px] font-bold">Как это работает</div>
-        <p className="mt-1.5 font-body text-[13px] text-[var(--text-muted)]">
-          Простая партнёрская программа в один уровень: ты получаешь процент с оплат тех, кого
-          пригласил лично. Никаких сетей и уровней — только твои друзья. Друг платит ровно
-          столько же, твой процент — из комиссии Оплатишки, а не из его кармана.
-        </p>
-        <div className="mt-4 space-y-2.5">
-          {steps.map((s) => (
-            <div key={s.n} className={`flex items-center gap-3 p-3 ${SOFT}`}>
-              <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[2.5px] border-[var(--shadow-ink)] font-display text-[14px] font-bold"
-                style={{ background: 'color-mix(in srgb, var(--acc) 22%, transparent)', color: 'var(--acc)' }}
-              >
-                {s.n}
-              </span>
-              <span className="font-body text-[13px]">{s.t}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Ставка растёт со статусом. */}
-      <section className={`p-6 ${CARD}`}>
-        <div className="font-display text-[16px] font-bold">Чем больше сеть — тем выше ставка</div>
-        <p className="mt-1 mb-4 font-body text-[13px] text-[var(--text-muted)]">
-          Статус растёт по обороту оплат твоих рефералов за месяц. Поднялся — ставка фиксируется
-          навсегда и уже не падает.
-        </p>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {statuses.map((s) => (
-            <div key={s.label} className={`p-4 ${SOFT}`}>
-              <div className="font-display text-[15px] font-bold">{s.label}</div>
-              <div className="mt-0.5 font-body text-[11px] text-[var(--text-muted)]">{s.threshold}</div>
-              <div className="mt-2 font-display text-[28px] font-bold leading-none" style={{ color: 'var(--acc)' }}>
-                {s.rate}
-              </div>
-              <div className="mt-1 font-body text-[11px] text-[var(--color-skin)]">{s.note}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Бонусы и выплаты. */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className={`p-6 ${CARD}`}>
-          <div className="mb-3 font-display text-[16px] font-bold">🎁 Бонусы</div>
-          <ul className="space-y-2 font-body text-[13px]">
-            <li>• <strong>Достижение статуса</strong> — разовый бонус $50 / $150.</li>
-            <li>• <strong>Спринт</strong> — 10+ новых активных рефералов за месяц → +$30.</li>
-            <li>• <strong>Серия</strong> — 3 месяца подряд с планом → +$25 / $75 / $200.</li>
-            <li>• <strong>Буст</strong> — оборот ≥150% плана → +1% к ставке на месяц.</li>
-          </ul>
-        </section>
-        <section className={`p-6 ${CARD}`}>
-          <div className="mb-3 font-display text-[16px] font-bold">💸 Выплаты</div>
-          <ul className="space-y-2 font-body text-[13px]">
-            <li>• На карту РФ — комиссия вывода <strong>3.5%</strong>.</li>
-            <li>• В крипте (USDT) — комиссия <strong>1%</strong>.</li>
-            <li>• Минимальная сумма вывода — <strong>{formatUsd(snap.minPayoutUsdCents)}</strong>.</li>
-            <li>• Полный номер карты и CVV мы не храним — только маска.</li>
-          </ul>
-        </section>
-      </div>
-
-      {/* Полная презентация (маркетинговый лендинг для друзей). */}
-      <a
-        href="/partner-presentation.html"
-        target="_blank"
-        rel="noreferrer"
-        className={`flex items-center justify-between p-5 ${CARD} transition-transform hover:-translate-y-0.5`}
-      >
-        <div>
-          <div className="font-display text-[15px] font-bold">📊 Открыть презентацию</div>
-          <div className="font-body text-[12px] text-[var(--text-muted)]">Красивое объяснение программы — можно показать другу</div>
-        </div>
-        <span className="font-display text-[20px]">→</span>
-      </a>
-    </div>
-  );
 }
 
 // ─── shared ─────────────────────────────────────────────────────────────────

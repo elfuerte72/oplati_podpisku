@@ -33,6 +33,12 @@ const PROPOSE_FAIL_TEXT =
 const MIN_AMOUNT_USD = 1;
 const MAX_AMOUNT_USD = 500;
 
+// Свободный ввод «Свой вариант…» временно ОТКЛЮЧЁН (владелец, 2026-07-02):
+// ограничиваем список — некоторые сервисы/карты не принимают наши подписки,
+// оператор не сможет исполнить произвольный заказ. Код сохранён за флагом —
+// вернуть свободный ввод = поставить `true`.
+const ALLOW_OWN_VARIANT = false;
+
 // Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam/App Store)
 // допускают суммы до HIGH_VALUE_MAX_AMOUNT_USD. Зеркалит серверный
 // HIGH_VALUE_SERVICE_SLUGS из propose-order.ts — держать синхронно.
@@ -170,7 +176,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
           </p>
           <div className="flex justify-center gap-3">
             <ComicButton onClick={() => void loadCatalog()}>Повторить</ComicButton>
-            <ComicButton onClick={onOwnVariant}>Написать текстом</ComicButton>
+            {ALLOW_OWN_VARIANT && <ComicButton onClick={onOwnVariant}>Написать текстом</ComicButton>}
           </div>
         </div>
       )}
@@ -207,16 +213,18 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             </section>
           ))}
 
-          <button type="button" onClick={onOwnVariant} className={`${tile} w-full`}>
-            <span className={tilePlate}>
-              <span aria-hidden className="font-display text-xl font-bold text-[var(--color-ink)]">
-                +
+          {ALLOW_OWN_VARIANT && (
+            <button type="button" onClick={onOwnVariant} className={`${tile} w-full`}>
+              <span className={tilePlate}>
+                <span aria-hidden className="font-display text-xl font-bold text-[var(--color-ink)]">
+                  +
+                </span>
               </span>
-            </span>
-            <span className="min-w-0 font-body text-sm font-semibold leading-tight text-[var(--accent)]">
-              Свой вариант…
-            </span>
-          </button>
+              <span className="min-w-0 font-body text-sm font-semibold leading-tight text-[var(--accent)]">
+                Свой вариант…
+              </span>
+            </button>
+          )}
         </div>
       )}
 
