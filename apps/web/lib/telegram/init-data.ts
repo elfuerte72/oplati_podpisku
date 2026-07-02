@@ -40,7 +40,7 @@ export type InitDataFailureReason =
   | 'malformed';
 
 export type ValidateInitDataResult =
-  | { ok: true; user: TelegramWebAppUser; authDate: Date }
+  | { ok: true; user: TelegramWebAppUser; authDate: Date; startParam: string | null }
   | { ok: false; reason: InitDataFailureReason };
 
 export function validateInitData(
@@ -99,7 +99,18 @@ export function validateInitData(
     return { ok: false, reason: 'malformed' };
   }
 
-  return { ok: true, user: parsed.data, authDate: new Date(authDateSec * 1000) };
+  // `start_param` — значение из `?startapp=<param>` прямой ссылки на Mini App.
+  // Оно ВХОДИТ в подписанную data_check_string (мы его не исключаем при проверке
+  // выше), поэтому после валидации подписи ему можно доверять. Используем для
+  // захвата реферала при входе в приложение (deep-link `startapp=ref_<code>`).
+  const startParam = params.get('start_param');
+
+  return {
+    ok: true,
+    user: parsed.data,
+    authDate: new Date(authDateSec * 1000),
+    startParam: startParam && startParam.length > 0 ? startParam : null,
+  };
 }
 
 /** Имя пользователя из Telegram-профиля (для `users.display_name`). */

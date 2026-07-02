@@ -82,6 +82,14 @@ const serverEnvSchema = z.object({
   SUPPORT_OPERATOR_CHAT_ID: optionalEnvString(
     z.string().regex(/^(-?\d+|@[A-Za-z0-9_]{4,})$/, 'must be a numeric chat id or @username'),
   ),
+  // Short name зарегистрированного в BotFather Mini App (/newapp). Задан →
+  // реф-ссылка кабинета собирается как прямая ссылка на приложение
+  // `t.me/<bot>/<shortname>?startapp=ref_<code>` (реф-код доезжает в
+  // initData.start_param и захватывается при входе). Не задан → fallback на
+  // bot-deep-link `?start=ref_<code>` (срабатывает только при нажатии «Начать»).
+  TELEGRAM_MINIAPP_SHORTNAME: optionalEnvString(
+    z.string().regex(/^[A-Za-z0-9_]{3,64}$/, 'must be a Telegram app short name'),
+  ),
 
   // Платежи (Sprint 2)
   YOOKASSA_SHOP_ID: optionalEnvString(),

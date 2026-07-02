@@ -39,6 +39,7 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
+import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
@@ -357,6 +358,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
     const ctx = await persistInbound(update, message, { referredBy });
     if (ctx) {
+      // Поздний захват: если строка юзера уже существовала (напр. он раньше
+      // открыл мини-апп кнопкой ☰ — тогда referred_by при создании не проставился),
+      // INSERT выше реферера не тронул. setReferrerOnce привяжет его сейчас
+      // (идемпотентно, с антифрод-гейтом по покупкам). Для нового юзера — no-op.
+      if (referredBy) {
+        await captureReferralForUser({
+          userId: ctx.userId,
+          referrerId: referredBy,
+          source: 'bot_start',
+        });
+      }
       await safeAppendMessage(
         ctx,
         'user',
