@@ -120,6 +120,20 @@
       "when": 1782895243268,
       "tag": "0016_unique_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1782984140692,
+      "tag": "0017_lethal_fabian_cortez",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1782984167390,
+      "tag": "0018_order_events_append_only_trigger",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-07-02 — Аудит: транзакционная целостность платежей + защита от абьюза + интеграционные тесты БД
+
+Итог полного аудита (тесты + транзакции + БД + security). Закрыт 1 критический баг потери денег и 6 важных находок; денежные SQL-гарантии впервые покрыты тестами на реальном Postgres.
+
+### Fixed
+
+- **Critical — оплаченный заказ мог «умереть» без recovery.** `claimPaymentSucceeded` (платёж → `succeeded`) и `transitionOrder(paid)` были двумя отдельными запросами: сбой БД между ними оставлял платёж `succeeded` при заказе в `pending_payment`, а cron `expire-payments` спустя ≤15 мин хоронил ОПЛАЧЕННЫЙ заказ в `expired` («срок оплаты истёк» клиенту). Теперь claim и переход — **в одной транзакции** (`processInvoicePaid`): сбой перехода откатывает и claim, платёж остаётся `pending`, `poll-payment` дообрабатывает. `catch` различает `OrderTransitionError` (легитимная «оплата мёртвого счёта» → алерт) и транзиентный сбой (re-throw → откат). Defense-in-depth: `findExpiredPendingOrders` теперь исключает заказы с успешным платежом (`NOT EXISTS payments succeeded`).
+- **Important — «Оплата получена» уходила даже при непройденном переходе в `paid`.** `dispatchPaymentConfirmed`/`dispatchIssueCard` вызывались до проверки результата; клиент, оплативший отменённый счёт, получал «мы обрабатываем заказ». Теперь все побочные эффекты — строго под `paidOk`.
+- **Important — merge пользователей терял месячную статистику партнёра.** При привязке Telegram к веб-строке FK `ON DELETE cascade` молча уносил `referral_monthly_stats` (в т.ч. серию `consecutive_met_months` → срыв серийного бонуса) и профиль `referral_partners` с накопленным статусом. `consumeLinkToken` теперь переносит месячную статистику (конфликтные месяцы остаются за telegram-строкой) и мержит профиль партнёра через `GREATEST` (круг/ставка не понижаются, `suspended` — по OR).
+- **Important — два конкурентных `confirm_order` создавали два живых инвойса** на один заказ (TOCTOU: проверка статуса и переход не атомарны, `providerRef` каждый раз новый). Клиент мог оплатить второй по уже завершённому заказу. Защита — частичный `UNIQUE(order_id) WHERE status='pending'` на `payments`; проигравший INSERT возвращает существующий pending-инвойс победителя.
+- **Important — `/api/orders/propose`, `/confirm`, `/auth/telegram/link` без rate-limit** (анонимный cost-DoS): бескуковый клиент получал свежую сессию — и свежий суточный кап заказов — на каждый запрос. Добавлен per-IP `checkRateLimit` (`web-order`/`web-link`) **до** резолва сессии и любых записей в БД.
+- **Important — `transitionReferralPayout` применял любой переход**, включая `paid→requested` (реанимация выплаченной заявки = повторный вывод). Машина статусов (`canTransitionPayout`) теперь форсится в самом репозитории, а не только у вызывающего.
+
+### Added
+
+- **Триггер БД `order_events_append_only`** (`BEFORE UPDATE OR DELETE → RAISE`): инвариант №1 (append-only) больше не держится на конвенции — RLS его не форсил для `service_role`/прямого подключения. Миграция `0018`.
+- **Интеграционный контур `packages/db`** на PGlite (WASM-Postgres, реальные миграции): 13 тестов закрывают главный пробел аудита — денежные SQL-гарантии (атомарный claim и его откат в транзакции, идемпотентность webhook, append-only-триггер, guard оплаченного заказа в expire, полный merge пользователей, идемпотентность+reversal ledger'а, машина статусов и анти-перевывод выплат) до этого исполнялись только моками. У `@oplati/db` появился `test`-скрипт (раньше CI молча его пропускал).
+- Guard валюты в `accrueReferralForPayment`: начисляем только при `original_currency` USD/NULL (защита от будущего дрейфа базы).
+
+### Changed
+
+- Частичный `UNIQUE(payment_id, beneficiary, level) WHERE status='accrued'` в `referral_accruals` (миграция `0017`): полный индекс блокировал собственный reversal-контракт ledger'а («reversal = новая строка `status='reversed'`»).
+- Удалена мёртвая опасная `markPaymentSucceeded` (безусловный UPDATE by id) — риск двойной траты при случайном вызове вместо claim-версии.
+- `getWebSessionProfile`: `SUM(amount_rub)::bigint` вместо `::int` (переполнение после ~21,4 млн ₽).
+- `/api/alerts/sentry`: зафиксирован комментарием компромисс секрета в query (`?s=` — Sentry webhook не умеет кастомные заголовки; при утечке ротировать секрет).
+
+### Tests
+
+- db 13 (новый пакет), web 235 (+9: транзакция claim↔transition, оплата мёртвого счёта, транзиентный сбой, guard валюты, rate-limit propose), types 87. `typecheck`/`lint`/`build` — зелёные.
+
 ## 2026-07-02 — Поддержка в боте: /support → пересылка оператору (interim-handoff)
 
 ### Added

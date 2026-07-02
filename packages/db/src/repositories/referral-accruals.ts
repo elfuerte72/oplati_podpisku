@@ -60,9 +60,12 @@ export type CommissionAccrualInsert = {
 
 /**
  * Вставляет commission-начисления идемпотентно (ON CONFLICT DO NOTHING по
- * UNIQUE(payment_id, beneficiary, level)). Возвращает число РЕАЛЬНО вставленных
- * строк (0 при полном дубле — повторный webhook/poll). В одноуровневой программе
- * строка одна (прямой реферер), поэтому простой цикл, а не bulk-INSERT.
+ * частичному UNIQUE(payment_id, beneficiary, level) WHERE status='accrued').
+ * Индекс частичный (находка аудита I2): полный блокировал бы reversal-контракт
+ * ledger'а — «reversal = НОВАЯ строка status='reversed'» с теми же ключами.
+ * Возвращает число РЕАЛЬНО вставленных строк (0 при полном дубле — повторный
+ * webhook/poll). В одноуровневой программе строка одна (прямой реферер),
+ * поэтому простой цикл, а не bulk-INSERT.
  */
 export async function insertCommissionAccruals(
   db: DB,
@@ -87,7 +90,7 @@ export async function insertCommissionAccruals(
           ${row.beneficiaryUserId}, ${sourceUserId}, ${orderId}, ${paymentId},
           ${row.level}, 'commission', ${row.rateBps}, ${row.amountUsdCents}
         )
-        ON CONFLICT (payment_id, beneficiary_user_id, level) DO NOTHING
+        ON CONFLICT (payment_id, beneficiary_user_id, level) WHERE status = 'accrued' DO NOTHING
         RETURNING id
       `);
       if (res[0]?.id) inserted++;

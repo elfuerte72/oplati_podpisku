@@ -145,11 +145,11 @@ export {
 
 export {
   upsertPaymentByProviderRef,
-  markPaymentSucceeded,
   claimPaymentSucceeded,
   markPaymentStatus,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
+  findPendingPaymentByOrderId,
   findPaymentsByOrderId,
   type PaymentRow,
   type UpsertPaymentByProviderRefInput,

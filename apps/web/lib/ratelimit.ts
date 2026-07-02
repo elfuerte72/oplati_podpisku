@@ -40,16 +40,33 @@ export type RateLimitResult = {
   remaining: number;
 };
 
-export type RateLimitName = 'web-chat' | 'telegram';
+export type RateLimitName = 'web-chat' | 'telegram' | 'web-order' | 'web-link';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
 // Окна подобраны под продукт (~50 заказов/день): живому пользователю хватает с
 // запасом, абьюзеру — режет залп. Тюнится без изменения кода вызова.
+// `web-order`/`web-link` (находка security-аудита): неаутентифицированные
+// write-эндпоинты (`orders/propose|confirm`, `auth/telegram/link`) без лимита
+// позволяли анониму без cookie заваливать БД строками users/orders/link_tokens —
+// суточный кап «≤10 заказов» не спасал, т.к. каждый бескуковый запрос получает
+// свежую сессию.
 const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   'web-chat': { limit: 12, windowSeconds: 60 },
   telegram: { limit: 20, windowSeconds: 60 },
+  'web-order': { limit: 8, windowSeconds: 60 },
+  'web-link': { limit: 5, windowSeconds: 60 },
 };
+
+/** Клиентский IP для rate-limit. На Vercel приходит в `x-forwarded-for`. */
+export function getClientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
 
 let cachedRedis: Redis | null = null;
 const limiterCache = new Map<RateLimitName, Ratelimit>();

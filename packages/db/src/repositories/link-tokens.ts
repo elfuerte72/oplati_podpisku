@@ -169,6 +169,51 @@ export async function consumeLinkToken(
           await tx.execute(
             sql`UPDATE referral_payouts SET user_id = ${byTelegram.id} WHERE user_id = ${byWebSession.id}`,
           );
+          // Месячная статистика прогрессии (PK user_id+month, FK ON DELETE cascade):
+          // без переноса DELETE молча снёс бы историю партнёра-веб-строки, включая
+          // серию consecutive_met_months (срыв серийного бонуса) — находка аудита I1.
+          // Конфликтные месяцы (строка есть у обеих) СЛИВАЕМ бережно: серию берём
+          // максимумом, plan_met — OR (это НЕ оборот, max серии не двоится); а
+          // оборот/новых рефералов оставляем telegram-версии, чтобы не задвоить
+          // (находка greptile P2). Порядок: сначала слить конфликтные (обе строки
+          // ещё живы), потом перенести неконфликтные, потом DELETE.
+          await tx.execute(sql`
+            UPDATE referral_monthly_stats t SET
+              consecutive_met_months = GREATEST(t.consecutive_met_months, s.consecutive_met_months),
+              plan_met = t.plan_met OR s.plan_met
+            FROM referral_monthly_stats s
+            WHERE t.user_id = ${byTelegram.id} AND s.user_id = ${byWebSession.id}
+              AND t.month = s.month
+          `);
+          await tx.execute(sql`
+            UPDATE referral_monthly_stats SET user_id = ${byTelegram.id}
+            WHERE user_id = ${byWebSession.id}
+              AND NOT EXISTS (
+                SELECT 1 FROM referral_monthly_stats t
+                WHERE t.user_id = ${byTelegram.id} AND t.month = referral_monthly_stats.month
+              )
+          `);
+          // Профили партнёра есть у ОБЕИХ строк → храповик не должен теряться с
+          // web-профилем (cascade-delete): переносим максимум круга/ставки на
+          // telegram-профиль; suspended — OR (антифрод-блок переживает merge).
+          // Активный буст веб-строки переносим, если он актуальнее telegram-буста
+          // (boost_until позже) — иначе партнёр, привязавший аккаунт в середине
+          // буст-месяца, терял бы буст до следующего rollup (находка greptile P2).
+          await tx.execute(sql`
+            UPDATE referral_partners t SET
+              current_circle = GREATEST(t.current_circle, s.current_circle),
+              locked_rate_l1_bps = GREATEST(t.locked_rate_l1_bps, s.locked_rate_l1_bps),
+              suspended = t.suspended OR s.suspended,
+              boost_until = CASE
+                WHEN s.boost_until IS NOT NULL AND (t.boost_until IS NULL OR s.boost_until > t.boost_until)
+                THEN s.boost_until ELSE t.boost_until END,
+              boost_rate_bps = CASE
+                WHEN s.boost_until IS NOT NULL AND (t.boost_until IS NULL OR s.boost_until > t.boost_until)
+                THEN s.boost_rate_bps ELSE t.boost_rate_bps END,
+              updated_at = now()
+            FROM referral_partners s
+            WHERE t.user_id = ${byTelegram.id} AND s.user_id = ${byWebSession.id}
+          `);
           await tx.execute(sql`
             UPDATE referral_partners SET user_id = ${byTelegram.id}
             WHERE user_id = ${byWebSession.id}

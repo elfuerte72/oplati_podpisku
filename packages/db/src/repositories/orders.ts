@@ -5,9 +5,10 @@ import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import {
   orders,
   orderEvents,
+  payments,
   type orderStatusEnum,
 } from '../schema.ts';
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
 import {
   isAllowedTransition,
   OrderTransitionError,
@@ -218,7 +219,7 @@ export type TransitionOrderResult = {
  * Атомарность гарантируется `FOR UPDATE`-локом внутри транзакции.
  */
 export async function transitionOrderDetailed(
-  db: DB,
+  db: DBLike,
   input: TransitionOrderInput,
   log: RepoLogger = noopLogger,
 ): Promise<TransitionOrderResult> {
@@ -310,7 +311,7 @@ export async function transitionOrderDetailed(
 }
 
 export async function transitionOrder(
-  db: DB,
+  db: DBLike,
   input: TransitionOrderInput,
   log: RepoLogger = noopLogger,
 ): Promise<OrderRow> {
@@ -329,13 +330,24 @@ export async function setOrderCardId(
   log.info({ event: 'db.orders.card_assigned', orderId, cardId });
 }
 
-/** Поиск заказов с истекшим pending_payment — для cron `expire-payments`. */
+/**
+ * Поиск заказов с истекшим pending_payment — для cron `expire-payments`.
+ *
+ * `NOT EXISTS (успешный платёж)` — защита от захоронения ОПЛАЧЕННОГО заказа
+ * (находка аудита C1): если сбой оставил payment=succeeded при заказе в
+ * pending_payment, cron не должен переводить его в expired — такой заказ чинит
+ * poll-payment/оператор, а не «срок оплаты истёк».
+ */
 export async function findExpiredPendingOrders(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
     .from(orders)
     .where(
-      sql`${orders.status} = 'pending_payment' AND ${orders.expiresAt} IS NOT NULL AND ${orders.expiresAt} < now()`,
+      sql`${orders.status} = 'pending_payment' AND ${orders.expiresAt} IS NOT NULL AND ${orders.expiresAt} < now()
+          AND NOT EXISTS (
+            SELECT 1 FROM ${payments}
+            WHERE ${payments.orderId} = ${orders.id} AND ${payments.status} = 'succeeded'
+          )`,
     );
 }
 

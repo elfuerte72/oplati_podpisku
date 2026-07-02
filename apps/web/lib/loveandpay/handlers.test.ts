@@ -25,7 +25,12 @@ vi.mock('@oplati/db', () => {
     forceClaimNull: false,
   };
   return {
-    getDb: () => ({}) as unknown,
+    // processInvoicePaid оборачивает claim+transition в db.transaction: мок
+    // просто исполняет callback с пустым tx (rollback-семантику проверяет
+    // интеграционный сьют packages/db на реальном Postgres).
+    getDb: () => ({
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+    }),
     findPaymentByProviderRef: vi.fn(async () => state.payment),
     // Атомарный claim: возвращает строку только если платёж был pending и claim
     // не форсирован в null (моделирует проигрыш гонки другому вызову).
@@ -52,6 +57,8 @@ vi.mock('@sentry/nextjs', () => ({
   captureException: vi.fn(),
   captureMessage: vi.fn(),
 }));
+
+import { OrderTransitionError } from '@oplati/types';
 
 import * as db from '@oplati/db';
 import { processInvoicePaid, processInvoiceTerminal } from './handlers.ts';
@@ -104,16 +111,45 @@ describe('processInvoicePaid', () => {
     expect(accrueReferralForPayment).toHaveBeenCalledWith({ orderId: 'order-1', paymentId: 'pay-1' });
   });
 
-  it('НЕ начисляет реферал, если переход в paid запрещён (cancelled/expired)', async () => {
+  it('оплата «мёртвого» счёта (OrderTransitionError): claim фиксируется, но НИ уведомление, НИ issue-card, НИ реферал не запускаются', async () => {
     (db as unknown as MockedDb).__setPayment({
       id: 'pay-1',
       orderId: 'order-1',
       status: 'pending',
       provider: 'loveandpay',
     });
-    // Заказ в терминальном статусе → transitionOrder бросает → paidOk=false.
-    vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('forbidden transition'));
-    await processInvoicePaid({ data, rawPayload: {} });
+    // Заказ в терминальном статусе → transitionOrder бросает ТИПИЗИРОВАННУЮ
+    // ошибку машины статусов → paidOk=false, аномалия алертится.
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(
+      new OrderTransitionError('order-1', 'cancelled', 'paid'),
+    );
+
+    const res = await processInvoicePaid({ data, rawPayload: {} });
+
+    expect(res.kind).toBe('processed');
+    expect(accrueReferralForPayment).not.toHaveBeenCalled();
+    // Находка аудита I4: раньше «Оплата получена, обрабатываем» уходило клиенту
+    // даже когда заказ мёртв и обработка не начнётся.
+    expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+
+  it('транзиентный сбой БД на переходе в paid: ошибка пробрасывается (транзакция откатит claim), побочных эффектов нет', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    // НЕ OrderTransitionError — например, обрыв соединения к pooler'у. Раньше
+    // такой сбой «съедался»: payment оставался succeeded при неоплаченном
+    // заказе, и ни один recovery его не подбирал (находка аудита C1).
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(processInvoicePaid({ data, rawPayload: {} })).rejects.toThrow('connection reset');
+
+    expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
     expect(accrueReferralForPayment).not.toHaveBeenCalled();
   });
 

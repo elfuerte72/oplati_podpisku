@@ -3,11 +3,14 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import {
+  findPendingPaymentByOrderId,
   getDb,
   getOrderById,
   transitionOrder,
   upsertPaymentByProviderRef,
+  type UpsertResult,
 } from '@oplati/db';
+import { OrderTransitionError } from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
@@ -155,16 +158,29 @@ export async function POST(req: Request): Promise<NextResponse> {
       amountRub: order.amountRub,
     });
 
-    const upsert = await upsertPaymentByProviderRef(db, {
-      orderId,
-      provider: 'loveandpay',
-      providerRef: invoice.id,
-      providerInvoiceNumber: invoice.invoiceNumber,
-      amountRub: order.amountRub,
-      status: 'pending',
-      expiresAt: invoice.expiresAt ? new Date(invoice.expiresAt) : null,
-      rawPayload: { invoice } as Record<string, unknown>,
-    });
+    let upsert: UpsertResult;
+    try {
+      upsert = await upsertPaymentByProviderRef(db, {
+        orderId,
+        provider: 'loveandpay',
+        providerRef: invoice.id,
+        providerInvoiceNumber: invoice.invoiceNumber,
+        amountRub: order.amountRub,
+        status: 'pending',
+        expiresAt: invoice.expiresAt ? new Date(invoice.expiresAt) : null,
+        rawPayload: { invoice } as Record<string, unknown>,
+      });
+    } catch (err) {
+      // Частичный unique payments_one_pending_per_order_idx (находка аудита I3):
+      // два КОНКУРЕНТНЫХ confirm_order оба проходили проверку статуса выше и
+      // создавали два живых инвойса — клиент мог оплатить второй по уже
+      // завершённому заказу. Теперь проигравший INSERT получает 23505 —
+      // возвращаем ему уже существующий pending-инвойс победителя (созданный
+      // здесь invoice остаётся неоплаченным висяком в L&P и истечёт сам).
+      if (!isPendingPaymentConflict(err)) throw err;
+      log.warn({ event: 'payments.create.concurrent_duplicate', orderId });
+      return await respondWithExistingPendingPayment(orderId, paymentMethod);
+    }
 
     // Если payment был создан только что (isNew=true), двигаем order вперёд.
     // Иначе (дубль — повторный вызов confirm_order) — возвращаем существующий ссылочный invoice.
@@ -217,4 +233,88 @@ function buildTelegramDeepLink(shortId: string): string {
   // success-страница на нашем web, оттуда редирект на бот по `tg://`.
   const base = serverEnv.APP_URL.replace(/\/$/, '');
   return `${base}/payment-success?order=${encodeURIComponent(shortId)}`;
+}
+
+/** Форма инвойса, сохранённого в payments.raw_payload при создании. */
+const storedInvoiceSchema = z.object({
+  invoice: z.object({
+    id: z.string(),
+    invoiceNumber: z.string().optional().nullable(),
+    paymentLink: z.string().optional().nullable(),
+    qrPayload: z.string().optional().nullable(),
+    expiresAt: z.string().optional().nullable(),
+  }),
+});
+
+/** 23505 по частичному unique `payments_one_pending_per_order_idx` (гонка confirm_order). */
+function isPendingPaymentConflict(err: unknown): boolean {
+  const candidates: unknown[] = [err];
+  if (typeof err === 'object' && err !== null && 'cause' in err) {
+    candidates.push((err as { cause?: unknown }).cause);
+  }
+  for (const c of candidates) {
+    if (typeof c !== 'object' || c === null) continue;
+    const { code, constraint_name: constraint, message } = c as {
+      code?: string;
+      constraint_name?: string;
+      message?: string;
+    };
+    if (
+      code === '23505' &&
+      (constraint === 'payments_one_pending_per_order_idx' ||
+        (message?.includes('payments_one_pending_per_order_idx') ?? false))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Идемпотентный ответ проигравшему гонку: отдаём pending-инвойс победителя из
+ * raw_payload. Заодно страхуем переход заказа в pending_payment (noop, если
+ * победитель уже перевёл; OrderTransitionError глотаем — статус двинулся дальше).
+ */
+async function respondWithExistingPendingPayment(
+  orderId: string,
+  paymentMethod: 'sbp' | 'card' | undefined,
+): Promise<NextResponse> {
+  const db = getDb();
+  const existing = await findPendingPaymentByOrderId(db, orderId);
+  const parsed = existing ? storedInvoiceSchema.safeParse(existing.rawPayload) : null;
+
+  if (!existing || !parsed?.success || !parsed.data.invoice.paymentLink) {
+    // Инвойс победителя недоступен (не должен случаться: raw_payload пишется
+    // при создании) — ведём себя как последовательный дубль: 409 invalid_status.
+    log.error({ event: 'payments.create.duplicate_without_invoice', orderId });
+    return NextResponse.json(
+      { ok: false, error: 'invalid_status', status: 'pending_payment' },
+      { status: 409 },
+    );
+  }
+
+  try {
+    await transitionOrder(db, {
+      orderId,
+      toStatus: 'pending_payment',
+      actorType: 'system',
+      eventType: 'payment_invoice_created',
+      payload: { paymentId: existing.id, invoiceId: parsed.data.invoice.id, paymentMethod: paymentMethod ?? 'any', duplicate: true },
+    });
+  } catch (err) {
+    if (!(err instanceof OrderTransitionError)) throw err;
+    // Заказ уже ушёл дальше pending_payment — ссылку всё равно возвращаем,
+    // платить по ней или нет, разрулит webhook (claim идемпотентен).
+    log.warn({ event: 'payments.create.duplicate_transition_skipped', orderId, err });
+  }
+
+  const inv = parsed.data.invoice;
+  return NextResponse.json({
+    ok: true,
+    paymentUrl: inv.paymentLink,
+    qrPayload: inv.qrPayload ?? null,
+    expiresAt: inv.expiresAt ?? null,
+    invoiceId: inv.id,
+    invoiceNumber: inv.invoiceNumber ?? null,
+  });
 }

@@ -24,3 +24,13 @@ export function getDb() {
 }
 
 export type DB = ReturnType<typeof getDb>;
+
+/**
+ * Транзакционный контекст drizzle (`db.transaction(async (tx) => ...)`).
+ * Репозитории, участвующие в общих транзакциях с вызывающим кодом (например,
+ * claim платежа + переход заказа в processInvoicePaid — атомарно, иначе сбой
+ * между ними оставляет payment succeeded при «неоплаченном» заказе), принимают
+ * `DBLike`: и обычный клиент, и tx.
+ */
+export type DBTx = Parameters<Parameters<DB['transaction']>[0]>[0];
+export type DBLike = DB | DBTx;

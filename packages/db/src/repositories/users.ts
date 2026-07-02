@@ -233,7 +233,8 @@ export async function getWebSessionProfile(
     display_name: string | null;
     telegram_id: string | null;
     orders_count: number;
-    total_spent_kopecks: number;
+    // ::bigint приходит из драйвера строкой — Number() при маппинге.
+    total_spent_kopecks: string | number;
   }>(sql`
     SELECT
       u.display_name,
@@ -243,7 +244,7 @@ export async function getWebSessionProfile(
       COALESCE(
         SUM(o.amount_rub) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed')),
         0
-      )::int AS total_spent_kopecks
+      )::bigint AS total_spent_kopecks
     FROM users u
     LEFT JOIN orders o ON o.user_id = u.id
     WHERE u.web_session_id = ${webSessionId}
@@ -258,7 +259,7 @@ export async function getWebSessionProfile(
     displayName: row.display_name,
     telegramLinked: row.telegram_id !== null,
     ordersCount: row.orders_count,
-    totalSpentKopecks: row.total_spent_kopecks,
+    totalSpentKopecks: Number(row.total_spent_kopecks),
   };
 }
 

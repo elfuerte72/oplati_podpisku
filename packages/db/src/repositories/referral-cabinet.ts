@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import {
+  canTransitionPayout,
   isTerminalPayoutStatus,
   type PayoutMethod,
   type PayoutStatus,
@@ -375,9 +376,13 @@ export type TransitionReferralPayoutResult = { applied: boolean; status: PayoutS
  * Переводит заявку по статусной машине (`requested→processing→paid|rejected`)
  * условным UPDATE `WHERE id AND status=from` — at-most-once, идемпотентно к
  * повторам/гонкам (проигравший видит `applied=false`, не дублирует эффект).
- * Терминальный статус (`paid`/`rejected`) проставляет `settled_at`. Валидность
- * самого перехода проверяет вызывающий (`canTransitionPayout` в @oplati/types) —
- * здесь только атомарная фиксация. Реальное исполнение выплаты — Этап E.
+ * Терминальный статус (`paid`/`rejected`) проставляет `settled_at`.
+ *
+ * Машина статусов форсится ЗДЕСЬ (`canTransitionPayout`), а не только у
+ * вызывающего (находка аудита I5): условный UPDATE применил бы любую пару
+ * `from→to`, включая реанимацию `paid→requested` (= повторный вывод), если
+ * будущий операторский endpoint передаст статусы из запроса без проверки.
+ * Реальное исполнение выплаты — Этап E.
  */
 export async function transitionReferralPayout(
   db: DB,
@@ -385,6 +390,9 @@ export async function transitionReferralPayout(
   log: RepoLogger = noopLogger,
 ): Promise<TransitionReferralPayoutResult> {
   const { payoutId, from, to } = params;
+  if (!canTransitionPayout(from, to)) {
+    throw new Error(`transitionReferralPayout: переход ${from} → ${to} запрещён машиной статусов`);
+  }
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE referral_payouts
     SET status = ${to},

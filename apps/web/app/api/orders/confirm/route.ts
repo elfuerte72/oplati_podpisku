@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { getDb, getOrCreateUserByWebSessionId } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import {
   confirmOrder,
   TELEGRAM_LINK_REQUIRED,
@@ -36,6 +37,16 @@ const FAIL_TEXT =
   'Не получилось создать счёт прямо сейчас. Попробуй ещё раз или напиши «оператор».';
 
 export async function POST(req: Request): Promise<NextResponse> {
+  // Rate-limit по IP ДО резолва сессии/БД — неаутентифицированный write-эндпоинт
+  // (находка security-аудита, тот же паттерн, что /api/chat и orders/propose).
+  const rl = await checkRateLimit('web-order', getClientIp(req));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: 'rate_limited', text: 'Слишком много запросов — попробуй через минуту.' },
+      { status: 429 },
+    );
+  }
+
   let raw: unknown;
   try {
     raw = await req.json();

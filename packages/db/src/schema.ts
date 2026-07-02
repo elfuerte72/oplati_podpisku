@@ -342,6 +342,13 @@ export const payments = pgTable(
       t.providerRef,
     ),
     orderIdx: index('payments_order_id_idx').on(t.orderId),
+    // Максимум один живой (pending) платёж на заказ — DB-энфорс против TOCTOU
+    // двух конкурентных confirm_order (двойной инвойс L&P на один заказ,
+    // находка аудита I3). Проигравший INSERT получает 23505 и возвращает
+    // клиенту уже существующий инвойс (payments/create).
+    onePendingPerOrderIdx: uniqueIndex('payments_one_pending_per_order_idx')
+      .on(t.orderId)
+      .where(sql`${t.status} = 'pending'`),
   }),
 ).enableRLS();
 
@@ -449,11 +456,12 @@ export const referralAccruals = pgTable(
   (t) => ({
     beneficiaryIdx: index('referral_accruals_beneficiary_idx').on(t.beneficiaryUserId),
     // Идемпотентность commission: один платёж → ровно одна строка на (beneficiary, level).
-    paymentBeneficiaryLevelIdx: uniqueIndex('referral_accruals_payment_beneficiary_level_idx').on(
-      t.paymentId,
-      t.beneficiaryUserId,
-      t.level,
-    ),
+    // Частичный (только status='accrued', находка аудита I2): полный unique
+    // блокировал бы reversal-контракт — «reversal = НОВАЯ строка status='reversed'»
+    // с теми же (payment_id, beneficiary, level).
+    paymentBeneficiaryLevelIdx: uniqueIndex('referral_accruals_payment_beneficiary_level_idx')
+      .on(t.paymentId, t.beneficiaryUserId, t.level)
+      .where(sql`${t.status} = 'accrued'`),
     // Recovery/orderHasAccruals пробят по order_id — индекс (находка код-ревью, перф).
     orderIdx: index('referral_accruals_order_id_idx').on(t.orderId),
     // Деньги неотрицательны (defense-in-depth): начисления всегда > 0 (план дропает
