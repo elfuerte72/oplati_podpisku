@@ -186,6 +186,21 @@ export async function doPay(initData: string, orderId: string): Promise<PayResul
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
+/** Заказ из кнопочного каталога Mini App (форма результата — как у repeat). */
+export type ProposePayload = {
+  slug: string;
+  tierName?: string;
+  tierPeriod?: 'month' | 'quarter' | 'year';
+  amountUsdCents?: number;
+};
+
+export async function doPropose(initData: string, payload: ProposePayload): Promise<RepeatResult> {
+  const resp = await callCabinet({ action: 'propose', initData, ...payload });
+  const parsed = resp ? repeatResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return parsed.data;
+  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
+}
+
 export async function doRepeat(initData: string, orderId: string): Promise<RepeatResult> {
   const resp = await callCabinet({ action: 'repeat', initData, orderId });
   const parsed = resp ? repeatResultSchema.safeParse(resp.json) : null;
