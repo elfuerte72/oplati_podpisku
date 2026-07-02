@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-07-02 — Mini App каталог + `/start`-меню + реферальный захват (2 канала) + фикс Date-бага
+
+### Fixed
+
+- **Реферальный захват падал с самого запуска программы (критично, prod).** `getOrCreateUserBy{TelegramId,WebSessionId}` передавали `referred_by_set_at` как JS `new Date()` в raw-`db.execute` — слой кэша запросов не хешит `Date` и ронял весь `INSERT`, но ТОЛЬКО когда реферер задан (иначе `null`, без Date). Итог: обычный `/start` писался, а `/start ref_` падал → новый юзер не создавался с реферером → далее заходил в приложение, где строка создавалась без привязки → `referred_by` вечно `null`; ни одно реферальное начисление не проходило. Диагностика по прод-логам `/api/bot`: `telegram.referral.captured` (реферер определён верно) → `telegram.persist.failed` `The "string" argument must be ... Received an instance of Date`. Фикс: `new Date()` → SQL `now()` в обоих upsert'ах. Регресс-тест на PGlite (`getOrCreateUserByTelegramId` с `referredBy` ставит `referred_by` + `referred_by_set_at`).
+
+### Added
+
+- **Кнопочный каталог внутри Mini App** (`components/cabinet/CatalogView.tsx`): «Оплатить подписку» → выбор сервиса → тариф/сумма → заказ → экран заказа с «Оплатить». Новый action `propose` в `POST /api/cabinet` (`proposeNewOrder` → общий `proposeFromCatalog`, channel `telegram`; цена строго серверная, auth по `initData`).
+- **Реферальный захват из Mini App** (`lib/cabinet/referral-capture.ts`): `initData.start_param` (`?startapp=ref_<code>`, входит в подписанную `data_check_string` — доверяем после проверки подписи) → `setReferrerOnce` с анти-абьюз-гейтом `hasPurchasedOrders`; плюс поздний захват на повторном `/start ref_` для уже существующих строк (напр. созданных мини-аппом). Env `TELEGRAM_MINIAPP_SHORTNAME` (опц.) переключает ссылку-приглашение кабинета на прямой Mini App-link.
+
+### Changed
+
+- **`/start` бота — inline-меню** (`buildStartMenuKeyboard`) вместо постоянной reply-клавиатуры: web_app «Открыть приложение» (prod `APP_URL` / preview `VERCEL_URL`), «Поддержка», заглушки-моки «VPN» / «Telegram-канал» (`callback vpn`/`channel`). Тексты старых reply-кнопок ещё перехватываются для существующих пользователей.
+- **Список заказов (история покупок) в кабинете удалён** (`OrderRow.tsx` удалён) — кабинет = «оплатить подписку» + карта + партнёрка; снапшот `orders` бэкенд отдаёт, UI не рендерит.
+- **Ссылка-приглашение вернулась на bot deep-link** `t.me/<bot>?start=ref_<code>` — `TELEGRAM_MINIAPP_SHORTNAME` снят с прода (владелец предпочёл контекст бота: друг видит «Оплатишку», а не голый mini app).
+
+### Ops
+
+- Mini App `pay` зарегистрирован в BotFather (`/newapp` → `t.me/test_prodipsa_bot/pay`, фото 640×360). Menu Button (☰) отключён — чтобы приглашённый не заходил в приложение мимо реф-кода. Восстановлены реферальные привязки, потерянные из-за Date-бага (бэкфилл `referred_by` тестовых заходов).
+
 ## 2026-07-02 — Кабинет: возврат на сайт, «Как это работает» → презентация, каталог без «Свой вариант»
 
 ### Changed
