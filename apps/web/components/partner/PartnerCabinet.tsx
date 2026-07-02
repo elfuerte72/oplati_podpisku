@@ -735,8 +735,11 @@ function HowItWorks({ snap }: { snap: ReferralSnapshot }) {
     { n: '2', t: 'Друг открывает бота по ссылке и оплачивает любую подписку.' },
     { n: '3', t: `Ты получаешь ${formatBps(snap.rates.l1Bps)} с каждой его оплаты — сразу в баланс.` },
   ];
+  // Статусы и пороги — зеркало REFERRAL_RATE_TABLE (@oplati/types): 4 ступени,
+  // держать синхронно (иначе кабинет покажет «Клиент», а объяснение — «Старт»).
   const statuses = [
-    { label: 'Старт', threshold: 'от $0', rate: '4%', note: 'старт для всех' },
+    { label: 'Клиент', threshold: 'старт для всех', rate: '4%', note: 'базовая ставка' },
+    { label: 'Старт', threshold: 'сеть ≥ $500 / мес', rate: '4%', note: 'ставка закрепляется' },
     { label: 'Партнёр', threshold: 'сеть ≥ $2 000 / мес', rate: '6%', note: '+ $50 бонус' },
     { label: 'Топ-партнёр', threshold: 'сеть ≥ $5 000 / мес', rate: '7%', note: '+ $150 бонус' },
   ];
@@ -772,7 +775,7 @@ function HowItWorks({ snap }: { snap: ReferralSnapshot }) {
           Статус растёт по обороту оплат твоих рефералов за месяц. Поднялся — ставка фиксируется
           навсегда и уже не падает.
         </p>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {statuses.map((s) => (
             <div key={s.label} className={`p-4 ${SOFT}`}>
               <div className="font-display text-[15px] font-bold">{s.label}</div>

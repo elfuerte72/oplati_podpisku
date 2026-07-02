@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Партнёрская программа Оплатишки — как это работает</title>
 <meta name="robots" content="noindex" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Balsamiq+Sans:wght@400;700&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<!-- Не утекать реферер третьим сторонам (Google Fonts) с финансовой страницы. -->
+<meta name="referrer" content="no-referrer" />
+<link rel="preconnect" href="https://fonts.googleapis.com" referrerpolicy="no-referrer" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin referrerpolicy="no-referrer" />
+<link href="https://fonts.googleapis.com/css2?family=Balsamiq+Sans:wght@400;700&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet" referrerpolicy="no-referrer" />
 <style>
   :root {
     --bg: #0f0d11;
@@ -225,11 +227,16 @@
     <span class="kicker">Статусы</span>
     <h2>Чем больше сеть — тем выше ставка</h2>
     <p class="lead">Статус растёт по обороту оплат твоих рефералов за месяц. Поднялся — ставка фиксируется навсегда и уже не падает.</p>
-    <div class="grid cols-3">
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>Клиент</h3>
+        <p><span class="pill"><span class="dot"></span>старт для всех</span></p>
+        <p style="margin-top:12px"><span class="rate" style="font-size:28px">4%</span></p>
+      </div>
       <div class="card">
         <h3>Старт</h3>
-        <p><span class="pill"><span class="dot"></span>для всех</span></p>
-        <p style="margin-top:12px"><span class="rate" style="font-size:28px">4%</span></p>
+        <p><span class="pill"><span class="dot"></span>оборот ≥ $500 / мес</span></p>
+        <p style="margin-top:12px"><span class="rate" style="font-size:28px">4%</span><br /><small class="teal">ставка закрепляется</small></p>
       </div>
       <div class="card" style="border-color:var(--teal)">
         <h3 class="teal">Партнёр</h3>
@@ -326,7 +333,8 @@
   // ── Константы из кода (packages/types/src/referral*.ts) — USD-центы, bps ──
   // Одноуровневая программа: ставка L1 по статусу, пороги оборота сети.
   var STATUSES = [
-    { threshold: 0,      l1: 400, bonus: 0,     label: 'Старт' },
+    { threshold: 0,      l1: 400, bonus: 0,     label: 'Клиент' },
+    { threshold: 50000,  l1: 400, bonus: 0,     label: 'Старт' },
     { threshold: 200000, l1: 600, bonus: 5000,  label: 'Партнёр' },
     { threshold: 500000, l1: 700, bonus: 15000, label: 'Топ-партнёр' },
   ];
