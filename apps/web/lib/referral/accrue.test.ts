@@ -22,7 +22,6 @@ type Order = {
 type Profile = {
   circle: number;
   lockedRateL1Bps: number;
-  teamMultiplier: boolean;
   boostBps: number;
   suspended: boolean;
 };
@@ -81,7 +80,6 @@ const m = db as unknown as MockedDb;
 const profile = (over: Partial<Profile>): Profile => ({
   circle: 0,
   lockedRateL1Bps: 400,
-  teamMultiplier: false,
   boostBps: 0,
   suspended: false,
   ...over,
@@ -95,16 +93,10 @@ describe('accrueReferralForPayment', () => {
     hoisted.env.COMMISSION_PERCENT = 30;
   });
 
-  it('начисляет цепочке из 3 уровней (круг 2: 6%/2%/1%), база $20', async () => {
+  it('начисляет прямому рефереру (круг 2: 6%), база $20', async () => {
     m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
-    m.__setAncestors([
-      { userId: 'l1', level: 1 },
-      { userId: 'l2', level: 2 },
-      { userId: 'l3', level: 3 },
-    ]);
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
     m.__setProfile('l1', profile({ circle: 2 }));
-    m.__setProfile('l2', profile({ circle: 2 }));
-    m.__setProfile('l3', profile({ circle: 2 }));
 
     await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
 
@@ -113,24 +105,19 @@ describe('accrueReferralForPayment', () => {
     expect(calls[0]).toMatchObject({ sourceUserId: 'src', orderId: 'o1', paymentId: 'p1' });
     expect(calls[0]?.rows).toEqual([
       { beneficiaryUserId: 'l1', level: 1, rateBps: 600, amountUsdCents: 120 },
-      { beneficiaryUserId: 'l2', level: 2, rateBps: 200, amountUsdCents: 40 },
-      { beneficiaryUserId: 'l3', level: 3, rateBps: 100, amountUsdCents: 20 },
     ]);
+    // Глубина обхода — дефолт репозитория (REFERRAL_MAX_LEVEL=1), без явного 3.
+    expect(db.getReferralAncestors).toHaveBeenCalledWith(expect.anything(), 'src');
   });
 
-  it('исключает suspended-партнёра из начисления', async () => {
+  it('suspended-реферер исключается → начислять некому, вставки нет', async () => {
     m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
-    m.__setAncestors([
-      { userId: 'l1', level: 1 },
-      { userId: 'l2', level: 2 },
-    ]);
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
     m.__setProfile('l1', profile({ circle: 2, suspended: true }));
-    m.__setProfile('l2', profile({ circle: 2 }));
 
     await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
 
-    const rows = m.__insertCalls()[0]?.rows ?? [];
-    expect(rows).toEqual([{ beneficiaryUserId: 'l2', level: 2, rateBps: 200, amountUsdCents: 40 }]);
+    expect(m.__insertCalls()).toHaveLength(0);
   });
 
   it('без профиля партнёра считает по кругу 0 (Клиент 4%)', async () => {
@@ -143,6 +130,18 @@ describe('accrueReferralForPayment', () => {
     // $15.99 × 4% = $0.63 (floor)
     expect(m.__insertCalls()[0]?.rows).toEqual([
       { beneficiaryUserId: 'l1', level: 1, rateBps: 400, amountUsdCents: 63 },
+    ]);
+  });
+
+  it('буст +1% из профиля применяется к ставке', async () => {
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 2, boostBps: 100 }));
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()[0]?.rows).toEqual([
+      { beneficiaryUserId: 'l1', level: 1, rateBps: 700, amountUsdCents: 140 },
     ]);
   });
 
@@ -170,16 +169,10 @@ describe('accrueReferralForPayment', () => {
   });
 
   it('инвариант: начисление > комиссии заказа → не вставляет + Sentry alert', async () => {
-    // commissionPercent 1% → комиссия floor(2000*1/100)=20, а начисление цепочки 180 > 20.
+    // commissionPercent 1% → комиссия floor(2000*1/100)=20, а начисление 120 > 20.
     m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 1 });
-    m.__setAncestors([
-      { userId: 'l1', level: 1 },
-      { userId: 'l2', level: 2 },
-      { userId: 'l3', level: 3 },
-    ]);
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
     m.__setProfile('l1', profile({ circle: 2 }));
-    m.__setProfile('l2', profile({ circle: 2 }));
-    m.__setProfile('l3', profile({ circle: 2 }));
 
     await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
 

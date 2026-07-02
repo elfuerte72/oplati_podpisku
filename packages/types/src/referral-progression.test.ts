@@ -16,7 +16,6 @@ const input = (over: Partial<MonthlyProgressionInput> = {}): MonthlyProgressionI
   lockedRateL1Bps: 400,
   networkTurnoverUsdCents: 0,
   newActiveReferrals: 0,
-  activeL2Count: 0,
   priorConsecutiveMetMonths: 0,
   ...over,
 });
@@ -148,15 +147,6 @@ describe('planMonthlyProgression — план и серийный бонус', (
     );
     expect(r.consecutiveMetMonths).toBe(6);
     expect(r.bonuses.find((x) => x.kind === 'serial_bonus')?.amountUsdCents).toBe(7_500);
-  });
-});
-
-describe('planMonthlyProgression — командный множитель', () => {
-  it('5+ активных L2 → флаг включён', () => {
-    expect(planMonthlyProgression(input({ activeL2Count: 5 })).teamMultiplier).toBe(true);
-  });
-  it('4 активных L2 → флаг выключен (пересчёт каждый месяц)', () => {
-    expect(planMonthlyProgression(input({ activeL2Count: 4 })).teamMultiplier).toBe(false);
   });
 });
 

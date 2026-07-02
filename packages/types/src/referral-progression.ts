@@ -6,16 +6,16 @@ import {
 /**
  * Прогрессия партнёра (Этап C) — чистое ядро месячного крона `referral-rollup`.
  *
- * По завершении календарного месяца крон считает по каждому партнёру оборот его
- * сети (D-REF-2), новых активных рефералов (D-REF-5) и активных L2, а затем этот
- * модуль решает:
- *  - **храповик круга** — оборот сети пересёк порог → повышение круга и фиксация
- *    ставки L1 навсегда (никогда не понижается);
+ * Программа одноуровневая (упрощение 2026-07-02): «оборот сети» = оборот ПРЯМЫХ
+ * рефералов партнёра. По завершении календарного месяца крон считает по каждому
+ * партнёру этот оборот (D-REF-2) и новых активных рефералов (D-REF-5), а затем
+ * этот модуль решает:
+ *  - **храповик круга** — оборот пересёк порог → повышение круга и фиксация
+ *    ставки навсегда (никогда не понижается);
  *  - **бонус достижения круга** — разовый $50 (Партнёр) / $150 (Топ-партнёр);
  *  - **спринт «новые активные»** — 10+ новых активных рефералов за месяц → $30;
- *  - **спринт-буст оборота** — оборот ≥150% порога круга → +1% к L1 на след. месяц;
- *  - **серийный бонус** — 3 месяца подряд с выполненным планом → $25/$75/$200;
- *  - **командный множитель** — 5+ активных L2 → ставка L2 2%→2.5% (флаг на партнёре).
+ *  - **спринт-буст оборота** — оборот ≥150% порога круга → +1% к ставке на след. месяц;
+ *  - **серийный бонус** — 3 месяца подряд с выполненным планом → $25/$75/$200.
  *
  * Деньги — USD-центы integer. Ставки — bps. Всё детерминировано входными данными
  * (месяц передаётся кроном параметром — без `Date.now()` в логике), поэтому
@@ -34,11 +34,8 @@ export const REFERRAL_SPRINT_NEW_REFS_BONUS_USD_CENTS = 3_000;
 /** Порог спринт-буста оборота: ≥150% порога текущего круга. */
 export const REFERRAL_TURNOVER_BOOST_RATIO_PERCENT = 150;
 
-/** Временный буст к ставке L1 на следующий месяц (bps) — +1%. */
+/** Временный буст к ставке на следующий месяц (bps) — +1%. */
 export const REFERRAL_TURNOVER_BOOST_BPS = 100;
-
-/** Порог командного множителя: 5+ активных рефералов 2-го уровня. */
-export const REFERRAL_TEAM_MULTIPLIER_MIN_ACTIVE_L2 = 5;
 
 /** Длина серии для серийного бонуса: план выполнен N месяцев подряд. */
 export const REFERRAL_SERIAL_PERIOD_MONTHS = 3;
@@ -81,14 +78,12 @@ export function planThresholdUsdCents(circle: number): number {
 export type MonthlyProgressionInput = {
   /** Текущий круг партнёра (0..3) на начало месяца. */
   readonly currentCircle: number;
-  /** Зафиксированная ставка L1 (bps) до этого месяца. */
+  /** Зафиксированная ставка (bps) до этого месяца. */
   readonly lockedRateL1Bps: number;
-  /** Оборот сети (L1+L2+L3) за месяц, USD-центы (D-REF-2). */
+  /** Оборот прямых рефералов за месяц, USD-центы (D-REF-2). */
   readonly networkTurnoverUsdCents: number;
-  /** Новые активные рефералы L1 за месяц (D-REF-5). */
+  /** Новые активные рефералы за месяц (D-REF-5). */
   readonly newActiveReferrals: number;
-  /** Активные рефералы 2-го уровня (≥1 покупка) — для командного множителя. */
-  readonly activeL2Count: number;
   /** Серия выполненных планов на конец ПРЕДЫДУЩЕГО месяца (0 если нет истории). */
   readonly priorConsecutiveMetMonths: number;
 };
@@ -105,11 +100,9 @@ export type MonthlyProgressionResult = {
   /** Круг после храповика (≥ currentCircle). */
   readonly newCircle: number;
   readonly circleUpgraded: boolean;
-  /** Ставка L1 после фиксации (≥ прежней). */
+  /** Ставка после фиксации (≥ прежней). */
   readonly newLockedRateL1Bps: number;
-  /** 5+ активных L2 в этом месяце. */
-  readonly teamMultiplier: boolean;
-  /** Буст к L1 на следующий месяц (bps); 0 если не выдан. */
+  /** Буст к ставке на следующий месяц (bps); 0 если не выдан. */
   readonly boostBps: number;
   readonly boostGranted: boolean;
   /** Выполнен ли план месяца (оборот ≥ порога круга). */
@@ -139,11 +132,9 @@ export function planMonthlyProgression(input: MonthlyProgressionInput): MonthlyP
   const newCircle = Math.max(currentCircle, achieved); // храповик — не понижается
   const circleUpgraded = newCircle > currentCircle;
 
-  // Ставка L1 фиксируется на уровне нового круга, но не ниже уже зафиксированной.
+  // Ставка фиксируется на уровне нового круга, но не ниже уже зафиксированной.
   const tableL1 = REFERRAL_RATE_TABLE[newCircle]?.l1Bps ?? input.lockedRateL1Bps;
   const newLockedRateL1Bps = Math.max(input.lockedRateL1Bps, tableL1);
-
-  const teamMultiplier = input.activeL2Count >= REFERRAL_TEAM_MULTIPLIER_MIN_ACTIVE_L2;
 
   // План и буст считаются от порога круга НА НАЧАЛО месяца (тот, что партнёр
   // должен был удержать), а не от нового — иначе скачок вверх задирал бы планку.
@@ -190,7 +181,6 @@ export function planMonthlyProgression(input: MonthlyProgressionInput): MonthlyP
     newCircle,
     circleUpgraded,
     newLockedRateL1Bps,
-    teamMultiplier,
     boostBps,
     boostGranted,
     planMet,

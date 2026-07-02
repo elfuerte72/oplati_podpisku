@@ -65,9 +65,9 @@ export type RollupResult = {
 
 /**
  * Cron `referral-rollup` (1-е число месяца): месячная прогрессия партнёров —
- * храповик кругов, бонусы (достижение/спринт/серия), спринт-буст, командный
- * множитель. Решение считает чистый `planMonthlyProgression`; применение
- * атомарно и идемпотентно на партнёра за месяц (PK `referral_monthly_stats`).
+ * храповик кругов, бонусы (достижение/спринт/серия), спринт-буст. Решение
+ * считает чистый `planMonthlyProgression`; применение атомарно и идемпотентно
+ * на партнёра за месяц (PK `referral_monthly_stats`).
  *
  * Гейт `REFERRAL_ENABLED`. Ошибка по одному партнёру не валит прогон (Sentry +
  * счётчик errors). Уведомление партнёру шлётся только при повышении круга или
@@ -109,7 +109,6 @@ export async function rollupReferralMonth(opts?: { now?: Date }): Promise<Rollup
         lockedRateL1Bps: profile?.lockedRateL1Bps ?? DEFAULT_LOCKED_L1_BPS,
         networkTurnoverUsdCents: input.networkTurnoverUsdCents,
         newActiveReferrals: input.newActiveReferrals,
-        activeL2Count: input.activeL2Count,
         priorConsecutiveMetMonths: prior,
       });
 
@@ -121,14 +120,12 @@ export async function rollupReferralMonth(opts?: { now?: Date }): Promise<Rollup
           stats: {
             networkTurnoverUsdCents: input.networkTurnoverUsdCents,
             newActiveReferrals: input.newActiveReferrals,
-            activeL2Count: input.activeL2Count,
             planMet: plan.planMet,
             consecutiveMetMonths: plan.consecutiveMetMonths,
           },
           profile: {
             newCircle: plan.newCircle,
             newLockedRateL1Bps: plan.newLockedRateL1Bps,
-            teamMultiplier: plan.teamMultiplier,
           },
           boost: plan.boostGranted ? { until: boostUntil, rateBps: plan.boostBps } : null,
           bonuses: plan.bonuses,
@@ -209,7 +206,7 @@ async function notifyPartnerProgression(
       lines.push(`${BONUS_LABEL[b.kind] ?? 'Бонус'}: +${fmtUsd(b.amountUsdCents)}`);
     }
     if (plan.boostGranted) {
-      lines.push('Активирован буст +1% к ставке 1-го уровня на этот месяц — так держать!');
+      lines.push('Активирован буст +1% к вашей ставке на этот месяц — так держать!');
     }
     if (lines.length === 0) return;
 

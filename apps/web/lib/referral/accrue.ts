@@ -54,20 +54,22 @@ export async function accrueReferralForPayment(params: {
     }
     const sourceUserId = order.userId;
 
-    const ancestors = await getReferralAncestors(db, sourceUserId, 3);
+    // Программа одноуровневая: начисляем только прямому рефереру
+    // (REFERRAL_MAX_LEVEL=1 — дефолт глубины в getReferralAncestors).
+    const ancestors = await getReferralAncestors(db, sourceUserId);
     if (ancestors.length === 0) {
       log.info({ event: 'referral.accrue.no_referrer', orderId });
       return;
     }
 
     // Ставка берётся из ТЕКУЩЕГО профиля партнёра, не из снимка на момент оплаты.
-    // С приходом Этапа C (месячный крон мутирует circle/boost/team_multiplier)
-    // это осознанный компромисс: inline-путь (сразу после оплаты) всегда считает
-    // по актуальной ставке — корректно. Расхождение возможно ТОЛЬКО на редком
-    // recovery-пути, если начисление промахнулось и досчитывается в следующем
-    // месяце после повышения круга/истечения буста (храповик → лёгкая переплата,
-    // истёкший буст → лёгкая недоплата). Оба ограничены инвариантом «≤ комиссия»
-    // и величиной ≤2% от базы. Снапшот круга на заказ (доп. колонка) сочли
+    // С приходом Этапа C (месячный крон мутирует circle/boost) это осознанный
+    // компромисс: inline-путь (сразу после оплаты) всегда считает по актуальной
+    // ставке — корректно. Расхождение возможно ТОЛЬКО на редком recovery-пути,
+    // если начисление промахнулось и досчитывается в следующем месяце после
+    // повышения круга/истечения буста (храповик → лёгкая переплата, истёкший
+    // буст → лёгкая недоплата). Оба ограничены инвариантом «≤ комиссия» и
+    // величиной ≤2% от базы. Снапшот круга на заказ (доп. колонка) сочли
     // избыточным для масштаба; при росте объёмов — вернуться к снапшоту.
     const beneficiaries: AccrualBeneficiary[] = [];
     for (const a of ancestors) {
@@ -81,7 +83,6 @@ export async function accrueReferralForPayment(params: {
         userId: a.userId,
         level: a.level,
         circle: profile?.circle ?? 0,
-        teamMultiplier: profile?.teamMultiplier ?? false,
         boostBps: profile?.boostBps ?? 0,
       });
     }
@@ -92,9 +93,9 @@ export async function accrueReferralForPayment(params: {
       return;
     }
 
-    // Инвариант «начисление ≤ маржа»: суммарная выплата не должна превышать
-    // комиссию заказа. С базовыми ставками (макс. цепочка 10%) и комиссией 30%
-    // не срабатывает; защита от будущих модификаторов/мисконфига.
+    // Инвариант «начисление ≤ маржа»: выплата не должна превышать комиссию
+    // заказа. С базовыми ставками (макс. 7%) и комиссией 30% не срабатывает;
+    // защита от будущих модификаторов/мисконфига.
     const commissionPercent = order.commissionPercent ?? serverEnv.COMMISSION_PERCENT;
     const commissionUsdCents = Math.floor((baseUsdCents * commissionPercent) / 100);
     const totalAccrual = rows.reduce((sum, r) => sum + r.amountUsdCents, 0);

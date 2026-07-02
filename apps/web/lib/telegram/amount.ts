@@ -11,7 +11,7 @@
 export const MIN_AMOUNT_USD = 1;
 export const MAX_AMOUNT_USD = 500;
 
-// Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam)
+// Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam/App Store)
 // допускают суммы до HIGH_VALUE_MAX_AMOUNT_USD. Зеркалит серверный
 // HIGH_VALUE_SERVICE_SLUGS из propose-order.ts и фронтовый в StartScreen.tsx —
 // держать синхронно.
@@ -19,6 +19,7 @@ export const HIGH_VALUE_SLUGS: ReadonlySet<string> = new Set([
   'airbnb',
   'booking',
   'steam',
+  'apple-app-store',
 ]);
 export const HIGH_VALUE_MAX_AMOUNT_USD = 5000;
 

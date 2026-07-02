@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-07-02 — Рефералка упрощена до 1 уровня; каталог сужен + пополнение App Store
+
+### Changed
+
+- **Реферальная программа стала одноуровневой** (решение владельца): партнёр получает процент только с оплат СВОИХ прямых рефералов. `REFERRAL_MAX_LEVEL=1`, ставки уровней 2–3 и командный множитель удалены из `REFERRAL_RATE_TABLE`/`planCommissionAccruals`/прогрессии; максимальная ставка — 7% (Топ-партнёр). Исторические начисления уровней 2–3 в append-only ledger'е остаются валидными; схема БД не менялась (легаси-колонки `active_l2`/`team_multiplier` пишутся нулями).
+- **Реферальная ссылка — только Telegram**: единственный канал приглашения — deep-link `t.me/<bot>?start=ref_<code>` (реферал закрепляется при первом `/start` бота). Веб-захват `?ref=` удалён целиком: `apps/web/middleware.ts`, `lib/referral/capture.ts`, `webLink` из снапшота кабинета.
+- **Кабинет партнёра упрощён** (`PartnerCabinet.tsx`): одна ставка вместо таблицы уровней, одна сводка «Мои рефералы» вместо трёх карточек сети, блок «Как это работает» (3 шага), кнопка «Поделиться в Telegram» (`t.me/share/url`).
+- **Каталог сужен** (решение владельца): в архив (`is_active=false`, записи сохранены в `ARCHIVED_CATALOG` сида для восстановления) выведены airbnb, booking, steam, playstation-plus, xbox-game-pass, discord-nitro, linkedin-premium, notion-plus, telegram-premium, tinder, adobe-creative-cloud, apple-one.
+
+### Added
+
+- Сервис **«App Store (пополнение)»** (`apple-app-store`, custom-amount как Steam: сумму вводит клиент) + иконка. Каталог общий для веба и Telegram — применяется прогоном `db:seed`.
+
+### Tests
+
+- Тесты переписаны под один уровень: types 87, web 226. `typecheck`/`lint`/`build` зелёные.
+
 ## 2026-07-01 — Реферальная программа: каркас выплат (Этап E1)
 
 ### Added

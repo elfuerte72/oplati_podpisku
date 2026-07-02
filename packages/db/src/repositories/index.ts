@@ -75,7 +75,7 @@ export {
 
 export {
   getReferralNetwork,
-  getReferralIncomeByLevel,
+  getReferralIncome,
   getReferralEarnings,
   getReferralMonthlyIncome,
   getNewReferralsThisMonth,
@@ -86,8 +86,8 @@ export {
   type CreateReferralPayoutResult,
   type CreateReferralPayoutOptions,
   type TransitionReferralPayoutResult,
-  type ReferralNetworkLevel,
-  type ReferralLevelIncome,
+  type ReferralNetworkSummary,
+  type ReferralIncome,
   type ReferralEarnings,
   type ReferralMonthlyIncomePoint,
   type ReferralNewReferrals,

@@ -47,10 +47,6 @@ const requestSchema = z.discriminatedUnion('action', [
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
 
-function baseUrl(): string {
-  return serverEnv.APP_URL.replace(/\/+$/, '');
-}
-
 /** Username бота для deep-link — graceful: при сбое ссылка в TG просто опустится. */
 async function resolveBotUsername(): Promise<string | null> {
   try {
@@ -84,7 +80,6 @@ export async function POST(req: Request): Promise<NextResponse> {
     const ctx: ReferralSnapshotContext = {
       enabled: false,
       telegramLinked: false,
-      baseUrl: baseUrl(),
       botUsername: null,
       minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
     };
@@ -115,7 +110,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         const ctx: ReferralSnapshotContext = {
           enabled: true,
           telegramLinked,
-          baseUrl: baseUrl(),
           botUsername: await resolveBotUsername(),
           minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
         };

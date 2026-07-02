@@ -8,7 +8,7 @@ import {
   getPartnerProfile,
   getReferralBalanceUsdCents,
   getReferralNetwork,
-  getReferralIncomeByLevel,
+  getReferralIncome,
   getReferralEarnings,
   getReferralMonthlyIncome,
   getNewReferralsThisMonth,
@@ -25,7 +25,6 @@ import { childLogger } from '../logger.ts';
 import {
   ledgerToHistoryEntry,
   payoutToHistoryEntry,
-  type ReferralLevelView,
   type ReferralSnapshot,
 } from './referral-types.ts';
 
@@ -40,9 +39,7 @@ export type ReferralSnapshotContext = {
   enabled: boolean;
   /** Личность подтверждена Telegram (mini-app — всегда true; web — по профилю). */
   telegramLinked: boolean;
-  /** База сайта без хвостового слэша (`APP_URL`) для веб-ссылки. */
-  baseUrl: string;
-  /** Username бота для deep-link; null если недоступен. */
+  /** Username бота для deep-link (единственный канал приглашения); null если недоступен. */
   botUsername: string | null;
   /** Минимум на вывод (USD-центы), `REFERRAL_MIN_PAYOUT_USD_CENTS`. */
   minPayoutUsdCents: number;
@@ -67,7 +64,6 @@ function disabledSnapshot(ctx: ReferralSnapshotContext): ReferralSnapshot {
     suspended: false,
     telegramLinked: ctx.telegramLinked,
     referralCode: null,
-    webLink: null,
     telegramLink: null,
     circle: {
       circle: 0,
@@ -76,7 +72,7 @@ function disabledSnapshot(ctx: ReferralSnapshotContext): ReferralSnapshot {
       nextThresholdUsdCents: REFERRAL_RATE_TABLE[1]?.thresholdUsdCents ?? null,
       achievementBonusUsdCents: 0,
     },
-    rates: { l1Bps: 0, l2Bps: 0, l3Bps: 0, topL1Bps: top?.l1Bps ?? 0 },
+    rates: { l1Bps: 0, topL1Bps: top?.l1Bps ?? 0 },
     rateLockedForever: false,
     earnedThisMonthUsdCents: 0,
     earnedTotalUsdCents: 0,
@@ -91,7 +87,13 @@ function disabledSnapshot(ctx: ReferralSnapshotContext): ReferralSnapshot {
       turnoverThisMonthUsdCents: 0,
       turnoverBoostThresholdUsdCents: 0,
     },
-    levels: [],
+    network: {
+      total: 0,
+      active: 0,
+      turnoverThisMonthUsdCents: 0,
+      incomeThisMonthUsdCents: 0,
+      incomeAllTimeUsdCents: 0,
+    },
     monthlyIncome: lastMonthKeys(MONTHS_WINDOW).map((month) => ({ month, usdCents: 0 })),
     history: [],
   };
@@ -128,7 +130,7 @@ export async function buildReferralSnapshot(
       getPartnerProfile(db, userId),
       getReferralBalanceUsdCents(db, userId),
       getReferralNetwork(db, userId),
-      getReferralIncomeByLevel(db, userId),
+      getReferralIncome(db, userId),
       getReferralEarnings(db, userId),
       getReferralMonthlyIncome(db, userId, MONTHS_WINDOW),
       getNewReferralsThisMonth(db, userId),
@@ -142,32 +144,19 @@ export async function buildReferralSnapshot(
   const top = REFERRAL_RATE_TABLE[REFERRAL_RATE_TABLE.length - 1];
 
   const rates = effectiveReferralRates({
-    circle,
     lockedRateL1Bps: partner?.lockedRateL1Bps ?? row?.l1Bps ?? 0,
-    teamMultiplier: partner?.teamMultiplier ?? false,
     boostBps: partner?.boostBps ?? 0,
   });
 
-  const netByLevel = new Map(network.map((n) => [n.level, n]));
-  const incByLevel = new Map(income.map((i) => [i.level, i]));
-  const rateForLevel = (level: number): number =>
-    level === 1 ? rates.l1Bps : level === 2 ? rates.l2Bps : rates.l3Bps;
+  const networkView = {
+    total: network.total,
+    active: network.active,
+    turnoverThisMonthUsdCents: network.turnoverThisMonthUsdCents,
+    incomeThisMonthUsdCents: income.thisMonthUsdCents,
+    incomeAllTimeUsdCents: income.allTimeUsdCents,
+  };
 
-  const levels: ReferralLevelView[] = [1, 2, 3].map((level) => {
-    const n = netByLevel.get(level);
-    const inc = incByLevel.get(level);
-    return {
-      level,
-      rateBps: rateForLevel(level),
-      total: n?.total ?? 0,
-      active: n?.active ?? 0,
-      turnoverThisMonthUsdCents: n?.turnoverThisMonthUsdCents ?? 0,
-      incomeThisMonthUsdCents: inc?.thisMonthUsdCents ?? 0,
-      incomeAllTimeUsdCents: inc?.allTimeUsdCents ?? 0,
-    };
-  });
-
-  const networkTurnover = levels.reduce((s, l) => s + l.turnoverThisMonthUsdCents, 0);
+  const networkTurnover = network.turnoverThisMonthUsdCents;
   const nextThreshold = nextRow?.thresholdUsdCents ?? null;
   const progressBps =
     nextThreshold && nextThreshold > 0
@@ -191,7 +180,8 @@ export async function buildReferralSnapshot(
   const suspended = partner?.suspended ?? false;
   const canPayout = ctx.telegramLinked && !suspended && balance >= ctx.minPayoutUsdCents;
 
-  const webLink = referralCode ? `${ctx.baseUrl}/?ref=${referralCode}` : null;
+  // Приглашение — только через Telegram deep-link: реферал фиксируется при
+  // первом /start бота (веб-захват `?ref=` удалён 2026-07-02).
   const telegramLink =
     referralCode && ctx.botUsername
       ? `https://t.me/${ctx.botUsername}?start=ref_${referralCode}`
@@ -202,7 +192,6 @@ export async function buildReferralSnapshot(
     suspended,
     telegramLinked: ctx.telegramLinked,
     referralCode,
-    webLink,
     telegramLink,
     circle: {
       circle,
@@ -211,7 +200,7 @@ export async function buildReferralSnapshot(
       nextThresholdUsdCents: nextThreshold,
       achievementBonusUsdCents: row?.achievementBonusUsdCents ?? 0,
     },
-    rates: { l1Bps: rates.l1Bps, l2Bps: rates.l2Bps, l3Bps: rates.l3Bps, topL1Bps: top?.l1Bps ?? 0 },
+    rates: { l1Bps: rates.l1Bps, topL1Bps: top?.l1Bps ?? 0 },
     rateLockedForever: circle >= 1,
     earnedThisMonthUsdCents: earnings.thisMonthUsdCents,
     earnedTotalUsdCents: earnings.totalUsdCents,
@@ -230,7 +219,7 @@ export async function buildReferralSnapshot(
       turnoverThisMonthUsdCents: networkTurnover,
       turnoverBoostThresholdUsdCents: Math.round(baseThreshold * 1.5),
     },
-    levels,
+    network: networkView,
     monthlyIncome,
     history,
   };

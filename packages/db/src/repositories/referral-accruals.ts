@@ -12,7 +12,6 @@ import type { DB } from '../index.ts';
 export type PartnerProfile = {
   circle: number;
   lockedRateL1Bps: number;
-  teamMultiplier: boolean;
   /** Активный буст в bps (0 если истёк/не задан — считается на стороне SQL). */
   boostBps: number;
   suspended: boolean;
@@ -26,14 +25,12 @@ export async function getPartnerProfile(db: DB, userId: string): Promise<Partner
   const rows = await db.execute<{
     current_circle: number;
     locked_rate_l1_bps: number;
-    team_multiplier: boolean;
     boost_bps: number;
     suspended: boolean;
   }>(sql`
     SELECT
       current_circle,
       locked_rate_l1_bps,
-      team_multiplier,
       CASE
         WHEN boost_until IS NOT NULL AND boost_until >= CURRENT_DATE
         THEN COALESCE(boost_rate_bps, 0)
@@ -49,7 +46,6 @@ export async function getPartnerProfile(db: DB, userId: string): Promise<Partner
   return {
     circle: r.current_circle,
     lockedRateL1Bps: r.locked_rate_l1_bps,
-    teamMultiplier: r.team_multiplier,
     boostBps: r.boost_bps,
     suspended: r.suspended,
   };
@@ -65,8 +61,8 @@ export type CommissionAccrualInsert = {
 /**
  * Вставляет commission-начисления идемпотентно (ON CONFLICT DO NOTHING по
  * UNIQUE(payment_id, beneficiary, level)). Возвращает число РЕАЛЬНО вставленных
- * строк (0 при полном дубле — повторный webhook/poll). Строк ≤3 (глубина сети),
- * поэтому простой цикл, а не bulk-INSERT.
+ * строк (0 при полном дубле — повторный webhook/poll). В одноуровневой программе
+ * строка одна (прямой реферер), поэтому простой цикл, а не bulk-INSERT.
  */
 export async function insertCommissionAccruals(
   db: DB,
@@ -79,9 +75,8 @@ export async function insertCommissionAccruals(
 ): Promise<number> {
   const { sourceUserId, orderId, paymentId, rows } = params;
   if (rows.length === 0) return 0;
-  // Транзакция: цепочка вставляется атомарно (all-or-nothing). Иначе обрыв после
-  // L1 оставил бы у заказа одну строку, а recovery-гейт (NOT EXISTS любой строки)
-  // больше не подобрал бы заказ → L2/L3 потеряны навсегда (находка код-ревью).
+  // Транзакция: строки вставляются атомарно (all-or-nothing) — recovery-гейт
+  // (NOT EXISTS любой строки) видит заказ либо целиком начисленным, либо нет.
   return db.transaction(async (tx) => {
     let inserted = 0;
     for (const row of rows) {

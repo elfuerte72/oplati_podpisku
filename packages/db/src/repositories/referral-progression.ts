@@ -42,52 +42,29 @@ export async function listReferralRollupCandidates(db: DB): Promise<string[]> {
 export type MonthlyRollupInput = {
   networkTurnoverUsdCents: number;
   newActiveReferrals: number;
-  activeL2Count: number;
 };
 
 /**
- * Месячные агрегаты партнёра за месяц `monthKey`:
- *  - оборот сети (L1+L2+L3) — сумма `original_amount` купленных заказов downline
+ * Месячные агрегаты партнёра за месяц `monthKey` (программа одноуровневая):
+ *  - оборот прямых рефералов — сумма `original_amount` их купленных заказов
  *    с `paid_at` внутри месяца (D-REF-2);
- *  - активные L2 — рефералы 2-го уровня с ≥1 покупкой (для командного множителя);
- *  - новые активные L1 — прямые рефералы, привязанные в этом месяце и активные
+ *  - новые активные — прямые рефералы, привязанные в этом месяце и активные
  *    (для спринта «10 новых активных»).
- *
- * Обход дерева ограничен глубиной 3 (`n.level < 3`) — всегда завершается.
  */
 export async function getMonthlyRollupInput(
   db: DB,
   userId: string,
   monthKey: string,
 ): Promise<MonthlyRollupInput> {
-  const netRows = await db.execute<{ turnover: string | number; active_l2: string | number }>(sql`
-    WITH RECURSIVE net AS (
-      SELECT id, 1 AS level FROM users WHERE referred_by = ${userId}
-      UNION ALL
-      SELECT u.id, n.level + 1
-      FROM users u
-      JOIN net n ON u.referred_by = n.id
-      WHERE n.level < 3
-    )
-    SELECT
-      COALESCE(SUM(mt.turnover), 0)::bigint AS turnover,
-      COUNT(*) FILTER (WHERE n.level = 2 AND act.is_active) AS active_l2
-    FROM net n
-    LEFT JOIN LATERAL (
-      SELECT EXISTS (
-        SELECT 1 FROM orders o
-        WHERE o.user_id = n.id AND o.status IN ${PURCHASED}
-      ) AS is_active
-    ) act ON true
-    LEFT JOIN LATERAL (
-      SELECT COALESCE(SUM(o.original_amount), 0) AS turnover
-      FROM orders o
-      WHERE o.user_id = n.id
-        AND o.status IN ${PURCHASED}
-        AND o.original_amount IS NOT NULL
-        AND o.paid_at >= ${monthKey}::date
-        AND o.paid_at < (${monthKey}::date + interval '1 month')
-    ) mt ON true
+  const netRows = await db.execute<{ turnover: string | number }>(sql`
+    SELECT COALESCE(SUM(o.original_amount), 0)::bigint AS turnover
+    FROM orders o
+    JOIN users u ON u.id = o.user_id
+    WHERE u.referred_by = ${userId}
+      AND o.status IN ${PURCHASED}
+      AND o.original_amount IS NOT NULL
+      AND o.paid_at >= ${monthKey}::date
+      AND o.paid_at < (${monthKey}::date + interval '1 month')
   `);
 
   const newRows = await db.execute<{ new_active: string | number }>(sql`
@@ -102,10 +79,8 @@ export async function getMonthlyRollupInput(
       AND u.referred_by_set_at < (${monthKey}::date + interval '1 month')
   `);
 
-  const net = netRows[0];
   return {
-    networkTurnoverUsdCents: Number(net?.turnover ?? 0),
-    activeL2Count: Number(net?.active_l2 ?? 0),
+    networkTurnoverUsdCents: Number(netRows[0]?.turnover ?? 0),
     newActiveReferrals: Number(newRows[0]?.new_active ?? 0),
   };
 }
@@ -136,14 +111,12 @@ export type ApplyMonthlyProgressionParams = {
   stats: {
     networkTurnoverUsdCents: number;
     newActiveReferrals: number;
-    activeL2Count: number;
     planMet: boolean;
     consecutiveMetMonths: number;
   };
   profile: {
     newCircle: number;
     newLockedRateL1Bps: number;
-    teamMultiplier: boolean;
   };
   /** Буст на следующий месяц; `null` — не выдан (сбрасывает прошлый буст). */
   boost: { until: string; rateBps: number } | null;
@@ -160,10 +133,12 @@ export type ApplyMonthlyProgressionResult =
  *  1. INSERT строки `referral_monthly_stats` `ON CONFLICT (user_id, month) DO
  *     NOTHING`. Если строки нет (месяц уже обработан) — выходим без мутаций
  *     (идемпотентность на партнёра за месяц).
- *  2. Upsert `referral_partners`: круг и ставка L1 — через `GREATEST` (храповик:
+ *  2. Upsert `referral_partners`: круг и ставка — через `GREATEST` (храповик:
  *     не понижаем, даже если профиль изменился между чтением и транзакцией);
- *     `team_multiplier`/буст — перезапись (пересчитываются каждый месяц, буст
- *     живёт один месяц). Всё в ОДНОЙ транзакции со статистикой.
+ *     буст — перезапись (пересчитывается каждый месяц, живёт один месяц);
+ *     легаси-колонки `active_l2`/`team_multiplier` обнуляются (программа
+ *     одноуровневая, командного множителя больше нет). Всё в ОДНОЙ транзакции
+ *     со статистикой.
  *  3. Бонусы (circle/sprint/serial) — строки в append-only `referral_accruals`
  *     (level 0, rate 0, payment/order/source = NULL). Дедуп обеспечивает шаг 1.
  */
@@ -179,7 +154,7 @@ export async function applyMonthlyProgression(
         (user_id, month, network_turnover_usd_cents, new_active_referrals, active_l2, plan_met, consecutive_met_months)
       VALUES (
         ${userId}, ${monthKey}::date,
-        ${stats.networkTurnoverUsdCents}, ${stats.newActiveReferrals}, ${stats.activeL2Count},
+        ${stats.networkTurnoverUsdCents}, ${stats.newActiveReferrals}, 0,
         ${stats.planMet}, ${stats.consecutiveMetMonths}
       )
       ON CONFLICT (user_id, month) DO NOTHING
@@ -195,7 +170,7 @@ export async function applyMonthlyProgression(
       INSERT INTO referral_partners
         (user_id, current_circle, locked_rate_l1_bps, team_multiplier, boost_until, boost_rate_bps, updated_at)
       VALUES (
-        ${userId}, ${profile.newCircle}, ${profile.newLockedRateL1Bps}, ${profile.teamMultiplier},
+        ${userId}, ${profile.newCircle}, ${profile.newLockedRateL1Bps}, false,
         ${boostUntil}::date, ${boostRateBps}, now()
       )
       ON CONFLICT (user_id) DO UPDATE SET
