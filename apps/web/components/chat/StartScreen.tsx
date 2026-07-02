@@ -33,10 +33,10 @@ const PROPOSE_FAIL_TEXT =
 const MIN_AMOUNT_USD = 1;
 const MAX_AMOUNT_USD = 500;
 
-// Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam)
+// Сервисы-пополнения с крупной индивидуальной ценой (Airbnb/Booking/Steam/App Store)
 // допускают суммы до HIGH_VALUE_MAX_AMOUNT_USD. Зеркалит серверный
 // HIGH_VALUE_SERVICE_SLUGS из propose-order.ts — держать синхронно.
-const HIGH_VALUE_SLUGS = new Set(['airbnb', 'booking', 'steam']);
+const HIGH_VALUE_SLUGS = new Set(['airbnb', 'booking', 'steam', 'apple-app-store']);
 const HIGH_VALUE_MAX_AMOUNT_USD = 5000;
 
 function maxAmountUsdFor(slug: string): number {

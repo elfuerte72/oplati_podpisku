@@ -79,6 +79,7 @@ const HIGH_VALUE_SERVICE_SLUGS: ReadonlySet<string> = new Set([
   'airbnb',
   'booking',
   'steam',
+  'apple-app-store',
 ]);
 const HIGH_VALUE_MAX_AMOUNT_USD_CENTS = 500_000; // $5000 — предохранитель от ошибки цены/инъекции
 
