@@ -107,12 +107,92 @@ export function catalogAmountInvalidText(maxUsd: number): string {
   return `Не понял сумму. Напиши число в долларах от $${MIN_AMOUNT_USD} до $${maxUsd} — например: 120. Или нажми /menu, чтобы выбрать другой сервис.`;
 }
 
+// ─── Поддержка (/support) ─────────────────────────────────────────────────
+//
+// Interim-handoff: бот пересылает обращение оператору в личку (Telegram ID из
+// SUPPORT_OPERATOR_CHAT_ID). Целевая схема — forum-topics — ещё не реализована.
+
+/** Подпись inline-кнопки «Поддержка» (под приветствием /start). */
+export const SUPPORT_BUTTON = 'Написать в поддержку';
+
+/** /support без аргументов — просим описать проблему (двухшаговый флоу). */
+export const SUPPORT_ASK_TEXT =
+  'Опиши, пожалуйста, что случилось — одним сообщением. Если это про конкретный заказ, добавь его номер. Я сразу передам всё оператору, и он свяжется с тобой здесь.';
+
+/** Обращение принято и ушло оператору. */
+export const SUPPORT_SENT_TEXT =
+  'Готово — передал оператору. Он напишет тебе здесь, в Telegram, в ближайшее время. Обычно отвечаем с 10:00 до 22:00 МСК.';
+
+/** Не удалось доставить обращение оператору. */
+export const SUPPORT_FAIL_TEXT =
+  'Не получилось передать оператору прямо сейчас — что-то на нашей стороне. Попробуй ещё раз через пару минут.';
+
+/** БД недоступна — двухшаговый флоу невозможен, направляем на inline-форму. */
+export const SUPPORT_UNAVAILABLE_TEXT =
+  'Чтобы позвать оператора, отправь одним сообщением: /support и описание проблемы. Например: /support не приходит ссылка на оплату.';
+
+/** Жёсткий лимит длины сообщения Telegram (символы). */
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/** Мягкий потолок пользовательского описания в сообщении оператору (символы). */
+export const SUPPORT_MESSAGE_MAX_LEN = 3500;
+
+/** HTML-escape пользовательского текста для parse_mode: 'HTML'. */
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 /**
- * Ответ на /support — вызов оператора. Пока MOCK: реальный handoff оператору
- * (Telegram forum-topics) ещё не реализован, поэтому отвечаем заглушкой.
+ * Обрезает УЖЕ экранированный HTML до `max` символов, не разрывая сущность
+ * (`&amp;` и т.п.): если хвост оканчивается на «&…» без «;», отступаем до начала
+ * сущности — иначе Telegram отвергнет parse_mode HTML (can't parse entities).
  */
-export const SUPPORT_MOCK_TEXT =
-  'Данная настройка в разработке. Связь с оператором появится здесь чуть позже — а пока просто напиши, что нужно оплатить, и я помогу.';
+function truncateEscapedHtml(escaped: string, max: number): string {
+  if (escaped.length <= max) return escaped;
+  let cut = escaped.slice(0, max);
+  const lastAmp = cut.lastIndexOf('&');
+  if (lastAmp !== -1 && !cut.slice(lastAmp).includes(';')) {
+    cut = cut.slice(0, lastAmp);
+  }
+  return `${cut}…`;
+}
+
+/**
+ * Сообщение оператору об обращении в поддержку (parse_mode HTML). Чистая
+ * функция — тестируется без бота. Пользовательские поля экранируются.
+ *
+ * Обрезка описания идёт ПОСЛЕ экранирования: `escapeHtml` может раздуть символ
+ * до 5× (`&` → `&amp;`), поэтому cap по «сырой» длине не гарантировал бы лимит
+ * Telegram (находка greptile — «/support» + 3500 «&» давал ~17500 символов и
+ * ронял sendMessage). Бюджет тела = остаток до 4096 после шапки (и не больше
+ * SUPPORT_MESSAGE_MAX_LEN). `tg://user?id=` — кликабельный переход к клиенту.
+ */
+export function buildSupportOperatorMessage(params: {
+  telegramId: number;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  description: string;
+}): string {
+  const name = [params.firstName, params.lastName]
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    .join(' ');
+  const nameLine = name.length > 0 ? escapeHtml(name) : 'без имени';
+  const handleLine = params.username ? `@${escapeHtml(params.username)}` : '—';
+  const header =
+    '🆘 <b>Новое обращение в поддержку</b>\n\n' +
+    `<b>Пользователь:</b> ${nameLine}\n` +
+    `<b>Username:</b> ${handleLine}\n` +
+    `<b>Telegram ID:</b> <code>${params.telegramId}</code>\n` +
+    `<b>Профиль:</b> <a href="tg://user?id=${params.telegramId}">открыть чат</a>\n\n` +
+    '<b>Сообщение:</b>\n';
+  // -1 — запас под «…», добавляемый при обрезке.
+  const bodyBudget = Math.max(
+    0,
+    Math.min(SUPPORT_MESSAGE_MAX_LEN, TELEGRAM_MESSAGE_LIMIT - header.length - 1),
+  );
+  return header + truncateEscapedHtml(escapeHtml(params.description), bodyBudget);
+}
 
 /** Текст карточки заказа под кнопками «Подтвердить» / «Отменить». */
 export function orderCardText(card: {
