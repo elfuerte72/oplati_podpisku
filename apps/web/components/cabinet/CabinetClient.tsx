@@ -56,14 +56,15 @@ function errorTextFor(error: string): string {
  * `true`, если хоть один способ сработал — вызывающий решает, что показать.
  */
 async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Clipboard API есть, но заблокирован — не проглатываем, а падаем на
-    // execCommand ниже; при его неудаче вернём false (сигнал вызывающему).
+  // Основной путь — Clipboard API. Reject (в Telegram WebView он часто
+  // заблокирован) обрабатываем вторым коллбэком .then, без bare catch — при
+  // неудаче падаем на execCommand ниже.
+  if (navigator.clipboard?.writeText) {
+    const ok = await navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false,
+    );
+    if (ok) return true;
   }
   try {
     const ta = document.createElement('textarea');

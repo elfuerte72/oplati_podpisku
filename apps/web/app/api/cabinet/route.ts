@@ -38,6 +38,7 @@ async function resolveBotUsername(): Promise<string | null> {
     return await getBotUsername();
   } catch (err) {
     log.warn({ event: 'cabinet.bot_username_failed', err });
+    Sentry.captureException(err, { tags: { source: 'cabinet-api', reason: 'bot_username' } });
     return null;
   }
 }
@@ -105,15 +106,20 @@ export async function POST(req: Request): Promise<NextResponse> {
       case 'snapshot': {
         // Реф-ссылка для главного меню (кнопка «Скопировать»). За флагом
         // REFERRAL_ENABLED; при выключенной программе — null (карточку не рисуем).
-        const referralEnabled = serverEnv.REFERRAL_ENABLED;
-        const botUsername = referralEnabled ? await resolveBotUsername() : null;
+        // buildSnapshot (тяжёлые DB-запросы) не должен ждать getMe: резолвим
+        // bot-username параллельно снапшоту, ссылку собираем следом.
+        const referralLinkPromise: Promise<string | null> = serverEnv.REFERRAL_ENABLED
+          ? resolveBotUsername().then((botUsername) =>
+              getReferralLinkForCabinet(userId, {
+                enabled: true,
+                botUsername,
+                miniAppShortName: serverEnv.TELEGRAM_MINIAPP_SHORTNAME ?? null,
+              }),
+            )
+          : Promise.resolve(null);
         const [snapshot, referralLink] = await Promise.all([
           buildSnapshot(userId),
-          getReferralLinkForCabinet(userId, {
-            enabled: referralEnabled,
-            botUsername,
-            miniAppShortName: serverEnv.TELEGRAM_MINIAPP_SHORTNAME ?? null,
-          }),
+          referralLinkPromise,
         ]);
         return NextResponse.json({ ok: true, ...snapshot, referralLink }, { status: 200 });
       }

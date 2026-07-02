@@ -549,3 +549,40 @@ describe('transitionReferralPayout (машина статусов форситс
     expect(second).toMatchObject({ ok: false, reason: 'insufficient_balance' });
   });
 });
+
+describe('createDraftOrder — снапшот надбавки за карту персистится (регрессия PR#51)', () => {
+  it('cardIssueFeeKopecks реально пишется в INSERT и читается обратно', async () => {
+    const user = await makeUser();
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'card-fee persist test',
+      amountRub: 231000,
+      originalAmount: 2000,
+      originalCurrency: 'USD',
+      commissionPercent: 30,
+      cardIssueFeeKopecks: 30800,
+    });
+    const rows = await db
+      .select({ fee: schema.orders.cardIssueFeeKopecks })
+      .from(schema.orders)
+      .where(eq(schema.orders.id, order.id));
+    expect(rows[0]?.fee).toBe(30800);
+  });
+
+  it('без cardIssueFeeKopecks колонка = null (обратная совместимость старых заказов)', async () => {
+    const user = await makeUser();
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'no-fee test',
+      originalAmount: 2000,
+      originalCurrency: 'USD',
+    });
+    const rows = await db
+      .select({ fee: schema.orders.cardIssueFeeKopecks })
+      .from(schema.orders)
+      .where(eq(schema.orders.id, order.id));
+    expect(rows[0]?.fee).toBeNull();
+  });
+});

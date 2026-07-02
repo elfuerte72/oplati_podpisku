@@ -95,6 +95,7 @@ export async function createDraftOrder(
           rateFixedAt: input.rateFixedAt ?? null,
           expiresAt: input.expiresAt ?? null,
           commissionPercent: input.commissionPercent ?? null,
+          cardIssueFeeKopecks: input.cardIssueFeeKopecks ?? null,
           parameters: input.parameters ?? null,
           requiresKyc: input.requiresKyc ?? false,
         })
