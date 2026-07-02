@@ -358,9 +358,10 @@ describe('consumeLinkToken (merge пользователей)', () => {
       { userId: webUser.id, month: '2026-06-01', consecutiveMetMonths: 4, planMet: true },
       { userId: telegramUser.id, month: '2026-06-01', consecutiveMetMonths: 1, planMet: false },
     ]);
-    // Профили партнёра у обеих строк: у web выше круг/ставка — храповик обязан выжить.
+    // Профили партнёра у обеих строк: у web выше круг/ставка — храповик обязан
+    // выжить; у web активный буст (позже telegram) — должен переехать.
     await db.insert(schema.referralPartners).values([
-      { userId: webUser.id, currentCircle: 2, lockedRateL1Bps: 600 },
+      { userId: webUser.id, currentCircle: 2, lockedRateL1Bps: 600, boostUntil: '2027-01-01', boostRateBps: 100 },
       { userId: telegramUser.id, currentCircle: 1, lockedRateL1Bps: 400 },
     ]);
 
@@ -404,9 +405,11 @@ describe('consumeLinkToken (merge пользователей)', () => {
       .where(eq(schema.referralMonthlyStats.userId, telegramUser.id));
     const byMonth = new Map(months.map((m) => [m.month, m]));
     expect(byMonth.get('2026-05-01')?.consecutiveMetMonths).toBe(3); // переехал
-    expect(byMonth.get('2026-06-01')?.consecutiveMetMonths).toBe(1); // остался telegram-вариант
+    // Конфликтный месяц: серия слита максимумом (GREATEST(1,4)), plan_met — OR.
+    expect(byMonth.get('2026-06-01')?.consecutiveMetMonths).toBe(4);
+    expect(byMonth.get('2026-06-01')?.planMet).toBe(true);
 
-    // Храповик: круг и ставка взяты максимумом из двух профилей.
+    // Храповик: круг и ставка взяты максимумом; активный буст веб-строки переехал.
     const partners = await db
       .select()
       .from(schema.referralPartners)
@@ -414,6 +417,8 @@ describe('consumeLinkToken (merge пользователей)', () => {
     const partner = firstOf(partners, 'partner');
     expect(partner.currentCircle).toBe(2);
     expect(partner.lockedRateL1Bps).toBe(600);
+    expect(partner.boostUntil).toBe('2027-01-01');
+    expect(partner.boostRateBps).toBe(100);
 
     // Токен одноразовый.
     const again = await consumeLinkToken(db, {
