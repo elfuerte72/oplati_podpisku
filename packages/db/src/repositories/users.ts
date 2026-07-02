@@ -67,7 +67,7 @@ export async function getOrCreateUserByTelegramId(
       ${displayName ?? null},
       ${language ?? 'ru'},
       ${referredBy ?? null},
-      ${referredBy ? new Date() : null}
+      ${referredBy ? sql`now()` : null}
     )
     ON CONFLICT (telegram_id) WHERE telegram_id IS NOT NULL
     DO UPDATE SET
@@ -163,7 +163,7 @@ export async function getOrCreateUserByWebSessionId(
     INSERT INTO users (web_session_id, language, referred_by, referred_by_set_at)
     VALUES (
       ${webSessionId}, ${language ?? 'ru'}, ${referredBy ?? null},
-      ${referredBy ? new Date() : null}
+      ${referredBy ? sql`now()` : null}
     )
     ON CONFLICT (web_session_id) WHERE web_session_id IS NOT NULL
     DO UPDATE SET updated_at = now()
