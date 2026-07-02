@@ -19,7 +19,7 @@ import {
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
-import { OrderRow } from './OrderRow';
+import { CatalogView } from './CatalogView';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
 type Phase = 'loading' | 'no-telegram' | 'error' | 'ready';
@@ -45,7 +45,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [errorText, setErrorText] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(previewSnapshot ?? null);
-  const [view, setView] = useState<'list' | 'detail' | 'referral'>('list');
+  const [view, setView] = useState<'list' | 'detail' | 'referral' | 'catalog'>('list');
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<'pay' | 'repeat' | 'operator' | null>(null);
@@ -250,6 +250,21 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return <PartnerCabinet initData={initData} onBack={() => setView('list')} />;
   }
 
+  // Кнопочный каталог: выбор сервиса → заказ → экран заказа с кнопкой «Оплатить».
+  if (view === 'catalog') {
+    return (
+      <main className="mx-auto w-full max-w-md p-4">
+        <CatalogView
+          initData={initData}
+          onBack={() => setView('list')}
+          onCreated={(orderId) => {
+            void openOrder(orderId);
+          }}
+        />
+      </main>
+    );
+  }
+
   const firstName = snapshot.profile.displayName?.trim().split(/\s+/)[0];
   const greeting = firstName ? `Привет, ${firstName}!` : 'Привет!';
   // Основная карта: активная, иначе самая свежая по дате выпуска.
@@ -274,6 +289,23 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           {notice}
         </p>
       )}
+
+      {/* Главное действие кабинета — оплатить подписку через кнопочный каталог. */}
+      <button
+        type="button"
+        onClick={() => {
+          setCardDetails(null);
+          setNotice(null);
+          setView('catalog');
+        }}
+        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--accent)] px-4 py-3.5 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+      >
+        <span className="text-[20px]">🛒</span>
+        <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
+          Оплатить подписку
+        </span>
+        <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
+      </button>
 
       {/* Карта клиента — главный акцент. */}
       <CardHero
@@ -300,17 +332,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         <span className="font-display text-[18px] text-[var(--color-paper)]">→</span>
       </button>
 
-      {/* Заказы — лёгкий компактный список. */}
-      {snapshot.orders.length > 0 && (
-        <section className="space-y-2.5">
-          <h2 className="px-1 font-display text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
-            Заказы
-          </h2>
-          {snapshot.orders.map((order) => (
-            <OrderRow key={order.orderId} order={order} onOpen={openOrder} />
-          ))}
-        </section>
-      )}
+      {/* Списка заказов (истории покупок) в кабинете осознанно НЕТ — решение
+          владельца 2026-07-02: только действие «оплатить» + карта + партнёрка.
+          К свежесозданному заказу ведёт flow каталога (view 'detail'). */}
     </main>
   );
 }

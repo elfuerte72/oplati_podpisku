@@ -46,7 +46,7 @@ export function OrderDetailView({
         onClick={onBack}
         className="font-display text-sm font-bold text-[var(--link)]"
       >
-        ‹ Назад к заказам
+        ‹ В кабинет
       </button>
 
       <div

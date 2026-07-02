@@ -30,7 +30,7 @@ import {
   type ToolCallLog,
 } from '@oplati/agent';
 import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@oplati/types';
-import { InlineKeyboard, Keyboard } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 
 import {
   BUDGET_EXCEEDED_TEXT,
@@ -62,14 +62,20 @@ import {
   catalogCustomAmountPrompt,
   catalogTierButtonLabel,
   catalogTierPrompt,
+  CHANNEL_MOCK_TEXT,
   MEDIA_REPLY,
   orderCardText,
   buildSupportOperatorMessage,
+  START_APP_BUTTON,
+  START_CHANNEL_BUTTON,
+  START_SUPPORT_BUTTON,
+  START_VPN_BUTTON,
   SUPPORT_ASK_TEXT,
   SUPPORT_BUTTON,
   SUPPORT_FAIL_TEXT,
   SUPPORT_SENT_TEXT,
   SUPPORT_UNAVAILABLE_TEXT,
+  VPN_MOCK_TEXT,
   type MediaKind,
 } from './templates';
 
@@ -370,7 +376,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       );
     }
 
-    await sendSafely(chatId, GREETING, update.update_id, buildMainReplyKeyboard());
+    await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
     return;
   }
 
@@ -751,16 +757,36 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
 }
 
 /**
- * Постоянная нижняя reply-клавиатура: «Выбрать сервис» + «Написать в поддержку».
- * `is_persistent` держит её раскрытой под полем ввода, поэтому меню и поддержка
- * доступны в любой момент. Синяя кнопка-меню (☰) при этом остаётся под mini app
- * «Кабинет» — reply-клавиатура её не занимает, так что кабинет живёт сверху, а
- * меню/поддержка снизу. Тексты кнопок совпадают с командами-перехватами в
- * handleTextUpdate (`text === CATALOG_OPEN_BUTTON` → каталог, `=== SUPPORT_BUTTON`
- * → флоу поддержки), поэтому reply-кнопки шлют обычный текст, а не /start.
+ * URL Mini App для web_app-кнопки стартового меню. Production — стабильный
+ * APP_URL; preview — собственный host деплоя (VERCEL_URL), чтобы smoke-тест
+ * dev-бота открывал именно preview (тот же приём, что self-call в confirm-order).
  */
-function buildMainReplyKeyboard(): Keyboard {
-  return new Keyboard().text(CATALOG_OPEN_BUTTON).text(SUPPORT_BUTTON).resized().persistent();
+function miniAppUrl(): string {
+  const ownHost = process.env.VERCEL_URL;
+  const base =
+    process.env.VERCEL_ENV === 'production' || !ownHost
+      ? serverEnv.APP_URL.replace(/\/$/, '')
+      : `https://${ownHost}`;
+  return `${base}/cabinet`;
+}
+
+/**
+ * Inline-меню под приветствием /start (заменило постоянную reply-клавиатуру
+ * 2026-07-02): Mini App (каталог + оплата + карта + партнёрка) — главный флоу,
+ * поддержка — существующий callback `support`, VPN и канал — заглушки до
+ * запуска продуктов. Тексты старых reply-кнопок («Выбрать сервис» /
+ * «Написать в поддержку») по-прежнему перехватываются в handleTelegramUpdate —
+ * у существующих пользователей клавиатура осталась раскрытой.
+ */
+function buildStartMenuKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .webApp(START_APP_BUTTON, miniAppUrl())
+    .row()
+    .text(START_SUPPORT_BUTTON, 'support')
+    .row()
+    .text(START_VPN_BUTTON, 'vpn')
+    .row()
+    .text(START_CHANNEL_BUTTON, 'channel');
 }
 
 /** Кнопка «<< Назад к списку» (вернуться к выбору сервиса). */
@@ -905,6 +931,7 @@ async function resolveCallbackContext(
  *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
  *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
  *   - `support`      → обращение в поддержку: просим описать проблему;
+ *   - `vpn` / `channel` → заглушки стартового меню (продукты ещё не запущены);
  *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
  *   - `tier:<slug>:<idx>` → выбран тариф: создать заказ → кнопки confirm/cancel;
  *   - `confirm:<orderId>` → confirmOrder (создание L&P invoice) + ссылка оплаты;
@@ -951,6 +978,14 @@ async function handleCallbackQuery(
       return;
     case 'support':
       await handleSupportCallback(cb, chatId, updateId);
+      return;
+    case 'vpn':
+      // Заглушка: VPN в разработке. Меню на исходном сообщении не трогаем.
+      await sendSafely(chatId, VPN_MOCK_TEXT, updateId);
+      return;
+    case 'channel':
+      // Заглушка: канал ещё не создан.
+      await sendSafely(chatId, CHANNEL_MOCK_TEXT, updateId);
       return;
     case 'svc': {
       const slug = parts[1];
@@ -1326,18 +1361,9 @@ async function handleSupportCallback(
     // Уже ждём описание — не дублируем (callback уже подтверждён answerCallbackQuery).
     return;
   }
-  // Снимаем кнопку «Поддержка» с исходного сообщения (оставляя «Выбрать сервис»),
-  // чтобы повторный/одновременный тап не плодил дубли — тот же приём, что снятие
-  // кнопок у confirm/cancel. С idempotent-проверкой выше закрывает и гонку тапов.
-  if (cb.message) {
-    try {
-      await getBot().api.editMessageReplyMarkup(chatId, cb.message.message_id, {
-        reply_markup: new InlineKeyboard().text(CATALOG_OPEN_BUTTON, 'cat'),
-      });
-    } catch (err) {
-      log.debug({ event: 'telegram.support.unmark_failed', updateId, err });
-    }
-  }
+  // Клавиатуру исходного сообщения НЕ трогаем: кнопка живёт в стартовом меню
+  // (Mini App / VPN / канал), и снятие/замена markup ломала бы всё меню ради
+  // дедупа. Дребезг закрывает idempotent-проверка pending-флага выше.
   await safeAppendMessage(
     ctx,
     'assistant',
@@ -1481,7 +1507,7 @@ async function sendSafely(
   chatId: number,
   text: string,
   updateId: number,
-  replyMarkup?: InlineKeyboard | Keyboard,
+  replyMarkup?: InlineKeyboard,
 ): Promise<void> {
   try {
     await getBot().api.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);

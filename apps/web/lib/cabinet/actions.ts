@@ -110,6 +110,76 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
   }
 }
 
+// ─── Новый заказ из каталога (Mini App) ───────────────────────────────────
+
+export type ProposeNewOrderInput = {
+  slug: string;
+  /** Для тарифных сервисов (взаимоисключающе с amountUsdCents). */
+  tierName?: string;
+  tierPeriod?: 'month' | 'quarter' | 'year';
+  /** Только для custom-amount сервисов; целые USD-центы. */
+  amountUsdCents?: number;
+};
+
+export type ProposeNewOrderResult =
+  | {
+      ok: true;
+      orderId: string;
+      shortId: string;
+      service: string;
+      totalKopecks: number;
+      expiresAt: string;
+    }
+  | { ok: false; error: 'failed'; message: string };
+
+/**
+ * Кнопочный каталог Mini App: создать заказ по slug из каталога. Цена — строго
+ * серверная (`proposeFromCatalog` берёт тариф из pricing_policy; caller шлёт
+ * сумму только для custom-amount сервисов, и её валидируют границы proposeOrder).
+ * Личность — из проверенного initData, ownership-проверка не нужна: заказ
+ * создаётся на самого пользователя.
+ */
+export async function proposeNewOrder(
+  userId: string,
+  input: ProposeNewOrderInput,
+): Promise<ProposeNewOrderResult> {
+  try {
+    const conversation = await getOrCreateActiveConversation(
+      getDb(),
+      { userId, channel: 'telegram' },
+      dbLog,
+    );
+    const result = await proposeFromCatalog({
+      userId,
+      conversationId: conversation.id,
+      channel: 'telegram',
+      slug: input.slug,
+      ...(input.tierName !== undefined ? { tierName: input.tierName } : {}),
+      ...(input.tierPeriod !== undefined ? { tierPeriod: input.tierPeriod } : {}),
+      ...(input.amountUsdCents !== undefined ? { amountUsdCents: input.amountUsdCents } : {}),
+    });
+    if (!result.ok) {
+      return { ok: false, error: 'failed', message: result.text };
+    }
+    return {
+      ok: true,
+      orderId: result.card.orderId,
+      shortId: result.card.shortId,
+      service: result.card.service,
+      totalKopecks: result.card.totalKopecks,
+      expiresAt: result.card.expiresAt,
+    };
+  } catch (err) {
+    log.error({ event: 'cabinet.propose.failed', slug: input.slug, err });
+    Sentry.captureException(err, { tags: { source: 'cabinet.propose' }, extra: { slug: input.slug } });
+    return {
+      ok: false,
+      error: 'failed',
+      message: 'Не получилось создать заказ. Попробуй ещё раз через минуту.',
+    };
+  }
+}
+
 // ─── Повторить заказ ──────────────────────────────────────────────────────
 
 export type RepeatOrderResult =

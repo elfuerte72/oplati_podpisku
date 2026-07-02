@@ -6,7 +6,7 @@ import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { resolveCabinetUser } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
-import { payOrder, repeatOrder, requestOperator } from '@/lib/cabinet/actions';
+import { payOrder, proposeNewOrder, repeatOrder, requestOperator } from '@/lib/cabinet/actions';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
 
 /**
@@ -40,6 +40,16 @@ const requestSchema = z.discriminatedUnion('action', [
     action: z.literal('card-details'),
     initData: z.string().min(1),
     cardId: z.string().uuid(),
+  }),
+  // Кнопочный каталог Mini App: заказ по slug. Сумма — только для custom-amount
+  // сервисов; для тарифных цена берётся сервером из pricing_policy.
+  z.object({
+    action: z.literal('propose'),
+    initData: z.string().min(1),
+    slug: z.string().min(1).max(100),
+    tierName: z.string().min(1).max(200).optional(),
+    tierPeriod: z.enum(['month', 'quarter', 'year']).optional(),
+    amountUsdCents: z.number().int().positive().optional(),
   }),
 ]);
 
@@ -104,6 +114,15 @@ export async function POST(req: Request): Promise<NextResponse> {
         const result = await requestOperator(userId, body.orderId);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
+      }
+      case 'propose': {
+        const result = await proposeNewOrder(userId, {
+          slug: body.slug,
+          ...(body.tierName !== undefined ? { tierName: body.tierName } : {}),
+          ...(body.tierPeriod !== undefined ? { tierPeriod: body.tierPeriod } : {}),
+          ...(body.amountUsdCents !== undefined ? { amountUsdCents: body.amountUsdCents } : {}),
+        });
+        return NextResponse.json(result, { status: 200 });
       }
       case 'card-details': {
         // Разовый показ реквизитов: live-fetch из PaySpace, в БД не хранятся.
