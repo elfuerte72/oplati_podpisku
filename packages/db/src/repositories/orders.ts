@@ -58,6 +58,8 @@ export type CreateDraftOrderInput = {
   rateFixedAt?: Date | null;
   expiresAt?: Date | null;
   commissionPercent?: number | null;
+  /** Снимок надбавки за выпуск карты (RUB-копейки), уже включённой в amountRub. */
+  cardIssueFeeKopecks?: number | null;
   parameters?: OrderParameters | null;
   requiresKyc?: boolean;
 };

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 
+import { IconCheck } from '@/components/comic/icons';
 import type { CardView } from './cabinet-api';
 
 const STATUS_DOT: Record<string, string> = {
@@ -98,7 +99,14 @@ export function CardHero({
             onClick={onHide}
             className="rounded-[8px] border-2 border-[var(--color-paper)] px-2.5 py-1 font-display text-[11px] font-bold"
           >
-            {copied ? '✓ Скопировано' : 'Скрыть'}
+            {copied ? (
+              <span className="inline-flex items-center gap-1">
+                <IconCheck size={12} />
+                Скопировано
+              </span>
+            ) : (
+              'Скрыть'
+            )}
           </button>
         </div>
       ) : (

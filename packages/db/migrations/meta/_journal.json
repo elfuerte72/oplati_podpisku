@@ -134,6 +134,13 @@
       "when": 1782984167390,
       "tag": "0018_order_events_append_only_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783019938556,
+      "tag": "0019_spicy_nuke",
+      "breakpoints": true
     }
   ]
 }

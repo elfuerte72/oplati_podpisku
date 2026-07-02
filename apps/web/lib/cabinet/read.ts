@@ -155,6 +155,7 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
     originalAmount: order.originalAmount,
     originalCurrency: order.originalCurrency,
     commissionPercent: order.commissionPercent,
+    cardIssueFeeKopecks: order.cardIssueFeeKopecks,
     paidAt: toIso(order.paidAt),
     fulfilledAt: toIso(order.fulfilledAt),
     events: events.map(mapEvent),

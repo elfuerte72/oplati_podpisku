@@ -60,12 +60,15 @@ const snapshotSchema = z.object({
   profile: profileSchema,
   orders: z.array(orderSummarySchema),
   cards: z.array(cardViewSchema),
+  /** Реф-ссылка для главного меню (кнопка «Скопировать»); null — программа выключена. */
+  referralLink: z.string().nullable(),
 });
 
 const orderDetailSchema = orderSummarySchema.extend({
   originalAmount: z.number().nullable(),
   originalCurrency: z.string().nullable(),
   commissionPercent: z.number().nullable(),
+  cardIssueFeeKopecks: z.number().nullable(),
   paidAt: z.string().nullable(),
   fulfilledAt: z.string().nullable(),
   events: z.array(eventViewSchema),
