@@ -345,29 +345,32 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
     return;
   }
 
-  const exp = `${String(args.expMonth).padStart(2, '0')}/${String(args.expYear).slice(-2)}`;
-  const cardType = formatCardType(args.cardType);
-  const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
-  const messageHtml = [
-    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта выпущена.</b>`,
-    '',
-    paymentRulesHtml(args.priceUsdCents),
-    '',
-    '<b>Карта</b>',
-    `<b>Номер:</b> <code>${escapeTelegramHtml(args.fullPan)}</code>`,
-    `<b>Срок:</b> <code>${escapeTelegramHtml(exp)}</code>`,
-    `<b>CVC:</b> <code>${escapeTelegramHtml(args.cvc)}</code>`,
-    `<b>Тип:</b> <code>${escapeTelegramHtml(cardType)}</code>`,
-    '',
-    '<b>Billing address</b>',
-    ...addressLines,
-    '',
-    'Если сервис попросит billing address, вводите адрес из блока выше.',
-    '',
-    'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
-  ].join('\n');
-
+  // ВСЯ подготовка сообщения — внутри try: сбой сборки текста (напр. в
+  // paymentRulesHtml) не должен всплыть в issueCard и свалить УЖЕ исполненный
+  // заказ в failed. Реквизиты выпущены — отправка это «best effort».
   try {
+    const exp = `${String(args.expMonth).padStart(2, '0')}/${String(args.expYear).slice(-2)}`;
+    const cardType = formatCardType(args.cardType);
+    const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
+    const messageHtml = [
+      `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта выпущена.</b>`,
+      '',
+      paymentRulesHtml(args.priceUsdCents),
+      '',
+      '<b>Карта</b>',
+      `<b>Номер:</b> <code>${escapeTelegramHtml(args.fullPan)}</code>`,
+      `<b>Срок:</b> <code>${escapeTelegramHtml(exp)}</code>`,
+      `<b>CVC:</b> <code>${escapeTelegramHtml(args.cvc)}</code>`,
+      `<b>Тип:</b> <code>${escapeTelegramHtml(cardType)}</code>`,
+      '',
+      '<b>Billing address</b>',
+      ...addressLines,
+      '',
+      'Если сервис попросит billing address, вводите адрес из блока выше.',
+      '',
+      'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
+    ].join('\n');
+
     // chat_id строкой — Bot API это принимает, Number() терял бы точность на
     // больших telegram_id.
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
@@ -403,16 +406,18 @@ async function sendTopupNotice(args: {
     return;
   }
 
-  const messageHtml = [
-    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта пополнена.</b>`,
-    'Плати той же картой, что и раньше — реквизиты уже у тебя (посмотреть можно в приложении).',
-    '',
-    paymentRulesHtml(args.priceUsdCents),
-    '',
-    'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
-  ].join('\n');
-
+  // Сборка текста — внутри try: сбой не должен всплыть в issueCard и свалить
+  // успешно пополненный (оплаченный) заказ в failed. Уведомление — best effort.
   try {
+    const messageHtml = [
+      `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта пополнена.</b>`,
+      'Плати той же картой, что и раньше — реквизиты уже у тебя (посмотреть можно в приложении).',
+      '',
+      paymentRulesHtml(args.priceUsdCents),
+      '',
+      'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
+    ].join('\n');
+
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
       parse_mode: 'HTML',
       reply_markup: new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl()),

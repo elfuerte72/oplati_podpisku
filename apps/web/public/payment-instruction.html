@@ -283,7 +283,7 @@
       </ol>
     </div>
 
-    <div class="card tab-panel" id="vpn-android" role="tabpanel" hidden>
+    <div class="card tab-panel" id="vpn-android" role="tabpanel">
       <span class="tag">Android</span>
       <ol class="steps">
         <li>Открой <b>Google Play</b>, найди любое VPN-приложение с серверами США и установи его.</li>
@@ -293,7 +293,7 @@
       </ol>
     </div>
 
-    <div class="card tab-panel" id="vpn-desktop" role="tabpanel" hidden>
+    <div class="card tab-panel" id="vpn-desktop" role="tabpanel">
       <span class="tag">Компьютер · Windows / Mac</span>
       <ol class="steps">
         <li>Установи VPN — приложение для компьютера или расширение для браузера (Chrome/Edge) с серверами США.</li>
@@ -351,7 +351,7 @@
       <p>Настройки → <b>Safari</b> → Дополнения → Данные веб-сайтов → «Изменить» → удали нужный сайт. Потом открой его заново.</p>
     </div>
 
-    <div class="card tab-panel" id="cache-android" role="tabpanel" hidden>
+    <div class="card tab-panel" id="cache-android" role="tabpanel">
       <span class="tag">Android · Chrome</span>
       <h3 class="teal">Просто: вкладка инкогнито</h3>
       <ol class="steps">
@@ -364,7 +364,7 @@
       <p>Нажми на замок слева от адреса → «Настройки сайта» / «Файлы cookie» → «Удалить и сбросить». Потом обнови страницу.</p>
     </div>
 
-    <div class="card tab-panel" id="cache-desktop" role="tabpanel" hidden>
+    <div class="card tab-panel" id="cache-desktop" role="tabpanel">
       <span class="tag">Компьютер · Chrome / Safari</span>
       <h3 class="teal">Просто: приватное окно</h3>
       <ol class="steps">
@@ -393,7 +393,7 @@
         <li>Подтверди оплату. Готово — вернись в бот и напиши нам, что всё прошло.</li>
       </ol>
     </div>
-    <p class="footnote">Карта одноразовая и рассчитана на эту подписку. Не вводи её на других сайтах.</p>
+    <p class="footnote">Карта рассчитана на эту подписку. Не вводи её на других сайтах — только там, где оформляешь подписку.</p>
   </div>
 </section>
 
@@ -420,19 +420,27 @@
 <script>
   (function () {
     // Вкладки iPhone / Android / Компьютер: переключаем панели внутри группы.
+    // Прогрессивный энхансмент: в разметке панели БЕЗ hidden (если JS не
+    // сработает — все три платформы видны и читаемы). При работающем JS ниже
+    // скрываем неактивные, оставляя выбранную вкладку.
     var groups = document.querySelectorAll('[data-tabs]');
     groups.forEach(function (group) {
-      var buttons = group.querySelectorAll('.tab-btn');
-      buttons.forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          buttons.forEach(function (b) {
-            var panel = document.getElementById(b.getAttribute('data-tab'));
-            var active = b === btn;
-            b.setAttribute('aria-selected', active ? 'true' : 'false');
-            if (panel) panel.hidden = !active;
-          });
+      var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+      function select(active) {
+        buttons.forEach(function (b) {
+          var panel = document.getElementById(b.getAttribute('data-tab'));
+          var isActive = b === active;
+          b.setAttribute('aria-selected', isActive ? 'true' : 'false');
+          if (panel) panel.hidden = !isActive;
         });
+      }
+      buttons.forEach(function (b) {
+        b.addEventListener('click', function () { select(b); });
       });
+      var initial = buttons.filter(function (b) {
+        return b.getAttribute('aria-selected') === 'true';
+      })[0] || buttons[0];
+      if (initial) select(initial);
     });
 
     // Прогресс-бар по вертикальному скроллу.
