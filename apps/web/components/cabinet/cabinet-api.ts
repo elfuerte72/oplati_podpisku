@@ -100,16 +100,6 @@ const repeatResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
 ]);
 
-const operatorResultSchema = z.discriminatedUnion('ok', [
-  z.object({
-    ok: z.literal(true),
-    slaHours: z.number(),
-    withinBusinessHours: z.boolean(),
-    duplicate: z.boolean(),
-  }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
-]);
-
 export type OrderSummary = z.infer<typeof orderSummarySchema>;
 export type CardView = z.infer<typeof cardViewSchema>;
 export type CardDetailsResult = z.infer<typeof cardDetailsResultSchema>;
@@ -120,7 +110,6 @@ export type Snapshot = z.infer<typeof snapshotSchema>;
 export type OrderDetail = z.infer<typeof orderDetailSchema>;
 export type PayResult = z.infer<typeof payResultSchema>;
 export type RepeatResult = z.infer<typeof repeatResultSchema>;
-export type OperatorResult = z.infer<typeof operatorResultSchema>;
 
 export type ApiError = { ok: false; status: number; error: string };
 export type ApiOk<T> = { ok: true; data: T };
@@ -204,16 +193,3 @@ export async function doPropose(initData: string, payload: ProposePayload): Prom
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
-export async function doRepeat(initData: string, orderId: string): Promise<RepeatResult> {
-  const resp = await callCabinet({ action: 'repeat', initData, orderId });
-  const parsed = resp ? repeatResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
-}
-
-export async function doOperator(initData: string, orderId: string): Promise<OperatorResult> {
-  const resp = await callCabinet({ action: 'operator', initData, orderId });
-  const parsed = resp ? operatorResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
-}

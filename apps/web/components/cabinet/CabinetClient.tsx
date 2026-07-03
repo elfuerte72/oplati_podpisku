@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { formatRub } from '@/components/comic/format';
 import {
   IconArrowRight,
   IconCart,
@@ -16,9 +15,7 @@ import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import {
-  doOperator,
   doPay,
-  doRepeat,
   fetchCardDetails,
   fetchOrderDetail,
   fetchSnapshot,
@@ -89,7 +86,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const [view, setView] = useState<'list' | 'detail' | 'referral' | 'catalog'>('list');
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [busy, setBusy] = useState<'pay' | 'repeat' | 'operator' | null>(null);
+  const [busy, setBusy] = useState<'pay' | null>(null);
   const [actionMsg, setActionMsg] = useState<DetailActionMessage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Реквизиты карты, показанные по кнопке (живой fetch, не хранятся). Сбрасываются
@@ -209,42 +206,6 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     }
   }, [detail, refreshDetail, reloadSnapshot]);
 
-  const onRepeat = useCallback(async () => {
-    if (!detail) return;
-    setBusy('repeat');
-    setActionMsg(null);
-    const res = await doRepeat(initDataRef.current, detail.orderId);
-    setBusy(null);
-    if (res.ok) {
-      setActionMsg({
-        tone: 'ok',
-        text: `Новый заказ ${res.shortId} создан: ${res.service}, к оплате ${formatRub(res.totalKopecks)}. Он уже в списке заказов.`,
-      });
-      void reloadSnapshot();
-    } else {
-      setActionMsg({ tone: 'err', text: res.message });
-    }
-  }, [detail, reloadSnapshot]);
-
-  const onOperator = useCallback(async () => {
-    if (!detail) return;
-    setBusy('operator');
-    setActionMsg(null);
-    const res = await doOperator(initDataRef.current, detail.orderId);
-    setBusy(null);
-    if (res.ok) {
-      const when = res.withinBusinessHours
-        ? `Оператор ответит в течение ${res.slaHours} ч.`
-        : 'Оператор ответит утром, как начнётся рабочий день.';
-      setActionMsg({
-        tone: 'ok',
-        text: res.duplicate ? `Заявка уже принята. ${when}` : `Заявка оператору отправлена. ${when}`,
-      });
-    } else {
-      setActionMsg({ tone: 'err', text: res.message });
-    }
-  }, [detail]);
-
   // ─── Рендер ──────────────────────────────────────────────────────────────
   if (phase === 'loading') {
     return <CenteredNote text="Загружаю кабинет…" />;
@@ -281,8 +242,6 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
             setActionMsg(null);
           }}
           onPay={onPay}
-          onRepeat={onRepeat}
-          onOperator={onOperator}
         />
       </main>
     );
