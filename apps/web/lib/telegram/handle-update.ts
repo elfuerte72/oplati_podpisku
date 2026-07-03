@@ -790,25 +790,26 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
 }
 
 /**
- * URL Mini App для web_app-кнопки стартового меню. Production — стабильный
- * APP_URL; preview — собственный host деплоя (VERCEL_URL), чтобы smoke-тест
- * dev-бота открывал именно preview (тот же приём, что self-call в confirm-order).
+ * База деплоя без завершающего слэша: production — стабильный APP_URL; preview —
+ * собственный host деплоя (VERCEL_URL), чтобы smoke-тест dev-бота открывал именно
+ * preview (тот же приём, что self-call в confirm-order). Общая для miniAppUrl и
+ * siteUrl — чтобы Vercel-логика не разъезжалась между ними.
  */
-function miniAppUrl(): string {
-  const ownHost = process.env.VERCEL_URL;
-  const base =
-    process.env.VERCEL_ENV === 'production' || !ownHost
-      ? serverEnv.APP_URL.replace(/\/$/, '')
-      : `https://${ownHost}`;
-  return `${base}/cabinet`;
-}
-
-/** URL главного сайта (корень) для url-кнопки «Сайт» в /start — тот же base, что miniAppUrl, без /cabinet. */
-function siteUrl(): string {
+function deploymentBaseUrl(): string {
   const ownHost = process.env.VERCEL_URL;
   return process.env.VERCEL_ENV === 'production' || !ownHost
     ? serverEnv.APP_URL.replace(/\/$/, '')
     : `https://${ownHost}`;
+}
+
+/** URL Mini App для web_app-кнопки стартового меню (открывает /cabinet). */
+function miniAppUrl(): string {
+  return `${deploymentBaseUrl()}/cabinet`;
+}
+
+/** URL главного сайта (корень) для url-кнопки «Сайт» в /start. */
+function siteUrl(): string {
+  return deploymentBaseUrl();
 }
 
 /**
