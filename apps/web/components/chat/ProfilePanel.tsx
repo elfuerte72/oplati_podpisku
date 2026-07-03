@@ -194,7 +194,7 @@ export function ProfilePanel({
           🤝 Партнёрская программа
         </Link>
 
-        {/* Поддержка — открывает бота в Telegram (там команда /support, пока mock). */}
+        {/* Telegram — открывает бота (deep-link на /start: приветствие + меню). */}
         {supportUrl && (
           <a
             href={supportUrl}
@@ -203,7 +203,7 @@ export function ProfilePanel({
             className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface-2)] px-4 py-2 font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
           >
             <TelegramIcon className="h-4 w-4 shrink-0" />
-            Поддержка
+            Telegram
           </a>
         )}
       </aside>

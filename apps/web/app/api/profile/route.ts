@@ -30,15 +30,18 @@ const EMPTY = {
 };
 
 /**
- * Ссылка на бота для кнопки «Поддержка» (открыть Telegram). Best-effort:
+ * Ссылка на бота для кнопки «Telegram» (открыть бота с сайта). Best-effort:
  * нет токена бота / getMe упал → null, кнопка просто не покажется. Username
  * кэшируется в bot.ts на жизнь инстанса, так что getMe зовётся редко.
+ *
+ * Deep-link `?start=site` уводит на /start (приветствие + меню). Без параметра
+ * Telegram открывает бота на последней команде — например неработающем /menu.
  */
 async function resolveSupportUrl(): Promise<string | null> {
   if (!process.env.TELEGRAM_BOT_TOKEN) return null;
   try {
     const username = await getBotUsername();
-    return `https://t.me/${username}`;
+    return `https://t.me/${username}?start=site`;
   } catch (err) {
     log.warn({ event: 'profile.support_url_failed', err });
     return null;

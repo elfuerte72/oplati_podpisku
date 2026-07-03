@@ -104,7 +104,6 @@ export async function POST(req: Request): Promise<NextResponse> {
     // валить регистрацию webhook (он уже установлен выше, повтор идемпотентен).
     try {
       await bot.api.setMyCommands([
-        { command: 'menu', description: 'Выбрать сервис для оплаты' },
         { command: 'support', description: 'Написать в поддержку' },
       ]);
     } catch (cmdErr) {
