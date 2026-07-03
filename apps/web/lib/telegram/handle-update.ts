@@ -717,7 +717,7 @@ async function handleLinkDeepLink(
       // есть свежий заказ, ждущий оплаты, — выставляем счёт и даём оплатить
       // прямо здесь, возвращаться на сайт не нужно.
       replyText =
-        (await buildPendingOrderHandoffText(result.userId, update.update_id)) ??
+        (await buildPendingOrderHandoffTextBounded(result.userId, update.update_id)) ??
         LINK_SUCCESS_TEXT;
     } else {
       log.info({ event: 'telegram.link.rejected', updateId: update.update_id, reason: result.reason });
@@ -748,6 +748,35 @@ async function handleLinkDeepLink(
 
 /** Свежесть заказа для handoff после привязки: старые брошенные черновики не воскрешаем. */
 const LINK_HANDOFF_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Потолок ожидания handoff-счёта: создание инвойса (self-call payments/create →
+ * L&P) может тянуться до 60 с, а подтверждение привязки не должно висеть из-за
+ * платёжного провайдера. По таймауту — стандартный успех-текст (graceful
+ * degradation); если инвойс всё же создастся позже, повторный confirm с сайта
+ * идемпотентно вернёт ту же ссылку (repeat_confirm).
+ */
+const LINK_HANDOFF_TIMEOUT_MS = 15_000;
+
+async function buildPendingOrderHandoffTextBounded(
+  userId: string,
+  updateId: number,
+): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), LINK_HANDOFF_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([buildPendingOrderHandoffText(userId, updateId), timeout]);
+    if (result === 'timeout') {
+      log.warn({ event: 'telegram.link.handoff_timeout', updateId });
+      return null;
+    }
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Если у только что привязавшегося пользователя есть свежий заказ в

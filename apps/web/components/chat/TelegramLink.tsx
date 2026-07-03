@@ -174,6 +174,9 @@ export function useTelegramLink(opts?: {
     try {
       const res = await fetchWithTimeout('/api/auth/telegram/link', { method: 'POST' });
       const data = (await res.json()) as StartResponse;
+      // Привязка завершилась, пока запрос летел — токен больше не нужен,
+      // состояние linked не трогаем (находка ревью).
+      if (linkedRef.current) return;
       if (data.ok && data.url) {
         setUrl(data.url);
         // Из error возвращаемся в idle; waiting не трогаем (не сбить поллинг).
@@ -189,11 +192,16 @@ export function useTelegramLink(opts?: {
         );
       } else {
         setUrl(null);
-        setPhase('error');
+        // Сбой ФОНОВОГО перевыпуска не должен ломать уже идущую привязку:
+        // waiting/linked сохраняем, error показываем только из idle
+        // (находка ревью Greptile P2 / CodeRabbit).
+        setPhase((p) => (p === 'waiting' || p === 'linked' ? p : 'error'));
       }
     } catch {
-      setUrl(null);
-      setPhase('error');
+      if (!linkedRef.current) {
+        setUrl(null);
+        setPhase((p) => (p === 'waiting' || p === 'linked' ? p : 'error'));
+      }
     } finally {
       fetchingRef.current = false;
     }
@@ -206,11 +214,18 @@ export function useTelegramLink(opts?: {
   // Из error автоматически не ретраим (не молотить сервер) — только по кнопке.
   // Через ref: setState внутри requestToken асинхронный (после await), но
   // react-hooks/set-state-in-effect статически этого не видит.
+  // prefetch выключился (drawer закрылся) → гасим refresh-таймер, чтобы
+  // скрытая кнопка не выпускала токены вечно; при повторном включении
+  // перевыпускаем (таймера нет — токен мог истечь, пока drawer был закрыт).
   useEffect(() => {
-    if (!prefetch || url !== null) return;
+    if (!prefetch) {
+      stopRefresh();
+      return;
+    }
     if (phase !== 'idle' && phase !== 'waiting') return;
+    if (url !== null && refreshRef.current !== null) return;
     void requestTokenRef.current();
-  }, [prefetch, phase, url]);
+  }, [prefetch, phase, url, stopRefresh]);
 
   /** Вызывается в onClick якоря: сам переход делает браузер по href. */
   const opened = useCallback(() => {
@@ -326,17 +341,18 @@ export function TelegramLinkFallback({
   url: string | null;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   if (!url) return null;
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 2500);
     } catch {
-      // clipboard недоступен (старый браузер/не-secure контекст) — молча,
-      // ссылка всё равно есть в href основной кнопки
+      // clipboard недоступен (старый браузер/не-secure контекст) — честно
+      // показываем ссылку текстом для ручного копирования (находка ревью).
+      setCopyState('failed');
     }
   };
 
@@ -348,9 +364,14 @@ export function TelegramLinkFallback({
         onClick={() => void copy()}
         className="font-bold text-[var(--accent)] underline underline-offset-2"
       >
-        {copied ? 'Ссылка скопирована!' : 'Скопируй ссылку'}
+        {copyState === 'copied' ? 'Ссылка скопирована!' : 'Скопируй ссылку'}
       </button>{' '}
       и вставь её в Telegram или адресную строку браузера.
+      {copyState === 'failed' && (
+        <span className="mt-1 block break-all font-mono text-[11px] text-[var(--text)]">
+          {url}
+        </span>
+      )}
     </p>
   );
 }

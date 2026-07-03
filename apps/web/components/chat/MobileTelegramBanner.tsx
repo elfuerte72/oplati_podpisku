@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react';
 
+import { z } from 'zod';
+
 import { comicButtonClassName } from '@/components/comic';
-import { fetchWithTimeout } from '@/lib/http';
+import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { TelegramIcon } from './TelegramLink';
 
 /**
@@ -22,7 +24,8 @@ import { TelegramIcon } from './TelegramLink';
 
 const FROM_TG_STORAGE_KEY = 'oplatishka_from_tg';
 
-type ProfileResponse = { supportUrl?: string | null };
+// Zod на границе (конвенция проекта): интересует только supportUrl.
+const profileResponseSchema = z.object({ supportUrl: z.string().nullable().optional() });
 
 export function MobileTelegramBanner() {
   const [url, setUrl] = useState<string | null>(null);
@@ -42,8 +45,8 @@ export function MobileTelegramBanner() {
     }
 
     void fetchWithTimeout('/api/profile', {}, 5000)
-      .then((res) => res.json() as Promise<ProfileResponse>)
-      .then((data) => setUrl(data.supportUrl ?? null))
+      .then((res) => parseJsonSafe(res, profileResponseSchema))
+      .then((data) => setUrl(data?.supportUrl ?? null))
       .catch(() => {
         // не критично: баннер — навигационный сахар, без него сайт работает
       });
