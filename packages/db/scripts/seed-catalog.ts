@@ -292,6 +292,21 @@ const CATALOG: readonly CatalogEntry[] = [
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
   },
+
+  // ─── Social ──────────────────────────────────────────────────────────────────
+  {
+    // Возвращён из архива по решению владельца 2026-07-03. Внимание: месячный
+    // тариф $4.99 при fallback-курсе 77 и комиссии 30% даёт 499,50 ₽ — НИЖЕ
+    // минимума терминала L&P (500 ₽), поэтому для клиента с активной картой
+    // (без $4-надбавки за выпуск) propose откажет с below_min; новый клиент
+    // проходит (с надбавкой ~807 ₽). Годовой тариф проходит всегда.
+    slug: 'telegram-premium',
+    name: 'Telegram Premium',
+    description: 'Telegram Premium — расширенные возможности мессенджера',
+    category: 'social',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Premium', 4.99), usd('Premium', 35.99, 'year')]),
+  },
 ];
 
 /**
@@ -413,14 +428,6 @@ const ARCHIVED_CATALOG: readonly CatalogEntry[] = [
   },
 
   // ─── Social ──────────────────────────────────────────────────────────────────
-  {
-    slug: 'telegram-premium',
-    name: 'Telegram Premium',
-    description: 'Telegram Premium — расширенные возможности мессенджера',
-    category: 'social',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Premium', 4.99), usd('Premium', 35.99, 'year')]),
-  },
   {
     slug: 'tinder',
     name: 'Tinder',
