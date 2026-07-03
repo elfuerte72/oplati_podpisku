@@ -141,7 +141,10 @@ export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) 
             <PriceBreakdown
               totalKopecks={order.amountKopecks}
               cardIssueFeeKopecks={order.cardIssueFeeKopecks}
-              originalAmountUsdCents={order.originalAmount}
+              // USD-строку показываем только для долларовых заказов: formatUsd
+              // жёстко форматирует в $, для не-USD валюты это был бы неверный
+              // ярлык. Сейчас каталог всегда USD — проверка защитная.
+              originalAmountUsdCents={order.originalCurrency === 'USD' ? order.originalAmount : null}
             />
           )}
           {order.paidAt && <Row label="Оплачен" value={formatExpires(order.paidAt)} />}
