@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { formatRub } from '@/components/comic';
 import { fetchWithTimeout } from '@/lib/http';
 import { Mascot, type MascotPose } from './Mascot';
-import { TelegramIcon, useTelegramLink } from './TelegramLink';
+import { TelegramIcon, TelegramLinkFallback, useTelegramLink } from './TelegramLink';
 
 /**
  * Событие «статистика могла измениться» (оплата заказа в ChatClient) —
@@ -54,7 +54,6 @@ export function ProfilePanel({
   open?: boolean;
   onClose?: () => void;
 }) {
-  const { phase: linkPhase, start: startLink } = useTelegramLink({ checkOnMount: true });
   const [profile, setProfile] = useState<Profile | null>(null);
   const [supportUrl, setSupportUrl] = useState<string | null>(null);
 
@@ -69,6 +68,16 @@ export function ProfilePanel({
     mq.addEventListener('change', update);
     return () => mq.removeEventListener('change', update);
   }, []);
+
+  // prefetch токена привязки — только когда панель реально видна (desktop-
+  // сайдбар или открытый drawer): закрытый drawer в DOM не должен выпускать
+  // токен на каждый просмотр страницы.
+  const {
+    phase: linkPhase,
+    url: linkUrl,
+    opened: openLink,
+    retry: retryLink,
+  } = useTelegramLink({ checkOnMount: true, prefetch: isDesktop || open });
 
   const loadProfile = useCallback(() => {
     void fetchWithTimeout('/api/profile')
@@ -167,22 +176,34 @@ export function ProfilePanel({
               }
             />
           </div>
-          {linkPhase !== 'linked' && (
-            <button
-              type="button"
-              onClick={() => void startLink()}
-              disabled={linkPhase === 'unknown' || linkPhase === 'starting' || linkPhase === 'waiting'}
-              className="w-full rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-2 font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {linkPhase === 'starting'
-                ? 'Открываю Telegram…'
-                : linkPhase === 'waiting'
-                  ? 'Жду подтверждения…'
-                  : linkPhase === 'error'
-                    ? 'Не вышло — ещё раз'
+          {linkPhase !== 'linked' &&
+            (linkUrl && (linkPhase === 'idle' || linkPhase === 'waiting') ? (
+              // Настоящая ссылка: universal link t.me открывает приложение
+              // только при прямом тапе (см. TelegramLink.tsx).
+              <a
+                href={linkUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={openLink}
+                className="block w-full rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-2 text-center font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+              >
+                {linkPhase === 'waiting' ? 'Открыть Telegram ещё раз' : 'Привязать Telegram'}
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={linkPhase === 'error' ? retryLink : undefined}
+                disabled={linkPhase !== 'error'}
+                className="w-full rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-2 font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {linkPhase === 'error'
+                  ? 'Не вышло — ещё раз'
+                  : linkPhase === 'waiting'
+                    ? 'Жду подтверждения…'
                     : 'Привязать Telegram'}
-            </button>
-          )}
+              </button>
+            ))}
+          {linkPhase === 'waiting' && <TelegramLinkFallback url={linkUrl} />}
         </div>
 
         {/* Партнёрская программа — десктоп открывает кабинет /partner; мобильный

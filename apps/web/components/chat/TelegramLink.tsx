@@ -4,28 +4,40 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { siTelegram } from 'simple-icons';
 
-import { ComicButton } from '@/components/comic';
+import { ComicButton, comicButtonClassName } from '@/components/comic';
 import { fetchWithTimeout } from '@/lib/http';
 
 /**
  * Привязка Telegram к веб-сессии (deep-link flow).
  *
- * `useTelegramLink` инкапсулирует весь клиентский цикл: POST
- * /api/auth/telegram/link → открыть t.me/<bot>?start=link_<token> → поллить
+ * `useTelegramLink` инкапсулирует клиентский цикл: заранее выпустить токен
+ * (POST /api/auth/telegram/link) → отдать готовый deep-link `t.me/<bot>?start=
+ * link_<token>` для НАСТОЯЩЕЙ `<a>`-ссылки → после тапа поллить
  * /api/auth/telegram/link/status, пока бот не подтвердит привязку. Серверная
  * половина — handle-update.ts (`/start link_*`) + consumeLinkToken.
  *
- * Используется в двух местах: карточка в ленте чата (гейт перед оплатой)
- * и кнопка в интро-оверлее.
+ * КРИТИЧНО (мобильные): переход в Telegram должен быть прямым тапом по якорю
+ * с уже готовым href. Universal link (https://t.me) открывает приложение
+ * ТОЛЬКО при user-tap-навигации; прежняя схема `window.open('about:blank')` +
+ * `location.replace` после await загружала веб-страницу t.me с интерстишлом
+ * (лишние тапы) или вовсе застревала на пустой вкладке, когда iOS замораживал
+ * фоновую вкладку до редиректа. По данным прода такие привязки не доходили до
+ * бота вообще (токены выпускались, но не потреблялись).
+ *
+ * Используется в трёх местах: карточка-гейт в ленте чата (перед оплатой),
+ * интро-оверлей, панель профиля.
  */
 
-type StartResponse = { ok: boolean; url?: string; text?: string };
+type StartResponse = { ok: boolean; url?: string; expiresAt?: string; text?: string };
 type StatusResponse = { ok: boolean; linked?: boolean };
 
-export type TelegramLinkPhase = 'unknown' | 'idle' | 'starting' | 'waiting' | 'linked' | 'error';
+export type TelegramLinkPhase = 'unknown' | 'idle' | 'waiting' | 'linked' | 'error';
 
 const POLL_INTERVAL_MS = 2500;
 const POLL_MAX_ATTEMPTS = 240; // ~10 минут — дальше токен всё равно истёк
+/** Перевыпуск токена незадолго до конца TTL — ссылка под пальцем всегда живая. */
+const TOKEN_REFRESH_MARGIN_MS = 60_000;
+const TOKEN_FALLBACK_TTL_MS = 10 * 60_000;
 
 /**
  * Кнопок привязки на странице несколько (интро, профиль, гейт в чате) — у
@@ -36,11 +48,24 @@ const POLL_MAX_ATTEMPTS = 240; // ~10 минут — дальше токен в�
  */
 const LINKED_EVENT = 'oplatishka:telegram-linked';
 
-export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: boolean }) {
+export function useTelegramLink(opts?: {
+  onLinked?: () => void;
+  checkOnMount?: boolean;
+  /**
+   * Выпускать ли токен заранее. По умолчанию true; выключается для мест, где
+   * кнопка смонтирована, но не видна (закрытый drawer профиля, первый кадр
+   * интро) — чтобы не плодить токены на каждый просмотр страницы.
+   */
+  prefetch?: boolean;
+}) {
   const checkOnMount = opts?.checkOnMount ?? false;
+  const prefetch = opts?.prefetch ?? true;
   const [phase, setPhase] = useState<TelegramLinkPhase>(checkOnMount ? 'unknown' : 'idle');
+  const [url, setUrl] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchingRef = useRef(false);
   const linkedRef = useRef(false);
   const onLinkedRef = useRef(opts?.onLinked);
   const onLinked = opts?.onLinked;
@@ -55,18 +80,32 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
     }
   }, []);
 
-  useEffect(() => stopPoll, [stopPoll]);
+  const stopRefresh = useCallback(() => {
+    if (refreshRef.current) {
+      clearTimeout(refreshRef.current);
+      refreshRef.current = null;
+    }
+  }, []);
+
+  useEffect(
+    () => () => {
+      stopPoll();
+      stopRefresh();
+    },
+    [stopPoll, stopRefresh],
+  );
 
   const markLinked = useCallback(
     (o: { notify: boolean; broadcast: boolean }) => {
       if (linkedRef.current) return;
       linkedRef.current = true;
       stopPoll();
+      stopRefresh();
       setPhase('linked');
       if (o.notify) onLinkedRef.current?.();
       if (o.broadcast) window.dispatchEvent(new Event(LINKED_EVENT));
     },
-    [stopPoll],
+    [stopPoll, stopRefresh],
   );
 
   // Привязка завершилась в другом экземпляре хука (интро/профиль/гейт).
@@ -122,7 +161,76 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
     };
   }, [checkOnMount]);
 
-  const startPoll = useCallback(() => {
+  /**
+   * Выпуск (или перевыпуск) токена. Ссылка кладётся в state и живёт в href
+   * якоря; по таймеру перевыпускается до истечения TTL, пока не привязались.
+   * Самовызов из setTimeout — через ref (useCallback не может ссылаться на
+   * себя напрямую, react-hooks/immutability).
+   */
+  const requestTokenRef = useRef<() => Promise<void>>(async () => {});
+  const requestToken = useCallback(async () => {
+    if (fetchingRef.current || linkedRef.current) return;
+    fetchingRef.current = true;
+    try {
+      const res = await fetchWithTimeout('/api/auth/telegram/link', { method: 'POST' });
+      const data = (await res.json()) as StartResponse;
+      // Привязка завершилась, пока запрос летел — токен больше не нужен,
+      // состояние linked не трогаем (находка ревью).
+      if (linkedRef.current) return;
+      if (data.ok && data.url) {
+        setUrl(data.url);
+        // Из error возвращаемся в idle; waiting не трогаем (не сбить поллинг).
+        setPhase((p) => (p === 'error' ? 'idle' : p));
+        stopRefresh();
+        const ttlMs = data.expiresAt ? new Date(data.expiresAt).getTime() - Date.now() : NaN;
+        const safeTtl = Number.isFinite(ttlMs) ? ttlMs : TOKEN_FALLBACK_TTL_MS;
+        refreshRef.current = setTimeout(
+          () => {
+            void requestTokenRef.current();
+          },
+          Math.max(safeTtl - TOKEN_REFRESH_MARGIN_MS, 30_000),
+        );
+      } else {
+        setUrl(null);
+        // Сбой ФОНОВОГО перевыпуска не должен ломать уже идущую привязку:
+        // waiting/linked сохраняем, error показываем только из idle
+        // (находка ревью Greptile P2 / CodeRabbit).
+        setPhase((p) => (p === 'waiting' || p === 'linked' ? p : 'error'));
+      }
+    } catch {
+      if (!linkedRef.current) {
+        setUrl(null);
+        setPhase((p) => (p === 'waiting' || p === 'linked' ? p : 'error'));
+      }
+    } finally {
+      fetchingRef.current = false;
+    }
+  }, [stopRefresh]);
+  useEffect(() => {
+    requestTokenRef.current = requestToken;
+  }, [requestToken]);
+
+  // Предвыпуск токена, как только известно, что сессия не привязана.
+  // Из error автоматически не ретраим (не молотить сервер) — только по кнопке.
+  // Через ref: setState внутри requestToken асинхронный (после await), но
+  // react-hooks/set-state-in-effect статически этого не видит.
+  // prefetch выключился (drawer закрылся) → гасим refresh-таймер, чтобы
+  // скрытая кнопка не выпускала токены вечно; при повторном включении
+  // перевыпускаем (таймера нет — токен мог истечь, пока drawer был закрыт).
+  useEffect(() => {
+    if (!prefetch) {
+      stopRefresh();
+      return;
+    }
+    if (phase !== 'idle' && phase !== 'waiting') return;
+    if (url !== null && refreshRef.current !== null) return;
+    void requestTokenRef.current();
+  }, [prefetch, phase, url, stopRefresh]);
+
+  /** Вызывается в onClick якоря: сам переход делает браузер по href. */
+  const opened = useCallback(() => {
+    if (linkedRef.current) return;
+    setPhase('waiting');
     stopPoll();
     let attempts = 0;
     pollRef.current = setInterval(() => {
@@ -143,46 +251,13 @@ export function useTelegramLink(opts?: { onLinked?: () => void; checkOnMount?: b
     }, POLL_INTERVAL_MS);
   }, [stopPoll, markLinked]);
 
-  const start = useCallback(async () => {
-    setPhase('starting');
-    // КРИТИЧНО (мобильные): вкладку под бота открываем СИНХРОННО в обработчике
-    // клика — ДО await. Если открыть `window.open` после `await fetch`, браузер
-    // теряет user-activation и блокирует попап (Safari/Chrome на iOS/Android) —
-    // кнопка «ничего не делает», Telegram не открывается. Сначала открываем
-    // about:blank в user-gesture, затем перенаправляем на deep-link.
-    // 'noopener' здесь НЕ ставим намеренно: с ним window.open вернул бы null, а
-    // нам нужна ссылка на окно, чтобы сменить его location (opener гасим вручную).
-    const preopened =
-      typeof window !== 'undefined' ? window.open('about:blank', '_blank') : null;
-    try {
-      const res = await fetchWithTimeout('/api/auth/telegram/link', { method: 'POST' });
-      const data = (await res.json()) as StartResponse;
-      if (data.ok && data.url) {
-        if (preopened && !preopened.closed) {
-          try {
-            preopened.opener = null;
-          } catch {
-            // некоторые браузеры запрещают запись opener — не критично
-          }
-          preopened.location.replace(data.url);
-        } else {
-          // Попап заблокирован даже синхронно (редко) — уводим текущую вкладку;
-          // возврат на сайт поймает привязку через visibilitychange-recheck.
-          window.location.href = data.url;
-        }
-        setPhase('waiting');
-        startPoll();
-      } else {
-        preopened?.close();
-        setPhase('error');
-      }
-    } catch {
-      preopened?.close();
-      setPhase('error');
-    }
-  }, [startPoll]);
+  /** После error: перезапросить токен (кнопка «Не вышло — ещё раз»). */
+  const retry = useCallback(() => {
+    setPhase('idle');
+    void requestToken();
+  }, [requestToken]);
 
-  return { phase, start };
+  return { phase, url, opened, retry };
 }
 
 export function TelegramIcon({ className }: { className?: string }) {
@@ -193,33 +268,111 @@ export function TelegramIcon({ className }: { className?: string }) {
   );
 }
 
-const BUTTON_LABEL: Record<TelegramLinkPhase, string> = {
-  unknown: 'Связать Telegram',
-  idle: 'Связать Telegram',
-  starting: 'Открываю Telegram…',
-  waiting: 'Жду подтверждения…',
-  linked: 'Telegram привязан',
-  error: 'Не вышло — ещё раз',
-};
-
+/**
+ * Кнопка привязки. Когда deep-link готов — это настоящая `<a>` (universal
+ * link открывает приложение Telegram только при прямом тапе по ссылке);
+ * во всех остальных состояниях — ComicButton.
+ */
 export function TelegramLinkButton({
   phase,
-  onStart,
+  url,
+  onOpen,
+  onRetry,
+  variant = 'primary',
   className = '',
 }: {
   phase: TelegramLinkPhase;
-  onStart: () => void;
+  url: string | null;
+  onOpen: () => void;
+  onRetry: () => void;
+  variant?: 'primary' | 'surface';
   className?: string;
 }) {
-  return (
-    <ComicButton
-      onClick={onStart}
-      disabled={phase === 'starting' || phase === 'waiting' || phase === 'linked' || phase === 'unknown'}
-      className={`inline-flex items-center gap-2 ${className}`}
-    >
+  const content = (label: string) => (
+    <>
       <TelegramIcon className="h-4 w-4 shrink-0" />
-      {BUTTON_LABEL[phase]}
+      {label}
+    </>
+  );
+  const mergedClassName = `inline-flex items-center gap-2 ${className}`;
+
+  if (url && (phase === 'idle' || phase === 'waiting')) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={onOpen}
+        className={comicButtonClassName(variant, mergedClassName)}
+      >
+        {content(phase === 'waiting' ? 'Открыть Telegram ещё раз' : 'Связать Telegram')}
+      </a>
+    );
+  }
+  if (phase === 'error') {
+    return (
+      <ComicButton onClick={onRetry} variant={variant} className={mergedClassName}>
+        {content('Не вышло — ещё раз')}
+      </ComicButton>
+    );
+  }
+  return (
+    <ComicButton disabled variant={variant} className={mergedClassName}>
+      {content(
+        phase === 'linked'
+          ? 'Telegram привязан'
+          : phase === 'waiting'
+            ? 'Жду подтверждения…'
+            : 'Связать Telegram',
+      )}
     </ComicButton>
+  );
+}
+
+/**
+ * Запасной выход, когда тап по ссылке не открыл Telegram (нет приложения,
+ * in-app браузер зарезал переход): даём скопировать deep-link, чтобы открыть
+ * его в самом Telegram или другом браузере. Показывать в состоянии waiting.
+ */
+export function TelegramLinkFallback({
+  url,
+  className = '',
+}: {
+  url: string | null;
+  className?: string;
+}) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  if (!url) return null;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 2500);
+    } catch {
+      // clipboard недоступен (старый браузер/не-secure контекст) — честно
+      // показываем ссылку текстом для ручного копирования (находка ревью).
+      setCopyState('failed');
+    }
+  };
+
+  return (
+    <p className={`font-body text-xs text-[var(--text-muted)] ${className}`}>
+      Telegram не открылся?{' '}
+      <button
+        type="button"
+        onClick={() => void copy()}
+        className="font-bold text-[var(--accent)] underline underline-offset-2"
+      >
+        {copyState === 'copied' ? 'Ссылка скопирована!' : 'Скопируй ссылку'}
+      </button>{' '}
+      и вставь её в Telegram или адресную строку браузера.
+      {copyState === 'failed' && (
+        <span className="mt-1 block break-all font-mono text-[11px] text-[var(--text)]">
+          {url}
+        </span>
+      )}
+    </p>
   );
 }
 
@@ -229,7 +382,7 @@ export function TelegramLinkButton({
  * автоматически повторяет подтверждение заказа.
  */
 export function TelegramLinkCard({ onLinked }: { onLinked?: () => void }) {
-  const { phase, start } = useTelegramLink({ ...(onLinked ? { onLinked } : {}) });
+  const { phase, url, opened, retry } = useTelegramLink({ ...(onLinked ? { onLinked } : {}) });
 
   return (
     <div className="w-fit max-w-[min(92%,28rem)] rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-4 shadow-[var(--shadow-comic)] motion-safe:animate-[comic-pop_180ms_var(--ease-pop)_both]">
@@ -239,12 +392,16 @@ export function TelegramLinkCard({ onLinked }: { onLinked?: () => void }) {
         тап: жми кнопку и нажми Start в боте.
       </p>
       <div className="mt-3 flex items-center gap-3">
-        <TelegramLinkButton phase={phase} onStart={() => void start()} />
+        <TelegramLinkButton phase={phase} url={url} onOpen={opened} onRetry={retry} />
       </div>
       {phase === 'waiting' && (
-        <p className="mt-2 font-body text-xs text-[var(--text-muted)]">
-          Жду Start в боте — как только нажмёшь, продолжу автоматически.
-        </p>
+        <>
+          <p className="mt-2 font-body text-xs text-[var(--text-muted)]">
+            Жду Start в боте — как только нажмёшь, продолжу автоматически. Если счёт придёт в
+            Telegram — можно оплатить и прямо там.
+          </p>
+          <TelegramLinkFallback url={url} className="mt-1.5" />
+        </>
       )}
       {phase === 'linked' && (
         <p className="mt-2 font-body text-xs text-[var(--accent)]">

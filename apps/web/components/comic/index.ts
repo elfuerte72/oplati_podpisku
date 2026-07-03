@@ -1,6 +1,6 @@
 export { SpeechBubble } from './SpeechBubble';
 export { TypingBubble } from './TypingBubble';
-export { ComicButton } from './ComicButton';
+export { ComicButton, comicButtonClassName } from './ComicButton';
 export { QuickReplyChip } from './QuickReplyChip';
 export { ServiceCard } from './ServiceCard';
 export { CatalogCard } from './CatalogCard';
