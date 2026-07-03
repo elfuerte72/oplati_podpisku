@@ -55,7 +55,10 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   'web-chat': { limit: 12, windowSeconds: 60 },
   telegram: { limit: 20, windowSeconds: 60 },
   'web-order': { limit: 8, windowSeconds: 60 },
-  'web-link': { limit: 5, windowSeconds: 60 },
+  // web-link: токен привязки выпускается ЗАРАНЕЕ при рендере кнопки (прямая
+  // <a>-ссылка вместо window.open, фикс мобильной привязки 2026-07-03), а не
+  // по клику — базовый расход выше, лимит поднят 5 → 10.
+  'web-link': { limit: 10, windowSeconds: 60 },
 };
 
 /** Клиентский IP для rate-limit. На Vercel приходит в `x-forwarded-for`. */

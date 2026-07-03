@@ -87,6 +87,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: false, error: 'order_not_found' }, { status: 404 });
     }
     if (order.status !== 'ready_for_payment') {
+      // Повторный confirm по заказу с уже выставленным счётом — идемпотентный
+      // успех: отдаём живой pending-инвойс вместо 409. Кейс реальный, а не
+      // только двойной клик: счёт мог создать бот при привязке Telegram
+      // (handoff в handleLinkDeepLink), а живая веб-вкладка после привязки
+      // повторяет подтверждение того же заказа.
+      if (order.status === 'pending_payment') {
+        log.info({ event: 'payments.create.repeat_confirm', orderId });
+        return await respondWithExistingPendingPayment(orderId, paymentMethod);
+      }
       log.warn({
         event: 'payments.create.invalid_status',
         orderId,

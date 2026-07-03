@@ -5,7 +5,11 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 
 import { ComicButton } from '@/components/comic';
 import { mascotSrc } from '@/components/chat/Mascot';
-import { TelegramLinkButton, useTelegramLink } from '@/components/chat/TelegramLink';
+import {
+  TelegramLinkButton,
+  TelegramLinkFallback,
+  useTelegramLink,
+} from '@/components/chat/TelegramLink';
 
 /**
  * Комикс-интро при первом визите: два «кадра» поверх чата.
@@ -81,7 +85,14 @@ export function IntroOverlay() {
  */
 function IntroFrames({ onClose }: { onClose: () => void }) {
   const [frame, setFrame] = useState<1 | 2>(1);
-  const { phase: linkPhase, start: startLink } = useTelegramLink({ checkOnMount: true });
+  // prefetch только на кадре 2 — кнопка привязки живёт там; не выпускаем
+  // токен каждому, кто увидел первый кадр и закрыл интро.
+  const {
+    phase: linkPhase,
+    url: linkUrl,
+    opened: openLink,
+    retry: retryLink,
+  } = useTelegramLink({ checkOnMount: true, prefetch: frame === 2 });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -216,8 +227,10 @@ function IntroFrames({ onClose }: { onClose: () => void }) {
               {linkPhase !== 'linked' && (
                 <TelegramLinkButton
                   phase={linkPhase}
-                  onStart={() => void startLink()}
-                  className="bg-[var(--surface)] text-[var(--text)]"
+                  url={linkUrl}
+                  onOpen={openLink}
+                  onRetry={retryLink}
+                  variant="surface"
                 />
               )}
               <p className="basis-full font-body text-xs text-[var(--text-muted)]">
@@ -225,6 +238,9 @@ function IntroFrames({ onClose }: { onClose: () => void }) {
                   ? 'Telegram уже привязан — туда придут чеки и доступы.'
                   : 'Привязка Telegram необязательна сейчас — попрошу её перед первой оплатой.'}
               </p>
+              {linkPhase === 'waiting' && (
+                <TelegramLinkFallback url={linkUrl} className="basis-full" />
+              )}
             </div>
           </div>
         </div>

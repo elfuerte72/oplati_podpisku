@@ -19,6 +19,7 @@ import {
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
+import { MobileTelegramBanner } from './MobileTelegramBanner';
 import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
@@ -494,6 +495,9 @@ export function ChatClient() {
 
       {/* Центр: чат */}
       <section className="relative flex min-w-0 flex-1 flex-col">
+        {/* Мобильный CTA в Telegram (основной канал) — скрыт на десктопе и
+            для визитов из бота (?src=tg). */}
+        <MobileTelegramBanner />
         {/* Шапка */}
         <header className="shrink-0 border-b-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
           <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">
