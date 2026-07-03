@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Как оплатить подписку — Оплатишка</title>
+<meta name="robots" content="noindex" />
+<!-- Не утекать реферер третьим сторонам (Google Fonts). -->
+<meta name="referrer" content="no-referrer" />
+<link rel="preconnect" href="https://fonts.googleapis.com" referrerpolicy="no-referrer" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin referrerpolicy="no-referrer" />
+<link href="https://fonts.googleapis.com/css2?family=Balsamiq+Sans:wght@400;700&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet" referrerpolicy="no-referrer" />
+<style>
+  :root {
+    --bg: #0f0d11;
+    --surface: #17151b;
+    --surface-2: #1e1c24;
+    --text: #f3f1ea;
+    --text-muted: #a09caa;
+    --teal: #268b89;
+    --teal-soft: #33a3a0;
+    --paper: #fbfcf7;
+    --ink: #0b0a0d;
+    --gold: #e8b64a;
+    --stamp: #c2362f;
+    --radius: 18px;
+    --shadow: 5px 5px 0 var(--ink);
+    --shadow-lg: 8px 8px 0 var(--ink);
+    --font-display: 'Balsamiq Sans', system-ui, sans-serif;
+    --font-body: 'Rubik', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; min-width: 0; }
+  html { scroll-snap-type: y proximity; scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  img, svg, code, pre { max-width: 100%; }
+  h1, h2, h3, p { overflow-wrap: anywhere; }
+  b, strong { color: var(--text); }
+  .halftone::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.05) 2px, transparent 2px);
+    background-size: 8px 8px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .slide {
+    position: relative;
+    min-height: 100vh;
+    min-height: 100dvh;
+    scroll-snap-align: start;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 72px 20px;
+    overflow: hidden;
+  }
+  .inner { position: relative; z-index: 1; width: 100%; max-width: 860px; }
+  .kicker {
+    display: inline-block;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--teal-soft);
+    border: 3px solid var(--teal);
+    border-radius: 10px;
+    padding: 5px 12px;
+    transform: rotate(-2deg);
+    margin-bottom: 20px;
+  }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(32px, 6vw, 56px); line-height: 1.05; }
+  h2 { font-family: var(--font-display); font-weight: 700; font-size: clamp(25px, 4.4vw, 38px); line-height: 1.12; margin-bottom: 14px; }
+  h3 { font-family: var(--font-display); font-weight: 700; font-size: 18px; margin-bottom: 6px; }
+  .lead { font-size: clamp(15px, 2.2vw, 19px); color: var(--text-muted); margin: 14px 0; max-width: 620px; }
+  .hint { font-size: 14px; color: var(--text-muted); margin-top: 26px; }
+  .wordmark {
+    background: var(--paper); color: var(--ink);
+    padding: 0 10px; border-radius: 8px;
+    border: 3px solid var(--ink);
+    box-shadow: 3px 3px 0 var(--teal);
+    display: inline-block; transform: rotate(-1deg);
+    white-space: nowrap;
+  }
+  .bounce { display: inline-block; animation: bob 1.4s ease-in-out infinite; }
+  @keyframes bob { 0%,100%{ transform: translateY(0) } 50%{ transform: translateY(6px) } }
+  .card {
+    position: relative;
+    background: var(--surface);
+    border: 3px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+  }
+  .card + .card { margin-top: 16px; }
+  .grid { display: grid; gap: 16px; }
+  .cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .badge-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: color-mix(in srgb, var(--teal) 24%, transparent);
+    color: var(--teal-soft);
+    border: 3px solid var(--ink);
+    font-family: var(--font-display); font-weight: 700; font-size: 18px;
+    margin-bottom: 10px;
+  }
+  .teal { color: var(--teal-soft); }
+  .gold { color: var(--gold); }
+  .note { font-size: 14px; color: var(--text-muted); margin-top: 20px; }
+  .footnote { font-size: 12px; color: var(--text-muted); margin-top: 22px; }
+  code {
+    background: var(--surface-2); border: 2px solid var(--ink); border-radius: 6px;
+    padding: 2px 7px; font-size: 13px; color: var(--teal-soft);
+    overflow-wrap: anywhere; word-break: break-word;
+  }
+  /* Слайд-маскот */
+  .slide-mascot {
+    display: block; height: 150px; width: auto; margin: 0 auto 20px;
+    filter: drop-shadow(4px 6px 0 rgba(0,0,0,0.35));
+  }
+  .mascot-hero {
+    position: absolute; right: 4%; bottom: 6%;
+    width: clamp(170px, 22vw, 280px); z-index: 0; pointer-events: none;
+    filter: drop-shadow(6px 8px 0 rgba(0,0,0,0.4));
+  }
+  /* Плашка «важно» — стикер стоп-цвета */
+  .alert {
+    background: color-mix(in srgb, var(--stamp) 16%, var(--surface));
+    border: 3px solid var(--stamp);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 16px 18px;
+    font-size: 15px;
+  }
+  .alert b { color: #ffd9d5; }
+  /* Числовой список шагов */
+  ol.steps { list-style: none; counter-reset: s; margin-top: 6px; }
+  ol.steps li {
+    counter-increment: s; position: relative;
+    padding: 8px 0 8px 42px; font-size: 15px; line-height: 1.4;
+    border-bottom: 2px dashed var(--surface-2);
+  }
+  ol.steps li:last-child { border-bottom: none; }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 6px;
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--teal); color: var(--paper);
+    border: 2px solid var(--ink);
+    font-family: var(--font-display); font-weight: 700; font-size: 14px;
+  }
+  /* Вкладки iPhone / Android / Компьютер */
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tab-btn {
+    font-family: var(--font-display); font-weight: 700; font-size: 14px;
+    color: var(--text-muted); background: var(--surface);
+    border: 3px solid var(--ink); border-radius: 12px;
+    padding: 8px 16px; cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.1s, color 0.1s, background 0.1s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn[aria-selected="true"] {
+    color: var(--paper); background: var(--teal);
+    box-shadow: 3px 3px 0 var(--ink);
+    transform: translate(-1px, -1px);
+  }
+  .tab-panel[hidden] { display: none; }
+  .tag {
+    display: inline-block; font-size: 12px; font-weight: 600;
+    color: var(--teal-soft); background: color-mix(in srgb, var(--teal) 16%, transparent);
+    border: 2px solid var(--teal); border-radius: 6px; padding: 1px 8px; margin-bottom: 8px;
+  }
+  .price-demo {
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    flex-wrap: wrap; margin: 8px 0 2px;
+  }
+  .price-demo .good, .price-demo .bad {
+    font-family: var(--font-display); font-weight: 700; font-size: clamp(20px, 4vw, 30px);
+    border: 3px solid var(--ink); border-radius: 12px; padding: 8px 18px; box-shadow: var(--shadow);
+  }
+  .price-demo .good { background: color-mix(in srgb, var(--teal) 20%, var(--surface)); color: var(--teal-soft); }
+  .price-demo .bad { background: color-mix(in srgb, var(--stamp) 16%, var(--surface)); color: #ffb4ad; text-decoration: line-through; }
+  .price-demo .arrow { color: var(--text-muted); font-size: 22px; }
+  /* Навигация: прогресс сверху */
+  .progress { position: fixed; top: 0; left: 0; height: 4px; background: var(--teal); z-index: 50; width: 0; transition: width 0.15s; }
+  .cta {
+    display: inline-block; margin-top: 22px;
+    font-family: var(--font-display); font-weight: 700; font-size: 16px;
+    color: var(--paper); background: var(--teal);
+    border: 3px solid var(--ink); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 12px 22px; text-decoration: none;
+  }
+  @media (max-width: 720px) {
+    .cols-2 { grid-template-columns: 1fr; }
+    .slide-mascot { height: 112px; }
+    .mascot-hero { position: static; margin: 20px auto 0; display: block; width: 170px; }
+  }
+  @media (max-width: 600px) {
+    html { scroll-snap-type: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; }
+    .bounce { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<!-- 1 — HERO -->
+<section class="slide halftone" id="s1">
+  <div class="inner">
+    <span class="kicker">Инструкция по оплате</span>
+    <h1>Как оплатить подписку<br />с <span class="wordmark">Оплатишкой</span></h1>
+    <p class="lead">Мы выпустили тебе виртуальную карту США и прислали её данные в бот. Осталось оплатить подписку правильно — с первого раза. Здесь всё по шагам, простыми словами, для iPhone, Android и компьютера.</p>
+    <p class="hint"><b>Поехали</b> — листай вниз <span class="bounce">↓</span></p>
+  </div>
+  <img class="mascot-hero" src="/mascot/presenting.png?v=2" alt="Оплатишка показывает" />
+</section>
+
+<!-- 2 — ЗОЛОТОЕ ПРАВИЛО -->
+<section class="slide halftone" id="s2">
+  <div class="inner">
+    <span class="kicker">Главное правило</span>
+    <h2>Плати строго по цене в долларах</h2>
+    <p class="lead">Карта выпущена <b>ровно на нужную сумму</b> в долларах — столько, сколько стоит подписка в США. Если на сайте цена окажется больше, денег на карте не хватит и оплата не пройдёт.</p>
+    <div class="alert">
+      <b>Из-за чего цена «прыгает»:</b> сайт смотрит, из какой ты страны, и добавляет местный налог. Из Европы подписка $10 может стоить €12, из России — ещё дороже или карту вообще не примут. Нам нужна <b>американская</b> цена — она самая честная и без налога.
+    </div>
+    <div class="price-demo">
+      <span class="good">$10</span>
+      <span class="arrow">против</span>
+      <span class="bad">€12</span>
+    </div>
+    <p class="note">Слева — как надо (США, доллары). Справа — как не надо (другая страна, дороже).</p>
+  </div>
+</section>
+
+<!-- 3 — ПОЧЕМУ VPN США -->
+<section class="slide halftone" id="s3">
+  <div class="inner">
+    <img class="slide-mascot" src="/mascot/thinking.png?v=2" alt="Оплатишка думает" />
+    <span class="kicker">Как получить цену США</span>
+    <h2>Включи VPN с локацией США</h2>
+    <p class="lead">VPN — это приложение, которое делает вид, что ты выходишь в интернет из другой страны. Включаем США — и сайт сервиса показывает долларовую цену, а карта проходит без проблем.</p>
+    <div class="card">
+      <h3 class="teal">Что нужно сделать в двух словах</h3>
+      <ol class="steps">
+        <li>Установить любое VPN-приложение с сервером <b>США</b>.</li>
+        <li>Выбрать страну <b>США</b> и нажать «Подключить».</li>
+        <li>Открыть сайт сервиса — и оплатить картой из бота.</li>
+      </ol>
+    </div>
+    <p class="note">Ниже — где нажимать на iPhone, Android и компьютере.</p>
+  </div>
+</section>
+
+<!-- 4 — ШАГ 1: включить VPN (вкладки) -->
+<section class="slide halftone" id="s4">
+  <div class="inner">
+    <span class="badge-num">1</span>
+    <h2>Включаем VPN на США</h2>
+    <div class="tabs" role="tablist" data-tabs="vpn">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="vpn-ios">iPhone</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="vpn-android">Android</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="vpn-desktop">Компьютер</button>
+    </div>
+
+    <div class="card tab-panel" id="vpn-ios" role="tabpanel">
+      <span class="tag">iPhone / iPad</span>
+      <ol class="steps">
+        <li>Открой <b>App Store</b>, найди любое VPN-приложение с серверами США и установи его.</li>
+        <li>Запусти приложение. При первом включении iPhone попросит разрешить VPN — нажми <b>«Разрешить»</b> и подтверди код/Face ID.</li>
+        <li>В списке стран выбери <b>США (United States)</b>.</li>
+        <li>Нажми большую кнопку <b>«Подключить» (Connect)</b>. Вверху экрана, рядом с часами, появится значок <code>VPN</code> — значит, всё работает.</li>
+      </ol>
+    </div>
+
+    <div class="card tab-panel" id="vpn-android" role="tabpanel">
+      <span class="tag">Android</span>
+      <ol class="steps">
+        <li>Открой <b>Google Play</b>, найди любое VPN-приложение с серверами США и установи его.</li>
+        <li>Запусти приложение. Android попросит разрешить создание VPN — нажми <b>«ОК»</b>.</li>
+        <li>Выбери страну <b>США (United States)</b>.</li>
+        <li>Нажми <b>«Подключить» (Connect)</b>. В строке состояния сверху появится значок ключа <code>VPN</code> — подключение активно.</li>
+      </ol>
+    </div>
+
+    <div class="card tab-panel" id="vpn-desktop" role="tabpanel">
+      <span class="tag">Компьютер · Windows / Mac</span>
+      <ol class="steps">
+        <li>Установи VPN — приложение для компьютера или расширение для браузера (Chrome/Edge) с серверами США.</li>
+        <li>Открой его, выбери страну <b>США (United States)</b>.</li>
+        <li>Нажми <b>«Подключить» (Connect)</b> и дождись статуса «Подключено».</li>
+        <li>Если это расширение браузера — убедись, что его значок горит и показывает флаг США.</li>
+      </ol>
+    </div>
+    <p class="footnote">Подойдёт любой VPN, где есть сервер США. Платный обычно стабильнее бесплатного, но для одной оплаты хватит и бесплатного.</p>
+  </div>
+</section>
+
+<!-- 5 — ШАГ 2: проверить цену -->
+<section class="slide halftone" id="s5">
+  <div class="inner">
+    <span class="badge-num">2</span>
+    <h2>Проверь, что цена — в долларах</h2>
+    <p class="lead">VPN включён? Теперь открой сайт сервиса и посмотри на цену подписки.</p>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3 class="teal">Хорошо</h3>
+        <p>Цена в <b>долларах</b> — например, <code>$10</code>. Валюта США. Можно оплачивать картой из бота.</p>
+      </div>
+      <div class="card">
+        <h3 style="color: var(--stamp)">Стоп</h3>
+        <p>Цена всё ещё в <b>рублях</b> или <b>евро</b>. Значит сайт запомнил твою старую страну — переходи к шагу&nbsp;3.</p>
+      </div>
+    </div>
+    <p class="note">Сайт «запоминает» страну в кэше браузера. Даже с включённым VPN он может показывать старую цену, пока кэш не сбросишь.</p>
+  </div>
+</section>
+
+<!-- 6 — ШАГ 3: очистить кэш (вкладки) -->
+<section class="slide halftone" id="s6">
+  <div class="inner">
+    <span class="badge-num">3</span>
+    <h2>Сайт помнит старую страну? Заходи заново</h2>
+    <p class="lead">Самый простой способ — открыть сайт в <b>приватной вкладке</b>: там кэш пустой, и сайт заново определит страну по VPN.</p>
+    <div class="tabs" role="tablist" data-tabs="cache">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="cache-ios">iPhone</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="cache-android">Android</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="cache-desktop">Компьютер</button>
+    </div>
+
+    <div class="card tab-panel" id="cache-ios" role="tabpanel">
+      <span class="tag">iPhone · Safari</span>
+      <h3 class="teal">Просто: приватная вкладка</h3>
+      <ol class="steps">
+        <li>Убедись, что <b>VPN США включён</b>.</li>
+        <li>В Safari нажми значок вкладок (два квадрата) внизу справа.</li>
+        <li>Внизу нажми <b>«Личный доступ» (Private)</b> и открой новую вкладку.</li>
+        <li>Введи адрес сайта заново — цена появится в долларах.</li>
+      </ol>
+      <h3 class="teal" style="margin-top:14px">Или очисти данные сайта</h3>
+      <p>Настройки → <b>Safari</b> → Дополнения → Данные веб-сайтов → «Изменить» → удали нужный сайт. Потом открой его заново.</p>
+    </div>
+
+    <div class="card tab-panel" id="cache-android" role="tabpanel">
+      <span class="tag">Android · Chrome</span>
+      <h3 class="teal">Просто: вкладка инкогнито</h3>
+      <ol class="steps">
+        <li>Убедись, что <b>VPN США включён</b>.</li>
+        <li>В Chrome нажми три точки вверху справа.</li>
+        <li>Выбери <b>«Новая вкладка инкогнито»</b>.</li>
+        <li>Введи адрес сайта заново — цена станет в долларах.</li>
+      </ol>
+      <h3 class="teal" style="margin-top:14px">Или очисти данные сайта</h3>
+      <p>Нажми на замок слева от адреса → «Настройки сайта» / «Файлы cookie» → «Удалить и сбросить». Потом обнови страницу.</p>
+    </div>
+
+    <div class="card tab-panel" id="cache-desktop" role="tabpanel">
+      <span class="tag">Компьютер · Chrome / Safari</span>
+      <h3 class="teal">Просто: приватное окно</h3>
+      <ol class="steps">
+        <li>Убедись, что <b>VPN США включён</b>.</li>
+        <li>Chrome/Edge: нажми <code>Ctrl+Shift+N</code> (на Mac — <code>Cmd+Shift+N</code>). Safari: <code>Cmd+Shift+N</code>.</li>
+        <li>Откроется приватное окно — введи адрес сайта заново.</li>
+        <li>Цена появится в долларах.</li>
+      </ol>
+      <h3 class="teal" style="margin-top:14px">Или очисти данные сайта</h3>
+      <p>Нажми на замок слева от адреса → «Файлы cookie и данные сайта» → удали их. Потом обнови страницу (F5).</p>
+    </div>
+  </div>
+</section>
+
+<!-- 7 — ШАГ 4: ввести карту -->
+<section class="slide halftone" id="s7">
+  <div class="inner">
+    <span class="badge-num">4</span>
+    <h2>Введи данные карты</h2>
+    <p class="lead">Цена в долларах? Отлично. Нажимай «Оплатить» на сайте и вводи данные карты — они пришли тебе в боте.</p>
+    <div class="card">
+      <ol class="steps">
+        <li><b>Номер карты</b>, <b>срок</b> и <b>CVC</b> — скопируй из сообщения бота (просто нажми на значение — оно копируется).</li>
+        <li>Если сайт просит <b>Billing address</b> (адрес плательщика) — вставь адрес из того же сообщения бота, поле в поле.</li>
+        <li>Имя на карте, если спросят, — можно любое латиницей (например, <code>Ivan Ivanov</code>).</li>
+        <li>Подтверди оплату. Готово — вернись в бот и напиши нам, что всё прошло.</li>
+      </ol>
+    </div>
+    <p class="footnote">Карта рассчитана на эту подписку. Не вводи её на других сайтах — только там, где оформляешь подписку.</p>
+  </div>
+</section>
+
+<!-- 8 — НЕ СРАБОТАЛО -->
+<section class="slide halftone" id="s8">
+  <div class="inner">
+    <img class="slide-mascot" src="/mascot/attentive.png?v=2" alt="Оплатишка на связи" />
+    <span class="kicker">Если что-то не так</span>
+    <h2>Не проходит оплата? Мы поможем</h2>
+    <p class="lead">Бывает, что сервис капризничает. Не переживай и не пытайся платить снова и снова — напиши нам, разберёмся вместе.</p>
+    <div class="card">
+      <h3 class="teal">Быстрый чек-лист</h3>
+      <ol class="steps">
+        <li>VPN точно включён и стоит на <b>США</b>?</li>
+        <li>Цена на сайте — в <b>долларах</b>?</li>
+        <li>Открывал сайт в <b>приватной вкладке</b> после включения VPN?</li>
+        <li>Номер, срок и CVC ввёл без пробелов и ошибок?</li>
+      </ol>
+    </div>
+    <p class="note">Всё равно не выходит — напиши в боте команду <code>/support</code> и коротко опиши, что не получилось. Оператор ответит тебе прямо в Telegram.</p>
+  </div>
+</section>
+
+<script>
+  (function () {
+    // Вкладки iPhone / Android / Компьютер: переключаем панели внутри группы.
+    // Прогрессивный энхансмент: в разметке панели БЕЗ hidden (если JS не
+    // сработает — все три платформы видны и читаемы). При работающем JS ниже
+    // скрываем неактивные, оставляя выбранную вкладку.
+    var groups = document.querySelectorAll('[data-tabs]');
+    groups.forEach(function (group) {
+      var buttons = Array.prototype.slice.call(group.querySelectorAll('.tab-btn'));
+      function select(active) {
+        buttons.forEach(function (b) {
+          var panel = document.getElementById(b.getAttribute('data-tab'));
+          var isActive = b === active;
+          b.setAttribute('aria-selected', isActive ? 'true' : 'false');
+          if (panel) panel.hidden = !isActive;
+        });
+      }
+      buttons.forEach(function (b) {
+        b.addEventListener('click', function () { select(b); });
+      });
+      var initial = buttons.filter(function (b) {
+        return b.getAttribute('aria-selected') === 'true';
+      })[0] || buttons[0];
+      if (initial) select(initial);
+    });
+
+    // Прогресс-бар по вертикальному скроллу.
+    var bar = document.getElementById('progress');
+    function onScroll() {
+      var h = document.documentElement.scrollHeight - window.innerHeight;
+      var pct = h > 0 ? (window.scrollY / h) * 100 : 0;
+      bar.style.width = pct + '%';
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+
+</body>
+</html>

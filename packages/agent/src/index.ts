@@ -41,6 +41,12 @@ export interface ProposeOrderResult {
   commissionKopecks: number;
   totalRubKopecks: number;
   rateUsdRubKopecks: number;
+  /**
+   * Оригинальная цена подписки в USD-центах (сколько клиент вводит на сайте
+   * сервиса, по цене США). Показывается в карточке заказа рядом с рублёвым
+   * «к оплате» — доллар-оригинал + рублёвый чек.
+   */
+  originalAmountUsdCents: number;
   expiresAt: string;
   /**
    * true — заказ создан без `serviceId` (через `customDescription`).

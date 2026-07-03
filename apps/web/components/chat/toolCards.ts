@@ -15,6 +15,8 @@ export type ChatCard =
       shortId: string;
       service: string;
       totalKopecks: number;
+      /** Оригинальная цена подписки в USD-центах; `null` — старый ответ без поля. */
+      usdCents: number | null;
       expiresAt: string;
       isCustom: boolean;
     }
@@ -87,6 +89,7 @@ export function parseToolCards(toolCalls: unknown): ChatCard[] {
           shortId,
           service,
           totalKopecks,
+          usdCents: asNum(output.originalAmountUsdCents) ?? null,
           expiresAt,
           isCustom: output.isCustom === true,
         });

@@ -1,5 +1,5 @@
 import { ComicButton } from '@/components/comic/ComicButton';
-import { formatExpires, formatRub } from '@/components/comic/format';
+import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
 
 import { StatusBadge } from './StatusBadge';
@@ -25,13 +25,13 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * Разбивка суммы заказа. `cardIssueFeeKopecks` — снимок разовой надбавки за
+ * Рублёвый «чек» заказа. `cardIssueFeeKopecks` — снимок разовой надбавки за
  * выпуск карты (уже включён в `totalKopecks`):
  *  - `> 0` — первая оплата: показываем «Подписка + Выпуск карты = Итого»;
  *  - `= 0` — повторная: «Сумма» + заметка «карта уже есть»;
  *  - `null` — заказ до фичи: просто «Сумма» (как раньше).
  */
-function PriceBreakdown({
+function RubBreakdown({
   totalKopecks,
   cardIssueFeeKopecks,
 }: {
@@ -63,6 +63,43 @@ function PriceBreakdown({
     );
   }
   return <Row label="Сумма" value={formatRub(totalKopecks)} />;
+}
+
+/**
+ * Полная разбивка цены: сверху — оригинальная цена подписки в долларах (столько
+ * клиент вводит на сайте сервиса, по цене США), под чертой — рублёвый чек с
+ * подсчётами (сколько списываем у нас). `originalAmountUsdCents` уже приходит с
+ * бэкенда (`OrderDetail.originalAmount`); `null`/0 — заказ до фичи, показываем
+ * только рублёвый чек.
+ */
+function PriceBreakdown({
+  totalKopecks,
+  cardIssueFeeKopecks,
+  originalAmountUsdCents,
+}: {
+  totalKopecks: number;
+  cardIssueFeeKopecks: number | null;
+  originalAmountUsdCents: number | null;
+}) {
+  return (
+    <>
+      {originalAmountUsdCents !== null && originalAmountUsdCents > 0 && (
+        <>
+          <div className="flex justify-between gap-4 font-body text-sm">
+            <dt className="text-[var(--text-muted)]">Цена подписки</dt>
+            <dd className="font-display font-bold text-[var(--text)]">
+              {formatUsd(originalAmountUsdCents)}
+            </dd>
+          </div>
+          <p className="font-body text-xs text-[var(--text-muted)]">
+            столько вводишь на сайте сервиса — в долларах, по цене США
+          </p>
+          <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
+        </>
+      )}
+      <RubBreakdown totalKopecks={totalKopecks} cardIssueFeeKopecks={cardIssueFeeKopecks} />
+    </>
+  );
 }
 
 /**
@@ -104,6 +141,10 @@ export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) 
             <PriceBreakdown
               totalKopecks={order.amountKopecks}
               cardIssueFeeKopecks={order.cardIssueFeeKopecks}
+              // USD-строку показываем только для долларовых заказов: formatUsd
+              // жёстко форматирует в $, для не-USD валюты это был бы неверный
+              // ярлык. Сейчас каталог всегда USD — проверка защитная.
+              originalAmountUsdCents={order.originalCurrency === 'USD' ? order.originalAmount : null}
             />
           )}
           {order.paidAt && <Row label="Оплачен" value={formatExpires(order.paidAt)} />}
