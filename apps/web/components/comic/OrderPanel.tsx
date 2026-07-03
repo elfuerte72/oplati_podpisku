@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { formatRub } from './format';
+import { formatRub, formatUsd } from './format';
 
 type OrderRow = { label: string; value: string };
 
@@ -8,6 +8,8 @@ type OrderPanelProps = {
   service: string;
   rows?: OrderRow[];
   amountKopecks: number;
+  /** Оригинальная цена подписки в USD-центах; показываем «$ на сайте + ₽ у нас». */
+  amountUsdCents?: number | null;
   confirm?: ReactNode;
   secondary?: ReactNode;
   stamp?: ReactNode;
@@ -19,6 +21,7 @@ export function OrderPanel({
   service,
   rows = [],
   amountKopecks,
+  amountUsdCents,
   confirm,
   secondary,
   stamp,
@@ -50,12 +53,27 @@ export function OrderPanel({
 
       <div className="my-4 border-t-2 border-[var(--shadow-ink)]" />
 
+      {amountUsdCents != null && amountUsdCents > 0 && (
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="font-body text-sm text-[var(--text-muted)]">Цена подписки</span>
+          <span className="font-display text-lg font-bold text-[var(--text)]">
+            {formatUsd(amountUsdCents)}
+          </span>
+        </div>
+      )}
+
       <div className="flex items-baseline justify-between">
         <span className="font-body text-sm text-[var(--text-muted)]">К оплате</span>
         <span className="font-display text-2xl font-bold text-[var(--accent)]">
           {formatRub(amountKopecks)}
         </span>
       </div>
+
+      {amountUsdCents != null && amountUsdCents > 0 && (
+        <p className="mt-1 font-body text-xs text-[var(--text-muted)]">
+          $ — цена на сайте сервиса (в США), ₽ — сколько спишем у нас
+        </p>
+      )}
 
       {(confirm || secondary) && (
         <div className="mt-4 flex items-center gap-3">

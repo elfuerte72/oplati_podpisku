@@ -1,6 +1,7 @@
 import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
+import { InlineKeyboard } from 'grammy';
 
 import {
   createCard,
@@ -26,6 +27,8 @@ import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
+import { CARD_HOWTO_BUTTON, paymentRulesHtml } from '../telegram/templates.ts';
+import { paymentInstructionUrl } from '../deployment-url.ts';
 
 /**
  * Job `issue-card` — выпускает (или переиспользует) виртуальную USD-карту
@@ -145,6 +148,13 @@ export async function issueCard(orderId: string): Promise<void> {
           cardId: card.id,
           balanceUsdCents: topup.balanceUsdCents,
         });
+        // Повторная оплата: карта пополнена, новых реквизитов нет — шлём короткое
+        // подтверждение с ценой и кнопкой-инструкцией (раньше не уходило ничего).
+        await sendTopupNotice({
+          telegramId: await resolveTelegramIdByUserId(order.userId),
+          serviceShortId: order.shortId,
+          priceUsdCents,
+        });
       } catch (err) {
         // PaySpaceApiError на топ-апе = провайдер ОТКЛОНИЛ операцию (success:false
         // или submit.status='failed') → деньги НЕ списаны, карту безопасно вывести
@@ -240,6 +250,7 @@ export async function issueCard(orderId: string): Promise<void> {
         cardType: cardMetadata.cardType,
         billingAddress,
         serviceShortId: order.shortId,
+        priceUsdCents,
       });
     }
 
@@ -320,6 +331,8 @@ type SendCredentialsArgs = {
   cardType: string | null;
   billingAddress: BillingAddress;
   serviceShortId: string;
+  /** Цена сервиса в USD-центах (`order.originalAmount`) — «оплатить строго $X». */
+  priceUsdCents: number;
 };
 
 /**
@@ -336,8 +349,9 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
   const cardType = formatCardType(args.cardType);
   const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
   const messageHtml = [
-    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен.</b>`,
-    'Карта уже выпущена. Ниже данные для оплаты подписки.',
+    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта выпущена.</b>`,
+    '',
+    paymentRulesHtml(args.priceUsdCents),
     '',
     '<b>Карта</b>',
     `<b>Номер:</b> <code>${escapeTelegramHtml(args.fullPan)}</code>`,
@@ -356,7 +370,10 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
   try {
     // chat_id строкой — Bot API это принимает, Number() терял бы точность на
     // больших telegram_id.
-    await getBot().api.sendMessage(args.telegramId, messageHtml, { parse_mode: 'HTML' });
+    await getBot().api.sendMessage(args.telegramId, messageHtml, {
+      parse_mode: 'HTML',
+      reply_markup: new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl()),
+    });
     log.info({
       event: 'job.issue_card.credentials_sent',
       shortId: args.serviceShortId,
@@ -366,6 +383,45 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
     log.error({ event: 'job.issue_card.send_credentials.failed', shortId: args.serviceShortId, err });
     Sentry.captureException(err, {
       tags: { source: 'job.issue-card', step: 'send_credentials' },
+    });
+  }
+}
+
+/**
+ * Уведомление при ПОВТОРНОЙ оплате: активная карта клиента пополнена, новых
+ * реквизитов нет (PAN тот же — у клиента уже есть). Шлём короткое подтверждение
+ * с ценой и той же кнопкой-инструкцией, чтобы клиент оплатил по правильному
+ * прайсу (раньше при топ-апе не уходило ничего, кроме «Оплата получена»).
+ */
+async function sendTopupNotice(args: {
+  telegramId: string | null;
+  serviceShortId: string;
+  priceUsdCents: number;
+}): Promise<void> {
+  if (!args.telegramId) {
+    log.warn({ event: 'job.issue_card.topup_notice.no_telegram', shortId: args.serviceShortId });
+    return;
+  }
+
+  const messageHtml = [
+    `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта пополнена.</b>`,
+    'Плати той же картой, что и раньше — реквизиты уже у тебя (посмотреть можно в приложении).',
+    '',
+    paymentRulesHtml(args.priceUsdCents),
+    '',
+    'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
+  ].join('\n');
+
+  try {
+    await getBot().api.sendMessage(args.telegramId, messageHtml, {
+      parse_mode: 'HTML',
+      reply_markup: new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl()),
+    });
+    log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
+  } catch (err) {
+    log.error({ event: 'job.issue_card.topup_notice.failed', shortId: args.serviceShortId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'job.issue-card', step: 'topup_notice' },
     });
   }
 }

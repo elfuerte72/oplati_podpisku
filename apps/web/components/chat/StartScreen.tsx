@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useCallback, useMemo, useState } from 'react';
 
 import { ComicButton } from '@/components/comic';
-import { formatRub } from '@/components/comic/format';
+import { formatRub, formatUsd } from '@/components/comic/format';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 
@@ -297,13 +297,20 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
                   <span className="font-body text-sm font-semibold text-[var(--text)]">
                     {t.name} · {formatTierPeriod(t.period)}
                   </span>
-                  <span className="font-display text-lg font-bold text-[var(--accent)]">
-                    {proposing ? '…' : formatRub(t.totalKopecks)}
+                  <span className="flex flex-col items-end leading-tight">
+                    <span className="font-display text-lg font-bold text-[var(--accent)]">
+                      {formatUsd(t.usdCents)}
+                    </span>
+                    <span className="font-body text-xs text-[var(--text-muted)]">
+                      {proposing ? '…' : `≈ ${formatRub(t.totalKopecks)}`}
+                    </span>
                   </span>
                 </button>
               ))}
               <p className="font-body text-xs text-[var(--text-muted)]">
-                Цена с комиссией по текущему курсу; финальная сумма зафиксируется в заказе.
+                <b>$</b> — цена подписки в США (столько вводишь на сайте сервиса). <b>≈ ₽</b> —
+                сколько спишем с тебя, с комиссией по текущему курсу; финальная сумма
+                зафиксируется в заказе.
               </p>
             </div>
           )}

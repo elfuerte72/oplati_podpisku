@@ -168,6 +168,19 @@ describe('issueCard', () => {
     expect(db.updateBalance).toHaveBeenCalledWith(expect.anything(), 'card-1', 2400, expect.anything());
     // in_fulfillment → completed (claim уже сделал paid → in_fulfillment).
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+    // Повторная оплата: клиент получает уведомление о пополнении с ценой ($20 =
+    // original 2000, БЕЗ буфера) и кнопкой-инструкцией. Реквизиты НЕ шлём.
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('Карта пополнена'),
+      expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('$20'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
   });
 
   it('topup завис в pending → заказ НЕ завершаем, уходим в failed', async () => {
@@ -247,27 +260,33 @@ describe('issueCard', () => {
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.stringContaining('<b>Тип:</b> <code>Mastercard</code>'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.stringContaining('<b>Номер:</b> <code>4111111111111234</code>'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.stringContaining('<b>Street address:</b> <code>350 5th Ave</code>'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.not.stringContaining('SG_SUB'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.stringContaining('<b>ZIP:</b> <code>10118</code>'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
+    // Правила оплаты с ценой $20 (original 2000, БЕЗ буфера) + кнопка-инструкция.
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('$20'),
+      expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
     );
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
   });

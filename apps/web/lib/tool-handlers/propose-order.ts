@@ -324,6 +324,7 @@ export async function proposeOrder(input: {
     commissionKopecks,
     totalRubKopecks: totalKopecks,
     rateUsdRubKopecks: usdtRubRateKopecks,
+    originalAmountUsdCents: amountUsdCents,
     expiresAt: expiresAt.toISOString(),
     isCustom,
   };

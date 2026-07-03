@@ -40,6 +40,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
+import { miniAppUrl, paymentInstructionUrl, siteUrl } from '@/lib/deployment-url';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
@@ -69,6 +70,7 @@ import {
   buildSupportOperatorMessage,
   START_APP_BUTTON,
   START_CHANNEL_BUTTON,
+  START_HOWTO_BUTTON,
   START_SITE_BUTTON,
   START_SUPPORT_BUTTON,
   START_VPN_BUTTON,
@@ -790,29 +792,6 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
 }
 
 /**
- * База деплоя без завершающего слэша: production — стабильный APP_URL; preview —
- * собственный host деплоя (VERCEL_URL), чтобы smoke-тест dev-бота открывал именно
- * preview (тот же приём, что self-call в confirm-order). Общая для miniAppUrl и
- * siteUrl — чтобы Vercel-логика не разъезжалась между ними.
- */
-function deploymentBaseUrl(): string {
-  const ownHost = process.env.VERCEL_URL;
-  return process.env.VERCEL_ENV === 'production' || !ownHost
-    ? serverEnv.APP_URL.replace(/\/$/, '')
-    : `https://${ownHost}`;
-}
-
-/** URL Mini App для web_app-кнопки стартового меню (открывает /cabinet). */
-function miniAppUrl(): string {
-  return `${deploymentBaseUrl()}/cabinet`;
-}
-
-/** URL главного сайта (корень) для url-кнопки «Сайт» в /start. */
-function siteUrl(): string {
-  return deploymentBaseUrl();
-}
-
-/**
  * Inline-меню под приветствием /start (заменило постоянную reply-клавиатуру
  * 2026-07-02): Mini App (каталог + оплата + карта + партнёрка) — главный флоу,
  * поддержка — существующий callback `support`, VPN и канал — заглушки до
@@ -825,6 +804,8 @@ function buildStartMenuKeyboard(): InlineKeyboard {
     .webApp(START_APP_BUTTON, miniAppUrl())
     .row()
     .url(START_SITE_BUTTON, siteUrl())
+    .row()
+    .url(START_HOWTO_BUTTON, paymentInstructionUrl())
     .row()
     .text(START_SUPPORT_BUTTON, 'support')
     .row()

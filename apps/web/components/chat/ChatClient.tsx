@@ -434,6 +434,7 @@ export function ChatClient() {
               { label: 'Действует до', value: formatExpires(card.expiresAt) },
             ]}
             amountKopecks={card.totalKopecks}
+            amountUsdCents={card.usdCents}
             stamp={isPaid ? <PaidStamp /> : undefined}
             confirm={
               <ComicButton
