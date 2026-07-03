@@ -69,6 +69,7 @@ import {
   buildSupportOperatorMessage,
   START_APP_BUTTON,
   START_CHANNEL_BUTTON,
+  START_SITE_BUTTON,
   START_SUPPORT_BUTTON,
   START_VPN_BUTTON,
   SUPPORT_ASK_TEXT,
@@ -306,7 +307,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         kind: 'media',
         mediaType: mediaKind,
       });
-      await sendSafely(chatId, MEDIA_REPLY[mediaKind], update.update_id);
+      // При выключенном BOT_AI_ENABLED бот не реагирует на сообщения (работают
+      // только команды/кнопки) — на медиа молчим.
+      if (serverEnv.BOT_AI_ENABLED) {
+        await sendSafely(chatId, MEDIA_REPLY[mediaKind], update.update_id);
+      }
       return;
     }
     // edited_message без текста, system-сообщения и т.п. — тихо игнорируем.
@@ -402,6 +407,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     text.startsWith('/menu@') ||
     text === CATALOG_OPEN_BUTTON
   ) {
+    // Кнопочный каталог в чате — за флагом BOT_AI_ENABLED. Выключен (по умолчанию,
+    // 2026-07-03) → бот молчит (реагируют только команды/кнопки). Код каталога цел.
+    if (!serverEnv.BOT_AI_ENABLED) {
+      log.info({ event: 'telegram.menu_ignored', chatId, telegramUserId });
+      return;
+    }
     log.info({ event: 'telegram.menu', chatId, telegramUserId });
     await showCatalogList(chatId, undefined, update.update_id);
     return;
@@ -468,13 +479,23 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       return;
     }
 
-    // Кнопочный флоу: если бот ранее попросил сумму для custom-amount сервиса
-    // (Airbnb и т.п.) — следующий текст трактуем как эту сумму и оформляем
-    // заказ напрямую, мимо AI (ноль токенов). Не сумма-подобный текст — сброс
-    // ожидания и обычный путь через агента.
-    if (await tryHandlePendingAmount(ctx, chatId, text, pendingMeta, update.update_id)) {
+    // Кнопочный флоу custom-amount (Airbnb и т.п.) — часть каталога, за флагом
+    // BOT_AI_ENABLED. Выключен → пропускаем (обычный путь ниже уведёт в Mini App).
+    if (
+      serverEnv.BOT_AI_ENABLED &&
+      (await tryHandlePendingAmount(ctx, chatId, text, pendingMeta, update.update_id))
+    ) {
       return;
     }
+  }
+
+  // Взаимодействие с Оплатишкой (AI-диалог) в чате бота — за флагом BOT_AI_ENABLED.
+  // Выключено (по умолчанию, 2026-07-03): бот НЕ реагирует на текст (молчит) — не
+  // дёргаем агента/роутер/бюджет. Работают только команды (/start, /support) и
+  // кнопки. Весь AI-путь ниже сохранён и работает при BOT_AI_ENABLED=1.
+  if (!serverEnv.BOT_AI_ENABLED) {
+    log.info({ event: 'telegram.message.ignored_ai_disabled', updateId: update.update_id, chatId });
+    return;
   }
 
   // Дневной глобальный токен-бюджет (как в /api/chat): при превышении —
@@ -769,17 +790,26 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
 }
 
 /**
- * URL Mini App для web_app-кнопки стартового меню. Production — стабильный
- * APP_URL; preview — собственный host деплоя (VERCEL_URL), чтобы smoke-тест
- * dev-бота открывал именно preview (тот же приём, что self-call в confirm-order).
+ * База деплоя без завершающего слэша: production — стабильный APP_URL; preview —
+ * собственный host деплоя (VERCEL_URL), чтобы smoke-тест dev-бота открывал именно
+ * preview (тот же приём, что self-call в confirm-order). Общая для miniAppUrl и
+ * siteUrl — чтобы Vercel-логика не разъезжалась между ними.
  */
-function miniAppUrl(): string {
+function deploymentBaseUrl(): string {
   const ownHost = process.env.VERCEL_URL;
-  const base =
-    process.env.VERCEL_ENV === 'production' || !ownHost
-      ? serverEnv.APP_URL.replace(/\/$/, '')
-      : `https://${ownHost}`;
-  return `${base}/cabinet`;
+  return process.env.VERCEL_ENV === 'production' || !ownHost
+    ? serverEnv.APP_URL.replace(/\/$/, '')
+    : `https://${ownHost}`;
+}
+
+/** URL Mini App для web_app-кнопки стартового меню (открывает /cabinet). */
+function miniAppUrl(): string {
+  return `${deploymentBaseUrl()}/cabinet`;
+}
+
+/** URL главного сайта (корень) для url-кнопки «Сайт» в /start. */
+function siteUrl(): string {
+  return deploymentBaseUrl();
 }
 
 /**
@@ -793,6 +823,8 @@ function miniAppUrl(): string {
 function buildStartMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .webApp(START_APP_BUTTON, miniAppUrl())
+    .row()
+    .url(START_SITE_BUTTON, siteUrl())
     .row()
     .text(START_SUPPORT_BUTTON, 'support')
     .row()
@@ -974,6 +1006,17 @@ async function handleCallbackQuery(
 
   if (!chatId) {
     log.warn({ event: 'telegram.callback.invalid', updateId, data });
+    return;
+  }
+
+  // Кнопочный каталог в чате — за флагом BOT_AI_ENABLED. Выключен (по умолчанию,
+  // 2026-07-03) → каталожные кнопки (в т.ч. старые в истории чата) не реагируют
+  // (callback уже подтверждён выше — кнопка не крутится). support / vpn / channel /
+  // confirm / cancel работают как обычно.
+  if (
+    !serverEnv.BOT_AI_ENABLED &&
+    ['noop', 'cat', 'back', 'own', 'svc', 'tier'].includes(action)
+  ) {
     return;
   }
 
