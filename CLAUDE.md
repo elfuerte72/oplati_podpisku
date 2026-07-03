@@ -122,7 +122,7 @@ pnpm --filter @oplati/db db:studio      # Drizzle Studio
 
 Vercel `fra1`. Два окружения с **раздельными Telegram-ботами** (webhook у бота один → шарить нельзя):
 
-- **Production** — `https://www.oplatishka.com` (custom-домен подключён 2026-07-03; env `APP_URL` указывает на него — от него резолвятся mini app `/cabinet`, кнопка «Сайт», презентация партнёрки, payment deep-link, self-call). Дефолтный `oplati-podpisku-web.vercel.app` тоже обслуживает (старые ссылки не ломаются). Бот `@test_prodipsa_bot`. Auto-deploy на merge в `main`.
+- **Production** — `https://www.oplatishka.com` (custom-домен подключён 2026-07-03; env `APP_URL` указывает на него — от него резолвятся mini app `/cabinet`, кнопка «Сайт», презентация партнёрки, payment deep-link, self-call). Дефолтный `oplati-podpisku-web.vercel.app` тоже обслуживает (старые ссылки не ломаются). Бот `@oplatishkaa_bot` (переезд 2026-07-03 со старого `@test_prodipsa_bot` — смена токена в env; username везде резолвится через `getMe`, код не менялся; у старого бота вебхук снят, клиенты должны нажать Start у нового, иначе бот не может писать первым). Auto-deploy на merge в `main`.
 - **Preview** — branch-alias `oplati-podpisku-web-git-<branch>-<team>.vercel.app` на каждый push в feature-ветку. Бот `@dev_test_podpiska_bot`. Перед merge — smoke-тест через dev-бота: webhook перерегистрируется на новый preview-URL.
 
 **Vercel Deployment Protection: Disabled** — иначе Telegram получает `401` от обвязки Vercel до нашего кода. Защита — secret-token (`/api/bot`), подпись (L&P webhook), `X-Internal-Token` (внутренние endpoints), Supabase RLS.
@@ -133,7 +133,7 @@ Vercel `fra1`. Два окружения с **раздельными Telegram-б
 
 | Бот | Vercel env (по окружениям) | Локально |
 |---|---|---|
-| `@test_prodipsa_bot` (prod) | Production: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` |
+| `@oplatishkaa_bot` (prod; до 2026-07-03 — `@test_prodipsa_bot`) | Production: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` |
 | `@dev_test_podpiska_bot` (dev) | Preview: те же имена, dev-значения | `TELEGRAM_BOT_TOKEN_DEV`, `TELEGRAM_WEBHOOK_SECRET_DEV` |
 
 Остальные env (Supabase, Anthropic, APP_URL, Love&Pay) — общие для обоих окружений. **Vercel `Sensitive`-флаг:** `vercel env pull` отдаёт пустую строку — by design; аудит по бейджу «Updated» в UI. После смены секрета **обязателен redeploy** — старые деплои держат стейл значение и отвечают `401`.
