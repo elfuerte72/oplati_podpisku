@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-07-03 — Надбавка за карту в цене, выключатель AI-чата бота, домен oplatishka.com, чистка UI
+
+### Added
+
+- **Надбавка за выпуск карты в цене клиента** (`CARD_ISSUE_FEE_USD_CENTS`, на проде $4=400 центов): берётся только когда у клиента нет активной карты (`findActiveByUserId` — первая покупка; при повторной топап без fee). Снимок `orders.card_issue_fee_kopecks` (миграция `0019`). Экран заказа — построчная разбивка «Подписка / Выпуск карты / Итого», при повторной «Карта уже есть». `+3` теста расчёта + `2` PGlite-теста персистентности (юнит-моки `createDraftOrder` скрывали баг — поле не писалось в `.values()` INSERT, поймал CodeRabbit).
+- **Реф-ссылка в главном меню Mini App** — карточка «Скопировать»/«Поделиться» (fallback `execCommand` под Telegram WebView, где `navigator.clipboard` блокируется); поле `referralLink` в снапшоте `/api/cabinet` за `REFERRAL_ENABLED`.
+- **Набор SVG-иконок комикс-стиля** (`components/comic/icons.tsx`, 18 шт.) вместо эмодзи по кабинету и партнёрке; «Оплатить подписку» → «Выбрать сервис», «В кабинет» → стрелка.
+- **Выключатель `BOT_AI_ENABLED`** (дефолт выключено): бот в чате не реагирует на сообщения (текст/медиа/каталожные кнопки/`/menu` — молчит), работают только команды `/start`/`/support` и inline-меню; покупки/диалог — в Mini App. Код каталога и AI-агента сохранён (`BOT_AI_ENABLED=1` возвращает прежнее поведение) — временный выключатель, не удаление.
+- **Кнопка «🌐 Сайт»** в inline-меню `/start` (url на главный сайт; `siteUrl()`/`deploymentBaseUrl()`).
+
+### Changed
+
+- **Домен → `https://www.oplatishka.com`** (custom подключён, env `APP_URL`). От него резолвятся Mini App `/cabinet`, кнопка «Сайт», презентация партнёрки, payment deep-link, self-call — хардкодов домена в коде нет. Дефолтный `oplati-podpisku-web.vercel.app` тоже обслуживает.
+- **Стартовое сообщение (`GREETING`) переписано** — короткое, дружелюбное; убраны USDT (не принимаем), «оператор вручную», «напиши, что нужно» (AI-чат в боте выключен → бот молчит), отклонённые сервисы (Disney+/Notion/Figma/GitHub), двойные тире. `SYSTEM_PROMPT` (веб-чат AI) — тоже без USDT/«оператор вручную».
+- **Экран заказа** — убраны «Повторить заказ» и «Нужен оператор» (операторов нет, повтор не нужен); осталась только «Оплатить». Почищен мёртвый `doRepeat`/`doOperator`/`operatorResultSchema` (`RepeatResult` → `OrderCreationResult`).
+- **Кнопка «Поддержка» на сайте → «Telegram»** (`ProfilePanel`); ссылка deep-link `?start=site` → бот открывается на `/start` (приветствие + меню), а не на неработающем `/menu`.
+- **`setMyCommands` — только `/support`** (`/menu` убран, не работает при выключенном `BOT_AI_ENABLED`).
+- **Починена презентация партнёрки** в узком вьюпорте Telegram (`public/partner-presentation.html`: `100dvh` вместо `100vh`, мягкий/выключенный scroll-snap, `min-width:0`, перенос широких блоков — `<code>`, ASCII-схема).
+
+### Ops
+
+- Миграция `0019` (`orders.card_issue_fee_kopecks`, nullable) применена на прод; env `CARD_ISSUE_FEE_USD_CENTS=400` и `APP_URL=https://www.oplatishka.com` заданы на Production + redeploy. Все изменения задеплоены (PR #51–#54, ревью Greptile + CodeRabbit).
+
 ## 2026-07-02 — Mini App каталог + `/start`-меню + реферальный захват (2 канала) + фикс Date-бага
 
 ### Fixed

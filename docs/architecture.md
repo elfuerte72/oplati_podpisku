@@ -109,7 +109,7 @@ instrumentation.ts                Sentry server/edge + fail-fast env
 1. Запрос приходит в `/api/bot` (проверка `X-Telegram-Bot-Api-Secret-Token`; единственный non-200 кейс → `401`) или `/api/chat` (cookie-сессия).
 2. Upsert пользователя и активного диалога, append входящего сообщения (`@oplati/db`).
 3. Загружается недавняя история → `runAgent(history, toolHandlers)`.
-4. Агент крутит tool-loop: ищет цену через `web_search`, сверяется с каталогом, создаёт черновик заказа (`propose_order` — расчёт RUB-суммы: USD-центы × курс USDT→RUB × 1.10), после согласия клиента — `confirm_order`.
+4. Агент крутит tool-loop: ищет цену через `web_search`, сверяется с каталогом, создаёт черновик заказа (`propose_order` — расчёт RUB-суммы: `USD-центы × курс + COMMISSION_PERCENT` (прод 30%) + надбавка за выпуск карты `CARD_ISSUE_FEE_USD_CENTS` для первой карты), после согласия клиента — `confirm_order`. Примечание: в ЧАТЕ бота этот AI-путь за флагом `BOT_AI_ENABLED` (дефолт выключено); веб-чат `/api/chat` работает всегда.
 5. Ответ агента append'ится в БД и уходит клиенту (в Telegram — с разбивкой по 4096 символов).
 6. **Graceful degradation:** если БД недоступна — `runAgentNoTools` (бот отвечает, но без памяти и заказов); если Anthropic недоступен — понятный текст с предложением позвать оператора.
 
@@ -170,7 +170,7 @@ draft → clarifying → kyc_required ⇄ clarifying
 
 | | Production | Preview |
 |---|---|---|
-| URL | `oplati-podpisku-web.vercel.app` | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` |
+| URL | `www.oplatishka.com` (custom-домен, env `APP_URL`; `oplati-podpisku-web.vercel.app` тоже обслуживает) | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` |
 | Telegram-бот | `@test_prodipsa_bot` | `@dev_test_podpiska_bot` |
 | Триггер деплоя | merge в `main` | push в feature-ветку |
 

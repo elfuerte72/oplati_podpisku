@@ -128,12 +128,12 @@ JSON клиенту → рендер
 Переиспользуют существующий код; **обязательна** проверка `order.userId === userId` — как уже
 делают callback-хендлеры бота (`handleOrderActionCallback` в `handle-update.ts`).
 
-- [ ] **Оплатить незавершённый заказ** (`ready_for_payment` / `pending_payment`) →
-  `confirmOrder({ orderId, userId })` из `apps/web/lib/tool-handlers/confirm-order.ts` →
-  вернуть `paymentUrl`. Открывать ссылку через `Telegram.WebApp.openLink` / `openInvoice`.
-- [ ] **Повторить заказ** → `proposeFromCatalog(...)` из `apps/web/lib/catalog/propose.ts`
-  (взять сервис/тариф из прошлого заказа).
-- [ ] **Запросить оператора** → событие `handoff_requested` (как делает `request_human`).
+- [x] **Оплатить незавершённый заказ** (`ready_for_payment` / `pending_payment`) →
+  `confirmOrder({ orderId, userId })` → вернуть `paymentUrl` (открывается через
+  `Telegram.WebApp.openLink`). Реализовано.
+- **Повторить заказ** и **Нужен оператор** — были реализованы и УБРАНЫ с экрана заказа
+  2026-07-03 (операторов нет — только `/support` в боте; повтор заказа не нужен).
+  На экране заказа осталась только кнопка «Оплатить».
 
 ---
 
@@ -174,12 +174,14 @@ query-параметру: клиент может его подделать, п�
 ## 7. Чек-лист выкатки
 
 **Vercel env:** `TELEGRAM_BOT_TOKEN` уже задан в обоих окружениях (валидация подписи берёт его
-автоматически). Новых обязательных env нет. `APP_URL` уже есть — из него строим URL кабинета.
+автоматически). `APP_URL` указывает на `https://www.oplatishka.com` (2026-07-03) — из него
+строим URL кабинета (`www.oplatishka.com/cabinet`).
 
-**@BotFather (оба бота):**
-- prod `@test_prodipsa_bot` → Menu Button → `https://oplati-podpisku-web.vercel.app/cabinet`;
-- dev `@dev_test_podpiska_bot` → Menu Button → preview-URL ветки `/cabinet`.
-- (Опционально) inline-кнопка `web_app` в приветствии и/или `t.me/<bot>?startapp=` deep-link.
+**@BotFather (`@test_prodipsa_bot`):**
+- Menu Button (☰) **ОТКЛЮЧЁН** — чтобы приглашённый не заходил в приложение мимо реф-кода.
+- Mini App открывается через direct link `t.me/test_prodipsa_bot/pay` (BotFather `/newapp`,
+  short name `pay`) + web_app-кнопка «Открыть приложение» в `/start`-меню (`miniAppUrl()`).
+- Реф-приглашение — bot deep-link `t.me/<bot>?start=ref_<code>` (контекст бота).
 
 **Vercel Deployment Protection** — уже Disabled (нужно, иначе Telegram webview получит `401`
 от обвязки Vercel до нашего кода).
