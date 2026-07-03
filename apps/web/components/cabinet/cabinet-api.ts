@@ -88,7 +88,8 @@ const payResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
 ]);
 
-const repeatResultSchema = z.discriminatedUnion('ok', [
+/** Результат создания заказа из каталога Mini App (`doPropose`). */
+const orderCreationResultSchema = z.discriminatedUnion('ok', [
   z.object({
     ok: z.literal(true),
     orderId: z.string(),
@@ -96,16 +97,6 @@ const repeatResultSchema = z.discriminatedUnion('ok', [
     service: z.string(),
     totalKopecks: z.number(),
     expiresAt: z.string(),
-  }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
-]);
-
-const operatorResultSchema = z.discriminatedUnion('ok', [
-  z.object({
-    ok: z.literal(true),
-    slaHours: z.number(),
-    withinBusinessHours: z.boolean(),
-    duplicate: z.boolean(),
   }),
   z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
 ]);
@@ -119,8 +110,7 @@ export type CabinetProfile = z.infer<typeof profileSchema>;
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export type OrderDetail = z.infer<typeof orderDetailSchema>;
 export type PayResult = z.infer<typeof payResultSchema>;
-export type RepeatResult = z.infer<typeof repeatResultSchema>;
-export type OperatorResult = z.infer<typeof operatorResultSchema>;
+export type OrderCreationResult = z.infer<typeof orderCreationResultSchema>;
 
 export type ApiError = { ok: false; status: number; error: string };
 export type ApiOk<T> = { ok: true; data: T };
@@ -197,23 +187,10 @@ export type ProposePayload = {
   amountUsdCents?: number;
 };
 
-export async function doPropose(initData: string, payload: ProposePayload): Promise<RepeatResult> {
+export async function doPropose(initData: string, payload: ProposePayload): Promise<OrderCreationResult> {
   const resp = await callCabinet({ action: 'propose', initData, ...payload });
-  const parsed = resp ? repeatResultSchema.safeParse(resp.json) : null;
+  const parsed = resp ? orderCreationResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return parsed.data;
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
-export async function doRepeat(initData: string, orderId: string): Promise<RepeatResult> {
-  const resp = await callCabinet({ action: 'repeat', initData, orderId });
-  const parsed = resp ? repeatResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
-}
-
-export async function doOperator(initData: string, orderId: string): Promise<OperatorResult> {
-  const resp = await callCabinet({ action: 'operator', initData, orderId });
-  const parsed = resp ? operatorResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
-}

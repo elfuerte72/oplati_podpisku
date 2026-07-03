@@ -9,12 +9,10 @@ export type DetailActionMessage = { tone: 'ok' | 'err'; text: string };
 
 type Props = {
   order: OrderDetail;
-  busy: 'pay' | 'repeat' | 'operator' | null;
+  busy: 'pay' | null;
   message: DetailActionMessage | null;
   onBack: () => void;
   onPay: () => void;
-  onRepeat: () => void;
-  onOperator: () => void;
 };
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -68,19 +66,11 @@ function PriceBreakdown({
 }
 
 /**
- * Экран деталей заказа: сводка, действия (оплатить / повторить / оператор),
- * таймлайн событий, платежи и карта. Действия проксируются наверх в
- * CabinetClient (там Telegram WebApp для открытия платёжной ссылки).
+ * Экран деталей заказа: сводка, кнопка «Оплатить», таймлайн событий, платежи и
+ * карта. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
+ * открытия платёжной ссылки).
  */
-export function OrderDetailView({
-  order,
-  busy,
-  message,
-  onBack,
-  onPay,
-  onRepeat,
-  onOperator,
-}: Props) {
+export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) {
   return (
     <div className="space-y-4">
       <button
@@ -123,31 +113,13 @@ export function OrderDetailView({
           )}
         </dl>
 
-        {(order.payable || order.repeatable) && (
-          <div className="mt-5 flex flex-wrap gap-3">
-            {order.payable && (
-              <ComicButton variant="primary" onClick={onPay} disabled={busy !== null}>
-                {busy === 'pay' ? 'Готовлю счёт…' : 'Оплатить'}
-              </ComicButton>
-            )}
-            {order.repeatable && (
-              <ComicButton variant="surface" onClick={onRepeat} disabled={busy !== null}>
-                {busy === 'repeat' ? 'Создаю…' : 'Повторить заказ'}
-              </ComicButton>
-            )}
+        {order.payable && (
+          <div className="mt-5">
+            <ComicButton variant="primary" onClick={onPay} disabled={busy !== null}>
+              {busy === 'pay' ? 'Готовлю счёт…' : 'Оплатить'}
+            </ComicButton>
           </div>
         )}
-
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={onOperator}
-            disabled={busy !== null}
-            className="font-body text-sm text-[var(--link)] underline disabled:opacity-60"
-          >
-            {busy === 'operator' ? 'Отправляю заявку…' : 'Нужен оператор'}
-          </button>
-        </div>
 
         {message && (
           <p
