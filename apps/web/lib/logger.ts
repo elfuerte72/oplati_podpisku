@@ -47,6 +47,11 @@ const redactPaths: string[] = [
   'body.email',
   'body.phone',
   'body.card',
+  // Страховка: сырое тело ответа PaySpace (может содержать полный PAN/CVV) не
+  // должно попадать в лог, даже если ошибку залогируют с ним. Первичная защита —
+  // неперечисляемое `rawBody` в PaySpaceContractError; это второй слой.
+  'err.rawBody',
+  '*.rawBody',
 ];
 
 const baseOptions: LoggerOptions = {
