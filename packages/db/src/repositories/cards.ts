@@ -205,15 +205,24 @@ export async function updateBalance(
 ): Promise<void> {
   await db
     .update(cards)
-    .set({ balanceUsdCents: sql`${cards.balanceUsdCents} + ${deltaCents}` })
+    // Топ-ап = использование карты клиентом → продлеваем last_used_at, чтобы
+    // recycle-cards не заидлил активно используемую карту раньше времени (M5).
+    .set({ balanceUsdCents: sql`${cards.balanceUsdCents} + ${deltaCents}`, lastUsedAt: new Date() })
     .where(eq(cards.id, cardId));
 
   log.info({ event: 'db.cards.balance_updated', cardId, deltaCents });
 }
 
 /**
- * Шаг 1 cron `recycle-cards`: active + last_used_at < now - 90d → idle.
+ * Шаг 1 cron `recycle-cards`: active + простой > 90d → idle.
  * Чистое БД-изменение, без обращения к провайдеру. Возвращает число затронутых.
+ *
+ * Простой меряем от `COALESCE(last_used_at, created_at)`: у нормально живущих
+ * карт `last_used_at` = NULL (createCard его не ставит, а `NULL < timestamp` в
+ * Postgres даёт NULL, не TRUE), поэтому фильтр по одному `last_used_at` никогда
+ * не матчил активные карты — они не идлились и не доходили до release, а буфер
+ * VCC оставался заперт (M5). Fallback на `created_at` чинит это для карт, ещё
+ * ни разу не использованных.
  */
 export async function idleAgedActiveCards(
   db: DB,
@@ -222,7 +231,7 @@ export async function idleAgedActiveCards(
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE cards
     SET status = 'idle', last_used_at = COALESCE(last_used_at, now())
-    WHERE status = 'active' AND last_used_at < now() - interval '90 days'
+    WHERE status = 'active' AND COALESCE(last_used_at, created_at) < now() - interval '90 days'
     RETURNING id
   `);
   const idled = rows.length;

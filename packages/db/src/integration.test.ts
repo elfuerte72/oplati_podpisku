@@ -30,6 +30,7 @@ import {
   createReferralPayout,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
+import { idleAgedActiveCards } from './repositories/cards.ts';
 
 /**
  * Интеграционные тесты репозиториев на РЕАЛЬНОМ Postgres (PGlite, WASM) с
@@ -584,5 +585,54 @@ describe('createDraftOrder — снапшот надбавки за карту �
       .from(schema.orders)
       .where(eq(schema.orders.id, order.id));
     expect(rows[0]?.fee).toBeNull();
+  });
+});
+
+describe('idleAgedActiveCards (M5)', () => {
+  it('идлит active-карту с last_used_at=NULL по created_at (>90д), свежую не трогает', async () => {
+    const user = await makeUser();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    const old = firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: user.id,
+          providerCardId: `pc-old-${++seq}`,
+          panMasked: '400000******0001',
+          status: 'active',
+          createdAt: new Date(Date.now() - 91 * dayMs),
+          // lastUsedAt НЕ задаём → NULL, как у реальных выпущенных карт
+        })
+        .returning(),
+      'old card',
+    );
+    const fresh = firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: user.id,
+          providerCardId: `pc-fresh-${++seq}`,
+          panMasked: '400000******0002',
+          status: 'active',
+          createdAt: new Date(Date.now() - 10 * dayMs),
+        })
+        .returning(),
+      'fresh card',
+    );
+
+    const idled = await idleAgedActiveCards(db);
+    expect(idled).toBe(1);
+
+    const oldRow = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, old.id)),
+      'old refetch',
+    );
+    const freshRow = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, fresh.id)),
+      'fresh refetch',
+    );
+    expect(oldRow.status).toBe('idle'); // раньше NULL last_used_at не матчился — баг M5
+    expect(freshRow.status).toBe('active');
   });
 });
