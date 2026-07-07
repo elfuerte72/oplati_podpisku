@@ -12,8 +12,8 @@ export default function HomePage() {
   return (
     <>
       <h1 className="sr-only">
-        Оплати подписки — оплата иностранных подписок (Claude, Netflix, Spotify,
-        ChatGPT) рублями, СБП и криптой
+        Оплати подписки — оплата иностранных подписок (Claude, ChatGPT, Apple
+        Music, Cursor) рублями, СБП и криптой
       </h1>
       <ChatClient />
       <IntroOverlay />

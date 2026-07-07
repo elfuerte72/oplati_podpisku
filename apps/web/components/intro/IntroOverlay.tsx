@@ -27,7 +27,7 @@ import {
 const STORAGE_KEY = 'oplatishka_intro_seen';
 
 const STEPS: { title: string; text: string }[] = [
-  { title: 'Скажи, что оплатить', text: 'ChatGPT, Spotify, Netflix — или любой другой сервис, даже вне списка.' },
+  { title: 'Скажи, что оплатить', text: 'ChatGPT, Claude, Apple Music — или любой другой сервис, даже вне списка.' },
   { title: 'Я выставлю счёт в рублях', text: 'Найду актуальную цену и пришлю ссылку на оплату — СБП или карта.' },
   { title: 'Получи доступ', text: 'Чек и доступы по заказу придут сообщением в Telegram.' },
 ];

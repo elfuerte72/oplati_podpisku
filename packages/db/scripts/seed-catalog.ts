@@ -199,43 +199,8 @@ const CATALOG: readonly CatalogEntry[] = [
   },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
-  {
-    slug: 'netflix-premium',
-    name: 'Netflix',
-    description: 'Видеостриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('С рекламой', 8.99),
-      usd('Standard', 19.99),
-      usd('Premium', 26.99),
-    ]),
-  },
-  {
-    slug: 'spotify-premium',
-    name: 'Spotify',
-    description: 'Музыкальный стриминг',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('Individual', 12.99),
-      usd('Duo', 18.99),
-      usd('Family', 21.99),
-      usd('Student', 6.99),
-    ]),
-  },
-  {
-    slug: 'youtube-premium',
-    name: 'YouTube Premium',
-    description: 'Без рекламы + YouTube Music',
-    category: 'streaming',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('Individual', 15.99),
-      usd('Family', 26.99),
-      usd('Student', 8.99),
-    ]),
-  },
+  // Netflix / Spotify / YouTube Premium выведены из витрины 2026-07-07 (решение
+  // владельца) — записи в ARCHIVED_CATALOG, деактивируются автоматически.
   {
     slug: 'apple-music',
     name: 'Apple Music',
@@ -284,14 +249,6 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Collab seat', 3),
     ]),
   },
-  {
-    slug: 'zoom-pro',
-    name: 'Zoom',
-    description: 'Zoom Workplace Pro — видеоконференции',
-    category: 'productivity',
-    requiresKyc: false,
-    pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
-  },
 
   // ─── Social ──────────────────────────────────────────────────────────────────
   {
@@ -311,13 +268,53 @@ const CATALOG: readonly CatalogEntry[] = [
 ];
 
 /**
- * Архив витрины (решение владельца 2026-07-02: сузить каталог). Эти сервисы
+ * Архив витрины (решение владельца 2026-07-02: сузить каталог; 2026-07-07 —
+ * дополнительно убраны Netflix / Spotify / YouTube Premium / Zoom). Эти сервисы
  * УБРАНЫ из витрины (is_active=false), но записи сохранены здесь целиком —
  * для восстановления достаточно перенести entry обратно в CATALOG (архивный
  * slug деактивируется автоматически, пока лежит в этом списке). История
  * заказов не трогается: деактивация вместо DELETE.
  */
 const ARCHIVED_CATALOG: readonly CatalogEntry[] = [
+  // ─── Streaming (убраны из витрины 2026-07-07) ────────────────────────────────
+  {
+    slug: 'netflix-premium',
+    name: 'Netflix',
+    description: 'Видеостриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('С рекламой', 8.99),
+      usd('Standard', 19.99),
+      usd('Premium', 26.99),
+    ]),
+  },
+  {
+    slug: 'spotify-premium',
+    name: 'Spotify',
+    description: 'Музыкальный стриминг',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Individual', 12.99),
+      usd('Duo', 18.99),
+      usd('Family', 21.99),
+      usd('Student', 6.99),
+    ]),
+  },
+  {
+    slug: 'youtube-premium',
+    name: 'YouTube Premium',
+    description: 'Без рекламы + YouTube Music',
+    category: 'streaming',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('Individual', 15.99),
+      usd('Family', 26.99),
+      usd('Student', 8.99),
+    ]),
+  },
+
   // ─── Gaming ────────────────────────────────────────────────────────────────
   {
     slug: 'playstation-plus',
@@ -378,6 +375,15 @@ const ARCHIVED_CATALOG: readonly CatalogEntry[] = [
   },
 
   // ─── Productivity ───────────────────────────────────────────────────────────
+  {
+    // Убран из витрины 2026-07-07 (решение владельца).
+    slug: 'zoom-pro',
+    name: 'Zoom',
+    description: 'Zoom Workplace Pro — видеоконференции',
+    category: 'productivity',
+    requiresKyc: false,
+    pricingPolicy: policy([usd('Pro', 16.99), usd('Pro', 159.96, 'year')]),
+  },
   {
     slug: 'discord-nitro',
     name: 'Discord Nitro',
