@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  appendOrderEvent,
   findOrdersForRenewalReminder,
   getDb,
   getServiceById,
@@ -46,7 +47,16 @@ export async function sendRenewalReminders(): Promise<{ sent: number; errors: nu
         `Через несколько дней закончится оплата ${serviceName} (заказ ${order.shortId}). ` +
         `Нужна оплата на следующий месяц? Напишите /start, продлим.`;
 
-      await getBot().api.sendMessage(Number(telegramId), message);
+      // telegramId — СТРОКА (не Number): большие 64-битные chat_id теряют
+      // точность в double, уведомление ушло бы не тому получателю (L4).
+      await getBot().api.sendMessage(telegramId, message);
+      // Отметить отправку в append-only order_events, чтобы следующий суточный
+      // прогон не выбрал этот заказ повторно (окно фильтра шире шага крона) — M6.
+      await appendOrderEvent(db, {
+        orderId: order.id,
+        eventType: 'renewal_reminder_sent',
+        actorType: 'system',
+      });
       sent++;
     } catch (err) {
       errors++;

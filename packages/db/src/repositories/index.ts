@@ -134,6 +134,7 @@ export {
   findStuckPaidOrders,
   findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
+  appendOrderEvent,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   hasPurchasedOrders,
