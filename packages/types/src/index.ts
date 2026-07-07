@@ -168,15 +168,38 @@ export type PricingPolicy = z.infer<typeof pricingPolicy>;
 
 // ─── AI agent tool results ────────────────────────────────────────────────
 
+/**
+ * Zod-схемы входов AI-tools. Границы (`.max()` на строках) валидируют сырой
+ * `tool_use.input` от модели ДО вызова обработчика (инвариант «Zod на всех
+ * границах»): ограничения в `input_schema` — advisory (Anthropic их не форсит),
+ * а обработчики проверяют только бизнес-логику. Схемы обязаны совпадать с
+ * интерфейсом `ToolHandlers` в `@oplati/agent`.
+ */
+export const searchCatalogInput = z.object({
+  query: z.string().min(1).max(200),
+});
+export type SearchCatalogInput = z.infer<typeof searchCatalogInput>;
+
 export const proposeOrderInput = z.object({
-  serviceSlug: z.string().optional(),
-  customDescription: z.string().optional(),
-  tierName: z.string().optional(),
-  period: z.enum(['month', 'quarter', 'year']).optional(),
-  accountEmail: z.string().email().optional(),
-  notes: z.string().optional(),
+  serviceId: z.string().max(100).optional(),
+  customDescription: z.string().max(500).optional(),
+  serviceName: z.string().max(100).optional(),
+  amountUsdCents: z.number().int().positive(),
+  paymentMethod: z.enum(['sbp', 'card']).optional(),
 });
 export type ProposeOrderInput = z.infer<typeof proposeOrderInput>;
+
+export const confirmOrderInput = z.object({
+  orderId: z.string().min(1).max(100),
+  paymentMethod: z.enum(['sbp', 'card']).optional(),
+});
+export type ConfirmOrderInput = z.infer<typeof confirmOrderInput>;
+
+export const requestHumanInput = z.object({
+  orderId: z.string().max(100).nullable().default(null),
+  reason: z.string().min(1).max(2000),
+});
+export type RequestHumanInput = z.infer<typeof requestHumanInput>;
 
 export const handoffReason = z.enum([
   'user_requested',

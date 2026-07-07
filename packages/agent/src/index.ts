@@ -1,4 +1,11 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import {
+  confirmOrderInput,
+  proposeOrderInput,
+  requestHumanInput,
+  searchCatalogInput,
+} from '@oplati/types';
+
 import { getClient } from './client.ts';
 import { SYSTEM_PROMPT } from './prompts.ts';
 import { tools } from './tools.ts';
@@ -84,6 +91,19 @@ export interface ToolHandlers {
     duplicate?: true;
   }>;
 }
+
+/**
+ * Zod-схемы входов наших tools — валидируют сырой `tool_use.input` модели ДО
+ * вызова обработчика (инвариант «Zod на всех границах, включая AI tool inputs»).
+ * `web_search` — server-side tool Anthropic, обработчика у нас нет, поэтому его
+ * здесь нет. Ключи обязаны совпадать с именами tools в `./tools.ts`.
+ */
+const TOOL_INPUT_SCHEMAS = {
+  search_catalog: searchCatalogInput,
+  propose_order: proposeOrderInput,
+  confirm_order: confirmOrderInput,
+  request_human: requestHumanInput,
+} as const;
 
 export interface AgentContext {
   userId: string;
@@ -263,8 +283,19 @@ export async function runAgent(
         let result: unknown;
         let isError = false;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          result = await (handler as any)(tu.input);
+          // Zod-граница: валидируем сырой input модели ДО обработчика. Провал
+          // (напр. customDescription длиннее лимита, отрицательная сумма) →
+          // is_error tool_result, обработчик мусор не получает (L6).
+          const schema = TOOL_INPUT_SCHEMAS[tu.name as keyof typeof TOOL_INPUT_SCHEMAS];
+          const parsed = schema?.safeParse(tu.input);
+          if (parsed && !parsed.success) {
+            isError = true;
+            result = { error: `invalid tool input: ${parsed.error.message}` };
+          } else {
+            const input = parsed?.success ? parsed.data : tu.input;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            result = await (handler as any)(input);
+          }
         } catch (err) {
           isError = true;
           result = { error: err instanceof Error ? err.message : String(err) };
