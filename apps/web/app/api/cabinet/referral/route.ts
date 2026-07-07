@@ -6,7 +6,7 @@ import { payoutDestinationInputSchema } from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
-import { checkRateLimit } from '@/lib/ratelimit';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { resolveReferralRequester } from '@/lib/cabinet/referral-auth';
 import { buildReferralSnapshot, type ReferralSnapshotContext } from '@/lib/cabinet/referral-read';
@@ -70,6 +70,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
   const body = parsed.data;
+
+  // ── Первый барьер: rate-limit по IP ДО резолва личности и любых INSERT ──
+  // Веб-ветка resolveReferralRequester создаёт строку users, а identity-лимит
+  // ниже ключуется по web_session_id (у cookieless-запроса он свежий на каждый
+  // вызов и никогда не срабатывает). От cookieless-флуда защищает только IP-барьер.
+  const ipRl = await checkRateLimit('web-chat', getClientIp(req));
+  if (!ipRl.allowed) {
+    log.warn({ event: 'referral.cabinet.ip_rate_limited', action: body.action });
+    return NextResponse.json(
+      { ok: false, error: 'rate_limited', text: RATE_LIMITED_TEXT },
+      { status: 429 },
+    );
+  }
 
   // ── Гейт: программа выключена ──
   if (!serverEnv.REFERRAL_ENABLED) {
