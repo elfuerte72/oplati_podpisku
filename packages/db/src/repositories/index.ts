@@ -147,7 +147,7 @@ export {
 export {
   upsertPaymentByProviderRef,
   claimPaymentSucceeded,
-  markPaymentStatus,
+  claimPaymentTerminal,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
   findPendingPaymentByOrderId,
