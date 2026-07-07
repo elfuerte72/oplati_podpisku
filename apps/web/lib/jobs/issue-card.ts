@@ -211,6 +211,18 @@ export async function issueCard(orderId: string): Promise<void> {
       }
     }
 
+    // Реквизиты новой карты копим здесь, а отправляем клиенту ПОСЛЕ перехода
+    // заказа в completed (L5). null — если был топ-ап активной карты.
+    let pendingCredentials: {
+      fullPan: string;
+      panMasked: string;
+      expMonth: number;
+      expYear: number;
+      cvc: string;
+      cardType: string | null;
+      billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
+    } | null = null;
+
     if (!card) {
       // 2. Активной карты нет (или реюз отклонён выше) — выпускаем НОВУЮ.
       // Recycled-карты между клиентами НЕ переиспользуем: `release` закрывает
@@ -240,18 +252,18 @@ export async function issueCard(orderId: string): Promise<void> {
         readCardMetadataSafely(paypace, created.cardId, order.shortId),
         getRandomUsBillingAddress(),
       ]);
-      await sendCardCredentialsToUser({
-        telegramId: await resolveTelegramIdByUserId(order.userId),
-        panMasked: created.panMasked,
+      // Реквизиты отправим ПОСЛЕ фиксации заказа (completed), не здесь: иначе
+      // сбой БД на setOrderCardId/transitionOrder ниже откатывал бы уже
+      // доставленный заказ в failed + слал ложный ops-алёрт (L5).
+      pendingCredentials = {
         fullPan: created.pan,
+        panMasked: created.panMasked,
         expMonth: created.expMonth,
         expYear: created.expYear,
         cvc: created.cvc,
         cardType: cardMetadata.cardType,
         billingAddress,
-        serviceShortId: order.shortId,
-        priceUsdCents,
-      });
+      };
     }
 
     // 4. Привязать card к order (card гарантированно не null: топ-ап активной
@@ -269,6 +281,33 @@ export async function issueCard(orderId: string): Promise<void> {
     });
 
     log.info({ event: 'job.issue_card.completed', orderId });
+
+    // 6. Реквизиты новой карты — доставка ПОСЛЕ фиксации заказа (best-effort):
+    //    заказ уже completed, поэтому сбой доставки не откатывает его в failed и
+    //    не шлёт ложный «не доставлен» (L5). Недоставку добьёт оператор/повтор.
+    if (pendingCredentials) {
+      try {
+        await sendCardCredentialsToUser({
+          telegramId: await resolveTelegramIdByUserId(order.userId),
+          panMasked: pendingCredentials.panMasked,
+          fullPan: pendingCredentials.fullPan,
+          expMonth: pendingCredentials.expMonth,
+          expYear: pendingCredentials.expYear,
+          cvc: pendingCredentials.cvc,
+          cardType: pendingCredentials.cardType,
+          billingAddress: pendingCredentials.billingAddress,
+          serviceShortId: order.shortId,
+          priceUsdCents,
+        });
+      } catch (err) {
+        log.error({ event: 'job.issue_card.credentials_send_failed', orderId, err });
+        Sentry.captureException(err, {
+          level: 'error',
+          tags: { source: 'job.issue-card', step: 'send_credentials' },
+          extra: { orderId },
+        });
+      }
+    }
   } catch (err) {
     log.error({ event: 'job.issue_card.failed', orderId, err });
     Sentry.captureException(err, {

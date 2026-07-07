@@ -33,8 +33,10 @@ export type OrderStatus = z.infer<typeof orderStatus>;
  * Допустимые переходы. Любой переход, не указанный здесь, считается багом и
  * `transitionOrder()` бросит `OrderTransitionError`.
  *
- * Терминальные статусы (`failed`, `cancelled`, `refunded`, `expired`) — пустой
- * массив; из них переходов нет (мы не пере-открываем заказ — заводим новый).
+ * Терминальные статусы без исходящих переходов — `cancelled`, `refunded`,
+ * `expired` (заказ не пере-открываем — заводим новый). `failed` и `completed`
+ * квази-терминальны: из них разрешён единственный переход `→ refund_requested`
+ * (возврат оплаченного, но не исполненного / уже завершённого заказа).
  */
 export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   draft: ['clarifying', 'ready_for_payment', 'cancelled'],

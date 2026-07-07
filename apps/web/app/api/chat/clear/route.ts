@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { createConversation, findUserIdByWebSessionId, getDb } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { readWebSessionId } from '@/lib/chat/session';
 
 /**
@@ -23,7 +24,14 @@ export const maxDuration = 10;
 const log = childLogger('web-chat-clear');
 const dbLog = childLogger('db');
 
-export async function POST(): Promise<NextResponse> {
+export async function POST(req: Request): Promise<NextResponse> {
+  // Write-эндпоинт (createConversation) под rate-limit по IP — иначе одна сессия
+  // могла бесконечно плодить строки conversations (L1).
+  const rl = await checkRateLimit('web-order', getClientIp(req));
+  if (!rl.allowed) {
+    return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429 });
+  }
+
   const webSessionId = await readWebSessionId();
   if (!webSessionId) {
     // Нет cookie → нечего чистить, диалог и так пуст.

@@ -79,32 +79,49 @@ export async function createDraftOrder(
   for (let attempt = 0; attempt < 3; attempt++) {
     const shortId = generateShortId();
     try {
-      const inserted = await db
-        .insert(orders)
-        .values({
-          shortId,
-          userId: input.userId,
-          conversationId: input.conversationId ?? null,
-          serviceId: input.serviceId ?? null,
-          customServiceDescription: input.customServiceDescription ?? null,
-          status,
-          amountRub: input.amountRub ?? null,
-          originalAmount: input.originalAmount ?? null,
-          originalCurrency: input.originalCurrency ?? null,
-          usdtRubRateKopecks: input.usdtRubRateKopecks ?? null,
-          rateFixedAt: input.rateFixedAt ?? null,
-          expiresAt: input.expiresAt ?? null,
-          commissionPercent: input.commissionPercent ?? null,
-          cardIssueFeeKopecks: input.cardIssueFeeKopecks ?? null,
-          parameters: input.parameters ?? null,
-          requiresKyc: input.requiresKyc ?? false,
-        })
-        .returning();
+      // Строка заказа и её стартовое событие order_created — в ОДНОЙ транзакции
+      // (инвариант A1/A4): иначе сбой БД между двумя INSERT оставил бы заказ без
+      // события в append-only-логе (L2).
+      const row = await db.transaction(async (tx) => {
+        const inserted = await tx
+          .insert(orders)
+          .values({
+            shortId,
+            userId: input.userId,
+            conversationId: input.conversationId ?? null,
+            serviceId: input.serviceId ?? null,
+            customServiceDescription: input.customServiceDescription ?? null,
+            status,
+            amountRub: input.amountRub ?? null,
+            originalAmount: input.originalAmount ?? null,
+            originalCurrency: input.originalCurrency ?? null,
+            usdtRubRateKopecks: input.usdtRubRateKopecks ?? null,
+            rateFixedAt: input.rateFixedAt ?? null,
+            expiresAt: input.expiresAt ?? null,
+            commissionPercent: input.commissionPercent ?? null,
+            cardIssueFeeKopecks: input.cardIssueFeeKopecks ?? null,
+            parameters: input.parameters ?? null,
+            requiresKyc: input.requiresKyc ?? false,
+          })
+          .returning();
 
-      const row = inserted[0];
-      if (!row) {
-        throw new Error('createDraftOrder: INSERT не вернул строку');
-      }
+        const created = inserted[0];
+        if (!created) {
+          throw new Error('createDraftOrder: INSERT не вернул строку');
+        }
+
+        // Стартовое событие в order_events — append-only audit log.
+        await tx.insert(orderEvents).values({
+          orderId: created.id,
+          actorType: 'system',
+          eventType: 'order_created',
+          fromStatus: null,
+          toStatus: created.status,
+          payload: { source: 'createDraftOrder' },
+        });
+
+        return created;
+      });
 
       log.info({
         event: 'db.orders.created',
@@ -112,16 +129,6 @@ export async function createDraftOrder(
         shortId: row.shortId,
         userId: row.userId,
         status: row.status,
-      });
-
-      // Стартовое событие в order_events — append-only audit log.
-      await db.insert(orderEvents).values({
-        orderId: row.id,
-        actorType: 'system',
-        eventType: 'order_created',
-        fromStatus: null,
-        toStatus: row.status,
-        payload: { source: 'createDraftOrder' },
       });
 
       return row;
