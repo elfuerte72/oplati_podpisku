@@ -246,6 +246,35 @@ html[data-intro-pending] .app-shell {
   }
 }
 
+/* Разовая подсветка «Выбрать сервис» после онбординга кабинета: пульсирующий
+   teal-ринг поверх кнопки (отдельным оверлеем, чтобы не конфликтовать с её
+   собственной тенью/active-состоянием). */
+@keyframes spotlight-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.015);
+  }
+}
+
+/* Точки брендового лоадера Mini App (см. CabinetLoader) — прыгают по очереди. */
+@keyframes dot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.55;
+  }
+  40% {
+    transform: translateY(-7px);
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   IconArrowRight,
+  IconBulb,
   IconCart,
   IconCheck,
   IconCopy,
@@ -13,6 +14,8 @@ import {
 } from '@/components/comic/icons';
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 
+import { CabinetIntro } from './CabinetIntro';
+import { CabinetLoader } from './CabinetLoader';
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import {
   doPay,
@@ -79,6 +82,30 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+const CABINET_INTRO_KEY = 'oplatishka_cabinet_intro_seen';
+const noopSubscribe = () => () => {};
+
+/**
+ * «Видел ли клиент онбординг кабинета» как external store (localStorage): на
+ * сервере считаем «видел» (не рендерим — нет hydration mismatch), на клиенте
+ * читаем флаг. Отдельный ключ от веб-интро — это другой контекст (кнопочный
+ * кабинет, а не чат), веб-флаг переиспользовать нельзя.
+ */
+function useCabinetIntroSeen(): boolean {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () => {
+      try {
+        return window.localStorage.getItem(CABINET_INTRO_KEY) !== null;
+      } catch {
+        // приватный режим без localStorage — интро просто не показываем
+        return true;
+      }
+    },
+    () => true,
+  );
+}
+
 export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot } = {}) {
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [errorText, setErrorText] = useState('');
@@ -94,6 +121,13 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const [cardDetails, setCardDetails] = useState<CardDetails | null>(null);
   const [revealingCard, setRevealingCard] = useState(false);
   const [refCopied, setRefCopied] = useState(false);
+
+  // Онбординг кабинета: показ при первом входе (флаг в localStorage) + повтор из
+  // шапки; после первого закрытия разово подсвечиваем «Выбрать сервис».
+  const introSeen = useCabinetIntroSeen();
+  const [introDismissed, setIntroDismissed] = useState(false);
+  const [forceIntro, setForceIntro] = useState(false);
+  const [highlightCatalog, setHighlightCatalog] = useState(false);
 
   const tgRef = useRef<TelegramWebApp | null>(null);
   const initDataRef = useRef<string>('');
@@ -206,9 +240,40 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     }
   }, [detail, refreshDetail, reloadSnapshot]);
 
+  // Тактильный отклик онбординга (необязателен — только в новых клиентах TG).
+  const introHaptic = useCallback((kind: 'tick' | 'success') => {
+    const h = tgRef.current?.HapticFeedback;
+    try {
+      if (kind === 'success') h?.notificationOccurred?.('success');
+      else h?.impactOccurred?.('light');
+    } catch {
+      // тактилка не критична — молча пропускаем
+    }
+  }, []);
+
+  // Первый показ — когда флаг не стоял и его не открыли повторно из шапки.
+  const introFirstRun = !introSeen && !forceIntro;
+  const closeIntro = useCallback(() => {
+    try {
+      window.localStorage.setItem(CABINET_INTRO_KEY, '1');
+    } catch {
+      // не записалось — покажем ещё раз в следующий визит, не критично
+    }
+    setIntroDismissed(true);
+    setForceIntro(false);
+    // Только на первом показе подсвечиваем реальную кнопку «Выбрать сервис» —
+    // прямо отвечаем на «куда нажимать». Повтор из шапки подсветку не запускает.
+    if (introFirstRun) {
+      setHighlightCatalog(true);
+      window.setTimeout(() => setHighlightCatalog(false), 3600);
+    }
+  }, [introFirstRun]);
+
+  const showIntro = phase === 'ready' && !!snapshot && (forceIntro || (!introSeen && !introDismissed));
+
   // ─── Рендер ──────────────────────────────────────────────────────────────
   if (phase === 'loading') {
-    return <CenteredNote text="Загружаю кабинет…" />;
+    return <CabinetLoader />;
   }
   if (phase === 'no-telegram') {
     return (
@@ -275,14 +340,25 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     null;
 
   return (
+    <>
     <main className="mx-auto w-full max-w-md space-y-4 p-4">
       {/* Компактная шапка вместо громоздкого ProfileHeader. */}
       <header className="flex items-center gap-3 pt-1">
         <Mascot pose="idle" size={40} />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="font-body text-xs text-[var(--text-muted)]">Личный кабинет</p>
           <h1 className="truncate font-display text-xl font-bold text-[var(--text)]">{greeting}</h1>
         </div>
+        {/* Реплей онбординга — для тех, кто «не понял, как это работает». */}
+        <button
+          type="button"
+          onClick={() => setForceIntro(true)}
+          aria-label="Как это работает"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-3 py-1.5 font-display text-xs font-bold text-[var(--text-muted)] shadow-[2px_2px_0_var(--shadow-ink)] transition-transform active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+        >
+          <IconBulb size={16} />
+          Как это работает
+        </button>
       </header>
 
       {notice && (
@@ -292,21 +368,30 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       )}
 
       {/* Главное действие кабинета — оплатить подписку через кнопочный каталог. */}
-      <button
-        type="button"
-        onClick={() => {
-          setCardDetails(null);
-          setNotice(null);
-          setView('catalog');
-        }}
-        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--accent)] px-4 py-3.5 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
-      >
-        <IconCart size={22} className="shrink-0 text-[var(--color-paper)]" />
-        <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
-          Выбрать сервис
-        </span>
-        <IconArrowRight size={18} className="shrink-0 text-[var(--color-paper)]" />
-      </button>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setHighlightCatalog(false);
+            setCardDetails(null);
+            setNotice(null);
+            setView('catalog');
+          }}
+          className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--accent)] px-4 py-3.5 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+        >
+          <IconCart size={22} className="shrink-0 text-[var(--color-paper)]" />
+          <span className="flex-1 font-display text-[15px] font-bold text-[var(--color-paper)]">
+            Выбрать сервис
+          </span>
+          <IconArrowRight size={18} className="shrink-0 text-[var(--color-paper)]" />
+        </button>
+        {highlightCatalog && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute -inset-1 rounded-[calc(var(--radius-card)+4px)] border-[3px] border-[var(--color-teal-light)] motion-safe:animate-[spotlight-pulse_1.1s_ease-in-out_infinite]"
+          />
+        )}
+      </div>
 
       {/* Карта клиента — главный акцент. */}
       <CardHero
@@ -395,6 +480,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           владельца 2026-07-02: только действие «оплатить» + карта + партнёрка.
           К свежесозданному заказу ведёт flow каталога (view 'detail'). */}
     </main>
+    {showIntro && <CabinetIntro onClose={closeIntro} haptic={introHaptic} />}
+    </>
   );
 }
 
