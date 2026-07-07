@@ -128,6 +128,69 @@ describe('PaySpaceClient.createCard', () => {
     const c = makeClient(fetchMock);
     await expect(c.createCard({ amountUsdCents: 1000 })).rejects.toBeInstanceOf(PaySpaceContractError);
   });
+
+  it('H1: дрейф контракта не утекает полный PAN/CVV в pino-лог', async () => {
+    // Дрейф card_no → cardNo (как уже в info/release): парс create падает, но
+    // сырое тело содержит полный PAN+CVV. rawBody не должен попадать в логи.
+    const driftBody = {
+      success: true,
+      data: {
+        card: {
+          card_id: 'c1',
+          cardNo: '5395020388220113', // переименовано → schema.parse упадёт
+          currency: 'USD',
+          exp_date: '2027-01-20',
+          cvv: '229',
+          balance: '10.00',
+          callback_url: null,
+        },
+        network: 'trc20',
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(makeResp(200, driftBody));
+    const c = makeClient(fetchMock);
+    const err = await c.createCard({ amountUsdCents: 1000 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaySpaceContractError);
+
+    // rawBody доступен программно (для отладки), но НЕперечисляем → не сериализуется.
+    expect((err as PaySpaceContractError).rawBody).toContain('5395020388220113');
+    expect(Object.keys(err as object)).not.toContain('rawBody');
+    expect(JSON.stringify(err)).not.toContain('5395020388220113');
+
+    // Реальный вектор: issue-card делает `log.error({ err })`. Даже без redact
+    // (первичная защита — неперечисляемость) PAN не должен попасть в вывод.
+    const lines: string[] = [];
+    const capture = pino({ level: 'error' }, { write: (s: string) => void lines.push(s) });
+    capture.error({ event: 'job.issue_card.failed', err });
+    expect(lines.join('')).not.toContain('5395020388220113');
+  });
+});
+
+describe('PaySpaceClient.createCard — не-идемпотентность (H2)', () => {
+  it('НЕ ретраит на сетевую ошибку — иначе повтор выпустит дубль-карту', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const c = makeClient(fetchMock);
+    await expect(c.createCard({ amountUsdCents: 1000 })).rejects.toBeInstanceOf(TypeError);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // ровно один POST /vcc/card/create/
+  });
+
+  it('НЕ ретраит на 5xx', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResp(503, { success: false, error: { code: 'busy', message: 'try later' } }));
+    const c = makeClient(fetchMock);
+    await expect(c.createCard({ amountUsdCents: 1000 })).rejects.toBeInstanceOf(PaySpaceApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('контраст: идемпотентный topup (с request_id) сетевую ошибку ретраит', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const c = makeClient(fetchMock);
+    await expect(
+      c.topupCard({ cardId: 'c1', amountUsdCents: 1000, requestId: 'r1' }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // повтор разрешён — request_id дедуплицирует
+  });
 });
 
 describe('PaySpaceClient.topupCard', () => {

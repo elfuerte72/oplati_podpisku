@@ -134,6 +134,7 @@ export {
   findStuckPaidOrders,
   findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
+  appendOrderEvent,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   hasPurchasedOrders,
@@ -147,7 +148,7 @@ export {
 export {
   upsertPaymentByProviderRef,
   claimPaymentSucceeded,
-  markPaymentStatus,
+  claimPaymentTerminal,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
   findPendingPaymentByOrderId,

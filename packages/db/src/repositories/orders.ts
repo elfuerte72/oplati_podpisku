@@ -403,15 +403,52 @@ export async function findStuckInFulfillmentOrders(
     .limit(STUCK_BATCH_LIMIT);
 }
 
-/** Заказы для напоминания о продлении подписки — cron `subscription-renewal-reminder`. */
+/**
+ * Заказы для напоминания о продлении подписки — cron `subscription-renewal-reminder`.
+ *
+ * Окно фильтра (3 дня) ШИРЕ шага крона (сутки), поэтому один заказ попадал бы в
+ * выборку несколько дней подряд → дубли напоминаний. `NOT EXISTS` исключает
+ * заказы, по которым напоминание уже отправлено (событие `renewal_reminder_sent`
+ * в append-only `order_events`) — идемпотентность на уровне выборки.
+ */
 export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
     .from(orders)
     .where(
       sql`${orders.status} = 'completed' AND ${orders.fulfilledAt} IS NOT NULL
-          AND ${orders.fulfilledAt} BETWEEN now() - interval '26 days' AND now() - interval '23 days'`,
+          AND ${orders.fulfilledAt} BETWEEN now() - interval '26 days' AND now() - interval '23 days'
+          AND NOT EXISTS (
+            SELECT 1 FROM ${orderEvents}
+            WHERE ${orderEvents.orderId} = ${orders.id}
+              AND ${orderEvents.eventType} = 'renewal_reminder_sent'
+          )`,
     );
+}
+
+/**
+ * Записать событие в append-only `order_events` БЕЗ смены статуса заказа — для
+ * не-переходных событий (напоминание о продлении, уведомление). `orders.status`
+ * не трогается, поэтому `from_status`/`to_status` остаются null. Только INSERT
+ * (append-only-триггер запрещает лишь UPDATE/DELETE).
+ */
+export async function appendOrderEvent(
+  db: DBLike,
+  input: {
+    orderId: string;
+    eventType: string;
+    actorType: 'system' | 'user' | 'operator' | 'supervisor' | 'ai' | 'payment_provider';
+    actorId?: string | null;
+    payload?: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  await db.insert(orderEvents).values({
+    orderId: input.orderId,
+    actorType: input.actorType,
+    actorId: input.actorId ?? null,
+    eventType: input.eventType,
+    payload: input.payload ?? null,
+  });
 }
 
 /**

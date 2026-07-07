@@ -1,10 +1,11 @@
 import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 
-import { getDb, getOrCreateUserByWebSessionId, getOrderById } from '@oplati/db';
+import { findUserIdByWebSessionId, getDb, getOrderById } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
-import { getOrCreateWebSessionId } from '@/lib/chat/session';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { readWebSessionId } from '@/lib/chat/session';
 
 /**
  * GET /api/orders/status?id=<orderId> — статус заказа для веб-чата (поллинг
@@ -19,7 +20,6 @@ export const runtime = 'nodejs';
 export const preferredRegion = 'fra1';
 
 const log = childLogger('web-chat-status');
-const dbLog = childLogger('db');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -38,12 +38,28 @@ export async function GET(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_id' }, { status: 400 });
   }
 
+  // Rate-limit по IP ДО резолва сессии и обращения к БД: без cookie каждый запрос
+  // иначе получал бы обработку заново — раньше это плодило строки users (cost-DoS).
+  const rl = await checkRateLimit('web-order', getClientIp(req));
+  if (!rl.allowed) {
+    return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429 });
+  }
+
+  // Read-only endpoint: НЕ создаём сессию/пользователя. Нет cookie или нет строки
+  // users → свежий посетитель не владеет никаким заказом → 404.
+  const webSessionId = await readWebSessionId();
+  if (!webSessionId) {
+    return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
+  }
+
   try {
-    const webSessionId = await getOrCreateWebSessionId();
     const db = getDb();
-    const user = await getOrCreateUserByWebSessionId(db, { webSessionId, language: 'ru' }, dbLog);
+    const userId = await findUserIdByWebSessionId(db, webSessionId);
+    if (!userId) {
+      return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
+    }
     const order = await getOrderById(db, id);
-    if (!order || order.userId !== user.id) {
+    if (!order || order.userId !== userId) {
       return NextResponse.json({ ok: false, error: 'not_found' }, { status: 404 });
     }
     return NextResponse.json(

@@ -176,29 +176,39 @@ export async function claimPaymentSucceeded(
   return row;
 }
 
-export async function markPaymentStatus(
+/**
+ * Атомарный claim платежа в терминальный статус `failed`: `pending → failed`
+ * ОДНИМ условным UPDATE. Симметричен `claimPaymentSucceeded`.
+ *
+ * Зачем условие `status='pending'` (а не безусловный UPDATE by id): webhook
+ * `invoice.paid` и терминальное событие (`expired`/`cancelled`) одного инвойса
+ * могут прийти конкурентно на разных serverless-инстансах. Безусловный UPDATE
+ * мог бы перезаписать уже `succeeded` платёж в `failed` (заказ оплачен, карта
+ * выпущена, деньги приняты — а запись платежа стала `failed`: рассинхрон сверки,
+ * риск ошибочного «возврата»). Условие гарантирует, что терминальный переход
+ * применяется ТОЛЬКО к ещё живому (pending) платежу.
+ *
+ * Возвращает `null`, если платёж уже не `pending` (гонку выиграл paid-путь либо
+ * повторное терминальное событие) — вызывающий трактует это как idempotent_skip.
+ */
+export async function claimPaymentTerminal(
   db: DB,
   paymentId: string,
-  status: PaymentStatus,
   log: RepoLogger = noopLogger,
-): Promise<PaymentRow> {
+): Promise<PaymentRow | null> {
   const updated = await db
     .update(payments)
-    .set({
-      status,
-      ...(status === 'succeeded' || status === 'failed' || status === 'refunded'
-        ? { completedAt: new Date() }
-        : {}),
-    })
-    .where(eq(payments.id, paymentId))
+    .set({ status: 'failed', completedAt: new Date() })
+    .where(and(eq(payments.id, paymentId), eq(payments.status, 'pending')))
     .returning();
 
   const row = updated[0];
   if (!row) {
-    throw new Error(`markPaymentStatus: payment ${paymentId} не найден`);
+    log.info({ event: 'db.payments.terminal_claim_skipped', paymentId, reason: 'not_pending' });
+    return null;
   }
 
-  log.info({ event: 'db.payments.status_changed', paymentId, status });
+  log.info({ event: 'db.payments.terminal_claimed', paymentId, orderId: row.orderId });
   return row;
 }
 

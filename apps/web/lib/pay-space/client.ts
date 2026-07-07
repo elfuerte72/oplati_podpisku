@@ -29,7 +29,8 @@ import { canonicalQuery, signPaySpaceRequest } from './sign.ts';
  * - Обёртка ответа `{ success, data }` распаковывается здесь; `data` валидируется
  *   Zod-схемой из `@oplati/types`. Дрифт контракта → `PaySpaceContractError`.
  * - Суммы наружу — USD-центы (integer); конвертация в доллары-строки — format.ts.
- * - Timeout 60s; retry ×2 на 5xx/сеть; 4xx не ретраим.
+ * - Timeout 60s; retry ×2 на 5xx/сеть; 4xx не ретраим. Не-идемпотентные POST
+ *   (createCard — без request_id) НЕ ретраим вовсе (риск дубль-выпуска карты).
  *
  * SECURITY: НИКОГДА не логировать `pan`/`cvc` (даже на DEBUG). `panMasked` — можно.
  */
@@ -184,6 +185,9 @@ export class PaySpaceClient {
         ...(input.callbackUrl ? { callback_url: input.callbackUrl } : {}),
       },
       schema: paySpaceCreateCardDataSchema,
+      // createCard не шлёт request_id (провайдер не дедуплицирует выпуск) →
+      // не ретраим, иначе повтор после таймаута выпустит вторую карту.
+      idempotent: false,
     });
     const { card, network } = data;
     const { expMonth, expYear } = parseExpDate(card.exp_date);
@@ -370,15 +374,25 @@ export class PaySpaceClient {
     query?: Record<string, string | number | undefined>;
     body?: Record<string, unknown> | null;
     schema: z.ZodType<T>;
+    /**
+     * Идемпотентен ли запрос. По умолчанию `true` (GET по природе; topup/
+     * withdraw/release идемпотентны через `request_id`). `false` — для операций,
+     * которые провайдер не умеет дедуплицировать (createCard без request_id):
+     * такие НЕ ретраим на таймаут/сбой, чтобы не выпустить вторую карту.
+     */
+    idempotent?: boolean;
   }): Promise<T> {
     const query = opts.query ?? {};
     const search = canonicalQuery(query);
     const url = `${this.baseUrl}${opts.path}${search ? `?${search}` : ''}`;
     const pathname = new URL(url).pathname;
     const bodyText = opts.method === 'GET' || !opts.body ? '' : JSON.stringify(opts.body);
+    // Не-идемпотентный POST выполняем ровно один раз (без повторов на 5xx/сеть/
+    // таймаут): повтор мог бы создать дубль-карту и потерять её фондирование.
+    const maxAttempts = opts.idempotent === false ? 1 : MAX_RETRIES;
 
     let lastError: unknown;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
       this.log.debug({ event: 'paypace.request', method: opts.method, path: opts.path, attempt });
@@ -413,7 +427,7 @@ export class PaySpaceClient {
           raw = JSON.parse(respText);
         } catch {
           // не-JSON: на 5xx ретраим, иначе контракт-ошибка.
-          if (resp.status >= 500 && attempt < MAX_RETRIES - 1) {
+          if (resp.status >= 500 && attempt < maxAttempts - 1) {
             await this.backoff(attempt, opts, resp.status);
             continue;
           }
@@ -447,7 +461,7 @@ export class PaySpaceClient {
         const code = errParsed.success ? errParsed.data.code : `HTTP_${resp.status}`;
         const message = errParsed.success ? errParsed.data.message : respText.slice(0, 500);
 
-        if (resp.status >= 500 && attempt < MAX_RETRIES - 1) {
+        if (resp.status >= 500 && attempt < maxAttempts - 1) {
           await this.backoff(attempt, opts, resp.status);
           continue;
         }
@@ -467,7 +481,7 @@ export class PaySpaceClient {
         const isAbort = err instanceof Error && err.name === 'AbortError';
         const isNetwork = err instanceof TypeError && /fetch/i.test(err.message);
         const isContract = err instanceof PaySpaceContractError;
-        if (!isContract && (isAbort || isNetwork) && attempt < MAX_RETRIES - 1) {
+        if (!isContract && (isAbort || isNetwork) && attempt < maxAttempts - 1) {
           this.log.warn({
             event: 'paypace.retry',
             method: opts.method,

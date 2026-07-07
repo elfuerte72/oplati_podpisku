@@ -4,9 +4,9 @@ import * as Sentry from '@sentry/nextjs';
 
 import {
   claimPaymentSucceeded,
+  claimPaymentTerminal,
   findPaymentByProviderRef,
   getDb,
-  markPaymentStatus,
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
@@ -222,16 +222,20 @@ export async function processInvoiceTerminal(input: InvoiceTerminalInput): Promi
     return { kind: 'not_found', providerRef: data.id };
   }
 
-  if (payment.status !== 'pending') {
+  // Атомарный claim pending→failed. Условие status='pending' внутри UPDATE —
+  // источник правды идемпотентности (не устаревшее чтение payment.status выше):
+  // если терминальное событие пришло после того, как paid-путь конкурентно
+  // перевёл платёж в succeeded и выпустил карту, claim вернёт null, и мы НЕ
+  // перезаписываем succeeded→failed (иначе рассинхрон сверки).
+  const claimed = await claimPaymentTerminal(db, payment.id, log);
+  if (!claimed) {
     log.info({
       event: 'loveandpay.handlers.idempotent_skip',
       paymentId: payment.id,
-      reason: `already_${payment.status}`,
+      reason: 'not_pending',
     });
-    return { kind: 'idempotent_skip', paymentId: payment.id, reason: `already_${payment.status}` };
+    return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'not_pending' };
   }
-
-  await markPaymentStatus(db, payment.id, 'failed');
 
   try {
     await transitionOrder(db, {

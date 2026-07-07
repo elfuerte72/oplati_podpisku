@@ -43,8 +43,10 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
       const telegramId = await getUserTelegramId(db, order.userId);
       if (telegramId) {
         try {
+          // telegramId — СТРОКА (не Number): большие 64-битные chat_id теряют
+          // точность в double, уведомление ушло бы не тому получателю (L4).
           await getBot().api.sendMessage(
-            Number(telegramId),
+            telegramId,
             `Срок оплаты заказа ${order.shortId} истёк. Если ещё актуально — напишите /start, оформим заново.`,
           );
         } catch (err) {

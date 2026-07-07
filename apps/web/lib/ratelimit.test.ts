@@ -127,3 +127,36 @@ describe('checkRateLimit', () => {
     expect(res.configured).toBe(false);
   });
 });
+
+describe('getClientIp (M3: анти-спуфинг)', () => {
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request('https://example.com/api', { headers });
+  }
+
+  it('приоритет доверенного x-real-ip над подделанным x-forwarded-for', async () => {
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-forwarded-for': '6.6.6.6, 10.0.0.1', // левый элемент — подделка клиента
+      'x-real-ip': '203.0.113.5', // Vercel проставил реальный адрес соединения
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+
+  it('ротация X-Forwarded-For не обходит лимит, пока есть x-real-ip', async () => {
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'x-forwarded-for': 'spoof-1', 'x-real-ip': '203.0.113.5' }));
+    const b = getClientIp(reqWith({ 'x-forwarded-for': 'spoof-2', 'x-real-ip': '203.0.113.5' }));
+    expect(a).toBe('203.0.113.5');
+    expect(b).toBe('203.0.113.5'); // одинаковый ключ → per-IP окно не сбрасывается
+  });
+
+  it('fallback без x-real-ip: берёт ПРАВЫЙ (доверенный) элемент x-forwarded-for', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '6.6.6.6, 203.0.113.9' }))).toBe('203.0.113.9');
+  });
+
+  it('нет заголовков → "unknown"', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({}))).toBe('unknown');
+  });
+});

@@ -20,9 +20,14 @@ type Pay = {
 };
 
 vi.mock('@oplati/db', () => {
-  const state: { payment: Pay | null; forceClaimNull: boolean } = {
+  const state: {
+    payment: Pay | null;
+    forceClaimNull: boolean;
+    forceTerminalClaimNull: boolean;
+  } = {
     payment: null,
     forceClaimNull: false,
+    forceTerminalClaimNull: false,
   };
   return {
     // processInvoicePaid оборачивает claim+transition в db.transaction: мок
@@ -41,14 +46,27 @@ vi.mock('@oplati/db', () => {
       }
       return null;
     }),
-    markPaymentStatus: vi.fn(async () => ({})),
+    // Атомарный claim в terminal (pending→failed): строку возвращает только если
+    // платёж был pending и claim не форсирован в null (моделирует проигрыш гонки
+    // paid-пути между чтением payment и условным UPDATE).
+    claimPaymentTerminal: vi.fn(async () => {
+      if (state.forceTerminalClaimNull) return null;
+      if (state.payment && state.payment.status === 'pending') {
+        return { ...state.payment, status: 'failed' };
+      }
+      return null;
+    }),
     transitionOrder: vi.fn(async () => ({})),
     __setPayment(p: Pay | null) {
       state.payment = p;
       state.forceClaimNull = false;
+      state.forceTerminalClaimNull = false;
     },
     __forceClaimNull() {
       state.forceClaimNull = true;
+    },
+    __forceTerminalClaimNull() {
+      state.forceTerminalClaimNull = true;
     },
   };
 });
@@ -68,6 +86,7 @@ import { accrueReferralForPayment } from '../referral/accrue.ts';
 type MockedDb = typeof db & {
   __setPayment: (p: Pay | null) => void;
   __forceClaimNull: () => void;
+  __forceTerminalClaimNull: () => void;
 };
 
 const data = {
@@ -268,7 +287,7 @@ describe('processInvoiceTerminal', () => {
     });
 
     expect(res.kind).toBe('processed');
-    expect(db.markPaymentStatus).toHaveBeenCalledTimes(1);
+    expect(db.claimPaymentTerminal).toHaveBeenCalledTimes(1);
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
   });
 
@@ -286,11 +305,11 @@ describe('processInvoiceTerminal', () => {
     });
 
     expect(res.kind).toBe('processed');
-    expect(db.markPaymentStatus).toHaveBeenCalledWith(expect.anything(), 'pay-1', 'failed');
+    expect(db.claimPaymentTerminal).toHaveBeenCalledWith(expect.anything(), 'pay-1', expect.anything());
     expect(db.transitionOrder).toHaveBeenCalledTimes(1);
   });
 
-  it('идемпотентен — повторный expired skip', async () => {
+  it('идемпотентен — повторный expired skip (платёж уже failed)', async () => {
     (db as unknown as MockedDb).__setPayment({
       id: 'pay-1',
       orderId: 'order-1',
@@ -304,6 +323,28 @@ describe('processInvoiceTerminal', () => {
     });
 
     expect(res.kind).toBe('idempotent_skip');
-    expect(db.markPaymentStatus).not.toHaveBeenCalled();
+    expect(db.transitionOrder).not.toHaveBeenCalled();
+  });
+
+  it('M4: гонку выиграл paid-путь (claim вернул null) → skip без перезаписи succeeded', async () => {
+    // Платёж прочитан как pending, но между чтением и атомарным claim paid-путь
+    // конкурентно перевёл его в succeeded (карта уже выпущена). claim не находит
+    // pending → null. Мы НЕ перезаписываем succeeded→failed и не трогаем заказ.
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    (db as unknown as MockedDb).__forceTerminalClaimNull();
+
+    const res = await processInvoiceTerminal({
+      data: { ...data, status: 'EXPIRED' },
+      reason: 'expired',
+    });
+
+    expect(res.kind).toBe('idempotent_skip');
+    expect(db.claimPaymentTerminal).toHaveBeenCalledTimes(1);
+    expect(db.transitionOrder).not.toHaveBeenCalled();
   });
 });

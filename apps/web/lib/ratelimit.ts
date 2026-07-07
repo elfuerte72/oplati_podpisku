@@ -61,14 +61,31 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   'web-link': { limit: 10, windowSeconds: 60 },
 };
 
-/** Клиентский IP для rate-limit. На Vercel приходит в `x-forwarded-for`. */
+/**
+ * Клиентский IP для rate-limit.
+ *
+ * SECURITY (CWE-348): `x-real-ip` Vercel проставляет сам из реального адреса
+ * соединения — клиент его подделать не может. А ЛЕВЫЙ элемент `x-forwarded-for`
+ * полностью подконтролен клиенту (Vercel добавляет реальный IP в КОНЕЦ цепочки,
+ * не вырезая клиентское значение), поэтому доверять ему для security-решений
+ * нельзя: ротация заголовка обнуляла бы per-IP лимит. Приоритет — `x-real-ip`;
+ * `x-forwarded-for` — только fallback (локально/не-Vercel), и то ПРАВЫЙ элемент,
+ * добавленный ближайшим доверенным прокси.
+ */
 export function getClientIp(req: Request): string {
+  const realIp = req.headers.get('x-real-ip')?.trim();
+  if (realIp) return realIp;
+
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    const first = xff.split(',')[0]?.trim();
-    if (first) return first;
+    const parts = xff
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const last = parts[parts.length - 1];
+    if (last) return last;
   }
-  return req.headers.get('x-real-ip') ?? 'unknown';
+  return 'unknown';
 }
 
 let cachedRedis: Redis | null = null;
