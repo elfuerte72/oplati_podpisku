@@ -158,7 +158,8 @@ const CATALOG: readonly CatalogEntry[] = [
     description: 'AI-ассистент от Google',
     category: 'ai',
     requiresKyc: false,
-    pricingPolicy: policy([usd('Plus', 7.99), usd('Pro', 19.99), usd('Ultra', 99.99)]),
+    // Сверено по сайту 2026-07-08: Plus $4.99 (был снижен с $7.99), Pro $19.99, Ultra от $99.99.
+    pricingPolicy: policy([usd('Plus', 4.99), usd('Pro', 19.99), usd('Ultra', 99.99)]),
   },
   {
     slug: 'grok-pro',
@@ -194,8 +195,12 @@ const CATALOG: readonly CatalogEntry[] = [
     description: 'AI-генерация видео и изображений',
     category: 'ai',
     requiresKyc: false,
-    // Higgsfield активно A/B-тестит цены — справочные на июнь 2026, владелец сверяет.
-    pricingPolicy: policy([usd('Starter', 15), usd('Plus', 39), usd('Ultra', 99)]),
+    // Higgsfield активно A/B-тестит цены. Сверено по сайту 2026-07-08: месячные
+    // (monthly) тарифы Plus $59, Ultra $129 — на них выпускается карта, т.к. клиент
+    // оформляет подписку помесячно (годовые per-month $47/$99 списываются сразу за
+    // год, картой не покрываются). Starter ($19/мес годовой, 270 кредитов) убран:
+    // слабый тариф + месячной цены на сайте по умолчанию не видно.
+    pricingPolicy: policy([usd('Plus', 59), usd('Ultra', 129)]),
   },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
