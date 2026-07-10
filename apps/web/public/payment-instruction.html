@@ -195,7 +195,12 @@
     color: var(--paper); background: var(--teal);
     border: 3px solid var(--ink); border-radius: 14px;
     box-shadow: var(--shadow); padding: 12px 22px; text-decoration: none;
+    transition: transform 0.1s, box-shadow 0.1s;
   }
+  .cta:hover { transform: translate(-1px, -1px); box-shadow: var(--shadow-lg); }
+  .cta:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+  .cta-lg { font-size: clamp(16px, 2.6vw, 19px); padding: 15px 28px; }
+  a.link { color: var(--teal-soft); }
   @media (max-width: 720px) {
     .cols-2 { grid-template-columns: 1fr; }
     .slide-mascot { height: 112px; }
@@ -414,6 +419,28 @@
       </ol>
     </div>
     <p class="note">Всё равно не выходит — напиши в боте команду <code>/support</code> и коротко опиши, что не получилось. Оператор ответит тебе прямо в Telegram.</p>
+  </div>
+</section>
+
+<!-- 9 — ФИНАЛ: переход в Mini App -->
+<section class="slide halftone" id="s9">
+  <div class="inner">
+    <img class="slide-mascot" src="/mascot/celebrate.png?v=2" alt="Оплатишка радуется" />
+    <span class="kicker">Следующий шаг</span>
+    <h2>Оплатить ещё одну подписку</h2>
+    <p class="lead">Открывай приложение — там каталог сервисов, тарифы и оплата в рублях. Карта и её данные придут в бот, как в прошлый раз.</p>
+    <!--
+      Прямой deep-link в Mini App (t.me/<bot>/<short_name>) открывает /cabinet
+      одним тапом, минуя чат бота. `oplatishkaMiniApp` — short name, выданный
+      /newapp у @oplatishkaa_bot; переименуют приложение — править ссылку здесь.
+      Обычная <a> без JS: universal link открывает Telegram только на прямом
+      тапе (window.open/location.replace после await на iOS не доводит до бота —
+      см. фикс мобильной привязки 2026-07-03).
+      Ссылка захардкожена на prod-бота: статический лендинг не резолвит username
+      по окружению, на preview кнопка тоже ведёт в прод.
+    -->
+    <p><a class="cta cta-lg" href="https://t.me/oplatishkaa_bot/oplatishkaMiniApp">Выбрать сервис в приложении →</a></p>
+    <p class="note">Приложение не открылось? Зайди в бота <a class="link" href="https://t.me/oplatishkaa_bot?start=app">@oplatishkaa_bot</a> — он пришлёт кнопку «Открыть приложение».</p>
   </div>
 </section>
 
