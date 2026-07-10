@@ -8,6 +8,7 @@ import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { getBotUsername } from '@/lib/telegram/bot';
+import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { resolveReferralRequester } from '@/lib/cabinet/referral-auth';
 import { buildReferralSnapshot, type ReferralSnapshotContext } from '@/lib/cabinet/referral-read';
 import { requestReferralPayout } from '@/lib/cabinet/referral-actions';
@@ -125,7 +126,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           enabled: true,
           telegramLinked,
           botUsername: await resolveBotUsername(),
-          miniAppShortName: serverEnv.TELEGRAM_MINIAPP_SHORTNAME ?? null,
+          miniAppShortName: referralMiniAppShortName(),
           minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
         };
         const snapshot = await buildReferralSnapshot(userId, ctx);
