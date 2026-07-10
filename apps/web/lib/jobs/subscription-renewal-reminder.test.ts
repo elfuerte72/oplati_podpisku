@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 type Ord = { id: string; userId: string; shortId: string; serviceId: string | null };
 
 const state: { orders: Ord[]; telegramId: string | null } = { orders: [], telegramId: null };
-const sendMessage = vi.fn(async (_chatId: string | number, _text: string) => ({}));
+const sendMessage = vi.fn<(chatId: string | number, text: string) => Promise<unknown>>();
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
