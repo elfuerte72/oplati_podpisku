@@ -21,7 +21,7 @@ type Profile = {
   totalSpentKopecks: number;
 };
 
-type ProfileResponse = { ok: boolean; profile?: Profile; supportUrl?: string | null };
+type ProfileResponse = { ok: boolean; profile?: Profile; cabinetUrl?: string | null };
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -35,7 +35,8 @@ function Row({ label, value }: { label: string; value: string }) {
 /**
  * Правая панель: крупный Оплатишка — единственный маскот на десктопе.
  * Ниже — профиль из БД (/api/profile): имя из Telegram, привязка, число
- * оплаченных заказов, сумма трат + кнопки «Привязать Telegram» и «Поддержка».
+ * оплаченных заказов, сумма трат. Кнопка внизу зависит от привязки: до неё —
+ * «Привязать Telegram», после — «Личный кабинет» (Mini App в Telegram).
  * Обновляется после привязки (linkPhase) и после оплаты (PROFILE_REFRESH_EVENT).
  *
  * Адаптив: на десктопе (lg+) — статичный сайдбар; на мобильном — выезжающая
@@ -55,7 +56,7 @@ export function ProfilePanel({
   onClose?: () => void;
 }) {
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [supportUrl, setSupportUrl] = useState<string | null>(null);
+  const [cabinetUrl, setCabinetUrl] = useState<string | null>(null);
 
   // На мобильном закрытый drawer уезжает off-screen (translate-x-full), но
   // остаётся в DOM — прячем его от скринридеров/таб-навигации через inert.
@@ -84,7 +85,7 @@ export function ProfilePanel({
       .then((res) => res.json() as Promise<ProfileResponse>)
       .then((data) => {
         if (data.ok && data.profile) setProfile(data.profile);
-        setSupportUrl(data.supportUrl ?? null);
+        setCabinetUrl(data.cabinetUrl ?? null);
       })
       .catch(() => {
         // профиль не критичен — останутся значения по умолчанию
@@ -153,18 +154,15 @@ export function ProfilePanel({
         {/* Личный профиль */}
         <div className="space-y-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface-2)] p-4 shadow-[var(--shadow-comic)]">
           <h3 className="font-display font-bold text-[var(--text)]">Личный профиль</h3>
-          <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--bg)] font-display text-lg font-bold text-[var(--text)]">
-              {(displayName ?? 'Гость').slice(0, 1).toUpperCase()}
+          {/* Аватар не показываем: у веб-сессии нет initData, а тянуть фото
+              через Bot API ради кружка не стоит. Только имя из Telegram. */}
+          <div className="leading-tight">
+            <span className="block font-display font-bold text-[var(--text)]">
+              {displayName ?? 'Гость'}
             </span>
-            <div className="leading-tight">
-              <span className="block font-display font-bold text-[var(--text)]">
-                {displayName ?? 'Гость'}
-              </span>
-              <span className="font-body text-xs text-[var(--text-muted)]">
-                {linkPhase === 'linked' ? 'аккаунт привязан к Telegram' : 'без регистрации'}
-              </span>
-            </div>
+            <span className="font-body text-xs text-[var(--text-muted)]">
+              {linkPhase === 'linked' ? 'аккаунт привязан к Telegram' : 'без регистрации'}
+            </span>
           </div>
           <div className="space-y-1.5 border-t-2 border-[var(--shadow-ink)] pt-3">
             <Row label="Заказов" value={String(profile?.ordersCount ?? 0)} />
@@ -215,16 +213,18 @@ export function ProfilePanel({
           🤝 Партнёрская программа
         </Link>
 
-        {/* Telegram — открывает бота (deep-link на /start: приветствие + меню). */}
-        {supportUrl && (
+        {/* Личный кабинет — Mini App в Telegram. Показываем только после
+            привязки: у непривязанной сессии кабинет пуст (нет telegram_id),
+            а вход в бота ей и так даёт кнопка «Привязать Telegram» выше. */}
+        {linkPhase === 'linked' && cabinetUrl && (
           <a
-            href={supportUrl}
+            href={cabinetUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface-2)] px-4 py-2 font-display font-bold text-[var(--text)] shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
           >
             <TelegramIcon className="h-4 w-4 shrink-0" />
-            Telegram
+            Личный кабинет
           </a>
         )}
       </aside>

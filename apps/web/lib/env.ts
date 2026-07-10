@@ -82,14 +82,25 @@ const serverEnvSchema = z.object({
   SUPPORT_OPERATOR_CHAT_ID: optionalEnvString(
     z.string().regex(/^(-?\d+|@[A-Za-z0-9_]{4,})$/, 'must be a numeric chat id or @username'),
   ),
-  // Short name зарегистрированного в BotFather Mini App (/newapp). Задан →
-  // реф-ссылка кабинета собирается как прямая ссылка на приложение
-  // `t.me/<bot>/<shortname>?startapp=ref_<code>` (реф-код доезжает в
-  // initData.start_param и захватывается при входе). Не задан → fallback на
-  // bot-deep-link `?start=ref_<code>` (срабатывает только при нажатии «Начать»).
+  // Short name зарегистрированного в BotFather Mini App (/newapp) — на проде
+  // `oplatishkaMiniApp`. Задан → кнопка «Личный кабинет» на сайте ведёт прямой
+  // ссылкой `t.me/<bot>/<shortname>` (кабинет открывается одним тапом). Не задан
+  // → fallback `t.me/<bot>?start=cabinet`: бот покажет /start-меню с web_app-
+  // кнопкой (лишний тап, но работает всегда — например у preview-бота, где
+  // приложение не зарегистрировано).
   TELEGRAM_MINIAPP_SHORTNAME: optionalEnvString(
     z.string().regex(/^[A-Za-z0-9_]{3,64}$/, 'must be a Telegram app short name'),
   ),
+  // Формат реф-ссылки приглашения. По умолчанию ВЫКЛЮЧЕНО (решение владельца
+  // 2026-07-02 в пользу bot-контекста): ссылка — `t.me/<bot>?start=ref_<code>`,
+  // друг сначала видит бота и приветствие. '1'/'true' + заданный
+  // TELEGRAM_MINIAPP_SHORTNAME → прямая ссылка на приложение
+  // `t.me/<bot>/<shortname>?startapp=ref_<code>` (реф-код доезжает в
+  // initData.start_param). Отдельный флаг, чтобы short name можно было задать
+  // ради кнопки «Личный кабинет», не меняя поведение реф-ссылки.
+  REFERRAL_MINIAPP_DEEPLINK: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
 
   // Платежи (Sprint 2)
   YOOKASSA_SHOP_ID: optionalEnvString(),

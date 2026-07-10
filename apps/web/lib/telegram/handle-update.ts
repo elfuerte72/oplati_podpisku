@@ -65,7 +65,7 @@ import {
   catalogCustomAmountPrompt,
   catalogTierButtonLabel,
   catalogTierPrompt,
-  CHANNEL_MOCK_TEXT,
+  CHANNEL_LINK_TEXT,
   MEDIA_REPLY,
   orderCardText,
   buildSupportOperatorMessage,
@@ -80,6 +80,7 @@ import {
   SUPPORT_FAIL_TEXT,
   SUPPORT_SENT_TEXT,
   SUPPORT_UNAVAILABLE_TEXT,
+  TELEGRAM_CHANNEL_URL,
   VPN_MOCK_TEXT,
   type MediaKind,
 } from './templates';
@@ -886,10 +887,11 @@ function buildConfirmKeyboard(orderId: string): InlineKeyboard {
 /**
  * Inline-меню под приветствием /start (заменило постоянную reply-клавиатуру
  * 2026-07-02): Mini App (каталог + оплата + карта + партнёрка) — главный флоу,
- * поддержка — существующий callback `support`, VPN и канал — заглушки до
- * запуска продуктов. Тексты старых reply-кнопок («Выбрать сервис» /
- * «Написать в поддержку») по-прежнему перехватываются в handleTelegramUpdate —
- * у существующих пользователей клавиатура осталась раскрытой.
+ * поддержка — существующий callback `support`, канал — url-кнопка (канал создан
+ * 2026-07-10), VPN — заглушка до запуска продукта. Тексты старых reply-кнопок
+ * («Выбрать сервис» / «Написать в поддержку») по-прежнему перехватываются в
+ * handleTelegramUpdate — у существующих пользователей клавиатура осталась
+ * раскрытой.
  */
 function buildStartMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
@@ -905,7 +907,7 @@ function buildStartMenuKeyboard(): InlineKeyboard {
     .row()
     .text(START_VPN_BUTTON, 'vpn')
     .row()
-    .text(START_CHANNEL_BUTTON, 'channel');
+    .url(START_CHANNEL_BUTTON, TELEGRAM_CHANNEL_URL);
 }
 
 /** Кнопка «<< Назад к списку» (вернуться к выбору сервиса). */
@@ -1050,7 +1052,8 @@ async function resolveCallbackContext(
  *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
  *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
  *   - `support`      → обращение в поддержку: просим описать проблему;
- *   - `vpn` / `channel` → заглушки стартового меню (продукты ещё не запущены);
+ *   - `vpn`          → заглушка стартового меню (продукт ещё не запущен);
+ *   - `channel`      → легаси старых меню: ссылка на Telegram-канал;
  *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
  *   - `tier:<slug>:<idx>` → выбран тариф: создать заказ → кнопки confirm/cancel;
  *   - `confirm:<orderId>` → confirmOrder (создание L&P invoice) + ссылка оплаты;
@@ -1114,8 +1117,9 @@ async function handleCallbackQuery(
       await sendSafely(chatId, VPN_MOCK_TEXT, updateId);
       return;
     case 'channel':
-      // Заглушка: канал ещё не создан.
-      await sendSafely(chatId, CHANNEL_MOCK_TEXT, updateId);
+      // Легаси: в новых меню это url-кнопка. Callback приходит только со старых
+      // сообщений — отвечаем ссылкой на канал.
+      await sendSafely(chatId, CHANNEL_LINK_TEXT, updateId);
       return;
     case 'svc': {
       const slug = parts[1];

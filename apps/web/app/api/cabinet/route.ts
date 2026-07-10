@@ -6,6 +6,7 @@ import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 import { getBotUsername } from '@/lib/telegram/bot';
+import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { resolveCabinetUser } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
 import { getReferralLinkForCabinet } from '@/lib/cabinet/referral-read';
@@ -113,7 +114,7 @@ export async function POST(req: Request): Promise<NextResponse> {
               getReferralLinkForCabinet(userId, {
                 enabled: true,
                 botUsername,
-                miniAppShortName: serverEnv.TELEGRAM_MINIAPP_SHORTNAME ?? null,
+                miniAppShortName: referralMiniAppShortName(),
               }),
             )
           : Promise.resolve(null);

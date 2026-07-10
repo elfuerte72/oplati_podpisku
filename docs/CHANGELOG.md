@@ -6,6 +6,48 @@
 
 ---
 
+## 2026-07-10 — Кнопка «Личный кабинет» на сайте, канал в меню бота
+
+### Changed
+
+- **Панель профиля (сайт):** кнопка «Telegram» (вела просто в бота) заменена на **«Личный кабинет»** — она появляется только после привязки Telegram и ведёт в Mini App. Ссылку отдаёт `/api/profile` полем `cabinetUrl` (`cabinetDeepLink()` в новом `lib/telegram/deep-links.ts`): при заданном `TELEGRAM_MINIAPP_SHORTNAME` — прямой `t.me/<bot>/<shortname>` (кабинет одним тапом), иначе fallback `t.me/<bot>?start=cabinet` (в /start-меню есть web_app-кнопка). Из браузера web_app-кнопку открыть нельзя — только через Telegram.
+- **Аватар в профиле убран** — остаётся имя из Telegram. У веб-сессии нет `initData`, а тянуть фото через Bot API (`getUserProfilePhotos` + `getFile` + прокси, т.к. URL файла содержит токен бота) ради кружка признано неоправданным.
+- **Кнопка «Telegram-канал»** в /start-меню бота стала настоящей url-кнопкой на `t.me/ooplatishka` (канал создан) вместо callback-заглушки. Callback `channel` оставлен: старые отправленные меню отвечают ссылкой на канал.
+
+### Added
+
+- Флаг `REFERRAL_MINIAPP_DEEPLINK` (дефолт `false`). Раньше формат реф-ссылки был завязан на `TELEGRAM_MINIAPP_SHORTNAME`, и задание short name ради кнопки кабинета молча переключило бы приглашение с bot-контекста (`?start=ref_`) на `?startapp=ref_`. Теперь short name — факт регистрации приложения, а формат реф-ссылки — отдельное решение (`referralMiniAppShortName()`).
+
+---
+
+## 2026-07-08 — Аудит безопасности: 14 находок закрыты (2 HIGH + 6 MEDIUM + 6 LOW)
+
+Многоагентный аудит всей кодовой базы (19 зон × осей: безопасность / платежи-деньги-идемпотентность / RLS-PII / корректность / тесты; адверсариальная верификация каждой находки). Платёжное ядро держалось — **0 BLOCKER**; исправлены дефекты на периферии. PR #66 (HIGH+MEDIUM) + #67 (LOW), оба на Production (Vercel MCP подтвердил READY).
+
+### Security
+
+- **H1 — полный PAN/CVV мог утечь в логи/Sentry.** `PaySpaceContractError.rawBody` (сырое тело card-эндпоинтов) при дрейфе контракта попадал в `log.error({ err })` / `captureException`. Свойство сделано неперечисляемым (`Object.defineProperty enumerable:false`) — pino/Sentry его не сериализуют; в `logger.ts` добавлен redact `err.rawBody`/`*.rawBody` вторым слоем.
+- **M3 — обход rate-limit спуфингом (CWE-348).** `getClientIp` (`ratelimit.ts`) больше не доверяет левому `x-forwarded-for` (клиент подделывает на Vercel) — приоритет неподделываемого `x-real-ip`, `xff` только fallback (правый элемент). Иначе ротация заголовка обнуляла per-IP лимит на 4 эндпоинтах.
+- **M1/M2 — cost-DoS через создание `users`.** `GET /api/orders/status` стал read-only (`readWebSessionId`+`findUserIdByWebSessionId`, пользователя не создаёт) + rate-limit по IP; `POST /api/cabinet/referral` и `/api/chat/clear` (L1) получили IP-барьер ДО записей в БД.
+- **L6 — Zod на входах AI-tools.** Сырой `tool_use.input` парсится схемами (`searchCatalog/proposeOrder/confirmOrder/requestHumanInput` в `@oplati/types`, `.max()` на строках) ДО обработчика; провал → `is_error`. Устаревшая `proposeOrderInput` переписана под контракт `ToolHandlers`.
+
+### Fixed
+
+- **H2 — двойной выпуск карты.** `createCard` (единственная мутирующая операция PaySpace без `request_id`) ретраился на таймаут/5xx → повтор выпускал вторую профинансированную карту-призрак (потеря funding + $4). Помечен `idempotent:false` — не ретраится.
+- **M4 — TOCTOU статуса платежа.** `markPaymentStatus` (безусловный UPDATE) мог перезаписать `succeeded→failed` при конкурентной доставке `invoice.paid`+`invoice.expired`. Заменён атомарным `claimPaymentTerminal` (условный `pending→failed`, null-возврат = idempotent_skip); `markPaymentStatus` удалён.
+- **M5 — застрявший VCC-фонд.** `idleAgedActiveCards` фильтровал по `last_used_at < now()-90d`, но у живых карт он `NULL` (`NULL < ts` = NULL) → карты не идлились → не доходили до `release`. Простой меряем от `COALESCE(last_used_at, created_at)`; `updateBalance` (топ-ап) проставляет `last_used_at`.
+- **M6 — дубли напоминаний о продлении.** Окно выборки (3 дня) шире шага крона (сутки) → 3-4 одинаковых сообщения. `findOrdersForRenewalReminder` исключает заказы с событием `renewal_reminder_sent` (`NOT EXISTS`); новая `appendOrderEvent` пишет это событие после отправки.
+- **L2 — `createDraftOrder`** оборачивает INSERT `orders` + `order_created` в одну транзакцию (append-only атомарность A1/A4).
+- **L3 — комментарий state-machine** приведён к коду (`failed`/`completed` квази-терминальны → `refund_requested`, а не «пустой массив»).
+- **L4 — `Number(telegramId)`** терял точность на больших 64-битных chat_id → передаём строкой (`expire-payments`, `renewal-reminder`).
+- **L5 — реквизиты новой карты** отправляются ПОСЛЕ `transitionOrder(completed)` best-effort: сбой доставки больше не откатывает выполненный заказ в `failed` и не шлёт ложный ops-алёрт «не доставлен».
+
+### Ops
+
+- Тесты: web 238→252, types 87→95, db 15→18 (+19 регрессов на находки, включая PGlite-тест `idleAgedActiveCards` на `NULL last_used_at`). Typecheck + lint чисто. PR #66/#67 squash в `main`, Production READY.
+- Скил `/full-review` (`.claude/skills/full-review/`) — проектный чеклист инвариантов (CLAUDE.md) для точечного ревью веток/PR параллельными саб-агентами по осям.
+- **Не входит в аудит кода:** 11 dependabot-уязвимостей (4 critical) в зависимостях — отдельная задача.
+
 ## 2026-07-03 — Надбавка за карту в цене, выключатель AI-чата бота, домен oplatishka.com, чистка UI
 
 ### Added
@@ -42,7 +84,7 @@
 
 ### Changed
 
-- **`/start` бота — inline-меню** (`buildStartMenuKeyboard`) вместо постоянной reply-клавиатуры: web_app «Открыть приложение» (prod `APP_URL` / preview `VERCEL_URL`), «Поддержка», заглушки-моки «VPN» / «Telegram-канал» (`callback vpn`/`channel`). Тексты старых reply-кнопок ещё перехватываются для существующих пользователей.
+- **`/start` бота — inline-меню** (`buildStartMenuKeyboard`) вместо постоянной reply-клавиатуры: web_app «Открыть приложение» (prod `APP_URL` / preview `VERCEL_URL`), «Поддержка», заглушка-мок «Telegram-канал» (`callback channel`). Тексты старых reply-кнопок ещё перехватываются для существующих пользователей.
 - **Список заказов (история покупок) в кабинете удалён** (`OrderRow.tsx` удалён) — кабинет = «оплатить подписку» + карта + партнёрка; снапшот `orders` бэкенд отдаёт, UI не рендерит.
 - **Ссылка-приглашение вернулась на bot deep-link** `t.me/<bot>?start=ref_<code>` — `TELEGRAM_MINIAPP_SHORTNAME` снят с прода (владелец предпочёл контекст бота: друг видит «Оплатишку», а не голый mini app).
 
