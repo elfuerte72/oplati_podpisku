@@ -43,6 +43,9 @@ function RubBreakdown({
       <>
         <Row label="Подписка" value={formatRub(totalKopecks - cardIssueFeeKopecks)} />
         <Row label="Выпуск карты" value={`+ ${formatRub(cardIssueFeeKopecks)}`} />
+        <p className="font-body text-xs text-[var(--text-muted)]">
+          разово — за выпуск личной карты США; в следующих заказах этой строки не будет
+        </p>
         <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
         <div className="flex justify-between gap-4 font-display text-base font-bold">
           <dt className="text-[var(--text)]">Итого</dt>
