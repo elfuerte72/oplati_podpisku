@@ -1,0 +1,12 @@
+node_modules
+.git
+.next
+.turbo
+.vercel
+.env*
+content_site
+api-1.json
+audit-report-*.html
+.agents
+.claude
+docs
