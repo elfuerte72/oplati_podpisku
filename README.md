@@ -119,7 +119,7 @@ oplati_podpicky/
     ├── types/   @oplati/types  — Zod-схемы и state machine заказа (источник правды контрактов)
     │   └── src/  order-state-machine.ts · loveandpay.ts · paypace.ts · telegram*.ts · index.ts
     ├── db/      @oplati/db     — Drizzle schema + repositories + migrations
-    │   └── src/  schema.ts (12 таблиц) · repositories/* (users, orders, payments, cards, …)
+    │   └── src/  schema.ts (16 таблиц) · repositories/* (users, orders, payments, cards, …)
     └── agent/   @oplati/agent  — AI-агент; НЕ импортирует db (только через ToolHandlers)
         └── src/  index.ts (runAgent) · client.ts · prompts.ts · router.ts · tools.ts
 ```
@@ -221,9 +221,10 @@ Vercel `fra1`. Два окружения с **раздельными Telegram-б
 
 ## База данных
 
-Supabase Postgres, Drizzle ORM, RLS включён. 12 таблиц (схема — `packages/db/src/schema.ts`):
+Supabase Postgres, Drizzle ORM, RLS включён. 16 таблиц (схема — `packages/db/src/schema.ts`):
 `users`, `link_tokens`, `staff`, `conversations`, `messages`, `services` (каталог),
-`orders`, `order_events`, `payments`, `cards`, `attachments`, `ai_usage_daily`.
+`orders`, `order_events`, `payments`, `cards`, `attachments`, `ai_usage_daily`,
+`referral_partners`, `referral_accruals`, `referral_payouts`, `referral_monthly_stats`.
 
 Как устроена БД — [`docs/database.html`](./docs/database.html). Миграции — только forward-only
 через Drizzle (см. `CLAUDE.md` → Миграции БД).
