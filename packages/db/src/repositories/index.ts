@@ -34,6 +34,7 @@ export {
 export {
   createLinkToken,
   consumeLinkToken,
+  deleteExpiredLinkTokens,
   LINK_TOKEN_PREFIX,
   type CreateLinkTokenInput,
   type CreateLinkTokenResult,

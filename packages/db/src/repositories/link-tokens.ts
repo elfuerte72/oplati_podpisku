@@ -340,3 +340,28 @@ export async function consumeLinkToken(
 function hash8(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 8);
 }
+
+/**
+ * Чистка протухших неиспользованных токенов (аудит 2026-07-11 F-17: строки
+ * копились без retention — сотни за первый месяц). Retention 30 дней ПОСЛЕ
+ * истечения: свежепротухшие остаются для расследований (например, диагностика
+ * мобильной привязки по `used_at IS NULL`), давно мёртвые — удаляются.
+ * Использованные токены (used_at IS NOT NULL) не трогаем — это аудит привязок.
+ */
+export async function deleteExpiredLinkTokens(
+  db: DB,
+  opts: { olderThanDays?: number } = {},
+  log: RepoLogger = noopLogger,
+): Promise<number> {
+  const days = opts.olderThanDays ?? 30;
+  const deleted = await db.execute<{ id: string }>(sql`
+    DELETE FROM link_tokens
+    WHERE used_at IS NULL
+      AND expires_at < now() - make_interval(days => ${days})
+    RETURNING id
+  `);
+  if (deleted.length > 0) {
+    log.info({ event: 'db.link_tokens.cleanup', deleted: deleted.length, olderThanDays: days });
+  }
+  return deleted.length;
+}

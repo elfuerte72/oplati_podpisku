@@ -103,7 +103,6 @@ oplati_podpicky/
 │       ├── logger.ts                pino singleton + childLogger(module)
 │       ├── sentry.ts                shared Sentry options + PII beforeSend
 │       ├── ratelimit.ts             per-identity rate-limit (Upstash sliding window)
-│       ├── supabase/                browser / server / admin (service_role) клиенты
 │       ├── telegram/                bot.ts (singleton) + handle-update.ts + templates.ts
 │       ├── tool-handlers/           реализация ToolHandlers для агента (4 tools)
 │       ├── loveandpay/              клиент + подпись + webhook-handlers (приём RUB)

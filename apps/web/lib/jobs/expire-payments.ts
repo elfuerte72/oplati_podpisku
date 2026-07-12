@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  deleteExpiredLinkTokens,
   findExpiredPendingOrders,
   getDb,
   getUserTelegramId,
@@ -61,6 +62,15 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
         extra: { orderId: order.id },
       });
     }
+  }
+
+  // Попутная чистка давно протухших неиспользованных link_tokens (аудит F-17):
+  // отдельный cron не заводим — токены и заказы протухают по одной природе.
+  // Best-effort: сбой чистки не влияет на результат основного джоба.
+  try {
+    await deleteExpiredLinkTokens(db, {}, log);
+  } catch (err) {
+    log.warn({ event: 'cron.expire_payments.link_tokens_cleanup_failed', err });
   }
 
   log.info({ event: 'cron.expire_payments.done', expired: expired.length, errors });

@@ -56,7 +56,6 @@ apps/web/          Next.js 16 — единый деплой: веб-чат (page
   lib/env.ts                      Zod-валидация env (lazy) + env.server.ts (`server-only`)
   lib/logger.ts                   pino singleton + childLogger(module)
   lib/sentry.ts                   shared Sentry options + PII beforeSend
-  lib/supabase/                   browser / server / admin (service_role) клиенты
   lib/telegram/                   bot.ts (singleton) + handle-update.ts + templates.ts
   lib/tool-handlers/              реализация ToolHandlers (4 tools)
   lib/loveandpay/                 клиент + подпись + webhook-handlers (+ тесты)
