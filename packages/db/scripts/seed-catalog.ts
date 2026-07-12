@@ -162,18 +162,6 @@ const CATALOG: readonly CatalogEntry[] = [
     pricingPolicy: policy([usd('Plus', 4.99), usd('Pro', 19.99), usd('Ultra', 99.99)]),
   },
   {
-    slug: 'grok-pro',
-    name: 'Grok',
-    description: 'AI-ассистент от xAI',
-    category: 'ai',
-    requiresKyc: false,
-    pricingPolicy: policy([
-      usd('SuperGrok Lite', 10),
-      usd('SuperGrok', 30),
-      usd('SuperGrok Heavy', 300),
-    ]),
-  },
-  {
     slug: 'perplexity-pro',
     name: 'Perplexity',
     description: 'AI-поиск',
@@ -281,6 +269,21 @@ const CATALOG: readonly CatalogEntry[] = [
  * заказов не трогается: деактивация вместо DELETE.
  */
 const ARCHIVED_CATALOG: readonly CatalogEntry[] = [
+  // ─── AI ──────────────────────────────────────────────────────────────────
+  {
+    // Убран из витрины 2026-07-12 (решение владельца).
+    slug: 'grok-pro',
+    name: 'Grok',
+    description: 'AI-ассистент от xAI',
+    category: 'ai',
+    requiresKyc: false,
+    pricingPolicy: policy([
+      usd('SuperGrok Lite', 10),
+      usd('SuperGrok', 30),
+      usd('SuperGrok Heavy', 300),
+    ]),
+  },
+
   // ─── Streaming (убраны из витрины 2026-07-07) ────────────────────────────────
   {
     slug: 'netflix-premium',
