@@ -41,6 +41,18 @@ const redactPaths: string[] = [
   '*.email',
   '*.phone',
   '*.card',
+  // Карточные реквизиты и auth-строки (аудит 2026-07-11 F-06): первичная защита —
+  // код никогда их не логирует (card-secrets.ts, non-enumerable rawBody); это
+  // страховочный слой на случай будущего рефакторинга. pan_masked НЕ редактируем
+  // (маскированный PAN — легитимный идентификатор в логах).
+  '*.pan',
+  '*.cvc',
+  '*.cvv',
+  '*.cardNo',
+  '*.card_no',
+  '*.initData',
+  '*.init_data',
+  '*.signature',
   'body.content',
   'body.text',
   'body.message',

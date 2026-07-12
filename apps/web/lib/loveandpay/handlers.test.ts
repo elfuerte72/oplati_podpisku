@@ -347,4 +347,42 @@ describe('processInvoiceTerminal', () => {
     expect(db.claimPaymentTerminal).toHaveBeenCalledTimes(1);
     expect(db.transitionOrder).not.toHaveBeenCalled();
   });
+
+  it('F-05: OrderTransitionError на переходе НЕ роняет обработку (claim фиксируется)', async () => {
+    // Легитимная гонка: заказ уже истёк по cron (expired→expired запрещён).
+    // Платёж должен остаться failed (claim закоммичен), результат — processed.
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(
+      new OrderTransitionError('order-1', 'expired', 'expired'),
+    );
+
+    const res = await processInvoiceTerminal({
+      data: { ...data, status: 'EXPIRED' },
+      reason: 'expired',
+    });
+
+    expect(res.kind).toBe('processed');
+  });
+
+  it('F-05: транзиентный сбой на переходе пробрасывается (транзакция откатит claim)', async () => {
+    // Обрыв соединения — НЕ бизнес-аномалия: re-throw из transaction-callback
+    // откатывает и claim, платёж остаётся pending, ретрай L&P/poll доиграет оба
+    // шага. Граница webhook'а ловит throw → 200 OK (инвариант №6).
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+    });
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(
+      processInvoiceTerminal({ data: { ...data, status: 'EXPIRED' }, reason: 'expired' }),
+    ).rejects.toThrow('connection reset');
+  });
 });

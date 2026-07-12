@@ -190,9 +190,13 @@ export async function claimPaymentSucceeded(
  *
  * Возвращает `null`, если платёж уже не `pending` (гонку выиграл paid-путь либо
  * повторное терминальное событие) — вызывающий трактует это как idempotent_skip.
+ *
+ * Принимает `DBLike`: вызывается из транзакции `processInvoiceTerminal` (claim +
+ * переход заказа atomically — транзиентный сбой перехода откатывает и claim,
+ * симметрично `claimPaymentSucceeded`).
  */
 export async function claimPaymentTerminal(
-  db: DB,
+  db: DBLike,
   paymentId: string,
   log: RepoLogger = noopLogger,
 ): Promise<PaymentRow | null> {

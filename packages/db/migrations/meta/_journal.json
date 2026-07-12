@@ -141,6 +141,20 @@
       "when": 1783019938556,
       "tag": "0019_spicy_nuke",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783882296929,
+      "tag": "0020_secret_valkyrie",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783882310905,
+      "tag": "0021_forbid_mutation_search_path",
+      "breakpoints": true
     }
   ]
 }
