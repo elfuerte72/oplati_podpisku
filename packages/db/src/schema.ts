@@ -214,6 +214,9 @@ export const messages = pgTable(
   },
   (t) => ({
     conversationIdx: index('messages_conversation_id_idx').on(t.conversationId, t.createdAt),
+    // Покрытие FK (аудит 2026-07-11 F-10): без индекса удаление/поиск по staff
+    // деградирует в seq scan по messages.
+    staffIdx: index('messages_staff_id_idx').on(t.staffId),
   }),
 ).enableRLS();
 
@@ -280,6 +283,12 @@ export const orders = pgTable(
     statusIdx: index('orders_status_idx').on(t.status),
     userIdx: index('orders_user_id_idx').on(t.userId),
     operatorIdx: index('orders_operator_id_idx').on(t.assignedOperatorId),
+    // Покрытие FK (аудит 2026-07-11 F-10): cascade/restrict-проверки и join'ы
+    // по этим ссылкам без индексов деградируют в seq scan при росте orders.
+    conversationIdx: index('orders_conversation_id_idx').on(t.conversationId),
+    serviceIdx: index('orders_service_id_idx').on(t.serviceId),
+    supervisorIdx: index('orders_supervisor_id_idx').on(t.supervisorId),
+    cardIdx: index('orders_card_id_idx').on(t.cardId),
     // Частичный индекс под горячий cron-запрос findStuckPaidOrders (каждые 5 мин:
     // status='paid' AND paid_at < cutoff). Крошечный — только активные `paid`.
     stuckPaidIdx: index('orders_stuck_paid_idx')
@@ -469,6 +478,9 @@ export const referralAccruals = pgTable(
       .where(sql`${t.status} = 'accrued'`),
     // Recovery/orderHasAccruals пробят по order_id — индекс (находка код-ревью, перф).
     orderIdx: index('referral_accruals_order_id_idx').on(t.orderId),
+    // Покрытие FK source_user_id (аудит 2026-07-11 F-10): ON DELETE SET NULL
+    // при удалении user без индекса сканирует весь ledger.
+    sourceUserIdx: index('referral_accruals_source_user_id_idx').on(t.sourceUserId),
     // Деньги неотрицательны (defense-in-depth): начисления всегда > 0 (план дропает
     // floor-в-ноль), reversal — положительная строка со status='reversed'.
     amountNonNeg: check('referral_accruals_amount_nonneg', sql`${t.amountUsdCents} >= 0`),
@@ -550,15 +562,24 @@ export const aiUsageDaily = pgTable('ai_usage_daily', {
 
 // ─── Attachments (Supabase Storage refs) ──────────────────────────────────
 
-export const attachments = pgTable('attachments', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
-  messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
-  kind: attachmentKindEnum('kind').notNull(),
-  storagePath: text('storage_path').notNull(),
-  mimeType: text('mime_type'),
-  sizeBytes: integer('size_bytes'),
-  // полиморфный uploader: users.id или staff.id
-  uploadedBy: uuid('uploaded_by'),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}).enableRLS();
+export const attachments = pgTable(
+  'attachments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    kind: attachmentKindEnum('kind').notNull(),
+    storagePath: text('storage_path').notNull(),
+    mimeType: text('mime_type'),
+    sizeBytes: integer('size_bytes'),
+    // полиморфный uploader: users.id или staff.id
+    uploadedBy: uuid('uploaded_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // Покрытие FK (аудит 2026-07-11 F-10): ON DELETE SET NULL по orders/messages
+    // без индексов сканирует attachments целиком.
+    orderIdx: index('attachments_order_id_idx').on(t.orderId),
+    messageIdx: index('attachments_message_id_idx').on(t.messageId),
+  }),
+).enableRLS();

@@ -227,7 +227,46 @@ export async function processInvoiceTerminal(input: InvoiceTerminalInput): Promi
   // если терминальное событие пришло после того, как paid-путь конкурентно
   // перевёл платёж в succeeded и выпустил карту, claim вернёт null, и мы НЕ
   // перезаписываем succeeded→failed (иначе рассинхрон сверки).
-  const claimed = await claimPaymentTerminal(db, payment.id, log);
+  //
+  // Claim и переход заказа — В ОДНОЙ транзакции (симметрично processInvoicePaid,
+  // находка аудита 2026-07-11 F-05). Раньше claim коммитился отдельно: транзиентный
+  // сбой на transitionOrder оставлял payment=failed при заказе в pending_payment,
+  // а повтор webhook'а получал idempotent_skip и переход не доигрывался никогда.
+  // Теперь транзиентный сбой откатывает и claim → ретрай L&P/poll обработает заново.
+  // OrderTransitionError — НЕ транзиентный сбой, а легитимная гонка (заказ уже
+  // ушёл иным путём: оплачен, истёк по cron): claim фиксируем, переход пропускаем.
+  const claimed = await db.transaction(async (tx) => {
+    const row = await claimPaymentTerminal(tx, payment.id, log);
+    if (!row) return null;
+
+    try {
+      await transitionOrder(tx, {
+        orderId: payment.orderId,
+        toStatus: reason,
+        actorType: 'payment_provider',
+        eventType: `payment_${reason}`,
+        payload: { paymentId: payment.id, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
+      });
+    } catch (err) {
+      if (!(err instanceof OrderTransitionError)) {
+        // Транзиентный сбой — re-throw откатывает транзакцию вместе с claim'ом.
+        throw err;
+      }
+      log.warn({
+        event: 'loveandpay.handlers.terminal_transition_skip',
+        orderId: payment.orderId,
+        reason,
+        err,
+      });
+      Sentry.captureException(err, {
+        level: 'warning',
+        tags: { source: 'loveandpay.handlers', step: 'transition_terminal' },
+        extra: { orderId: payment.orderId, invoiceId: data.id, reason },
+      });
+    }
+    return row;
+  });
+
   if (!claimed) {
     log.info({
       event: 'loveandpay.handlers.idempotent_skip',
@@ -235,31 +274,6 @@ export async function processInvoiceTerminal(input: InvoiceTerminalInput): Promi
       reason: 'not_pending',
     });
     return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'not_pending' };
-  }
-
-  try {
-    await transitionOrder(db, {
-      orderId: payment.orderId,
-      toStatus: reason,
-      actorType: 'payment_provider',
-      eventType: `payment_${reason}`,
-      payload: { paymentId: payment.id, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
-    });
-  } catch (err) {
-    // Терминальный переход (expired/cancelled) запрещён — обычно безобидная
-    // гонка (заказ уже оплачен/отменён иным путём). Логируем + Sentry warning
-    // для видимости, но без error-алерта.
-    log.warn({
-      event: 'loveandpay.handlers.terminal_transition_skip',
-      orderId: payment.orderId,
-      reason,
-      err,
-    });
-    Sentry.captureException(err, {
-      level: 'warning',
-      tags: { source: 'loveandpay.handlers', step: 'transition_terminal' },
-      extra: { orderId: payment.orderId, invoiceId: data.id, reason },
-    });
   }
 
   log.info({

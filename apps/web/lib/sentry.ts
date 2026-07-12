@@ -10,7 +10,10 @@ import type * as SentryTypes from '@sentry/nextjs';
  * Применяется на всех трёх runtime'ах (client/server/edge).
  */
 
-const PII_KEY_RE = /^(content|message|text|email|phone|card|password|token)$/i;
+// Карточные реквизиты (pan/cvc/cvv/cardNo) и auth-строки (initData/signature) —
+// аудит 2026-07-11 F-06: страховочный слой, код их в Sentry не отправляет.
+const PII_KEY_RE =
+  /^(content|message|text|email|phone|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature)$/i;
 
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
 function scrubPii(value: unknown, depth = 0): unknown {
@@ -38,10 +41,14 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
       event.request.data = scrubPii(event.request.data) as typeof event.request.data;
     }
     if (event.request.query_string && typeof event.request.query_string === 'string') {
-      event.request.query_string = event.request.query_string.replace(
-        /(content|message|text|email|phone|card|password|token)=[^&]*/gi,
-        '$1=[REDACTED]',
-      );
+      event.request.query_string = event.request.query_string
+        .replace(
+          /(content|message|text|email|phone|card|password|token|signature|init_?data)=[^&]*/gi,
+          '$1=[REDACTED]',
+        )
+        // `?s=` — секрет алёрт-вебхука Sentry (/api/alerts/sentry). Отдельным
+        // выражением с якорем на границу параметра, чтобы не задевать `tags=` и т.п.
+        .replace(/(^|[?&])s=[^&]*/gi, '$1s=[REDACTED]');
     }
     if (event.request.headers) {
       const headers = event.request.headers as Record<string, string>;

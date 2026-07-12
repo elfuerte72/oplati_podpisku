@@ -12,6 +12,7 @@ import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import {
   claimPaymentSucceeded,
+  claimPaymentTerminal,
   findPendingPaymentByOrderId,
   upsertPaymentByProviderRef,
 } from './repositories/payments.ts';
@@ -183,6 +184,44 @@ describe('claimPaymentSucceeded (атомарный claim pending→succeeded)',
 
     // После отката claim доступен повторно (poll-payment дообработает).
     expect(await claimPaymentSucceeded(db, { paymentId: payment.id })).not.toBeNull();
+  });
+});
+
+describe('claimPaymentTerminal (атомарный claim pending→failed)', () => {
+  it('F-05: сбой в общей транзакции ПОСЛЕ claim откатывает и claim — платёж остаётся pending', async () => {
+    const user = await makeUser();
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    // Сценарий processInvoiceTerminal (симметричен C1): terminal claim прошёл,
+    // а переход заказа (expired/cancelled) упал транзиентно. До фикса F-05 claim
+    // коммитился отдельно — payment застревал в failed при заказе в
+    // pending_payment, а повтор webhook'а вечно получал idempotent_skip.
+    await expect(
+      db.transaction(async (tx) => {
+        const claimed = await claimPaymentTerminal(tx, payment.id);
+        expect(claimed).not.toBeNull();
+        throw new Error('transient db failure');
+      }),
+    ).rejects.toThrow('transient db failure');
+
+    const rows = await db.select().from(schema.payments).where(eq(schema.payments.id, payment.id));
+    expect(firstOf(rows, 'payment').status).toBe('pending');
+
+    // Ретрай L&P/poll доигрывает оба шага заново.
+    expect(await claimPaymentTerminal(db, payment.id)).not.toBeNull();
+  });
+
+  it('после успешной транзакции claim идемпотентен (повтор → null)', async () => {
+    const user = await makeUser();
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    await db.transaction(async (tx) => {
+      expect(await claimPaymentTerminal(tx, payment.id)).not.toBeNull();
+    });
+
+    expect(await claimPaymentTerminal(db, payment.id)).toBeNull();
+    const rows = await db.select().from(schema.payments).where(eq(schema.payments.id, payment.id));
+    expect(firstOf(rows, 'payment').status).toBe('failed');
   });
 });
 
