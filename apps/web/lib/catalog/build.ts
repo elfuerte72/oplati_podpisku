@@ -170,6 +170,23 @@ export type CatalogGroup = {
 };
 
 /**
+ * Сервисы, которые полностью настроены и остаются в seed/БД, но временно не
+ * показываются пользователям ни в веб-каталоге, ни в Mini App, ни в меню бота.
+ * Внутренний lookup по slug не фильтруется: существующие заказы и уже
+ * отправленные Telegram-кнопки продолжают работать.
+ */
+const HIDDEN_CATALOG_SLUGS = new Set([
+  'apple-music',
+  'apple-app-store',
+  'icloud-plus-200gb',
+  'telegram-premium',
+]);
+
+export function filterCatalogForDisplay(items: CatalogService[]): CatalogService[] {
+  return items.filter((service) => !HIDDEN_CATALOG_SLUGS.has(service.slug));
+}
+
+/**
  * Группирует каталог по темам в порядке `CATEGORY_ORDER`; внутри темы порядок —
  * как у `sortCatalog` (популярные вперёд, дальше алфавит). Пустые темы
  * пропускаются. Неизвестные категории — в конце, по алфавиту.

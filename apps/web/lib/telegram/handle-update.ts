@@ -42,7 +42,11 @@ import {
 } from '@/lib/ai/budget';
 import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
 import { miniAppUrl, paymentInstructionUrl, siteUrl } from '@/lib/deployment-url';
-import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
+import {
+  filterCatalogForDisplay,
+  groupCatalog,
+  type CatalogService,
+} from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires, formatRub } from '@/components/comic/format';
@@ -992,7 +996,7 @@ async function showCatalogList(
 ): Promise<void> {
   let services: CatalogService[] = [];
   try {
-    services = await loadCatalog();
+    services = filterCatalogForDisplay(await loadCatalog());
   } catch (err) {
     log.error({ event: 'telegram.catalog.load_failed', updateId, err });
     Sentry.captureException(err, { tags: { source: 'telegram.catalog', step: 'load' } });
