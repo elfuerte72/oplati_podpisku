@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import { useCallback, useMemo, useState } from 'react';
 
+import { ServicePricingButton } from '@/components/catalog/ServicePricingButton';
 import { ComicButton } from '@/components/comic';
 import { formatRub, formatUsd } from '@/components/comic/format';
 import { fetchWithTimeout } from '@/lib/http';
@@ -71,6 +72,10 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
   const [proposing, setProposing] = useState(false);
   const [amount, setAmount] = useState('');
   const [amountError, setAmountError] = useState<string | null>(null);
+
+  const openExternalLink = useCallback((url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, []);
 
   const loadCatalog = useCallback(async () => {
     setLoading(true);
@@ -258,6 +263,11 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             Платим американской картой без НДС. Включите на сайте сервиса VPN с локацией
             США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).
           </p>
+
+          <ServicePricingButton
+            slug={selected.slug}
+            onOpenExternalLink={openExternalLink}
+          />
 
           {selected.customAmount ? (
             <form onSubmit={submitAmount} className="mt-4 space-y-3">

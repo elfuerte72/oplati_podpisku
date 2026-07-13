@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { ComicButton, comicButtonClassName } from '@/components/comic/ComicButton';
+import { ComicButton } from '@/components/comic/ComicButton';
 import { formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft } from '@/components/comic/icons';
+import { ServicePricingButton } from '@/components/catalog/ServicePricingButton';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
-import { servicePricingUrl } from '@/lib/catalog/pricing-links';
 import { ServiceLogo } from '@/components/chat/ServiceLogos';
 
 import { doPropose } from './cabinet-api';
@@ -137,8 +137,6 @@ export function CatalogView({
   };
 
   const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);
-  const pricingUrl = servicePricingUrl(selected?.slug);
-
   const tilePlate =
     'grid h-9 w-9 shrink-0 place-items-center rounded-xl border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)]';
   const tile =
@@ -235,18 +233,10 @@ export function CatalogView({
             США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).
           </p>
 
-          {pricingUrl && (
-            <button
-              type="button"
-              onClick={() => onOpenExternalLink(pricingUrl)}
-              className={comicButtonClassName(
-                'surface',
-                'mt-4 w-full px-4 py-2.5 text-sm',
-              )}
-            >
-              Открыть прайс сервиса
-            </button>
-          )}
+          <ServicePricingButton
+            slug={selected.slug}
+            onOpenExternalLink={onOpenExternalLink}
+          />
 
           {selected.customAmount ? (
             <form onSubmit={submitAmount} className="mt-4 space-y-3">
