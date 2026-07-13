@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 
 import { loadCatalog } from '@/lib/catalog/load';
+import { filterCatalogForDisplay } from '@/lib/catalog/build';
 import { childLogger } from '@/lib/logger';
 
 /**
@@ -20,7 +21,7 @@ const log = childLogger('api.catalog');
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const services = await loadCatalog();
+    const services = filterCatalogForDisplay(await loadCatalog());
     return NextResponse.json({ ok: true, services }, { status: 200 });
   } catch (err) {
     log.error({ event: 'api.catalog.failed', err });

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCatalogService, computeTotalKopecks, groupCatalog, sortCatalog } from './build';
+import {
+  buildCatalogService,
+  computeTotalKopecks,
+  filterCatalogForDisplay,
+  groupCatalog,
+  sortCatalog,
+} from './build';
 
 const RATE = 95.5; // RUB за USDT
 const COMMISSION = 10; // %
@@ -163,6 +169,30 @@ describe('sortCatalog', () => {
       'airbnb',
       'notion-plus',
     ]);
+  });
+});
+
+describe('filterCatalogForDisplay', () => {
+  it('временно скрывает от пользователя отложенные сервисы, сохраняя остальные', () => {
+    const mk = (slug: string, name: string) => ({
+      slug,
+      name,
+      category: 'x',
+      requiresKyc: false,
+      customAmount: false,
+      tiers: [],
+    });
+
+    const visible = filterCatalogForDisplay([
+      mk('chatgpt-plus', 'ChatGPT'),
+      mk('apple-music', 'Apple Music'),
+      mk('apple-app-store', 'App Store (пополнение)'),
+      mk('icloud-plus-200gb', 'iCloud+'),
+      mk('telegram-premium', 'Telegram Premium'),
+      mk('claude-pro', 'Claude'),
+    ]);
+
+    expect(visible.map((service) => service.slug)).toEqual(['chatgpt-plus', 'claude-pro']);
   });
 });
 
