@@ -204,6 +204,11 @@ describe('issueCard', () => {
       expect.stringContaining('$20'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('не в мобильном приложении'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
   });
 
   it('ошибка lookup прайса не блокирует fulfillment и оставляет кнопку инструкции', async () => {
@@ -333,6 +338,11 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('$20'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('не в мобильном приложении'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
