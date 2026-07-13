@@ -187,6 +187,12 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     if (res.ok) setSnapshot(res.data);
   }, []);
 
+  const openExternalLink = useCallback((url: string) => {
+    const tg = tgRef.current;
+    if (tg) tg.openLink(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
+  }, []);
+
   const revealCard = useCallback(async (cardId: string) => {
     setRevealingCard(true);
     const res = await fetchCardDetails(initDataRef.current, cardId);
@@ -323,6 +329,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         <CatalogView
           initData={initData}
           onBack={() => setView('list')}
+          onOpenExternalLink={openExternalLink}
           onCreated={(orderId) => {
             void openOrder(orderId);
           }}
