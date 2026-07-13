@@ -114,18 +114,6 @@ export async function issueCard(orderId: string): Promise<void> {
   const amountUsdCents = cardFundingUsdCents(priceUsdCents, bufferPercent);
   log.info({ event: 'job.issue_card.card_funding', orderId, priceUsdCents, bufferPercent, amountUsdCents });
 
-  // Прайс — необязательное обогащение финального сообщения. Ошибка lookup не
-  // должна блокировать выпуск уже оплаченной карты.
-  let pricingUrl: string | null = null;
-  if (order.serviceId) {
-    try {
-      const service = await getServiceById(db, order.serviceId);
-      pricingUrl = servicePricingUrl(service?.slug);
-    } catch (err) {
-      log.warn({ event: 'job.issue_card.pricing_link_lookup_failed', orderId, err });
-    }
-  }
-
   // Атомарный claim paid → in_fulfillment. Только этот вызов продолжит к топ-апу;
   // параллельный/повторный (webhook + recovery cron, double-dispatch) увидит
   // transitioned=false и выйдет, не пополняя карту повторно.
@@ -138,6 +126,19 @@ export async function issueCard(orderId: string): Promise<void> {
   if (!claim.transitioned) {
     log.info({ event: 'job.issue_card.already_claimed', orderId, status: claim.order.status });
     return;
+  }
+
+  // Прайс — необязательное обогащение финального сообщения. Ошибка lookup не
+  // должна блокировать выпуск уже оплаченной карты. Резолвим только ПОСЛЕ claim,
+  // чтобы проигравший конкурентный fulfillment не делал лишний запрос к БД.
+  let pricingUrl: string | null = null;
+  if (order.serviceId) {
+    try {
+      const service = await getServiceById(db, order.serviceId);
+      pricingUrl = servicePricingUrl(service?.slug);
+    } catch (err) {
+      log.warn({ event: 'job.issue_card.pricing_link_lookup_failed', orderId, err });
+    }
   }
 
   try {

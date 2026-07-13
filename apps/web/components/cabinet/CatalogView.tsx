@@ -244,7 +244,7 @@ export function CatalogView({
                 'mt-4 w-full px-4 py-2.5 text-sm',
               )}
             >
-              Посмотреть цены на сайте сервиса
+              Открыть прайс сервиса
             </button>
           )}
 

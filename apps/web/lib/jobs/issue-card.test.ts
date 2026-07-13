@@ -191,7 +191,7 @@ describe('issueCard', () => {
           inline_keyboard: expect.arrayContaining([
             [
               expect.objectContaining({
-                text: 'Цены на сайте сервиса',
+                text: 'Открыть прайс сервиса',
                 url: 'https://openai.com/chatgpt/pricing/',
               }),
             ],
@@ -203,6 +203,29 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('$20'),
       expect.objectContaining({ parse_mode: 'HTML' }),
+    );
+  });
+
+  it('ошибка lookup прайса не блокирует fulfillment и оставляет кнопку инструкции', async () => {
+    vi.mocked(db.getServiceById).mockRejectedValueOnce(new Error('db down'));
+
+    await issueCard('order-1');
+
+    expect(h.topupMock).toHaveBeenCalledTimes(1);
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'completed' }),
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.any(String),
+      expect.objectContaining({
+        reply_markup: expect.objectContaining({
+          inline_keyboard: [
+            [expect.objectContaining({ text: '📖 Как оплатить — пошагово' })],
+          ],
+        }),
+      }),
     );
   });
 
@@ -319,7 +342,7 @@ describe('issueCard', () => {
           inline_keyboard: expect.arrayContaining([
             [
               expect.objectContaining({
-                text: 'Цены на сайте сервиса',
+                text: 'Открыть прайс сервиса',
                 url: 'https://openai.com/chatgpt/pricing/',
               }),
             ],

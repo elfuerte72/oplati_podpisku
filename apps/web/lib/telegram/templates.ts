@@ -75,7 +75,7 @@ export const START_HOWTO_BUTTON = '📖 Как оплатить';
 export const CARD_HOWTO_BUTTON = '📖 Как оплатить — пошагово';
 
 /** Подпись url-кнопки официального прайса купленного сервиса. */
-export const SERVICE_PRICING_BUTTON = 'Цены на сайте сервиса';
+export const SERVICE_PRICING_BUTTON = 'Открыть прайс сервиса';
 
 /** Ответ на кнопку VPN, пока продукт в разработке. */
 export const VPN_MOCK_TEXT =
