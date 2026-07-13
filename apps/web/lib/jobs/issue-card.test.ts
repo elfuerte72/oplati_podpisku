@@ -17,6 +17,7 @@ type OrderLike = {
   status: string;
   originalAmount: number | null;
   shortId: string;
+  serviceId: string | null;
 };
 
 const h = vi.hoisted(() => {
@@ -42,6 +43,7 @@ const h = vi.hoisted(() => {
       order: null as OrderLike | null,
       claimTransitioned: true,
       activeCard: null as Record<string, unknown> | null,
+      serviceSlug: 'chatgpt-plus' as string | null,
     },
   };
 });
@@ -62,6 +64,9 @@ vi.mock('@oplati/db', () => ({
   updateBalance: vi.fn(async () => {}),
   setOrderCardId: vi.fn(async () => {}),
   getUserTelegramId: vi.fn(async () => '12345'),
+  getServiceById: vi.fn(async () =>
+    h.dbState.serviceSlug ? { slug: h.dbState.serviceSlug } : null,
+  ),
 }));
 
 vi.mock('../pay-space/index.ts', () => ({
@@ -111,6 +116,7 @@ const baseOrder: OrderLike = {
   status: 'paid',
   originalAmount: 2000, // $20.00
   shortId: 'ORD-AAAAA',
+  serviceId: 'service-1',
 };
 
 const activeCard = {
@@ -133,6 +139,7 @@ describe('issueCard', () => {
     h.dbState.order = { ...baseOrder };
     h.dbState.claimTransitioned = true;
     h.dbState.activeCard = { ...activeCard };
+    h.dbState.serviceSlug = 'chatgpt-plus';
     h.topupMock.mockResolvedValue({
       cardId: 'pc-1',
       requestId: 'topup_order-1_card-1',
@@ -175,6 +182,22 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('Карта пополнена'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.any(String),
+      expect.objectContaining({
+        reply_markup: expect.objectContaining({
+          inline_keyboard: expect.arrayContaining([
+            [
+              expect.objectContaining({
+                text: 'Цены на сайте сервиса',
+                url: 'https://openai.com/chatgpt/pricing/',
+              }),
+            ],
+          ]),
+        }),
+      }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
@@ -287,6 +310,22 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('$20'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.any(String),
+      expect.objectContaining({
+        reply_markup: expect.objectContaining({
+          inline_keyboard: expect.arrayContaining([
+            [
+              expect.objectContaining({
+                text: 'Цены на сайте сервиса',
+                url: 'https://openai.com/chatgpt/pricing/',
+              }),
+            ],
+          ]),
+        }),
+      }),
     );
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
   });

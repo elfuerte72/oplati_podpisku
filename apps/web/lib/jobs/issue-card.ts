@@ -8,6 +8,7 @@ import {
   findActiveByUserId,
   getDb,
   getOrderById,
+  getServiceById,
   getUserTelegramId,
   markIdle,
   setOrderCardId,
@@ -27,8 +28,13 @@ import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { getBot } from '../telegram/bot.ts';
-import { CARD_HOWTO_BUTTON, paymentRulesHtml } from '../telegram/templates.ts';
+import {
+  CARD_HOWTO_BUTTON,
+  paymentRulesHtml,
+  SERVICE_PRICING_BUTTON,
+} from '../telegram/templates.ts';
 import { paymentInstructionUrl } from '../deployment-url.ts';
+import { servicePricingUrl } from '../catalog/pricing-links.ts';
 
 /**
  * Job `issue-card` — выпускает (или переиспользует) виртуальную USD-карту
@@ -108,6 +114,18 @@ export async function issueCard(orderId: string): Promise<void> {
   const amountUsdCents = cardFundingUsdCents(priceUsdCents, bufferPercent);
   log.info({ event: 'job.issue_card.card_funding', orderId, priceUsdCents, bufferPercent, amountUsdCents });
 
+  // Прайс — необязательное обогащение финального сообщения. Ошибка lookup не
+  // должна блокировать выпуск уже оплаченной карты.
+  let pricingUrl: string | null = null;
+  if (order.serviceId) {
+    try {
+      const service = await getServiceById(db, order.serviceId);
+      pricingUrl = servicePricingUrl(service?.slug);
+    } catch (err) {
+      log.warn({ event: 'job.issue_card.pricing_link_lookup_failed', orderId, err });
+    }
+  }
+
   // Атомарный claim paid → in_fulfillment. Только этот вызов продолжит к топ-апу;
   // параллельный/повторный (webhook + recovery cron, double-dispatch) увидит
   // transitioned=false и выйдет, не пополняя карту повторно.
@@ -154,6 +172,7 @@ export async function issueCard(orderId: string): Promise<void> {
           telegramId: await resolveTelegramIdByUserId(order.userId),
           serviceShortId: order.shortId,
           priceUsdCents,
+          pricingUrl,
         });
       } catch (err) {
         // PaySpaceApiError на топ-апе = провайдер ОТКЛОНИЛ операцию (success:false
@@ -298,6 +317,7 @@ export async function issueCard(orderId: string): Promise<void> {
           billingAddress: pendingCredentials.billingAddress,
           serviceShortId: order.shortId,
           priceUsdCents,
+          pricingUrl,
         });
       } catch (err) {
         log.error({ event: 'job.issue_card.credentials_send_failed', orderId, err });
@@ -372,6 +392,8 @@ type SendCredentialsArgs = {
   serviceShortId: string;
   /** Цена сервиса в USD-центах (`order.originalAmount`) — «оплатить строго $X». */
   priceUsdCents: number;
+  /** Официальный прайс каталожного сервиса; null для custom/неизвестного. */
+  pricingUrl: string | null;
 };
 
 /**
@@ -414,7 +436,7 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
     // больших telegram_id.
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
       parse_mode: 'HTML',
-      reply_markup: new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl()),
+      reply_markup: buildCardActionKeyboard(args.pricingUrl),
     });
     log.info({
       event: 'job.issue_card.credentials_sent',
@@ -439,6 +461,7 @@ async function sendTopupNotice(args: {
   telegramId: string | null;
   serviceShortId: string;
   priceUsdCents: number;
+  pricingUrl: string | null;
 }): Promise<void> {
   if (!args.telegramId) {
     log.warn({ event: 'job.issue_card.topup_notice.no_telegram', shortId: args.serviceShortId });
@@ -459,7 +482,7 @@ async function sendTopupNotice(args: {
 
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
       parse_mode: 'HTML',
-      reply_markup: new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl()),
+      reply_markup: buildCardActionKeyboard(args.pricingUrl),
     });
     log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
   } catch (err) {
@@ -468,6 +491,12 @@ async function sendTopupNotice(args: {
       tags: { source: 'job.issue-card', step: 'topup_notice' },
     });
   }
+}
+
+function buildCardActionKeyboard(pricingUrl: string | null): InlineKeyboard {
+  const keyboard = new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl());
+  if (pricingUrl) keyboard.row().url(SERVICE_PRICING_BUTTON, pricingUrl);
+  return keyboard;
 }
 
 async function resolveTelegramIdByUserId(userId: string): Promise<string | null> {
