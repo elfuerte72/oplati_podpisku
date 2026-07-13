@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft } from '@/components/comic/icons';
+import { ServicePricingButton } from '@/components/catalog/ServicePricingButton';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { ServiceLogo } from '@/components/chat/ServiceLogos';
@@ -57,9 +58,15 @@ type CatalogViewProps = {
   initData: string;
   onBack: () => void;
   onCreated: (orderId: string) => void;
+  onOpenExternalLink: (url: string) => void;
 };
 
-export function CatalogView({ initData, onBack, onCreated }: CatalogViewProps) {
+export function CatalogView({
+  initData,
+  onBack,
+  onCreated,
+  onOpenExternalLink,
+}: CatalogViewProps) {
   const [catalog, setCatalog] = useState<CatalogService[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -130,7 +137,6 @@ export function CatalogView({ initData, onBack, onCreated }: CatalogViewProps) {
   };
 
   const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);
-
   const tilePlate =
     'grid h-9 w-9 shrink-0 place-items-center rounded-xl border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)]';
   const tile =
@@ -226,6 +232,11 @@ export function CatalogView({ initData, onBack, onCreated }: CatalogViewProps) {
             Платим американской картой без НДС. Включи на сайте сервиса VPN с локацией
             США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).
           </p>
+
+          <ServicePricingButton
+            slug={selected.slug}
+            onOpenExternalLink={onOpenExternalLink}
+          />
 
           {selected.customAmount ? (
             <form onSubmit={submitAmount} className="mt-4 space-y-3">
