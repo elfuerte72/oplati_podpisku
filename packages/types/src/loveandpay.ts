@@ -101,37 +101,6 @@ export const loveAndPayInvoiceResponseSchema = z.object({
 });
 export type LoveAndPayInvoiceResponse = z.infer<typeof loveAndPayInvoiceResponseSchema>;
 
-// ─── Rates ────────────────────────────────────────────────────────────────
-
-/**
- * Ответ `GET /api/v2/rates?base=USDT&quote=RUB` (см. docs.loveandpay.io
- * → api-reference/v2/rates/current). Реальная структура — `rate` это объект,
- * а число лежит в `rate.rate`.
- */
-export const loveAndPayRateSchema = z.object({
-  id: z.string(),
-  baseCurrency: z.string(),
-  quoteCurrency: z.string(),
-  rate: z.number().positive(),
-  validFrom: z.string().optional(),
-  validTo: z.string().nullable().optional(),
-  fixedAt: z.string().optional(),
-});
-export type LoveAndPayRate = z.infer<typeof loveAndPayRateSchema>;
-
-export const loveAndPayRatesResponseSchema = z.object({
-  success: z.boolean().optional(),
-  rate: loveAndPayRateSchema,
-  formatted: z
-    .object({
-      pair: z.string().optional(),
-      value: z.string().optional(),
-    })
-    .optional(),
-  requestId: z.string().optional(),
-});
-export type LoveAndPayRatesResponse = z.infer<typeof loveAndPayRatesResponseSchema>;
-
 // ─── Webhook events ───────────────────────────────────────────────────────
 
 /**

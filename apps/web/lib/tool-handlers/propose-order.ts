@@ -13,11 +13,11 @@ import type { ProposeOrderResult } from '@oplati/agent';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
-import { resolveUsdtRubRate } from '../loveandpay/rates.ts';
+import { resolveUsdtRubRate } from '../rapira/rates.ts';
 
 /**
  * Tool `propose_order`. Считает итоговую сумму в RUB:
- *   1. Получает текущий курс USDT→RUB (`L&P /rates`).
+ *   1. Получает текущий курс USDT→RUB (Rapira `askPrice`).
  *   2. subtotal = round(amountUsdCents/100 * rate * 100)  // копейки RUB
  *   3. commission = round(subtotal * COMMISSION_PERCENT / 100)
  *   4. total = subtotal + commission
@@ -156,7 +156,7 @@ export async function proposeOrder(input: {
   const db = getDb();
 
   // Лимит заказов на пользователя — проверяем ДО lookup'а сервиса и запроса
-  // курса в L&P, чтобы абьюз не сжигал внешние вызовы.
+  // курса в Rapira, чтобы абьюз не сжигал внешние вызовы.
   const recentOrders = await countRecentOrdersByUser(db, {
     userId,
     withinMs: ORDERS_WINDOW_MS,

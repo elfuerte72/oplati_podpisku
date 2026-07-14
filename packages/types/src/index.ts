@@ -25,10 +25,6 @@ export {
   type LoveAndPayInvoice,
   loveAndPayInvoiceResponseSchema,
   type LoveAndPayInvoiceResponse,
-  loveAndPayRateSchema,
-  type LoveAndPayRate,
-  loveAndPayRatesResponseSchema,
-  type LoveAndPayRatesResponse,
   loveAndPayWebhookData,
   type LoveAndPayWebhookData,
   loveAndPayWebhookEventSchema,
@@ -38,6 +34,13 @@ export {
   loveAndPayErrorSchema,
   type LoveAndPayError,
 } from './loveandpay.ts';
+
+export {
+  rapiraMarketRateSchema,
+  type RapiraMarketRate,
+  rapiraMarketRatesResponseSchema,
+  type RapiraMarketRatesResponse,
+} from './rapira.ts';
 
 export {
   paySpaceErrorSchema,

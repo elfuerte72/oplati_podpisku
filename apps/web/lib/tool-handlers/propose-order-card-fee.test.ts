@@ -31,9 +31,9 @@ vi.mock('@oplati/db', () => ({
   findActiveByUserId: h.findActiveByUserIdMock,
 }));
 
-// Курс USDT→RUB фиксируем (живой L&P не дёргаем): 77 ₽/USDT.
-vi.mock('../loveandpay/rates.ts', () => ({
-  resolveUsdtRubRate: vi.fn(async () => 77),
+// Курс USDT→RUB фиксируем по примеру Rapira (живой API не дёргаем): 80.12 ₽/USDT.
+vi.mock('../rapira/rates.ts', () => ({
+  resolveUsdtRubRate: vi.fn(async () => 80.12),
 }));
 
 vi.mock('@sentry/nextjs', () => ({
@@ -45,16 +45,16 @@ import { proposeOrder } from './propose-order.ts';
 
 const BASE = { userId: 'user-1', conversationId: 'conv-1' };
 
-/** Заказ Netflix $20. subtotal = 2000×77 = 154 000; commission 30% = 46 200. */
+/** Заказ Netflix $20. subtotal = 2000×80.12 = 160 240; commission 30% = 48 072. */
 function netflixInput() {
   h.state.service = { id: 'svc-1', slug: 'netflix-premium', isActive: true, requiresKyc: false };
   return { ...BASE, serviceId: 'svc-1', amountUsdCents: 2000 };
 }
 
-const SUBTOTAL = 154_000;
-const COMMISSION = 46_200;
-// Надбавка за выпуск карты: round($4 × 77) = round(400 × 77) = 30 800 копеек (308 ₽).
-const CARD_FEE = 30_800;
+const SUBTOTAL = 160_240;
+const COMMISSION = 48_072;
+// Надбавка за выпуск карты: round($4 × 80.12) = 32 048 копеек (320.48 ₽).
+const CARD_FEE = 32_048;
 
 beforeEach(() => {
   h.state.service = null;
@@ -70,7 +70,7 @@ describe('proposeOrder — разовая надбавка за выпуск к�
     const r = await proposeOrder(netflixInput());
 
     expect(r.orderId).toBe('order-1');
-    // total = subtotal + commission + fee = 154000 + 46200 + 30800 = 231 000.
+    // total = subtotal + commission + fee = 160240 + 48072 + 32048 = 240 360.
     expect(r.totalRubKopecks).toBe(SUBTOTAL + COMMISSION + CARD_FEE);
     expect(h.createDraftOrderMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -87,7 +87,7 @@ describe('proposeOrder — разовая надбавка за выпуск к�
 
     const r = await proposeOrder(netflixInput());
 
-    // total = subtotal + commission = 200 200 (без fee).
+    // total = subtotal + commission = 208 312 (без fee).
     expect(r.totalRubKopecks).toBe(SUBTOTAL + COMMISSION);
     expect(h.createDraftOrderMock).toHaveBeenCalledWith(
       expect.anything(),
