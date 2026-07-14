@@ -153,13 +153,13 @@ describe('buildReferralSnapshot — включённая программа', ()
   it('единственная ссылка — Telegram deep-link (веб-захват удалён)', async () => {
     const snap = await buildReferralSnapshot('u1', ctx());
     expect(snap.referralCode).toBe('abc123');
-    expect(snap.telegramLink).toBe('https://t.me/mybot?start=ref_abc123');
+    expect(snap.telegramLink).toBe('https://telegram.me/mybot?start=ref_abc123');
     expect('webLink' in snap).toBe(false);
   });
 
   it('с miniAppShortName ссылка — прямой startapp deep-link на Mini App', async () => {
     const snap = await buildReferralSnapshot('u1', ctx({ miniAppShortName: 'pay' }));
-    expect(snap.telegramLink).toBe('https://t.me/mybot/pay?startapp=ref_abc123');
+    expect(snap.telegramLink).toBe('https://telegram.me/mybot/pay?startapp=ref_abc123');
   });
 
   it('без username бота ссылка недоступна (graceful)', async () => {

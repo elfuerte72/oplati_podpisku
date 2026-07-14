@@ -27,6 +27,7 @@ import type {
   ReferralHistoryEntry,
   ReferralSnapshot,
 } from '@/lib/cabinet/referral-types';
+import { telegramShareLink } from '@/lib/telegram/links';
 
 import { fetchReferralSnapshot, requestPayout } from './partner-api';
 import { formatBps, formatLedgerDate, formatMonthShort, formatUsd } from './format-usd';
@@ -644,9 +645,10 @@ function LinkCard({
   // когда друг запускает бота по ссылке (веб-захвата больше нет).
   const link = snap.telegramLink ?? '';
   const shareUrl = link
-    ? `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(
+    ? telegramShareLink(
+        link,
         'Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!',
-      )}`
+      )
     : '';
   const copy = useCallback(() => {
     if (!link) return;

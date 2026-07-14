@@ -88,7 +88,7 @@ export type ReferralSnapshot = {
   telegramLinked: boolean;
   referralCode: string | null;
   /**
-   * Deep-link бота: `t.me/<bot>?start=ref_<code>` — ЕДИНСТВЕННЫЙ канал
+   * Deep-link бота: `telegram.me/<bot>?start=ref_<code>` — ЕДИНСТВЕННЫЙ канал
    * приглашения (веб-захват `?ref=` удалён 2026-07-02).
    */
   telegramLink: string | null;

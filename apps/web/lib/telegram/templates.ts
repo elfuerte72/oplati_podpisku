@@ -4,6 +4,7 @@ import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
 
 import { MIN_AMOUNT_USD, maxAmountUsdFor } from './amount';
+import { telegramBotLink } from './links';
 
 /**
  * Централизованные текстовые шаблоны для Telegram-бота.
@@ -63,7 +64,7 @@ export const START_VPN_BUTTON = '🛡 VPN';
 export const START_CHANNEL_BUTTON = '📣 Telegram-канал';
 
 /** Публичный Telegram-канал Оплатишки (создан 2026-07-10). */
-export const TELEGRAM_CHANNEL_URL = 'https://t.me/ooplatishka';
+export const TELEGRAM_CHANNEL_URL = telegramBotLink('ooplatishka');
 
 /** Подпись url-кнопки «Сайт» в стартовом меню (открывает главный сайт Оплатишки). */
 export const START_SITE_BUTTON = '🌐 Сайт';

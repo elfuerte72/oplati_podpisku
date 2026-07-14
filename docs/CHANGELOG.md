@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-07-14 — Аварийный переход Telegram deep-links на `telegram.me`
+
+### Fixed
+
+- Из-за глобального `serverHold` домена `t.me` все пользовательские Telegram-ссылки
+  переведены на официальный alias `telegram.me`: реферальные приглашения, привязка
+  Telegram с сайта, Mini App, поддержка, канал, share-flow и Telegram Premium.
+- Форматы payload не менялись: бот по-прежнему получает `/start ref_<code>` и
+  `/start link_<token>`, а Mini App — `startapp=ref_<code>`.
+- Генерация runtime-ссылок собрана в `lib/telegram/links.ts` и покрыта контрактными
+  тестами, чтобы домен и параметры не расходились между пользовательскими потоками.
+
 ## 2026-07-14 — Возврат рыночного курса Rapira без надбавки
 
 ### Changed

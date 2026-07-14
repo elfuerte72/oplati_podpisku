@@ -39,7 +39,7 @@ Mini App — это веб-страница, открываемая внутри
 
 **Ключевой инсайт — авторизация решается «бесплатно».** Текущий веб-чат не знает, кто за
 ним сидит, поэтому построена машинерия привязки: `link_tokens`, deep-link
-`t.me/<bot>?start=link_<token>`, `consumeLinkToken`, merge двух `users`-строк, поллинг
+`telegram.me/<bot>?start=link_<token>`, `consumeLinkToken`, merge двух `users`-строк, поллинг
 статуса (`apps/web/app/api/auth/telegram/link/`, `apps/web/lib/telegram/handle-update.ts`).
 
 В Mini App этого **не нужно**. Страница получает `window.Telegram.WebApp.initData` —
@@ -179,9 +179,9 @@ query-параметру: клиент может его подделать, п�
 
 **@BotFather (`@test_prodipsa_bot`):**
 - Menu Button (☰) **ОТКЛЮЧЁН** — чтобы приглашённый не заходил в приложение мимо реф-кода.
-- Mini App открывается через direct link `t.me/test_prodipsa_bot/pay` (BotFather `/newapp`,
+- Mini App открывается через direct link `telegram.me/test_prodipsa_bot/pay` (BotFather `/newapp`,
   short name `pay`) + web_app-кнопка «Открыть приложение» в `/start`-меню (`miniAppUrl()`).
-- Реф-приглашение — bot deep-link `t.me/<bot>?start=ref_<code>` (контекст бота).
+- Реф-приглашение — bot deep-link `telegram.me/<bot>?start=ref_<code>` (контекст бота).
 
 **Vercel Deployment Protection** — уже Disabled (нужно, иначе Telegram webview получит `401`
 от обвязки Vercel до нашего кода).

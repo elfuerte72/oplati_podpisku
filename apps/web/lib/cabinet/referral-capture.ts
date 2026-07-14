@@ -15,7 +15,7 @@ import { childLogger } from '../logger.ts';
 
 /**
  * Захват реферера при входе в Mini App по `start_param` (deep-link
- * `t.me/<bot>/<app>?startapp=ref_<code>`). Дополняет основной путь `/start ref_`
+ * `telegram.me/<bot>/<app>?startapp=ref_<code>`). Дополняет основной путь `/start ref_`
  * бота: клиенты фактически заходят через приложение (кнопка ☰ / web_app), где
  * `/start` не срабатывает и код иначе теряется.
  *

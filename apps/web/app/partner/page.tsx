@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 import { getBotUsername } from '@/lib/telegram/bot';
+import { telegramBotLink } from '@/lib/telegram/links';
 
 /**
  * /partner — партнёрский кабинет на сайте Оплатишки (приоритетная поверхность
@@ -35,7 +36,7 @@ export default async function PartnerPage() {
     } catch {
       bot = null;
     }
-    if (bot) redirect(`https://t.me/${bot}`);
+    if (bot) redirect(telegramBotLink(bot));
     // имя бота недоступно → не ломаем переход, рендерим кабинет
   }
   return <PartnerCabinet />;

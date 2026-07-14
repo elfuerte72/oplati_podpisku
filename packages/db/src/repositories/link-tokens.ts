@@ -10,7 +10,7 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * Привязка Telegram-аккаунта к веб-сессии через одноразовый deep-link токен.
  *
  * Flow: сайт создаёт токен по `web_session_id` (`createLinkToken`) → пользователь
- * открывает `t.me/<bot>?start=link_<token>` → бот получает `/start link_<token>`
+ * открывает `telegram.me/<bot>?start=link_<token>` → бот получает `/start link_<token>`
  * и вызывает `consumeLinkToken` → telegram_id и web_session_id оказываются на
  * одной строке `users`.
  *
