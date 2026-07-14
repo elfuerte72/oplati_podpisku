@@ -26,8 +26,8 @@ vi.mock('@oplati/db', () => ({
   createDraftOrder: h.createDraftOrderMock,
 }));
 
-// Курс USDT→RUB фиксируем (живой L&P не дёргаем): 77 ₽/USDT.
-vi.mock('../loveandpay/rates.ts', () => ({
+// Курс USDT→RUB фиксируем (живой Rapira не дёргаем): 77 ₽/USDT.
+vi.mock('../rapira/rates.ts', () => ({
   resolveUsdtRubRate: vi.fn(async () => 77),
 }));
 

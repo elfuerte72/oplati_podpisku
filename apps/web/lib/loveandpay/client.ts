@@ -1,11 +1,9 @@
 import {
   loveAndPayInvoiceResponseSchema,
-  loveAndPayRatesResponseSchema,
   loveAndPayErrorSchema,
   type LoveAndPayInvoice,
   type LoveAndPayInvoiceRequest,
   type LoveAndPayInvoiceResponse,
-  type LoveAndPayRatesResponse,
 } from '@oplati/types';
 
 import type { Logger } from '../logger.ts';
@@ -88,18 +86,6 @@ export class LoveAndPayClient {
     return resp.invoice;
   }
 
-  async getRates(base: 'USDT', quote: 'RUB'): Promise<LoveAndPayRatesResponse> {
-    // Документация: в подпись query параметры НЕ включаются. signPath остаётся
-    // '/api/v2/rates', а query шлём в URL.
-    return await this.requestJson(
-      'GET',
-      '/rates',
-      null,
-      loveAndPayRatesResponseSchema.parse,
-      `base=${base}&quote=${quote}`,
-    );
-  }
-
   // ─── Internals ───────────────────────────────────────────────────────────
 
   private async requestJson<T>(
@@ -107,15 +93,11 @@ export class LoveAndPayClient {
     path: string,
     body: unknown,
     parse: (raw: unknown) => T,
-    queryString?: string,
   ): Promise<T> {
     const bodyText = body === null ? '' : JSON.stringify(body);
     // signPath = '/api/v2/invoices' — ПОЛНЫЙ путь для HMAC (без query).
     const signPath = `${this.apiPath}${path}`;
-    // URL для fetch включает query (если есть).
-    const url = queryString
-      ? `${this.origin}${signPath}?${queryString}`
-      : `${this.origin}${signPath}`;
+    const url = `${this.origin}${signPath}`;
 
     let lastError: unknown;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {

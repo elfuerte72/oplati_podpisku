@@ -4,7 +4,7 @@ import { getDb, listActiveServices } from '@oplati/db';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
-import { resolveUsdtRubRate } from '@/lib/loveandpay/rates';
+import { resolveUsdtRubRate } from '@/lib/rapira/rates';
 
 import { buildCatalogService, sortCatalog, type CatalogService } from './build';
 
@@ -13,7 +13,7 @@ import { buildCatalogService, sortCatalog, type CatalogService } from './build';
  * оценкой «к оплате») — единый источник для веб-чата (`GET /api/catalog`) и
  * Telegram-бота (кнопочный каталог). Ноль AI-токенов.
  *
- * Кэш — module-level (5 мин): бережёт вызов курса L&P и запрос к БД. Дрейф
+ * Кэш — module-level (5 мин): бережёт вызов курса Rapira и запрос к БД. Дрейф
  * витринной цены ≤ TTL не страшен — финальная сумма фиксируется заново
  * в `proposeFromCatalog`/`propose_order`. Кэш в памяти инстанса, не общий
  * между регионами — для каталога это норм.
