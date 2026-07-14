@@ -41,7 +41,7 @@ Telegram-бот + веб-чат, через которые русскоязыч�
 **Поток заказа (happy path):**
 
 1. Клиент описывает желаемую подписку → агент через `web_search`/`search_catalog` находит цену.
-2. `propose_order` — расчёт суммы (USD-цена × курс USDT→RUB + комиссия `COMMISSION_PERCENT`, на проде 30%), границы $1–500, ≤10 заказов/сутки.
+2. `propose_order` — расчёт суммы (USD-цена × (`askPrice` Rapira × 1,035), затем комиссия `COMMISSION_PERCENT`, на проде 30%), границы $1–500, ≤10 заказов/сутки.
 3. `confirm_order` → внутренний `POST /api/payments/create` создаёт инвойс Love&Pay → клиент получает ссылку на оплату в рублях.
    - **Гейт:** веб-пользователь без привязанного `telegram_id` ссылку не получает (`TelegramLinkRequiredError`) — реквизиты карты доставляются только в Telegram.
 4. Клиент платит → webhook `/api/payments/loveandpay` (`invoice.paid`) атомарно переводит заказ в `paid`, уведомляет клиента и запускает `issue-card`.

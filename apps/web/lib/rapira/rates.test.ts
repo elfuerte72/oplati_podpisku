@@ -31,9 +31,9 @@ const SUCCESS_RESPONSE = {
     },
     {
       symbol: 'USDT/RUB',
-      close: 80.11,
-      askPrice: 80.12,
-      bidPrice: 80.11,
+      close: 80.16,
+      askPrice: 80.17,
+      bidPrice: 80.16,
       baseCurrency: 'RUB',
       quoteCurrency: 'USDT',
     },
@@ -54,11 +54,12 @@ afterEach(() => {
 });
 
 describe('resolveUsdtRubRate', () => {
-  it('uses the USDT/RUB ask price from Rapira', async () => {
+  it('adds 3.5% to the USDT/RUB ask price from Rapira', async () => {
     const fetchMock = vi.fn().mockResolvedValue(response(200, SUCCESS_RESPONSE));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(resolveUsdtRubRate()).resolves.toBe(80.12);
+    // 80.17 × 1.035 = 82.97595 → 82.976 after normalization to four decimals.
+    await expect(resolveUsdtRubRate()).resolves.toBe(82.976);
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.rapira.net/open/market/rates',
       expect.objectContaining({
@@ -67,6 +68,19 @@ describe('resolveUsdtRubRate', () => {
         signal: expect.any(AbortSignal),
       }),
     );
+  });
+
+  it('turns a Rapira rate of 79 into 81.765', async () => {
+    const rateAt79 = {
+      ...SUCCESS_RESPONSE,
+      data: [
+        SUCCESS_RESPONSE.data[0],
+        { ...SUCCESS_RESPONSE.data[1], askPrice: 79 },
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(200, rateAt79)));
+
+    await expect(resolveUsdtRubRate()).resolves.toBe(81.765);
   });
 
   it('ignores a malformed unrelated market pair', async () => {
@@ -78,7 +92,7 @@ describe('resolveUsdtRubRate', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(resolveUsdtRubRate()).resolves.toBe(80.12);
+    await expect(resolveUsdtRubRate()).resolves.toBe(82.976);
   });
 
   it('falls back when the Rapira response has no USDT/RUB pair', async () => {
@@ -87,7 +101,8 @@ describe('resolveUsdtRubRate', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(resolveUsdtRubRate()).resolves.toBe(77);
+    // Fallback follows the same pricing formula: 77 × 1.035 = 79.695.
+    await expect(resolveUsdtRubRate()).resolves.toBe(79.695);
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       'USDT/RUB rate fallback used',
       expect.objectContaining({ tags: { source: 'rapira.usdt_rub' } }),
@@ -97,6 +112,6 @@ describe('resolveUsdtRubRate', () => {
   it('falls back when Rapira returns a non-success HTTP status', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(503, { message: 'unavailable' })));
 
-    await expect(resolveUsdtRubRate()).resolves.toBe(77);
+    await expect(resolveUsdtRubRate()).resolves.toBe(79.695);
   });
 });
