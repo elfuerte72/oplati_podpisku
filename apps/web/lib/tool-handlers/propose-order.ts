@@ -17,7 +17,7 @@ import { resolveUsdtRubRate } from '../rapira/rates.ts';
 
 /**
  * Tool `propose_order`. Считает итоговую сумму в RUB:
- *   1. Получает расчётный курс USDT→RUB (Rapira `askPrice` + 3,5%).
+ *   1. Получает текущий курс USDT→RUB (Rapira `askPrice`).
  *   2. subtotal = round(amountUsdCents/100 * rate * 100)  // копейки RUB
  *   3. commission = round(subtotal * COMMISSION_PERCENT / 100)
  *   4. total = subtotal + commission
@@ -257,8 +257,7 @@ export async function proposeOrder(input: {
     );
   }
 
-  // Сохраняем расчётный курс (Rapira ask + 3,5%) как `rate * 10000`
-  // (фиксированная точка с 4 знаками) в integer —
+  // Сохраняем курс как `rate * 10000` (фиксированная точка с 4 знаками) в integer —
   // чтобы 95.2345 RUB/USDT хранился как 952345. Это совместимо с `usdt_rub_rate_kopecks integer`.
   const usdtRubRateKopecks = Math.round(rate * 10_000);
 

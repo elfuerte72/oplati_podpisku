@@ -258,8 +258,7 @@ export const orders = pgTable(
     assignedOperatorId: uuid('assigned_operator_id').references(() => staff.id),
     supervisorId: uuid('supervisor_id').references(() => staff.id),
     parameters: jsonb('parameters').$type<OrderParameters>(),
-    // Расчётный курс USDT→RUB (Rapira ask + 3,5%) × 10000; например
-    // 82.9242 RUB/USDT хранится как 829242.
+    // Курс USDT→RUB × 10000; например 80.1200 RUB/USDT хранится как 801200.
     usdtRubRateKopecks: integer('usdt_rub_rate_kopecks'),
     rateFixedAt: timestamp('rate_fixed_at', { withTimezone: true }),
     // TTL счёта L&P (по умолчанию 24h)
@@ -269,7 +268,7 @@ export const orders = pgTable(
     // Снапшот разовой надбавки за выпуск карты (RUB-копейки), уже включённой в
     // amount_rub. NULL — заказ создан до появления фичи; 0 — надбавки не было
     // (повторная оплата: карта уже выпущена, топап без issue-fee); >0 — первая
-    // оплата, клиент оплатил $4 issue-fee (по расчётному курсу заказа).
+    // оплата, клиент оплатил $4 issue-fee (по курсу заказа).
     cardIssueFeeKopecks: integer('card_issue_fee_kopecks'),
     // FK на cards.id — выставляется issue-card job-ом после успешной оплаты.
     // Lazy reference: cards объявлена ниже в этом же файле, стрелочная функция спасает от hoisting.

@@ -13,8 +13,7 @@ import { buildCatalogService, sortCatalog, type CatalogService } from './build';
  * оценкой «к оплате») — единый источник для веб-чата (`GET /api/catalog`) и
  * Telegram-бота (кнопочный каталог). Ноль AI-токенов.
  *
- * Кэш — module-level (5 мин): бережёт вызов расчётного курса Rapira (+3,5%)
- * и запрос к БД. Дрейф
+ * Кэш — module-level (5 мин): бережёт вызов курса Rapira и запрос к БД. Дрейф
  * витринной цены ≤ TTL не страшен — финальная сумма фиксируется заново
  * в `proposeFromCatalog`/`propose_order`. Кэш в памяти инстанса, не общий
  * между регионами — для каталога это норм.
@@ -54,7 +53,7 @@ export async function loadCatalog(): Promise<CatalogService[]> {
 
   const sorted = sortCatalog(services);
   cache = { services: sorted, expiresAt: Date.now() + CACHE_TTL_MS };
-  log.info({ event: 'catalog.load.ok', count: sorted.length, effectiveRate: rate });
+  log.info({ event: 'catalog.load.ok', count: sorted.length, rate });
   return sorted;
 }
 
