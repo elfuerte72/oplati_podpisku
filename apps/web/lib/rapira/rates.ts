@@ -12,25 +12,14 @@ import { childLogger } from '../logger.ts';
 
 const RAPIRA_RATES_URL = 'https://api.rapira.net/open/market/rates';
 const REQUEST_TIMEOUT_MS = 5_000;
-const RATE_MARKUP_PERCENT = 3.5;
-const RATE_PRECISION = 10_000;
 const log = childLogger('rapira.rates');
 
 /**
- * Добавляет к рыночному курсу коммерческую надбавку и нормализует результат до
- * четырёх знаков — той же точности, с которой курс сохраняется в заказе.
- */
-function applyRateMarkup(marketRate: number): number {
-  const markedUpRate = marketRate * (1 + RATE_MARKUP_PERCENT / 100);
-  return Math.round(markedUpRate * RATE_PRECISION) / RATE_PRECISION;
-}
-
-/**
- * Возвращает расчётный курс покупки 1 USDT за RUB: лучший ask Rapira + 3,5%.
- * На ошибку сети, HTTP или контракта применяет ту же надбавку к env-fallback.
+ * Возвращает цену покупки 1 USDT за RUB по лучшему ask Rapira. На ошибку сети,
+ * HTTP или контракта сохраняет управляемую деградацию через env-fallback.
  */
 export async function resolveUsdtRubRate(): Promise<number> {
-  const fallbackMarketRate = serverEnv.RATE_FALLBACK_USDT_RUB;
+  const fallback = serverEnv.RATE_FALLBACK_USDT_RUB;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -71,36 +60,17 @@ export async function resolveUsdtRubRate(): Promise<number> {
       throw new Error('Rapira response has no USDT/RUB pair');
     }
 
-    const rate = applyRateMarkup(pair.askPrice);
-    log.info({
-      event: 'rapira.rates.usdt_rub.live',
-      marketRate: pair.askPrice,
-      markupPercent: RATE_MARKUP_PERCENT,
-      rate,
-    });
-    return rate;
+    log.info({ event: 'rapira.rates.usdt_rub.live', rate: pair.askPrice });
+    return pair.askPrice;
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'unknown';
-    const fallbackRate = applyRateMarkup(fallbackMarketRate);
-    log.warn({
-      event: 'rapira.rates.usdt_rub.fallback',
-      reason,
-      fallbackMarketRate,
-      markupPercent: RATE_MARKUP_PERCENT,
-      fallbackRate,
-      err,
-    });
+    log.warn({ event: 'rapira.rates.usdt_rub.fallback', reason, fallback, err });
     Sentry.captureMessage('USDT/RUB rate fallback used', {
       level: 'warning',
       tags: { source: 'rapira.usdt_rub' },
-      extra: {
-        reason,
-        fallbackMarketRate,
-        markupPercent: RATE_MARKUP_PERCENT,
-        fallbackRate,
-      },
+      extra: { reason, fallback },
     });
-    return fallbackRate;
+    return fallback;
   } finally {
     clearTimeout(timeoutId);
   }

@@ -6,8 +6,7 @@ import { pricingPolicy } from '@oplati/types';
  * цены — `pricing_policy.tiers[].originalAmount` в USD-центах).
  *
  * Формула рублёвой цены тарифа — та же, что в `propose_order`
- * (см. lib/tool-handlers/propose-order.ts): `rate` уже включает 3,5% к Rapira;
- * subtotal = round(usdCents × rate),
+ * (см. lib/tool-handlers/propose-order.ts): subtotal = round(usdCents × rate),
  * commission = round(subtotal × percent / 100), total = subtotal + commission.
  * Здесь она даёт ОЦЕНКУ для витрины; юридически значимая сумма фиксируется
  * заново в момент создания заказа.
@@ -17,7 +16,7 @@ export type CatalogTier = {
   name: string;
   period: 'month' | 'quarter' | 'year';
   usdCents: number;
-  /** Оценка «к оплате»: Rapira + 3,5%, затем комиссия. */
+  /** Оценка «к оплате» в копейках: курс на момент сборки + комиссия. */
   totalKopecks: number;
 };
 

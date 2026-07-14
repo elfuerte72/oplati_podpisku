@@ -26,9 +26,9 @@ vi.mock('@oplati/db', () => ({
   createDraftOrder: h.createDraftOrderMock,
 }));
 
-// Rapira ask 77 + 3,5% = расчётный курс 79.695 ₽/USDT (живой API не дёргаем).
+// Курс USDT→RUB фиксируем (живой Rapira не дёргаем): 77 ₽/USDT.
 vi.mock('../rapira/rates.ts', () => ({
-  resolveUsdtRubRate: vi.fn(async () => 79.695),
+  resolveUsdtRubRate: vi.fn(async () => 77),
 }));
 
 vi.mock('@sentry/nextjs', () => ({
@@ -64,12 +64,11 @@ describe('proposeOrder — service-aware потолок суммы', () => {
       const r = await proposeOrder(catalogInput('airbnb', 61_000));
       expect(r.orderId).toBe('order-1');
       expect(r.isCustom).toBe(false);
-      // subtotal = 61000 × 79.695 = 4 861 395 коп.; commission 30% = 1 458 419;
-      // total = 6 319 814.
+      // subtotal = 61000 × 77 = 4 697 000 коп.; commission 30% = 1 409 100; total = 6 106 100.
       expect(h.createDraftOrderMock).toHaveBeenCalledTimes(1);
       expect(h.createDraftOrderMock).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ amountRub: 6_319_814, originalAmount: 61_000, originalCurrency: 'USD' }),
+        expect.objectContaining({ amountRub: 6_106_100, originalAmount: 61_000, originalCurrency: 'USD' }),
         expect.anything(),
       );
     });

@@ -109,7 +109,7 @@ instrumentation.ts                Sentry server/edge + fail-fast env
 1. Запрос приходит в `/api/bot` (проверка `X-Telegram-Bot-Api-Secret-Token`; единственный non-200 кейс → `401`) или `/api/chat` (cookie-сессия).
 2. Upsert пользователя и активного диалога, append входящего сообщения (`@oplati/db`).
 3. Загружается недавняя история → `runAgent(history, toolHandlers)`.
-4. Агент крутит tool-loop: ищет цену через `web_search`, сверяется с каталогом, создаёт черновик заказа (`propose_order` — расчёт RUB-суммы: `USD-центы × (askPrice USDT/RUB Rapira × 1,035)`, затем `COMMISSION_PERCENT` (прод 30%) + надбавка за выпуск карты `CARD_ISSUE_FEE_USD_CENTS` для первой карты), после согласия клиента — `confirm_order`. Примечание: в ЧАТЕ бота этот AI-путь за флагом `BOT_AI_ENABLED` (дефолт выключено); веб-чат `/api/chat` работает всегда.
+4. Агент крутит tool-loop: ищет цену через `web_search`, сверяется с каталогом, создаёт черновик заказа (`propose_order` — расчёт RUB-суммы: `USD-центы × askPrice USDT/RUB Rapira + COMMISSION_PERCENT` (прод 30%) + надбавка за выпуск карты `CARD_ISSUE_FEE_USD_CENTS` для первой карты), после согласия клиента — `confirm_order`. Примечание: в ЧАТЕ бота этот AI-путь за флагом `BOT_AI_ENABLED` (дефолт выключено); веб-чат `/api/chat` работает всегда.
 5. Ответ агента append'ится в БД и уходит клиенту (в Telegram — с разбивкой по 4096 символов).
 6. **Graceful degradation:** если БД недоступна — `runAgentNoTools` (бот отвечает, но без памяти и заказов); если Anthropic недоступен — понятный текст с предложением позвать оператора.
 
