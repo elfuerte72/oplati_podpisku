@@ -170,8 +170,9 @@ const serverEnvSchema = z.object({
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
 
-  // Fallback USDT→RUB курс, если публичный endpoint Rapira временно недоступен.
-  // Значение — рубли за 1 USDT; живой `askPrice` Rapira имеет приоритет.
+  // Рыночный fallback USDT→RUB, если публичный endpoint Rapira недоступен.
+  // Значение — рубли за 1 USDT ДО коммерческой надбавки 3,5%; резолвер
+  // применяет её одинаково к живому `askPrice` и fallback.
   RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(77),
 
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
