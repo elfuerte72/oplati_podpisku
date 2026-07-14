@@ -22,13 +22,13 @@ describe('cabinetDeepLink', () => {
   it('short name задан → прямая ссылка на Mini App (кабинет одним тапом)', () => {
     hoisted.env.TELEGRAM_MINIAPP_SHORTNAME = 'oplatishkaMiniApp';
     expect(cabinetDeepLink('oplatishkaa_bot')).toBe(
-      'https://t.me/oplatishkaa_bot/oplatishkaMiniApp',
+      'https://telegram.me/oplatishkaa_bot/oplatishkaMiniApp',
     );
   });
 
   it('short name не задан → deep-link на бота (там web_app-кнопка)', () => {
     expect(cabinetDeepLink('dev_test_podpiska_bot')).toBe(
-      'https://t.me/dev_test_podpiska_bot?start=cabinet',
+      'https://telegram.me/dev_test_podpiska_bot?start=cabinet',
     );
   });
 });

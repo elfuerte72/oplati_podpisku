@@ -147,7 +147,7 @@ export function effectiveReferralRates(input: {
 
 // ─── Реферальный код и deep-link ──────────────────────────────────────────
 
-/** Префикс deep-link захвата: `t.me/<bot>?start=ref_<code>`. */
+/** Префикс deep-link захвата: `telegram.me/<bot>?start=ref_<code>`. */
 export const REFERRAL_DEEPLINK_PREFIX = 'ref_';
 
 /**

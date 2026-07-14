@@ -7,6 +7,7 @@ import { childLogger } from '@/lib/logger';
 import { readWebSessionId } from '@/lib/chat/session';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { cabinetDeepLink } from '@/lib/telegram/deep-links';
+import { telegramBotLink } from '@/lib/telegram/links';
 
 /**
  * GET /api/profile — профиль текущей веб-сессии для правой панели:
@@ -48,7 +49,7 @@ async function resolveBotLinks(): Promise<{
   try {
     const username = await getBotUsername();
     return {
-      supportUrl: `https://t.me/${username}?start=site`,
+      supportUrl: telegramBotLink(username, 'site'),
       cabinetUrl: cabinetDeepLink(username),
     };
   } catch (err) {

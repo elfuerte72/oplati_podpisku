@@ -12,7 +12,7 @@ import { TelegramIcon } from './TelegramLink';
  * Мобильный CTA «Продолжить в Telegram» над шапкой чата.
  *
  * Основной канал продукта — Telegram-бот с Mini App; мобильный сайт — воронка
- * в него. Прямая `<a>` на `t.me/<bot>?start=site` нативно открывает приложение
+ * в него. Прямая `<a>` на `telegram.me/<bot>?start=site` открывает приложение
  * (universal link срабатывает только от прямого тапа — тот же принцип, что в
  * TelegramLink.tsx). URL бота берём из /api/profile (`supportUrl`) — эндпоинт
  * уже существует и best-effort: нет ответа → баннер просто не показываем.

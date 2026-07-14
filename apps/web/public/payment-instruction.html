@@ -459,17 +459,17 @@
     <h2>Оплатить ещё одну подписку</h2>
     <p class="lead">Открывай приложение — там каталог сервисов, тарифы и оплата в рублях. Карта у тебя уже есть, так что надбавки за выпуск не будет — только цена подписки. Данные карты придут в бот, как в прошлый раз.</p>
     <!--
-      Прямой deep-link в Mini App (t.me/<bot>/<short_name>) открывает /cabinet
+      Прямой deep-link в Mini App (telegram.me/<bot>/<short_name>) открывает /cabinet
       одним тапом, минуя чат бота. `oplatishkaMiniApp` — short name, выданный
       /newapp у @oplatishkaa_bot; переименуют приложение — править ссылку здесь.
-      Обычная <a> без JS: universal link открывает Telegram только на прямом
+       Обычная <a> без JS: HTTPS deep-link открывает Telegram только на прямом
       тапе (window.open/location.replace после await на iOS не доводит до бота —
       см. фикс мобильной привязки 2026-07-03).
       Ссылка захардкожена на prod-бота: статический лендинг не резолвит username
       по окружению, на preview кнопка тоже ведёт в прод.
     -->
-    <p><a class="cta cta-lg" href="https://t.me/oplatishkaa_bot/oplatishkaMiniApp">Выбрать сервис в приложении →</a></p>
-    <p class="note">Приложение не открылось? Зайди в бота <a class="link" href="https://t.me/oplatishkaa_bot?start=app">@oplatishkaa_bot</a> — он пришлёт кнопку «Открыть приложение».</p>
+    <p><a class="cta cta-lg" href="https://telegram.me/oplatishkaa_bot/oplatishkaMiniApp">Выбрать сервис в приложении →</a></p>
+    <p class="note">Приложение не открылось? Зайди в бота <a class="link" href="https://telegram.me/oplatishkaa_bot?start=app">@oplatishkaa_bot</a> — он пришлёт кнопку «Открыть приложение».</p>
   </div>
 </section>
 

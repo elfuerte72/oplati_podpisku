@@ -13,6 +13,7 @@ import {
   IconUsers,
 } from '@/components/comic/icons';
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
+import { telegramShareLink } from '@/lib/telegram/links';
 
 import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
@@ -469,7 +470,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
-                const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!')}`;
+                const shareUrl = telegramShareLink(
+                  link,
+                  'Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!',
+                );
                 const tg = tgRef.current;
                 if (tg?.openTelegramLink) tg.openTelegramLink(shareUrl);
                 else window.open(shareUrl, '_blank');

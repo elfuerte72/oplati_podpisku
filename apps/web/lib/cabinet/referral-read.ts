@@ -22,6 +22,7 @@ import {
 } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import { telegramBotLink, telegramMiniAppLink } from '../telegram/links.ts';
 import {
   ledgerToHistoryEntry,
   payoutToHistoryEntry,
@@ -118,8 +119,8 @@ export function formatReferralTelegramLink(
 ): string | null {
   if (!referralCode || !botUsername) return null;
   return miniAppShortName
-    ? `https://t.me/${botUsername}/${miniAppShortName}?startapp=ref_${referralCode}`
-    : `https://t.me/${botUsername}?start=ref_${referralCode}`;
+    ? telegramMiniAppLink(botUsername, miniAppShortName, `ref_${referralCode}`)
+    : telegramBotLink(botUsername, `ref_${referralCode}`);
 }
 
 /**

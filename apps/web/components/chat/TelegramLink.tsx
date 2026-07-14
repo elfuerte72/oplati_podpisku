@@ -11,13 +11,13 @@ import { fetchWithTimeout } from '@/lib/http';
  * Привязка Telegram к веб-сессии (deep-link flow).
  *
  * `useTelegramLink` инкапсулирует клиентский цикл: заранее выпустить токен
- * (POST /api/auth/telegram/link) → отдать готовый deep-link `t.me/<bot>?start=
+ * (POST /api/auth/telegram/link) → отдать готовый deep-link `telegram.me/<bot>?start=
  * link_<token>` для НАСТОЯЩЕЙ `<a>`-ссылки → после тапа поллить
  * /api/auth/telegram/link/status, пока бот не подтвердит привязку. Серверная
  * половина — handle-update.ts (`/start link_*`) + consumeLinkToken.
  *
  * КРИТИЧНО (мобильные): переход в Telegram должен быть прямым тапом по якорю
- * с уже готовым href. Universal link (https://t.me) открывает приложение
+ * с уже готовым href. Telegram HTTPS deep-link открывает приложение
  * ТОЛЬКО при user-tap-навигации; прежняя схема `window.open('about:blank')` +
  * `location.replace` после await загружала веб-страницу t.me с интерстишлом
  * (лишние тапы) или вовсе застревала на пустой вкладке, когда iOS замораживал

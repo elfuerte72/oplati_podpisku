@@ -19,7 +19,7 @@ describe('servicePricingUrl', () => {
     ['apple-app-store', 'https://support.apple.com/en-us/118297'],
     ['icloud-plus-200gb', 'https://support.apple.com/en-us/108047'],
     ['figma-professional', 'https://www.figma.com/pricing/'],
-    ['telegram-premium', 'https://t.me/premiumbot'],
+    ['telegram-premium', 'https://telegram.me/premiumbot'],
   ])('возвращает официальный прайс для активного сервиса %s', (slug, url) => {
     expect(servicePricingUrl(slug)).toBe(url);
   });

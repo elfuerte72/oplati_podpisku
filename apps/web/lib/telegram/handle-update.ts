@@ -671,7 +671,7 @@ const LINK_FAIL_TEXT =
 
 /**
  * Завершение привязки веб-сессии: пользователь пришёл по deep-link
- * `t.me/<bot>?start=link_<token>` с сайта. Токен выпущен
+ * `telegram.me/<bot>?start=link_<token>` с сайта. Токен выпущен
  * `POST /api/auth/telegram/link`, потребление одноразовое (consumeLinkToken).
  *
  * Если у пользователя уже была история и в боте, и на сайте — consumeLinkToken

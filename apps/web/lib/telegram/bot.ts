@@ -33,7 +33,7 @@ export function getBot(): Bot {
 }
 
 /**
- * Username бота для deep-link `t.me/<username>?start=...` (привязка Telegram
+ * Username бота для deep-link `telegram.me/<username>?start=...` (привязка Telegram
  * к веб-сессии). Берётся через `getMe` и кэшируется на жизнь инстанса —
  * env-переменной с username нет, а токен на prod/preview принадлежит разным
  * ботам, так что getMe всегда отдаёт правильного.

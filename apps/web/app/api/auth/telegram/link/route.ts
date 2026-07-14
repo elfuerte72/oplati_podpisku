@@ -7,12 +7,13 @@ import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { getBotUsername } from '@/lib/telegram/bot';
+import { telegramBotLink } from '@/lib/telegram/links';
 
 /**
  * POST /api/auth/telegram/link — начало привязки Telegram к веб-сессии.
  *
  * Создаёт одноразовый токен (TTL 10 минут) по cookie-сессии и возвращает
- * deep-link `https://t.me/<bot>?start=link_<token>`. Завершение привязки —
+ * deep-link `https://telegram.me/<bot>?start=link_<token>`. Завершение привязки —
  * в обработчике `/start link_*` бота (lib/telegram/handle-update.ts),
  * прогресс клиент узнаёт поллингом `GET /api/auth/telegram/link/status`.
  *
@@ -54,7 +55,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       getBotUsername(),
     ]);
 
-    const url = `https://t.me/${botUsername}?start=${LINK_TOKEN_PREFIX}${token}`;
+    const url = telegramBotLink(botUsername, `${LINK_TOKEN_PREFIX}${token}`);
     log.info({ event: 'auth.telegram.link.token_issued' });
 
     return NextResponse.json(
