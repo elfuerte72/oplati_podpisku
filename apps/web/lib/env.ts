@@ -114,6 +114,11 @@ const serverEnvSchema = z.object({
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
   LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
   LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+  // Исходящий CONNECT-прокси для запросов к L&P (верификация доступа по IP, 2026-07-15:
+  // L&P принимает запросы только с задекларированных IP; у Vercel egress динамический).
+  // Формат: http://user:pass@host:port (VPS с фиксированным IP). TLS идёт насквозь —
+  // прокси не видит API-ключи. Не задан → прямое соединение.
+  LOVEANDPAY_PROXY_URL: optionalUrl(),
   // Минимальная сумма счёта L&P в рублях (терминал KANYON не принимает < 500 ₽).
   // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
