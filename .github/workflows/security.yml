@@ -38,8 +38,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Fail only on HIGH/CRITICAL; adjust when dedicated SLA is defined.
+      # 2026-07-15: npm отключил старый audit-эндпоинт (410 Gone), а pnpm (включая
+      # latest) ещё не переехал на bulk advisory API — шаг падал на каждом PR по
+      # внешней причине и блокировал merge (required check). continue-on-error до
+      # фикса в pnpm; реальный PR-гейт по уязвимостям — job dependency-review ниже
+      # (GitHub Advisory DB, fail-on-severity high).
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
+        continue-on-error: true
 
   dependency-review:
     name: Dependency Review

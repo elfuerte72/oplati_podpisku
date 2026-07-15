@@ -3,6 +3,7 @@ import 'server-only';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { LoveAndPayClient } from './client.ts';
+import { buildProxyFetch, proxyHostForLog } from './proxy-fetch.ts';
 
 /**
  * Lazy-singleton L&P-клиента. На build-time `serverEnv` может быть пуст, поэтому
@@ -23,11 +24,23 @@ export function getLoveAndPayClient(): LoveAndPayClient {
     throw new Error('LOVEANDPAY_API_KEY / LOVEANDPAY_SECRET_KEY не заданы в env');
   }
 
+  const logger = childLogger('loveandpay');
+
+  // L&P allowlist по IP: в проде запросы идут через CONNECT-прокси с фиксированным
+  // IP (см. proxy-fetch.ts). URL содержит credentials — в лог только host:port.
+  const proxyUrl = serverEnv.LOVEANDPAY_PROXY_URL;
+  let fetchImpl: typeof fetch | undefined;
+  if (proxyUrl) {
+    fetchImpl = buildProxyFetch(proxyUrl);
+    logger.info({ event: 'loveandpay.proxy_enabled', proxy: proxyHostForLog(proxyUrl) });
+  }
+
   _client = new LoveAndPayClient({
     apiKey,
     secretKey,
     baseUrl,
-    logger: childLogger('loveandpay'),
+    logger,
+    fetchImpl,
   });
   return _client;
 }
