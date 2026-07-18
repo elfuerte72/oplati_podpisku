@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-07-18 — Инфраструктура: dev-окружение Preview и защита main
+
+Полноценный пайплайн feature → Preview → PR → main (PR #83, #84): Preview больше не делит данные с продом, main закрыт от прямых push.
+
+### Added
+
+- **Отдельная dev-Supabase для Preview и локальной разработки** (`oqwofyipeuzgezdplixn`, отдельный Supabase-аккаунт): применены все миграции (0001–0023) + seed каталога (13 активных сервисов). Vercel Preview env переведён на dev-значения: `DATABASE_URL`/`DATABASE_URL_DIRECT`/`SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY`; добавлены `APP_URL` (фикс fail-fast preview-деплоев), отдельный `CRON_SECRET` и предохранитель `AI_DAILY_TOKEN_BUDGET=200000`.
+- **Branch protection ruleset `protectionOplatishka` на `main`**: merge только через PR с зелёными required-чеками `Tests` / `Type Check` / `Lint`; force-push и удаление ветки заблокированы; approvals 0 (solo).
+
+### Changed
+
+- **AI на Preview/dev — Haiku**: основной агент на `claude-haiku-4-5-20251001`, прод остаётся на `claude-sonnet-4-6`; env-записи `ANTHROPIC_MODEL`, `SUPABASE_URL`/`SUPABASE_ANON_KEY` разделены по окружениям (раньше были общими с продом).
+
+### Ops
+
+- Инцидент: GitHub→Vercel вебхук потерял событие мержа PR #83 — прод задеплоен вручную (`vercel deploy --prod`); после каждого мержа проверять появление Production-деплоя (подробности — `docs/incidents.md`).
+
 ## 2026-07-18 — Улучшение клиентского пути (ТЗ: сайт · бот · Mini App)
 
 Внедрение ТЗ «Улучшение клиентского пути» одним релизом (PR #81): клиент с первого экрана понимает ценность сервиса, видит полную цену до оплаты, получает пер-сервисную инструкцию и не теряется после выпуска карты.
