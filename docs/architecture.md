@@ -52,7 +52,7 @@
 
 Drizzle ORM поверх Supabase Postgres (подключение через pooler, `prepare: false`).
 
-- `src/schema.ts` — вся схема: 16 таблиц + enum'ы. RLS включён везде, кроме публичного каталога `services` (public-read активных записей).
+- `src/schema.ts` — вся схема: 16 таблиц + enum'ы. RLS включён везде, кроме публичного каталога `services` (public-read активных записей; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
 - `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert), `cards`, `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
 - `drizzle/` — forward-only миграции; `scripts/seed-catalog.ts` — идемпотентный seed каталога.
 - `repositories/logger.ts` — интерфейс `RepoLogger` (pino-shape), чтобы пакет не зависел от pino.
@@ -95,8 +95,11 @@ lib/
   tool-handlers/                  реализация ToolHandlers (мост agent → db)
   loveandpay/                     клиент, HMAC-подпись, webhook-handlers (+ Vitest)
   pay-space/                      клиент PaySpace (createCard/topupCard/getCard) — на проде включён
+  catalog/                        витрина кнопочного флоу: build/load/propose + пер-сервисные
+                                  инструкции оплаты (instructions.ts, «Важно перед оплатой»)
   referral/                       захват реферера (capture) + начисление (accrue) + исполнитель выплат (payout-executor, mock)
-  cabinet/                        снапшот/auth/payout партнёрского кабинета
+  cabinet/                        кабинеты: снапшот/auth Mini App (read, live-balance,
+                                  payment-issues) + referral-* партнёрского кабинета
   jobs/                           логика cron-джобов + dispatcher
   chat/                           cookie-сессия и история веб-чата
 instrumentation.ts                Sentry server/edge + fail-fast env
@@ -152,7 +155,9 @@ draft → clarifying → kyc_required ⇄ clarifying
 
 ### 6. Виртуальные карты PaySpace (на проде включён)
 
-После `paid` job `issue-card` выдаёт клиенту реквизиты USD-карты: **атомарный claim `paid → in_fulfillment` до операций** (at-most-once) → topup активной карты юзера ИЛИ выпуск новой через PaySpace (cross-client reuse убран — `release` необратим) → карта выпускается на цену + буфер `PAYSPACE_CARD_BUFFER_PERCENT` (20%, запас на VAT/FX/foreign-fee) → реквизиты клиенту в Telegram → `completed` (actor `system`). Контракт PaySpace подтверждён живым вызовом (заморозки в API нет — только withdraw/topup/release). Без `PAYSPACE_API_KEY` срабатывает guard `skipped_no_paypace` — заказ остаётся в `paid` для ручного исполнения; **на проде ключи стоят, выпуск боевой.** Операционный гейт беты — баланс VCC-субаккаунта (на карту нужно `цена + буфер + $4 issue-fee`); при низком балансе `createCard`/`topup` падает уже ПОСЛЕ приёма рублей → заказ `failed` (алёрт `vcc_balance.low`). Полные PAN/CVC никогда не попадают в БД/логи — только `pan_masked`; реквизиты клиенту уходят единственным путём — сообщением в Telegram. Recovery — cron `poll-payment` (`findStuckPaidOrders`).
+После `paid` job `issue-card` выдаёт клиенту реквизиты USD-карты: **атомарный claim `paid → in_fulfillment` до операций** (at-most-once) → topup активной карты юзера ИЛИ выпуск новой через PaySpace (cross-client reuse убран — `release` необратим) → карта выпускается на цену + буфер `PAYSPACE_CARD_BUFFER_PERCENT` (20%, запас на VAT/FX/foreign-fee) → реквизиты клиенту в Telegram → `completed` (actor `system`). Контракт PaySpace подтверждён живым вызовом (заморозки в API нет — только withdraw/topup/release). Без `PAYSPACE_API_KEY` срабатывает guard `skipped_no_paypace` — заказ остаётся в `paid` для ручного исполнения; **на проде ключи стоят, выпуск боевой.** Операционный гейт беты — баланс VCC-субаккаунта (на карту нужно `цена + буфер + $4 issue-fee`); при низком балансе `createCard`/`topup` падает уже ПОСЛЕ приёма рублей → заказ `failed` (алёрт `vcc_balance.low`). Полные PAN/CVC никогда не попадают в БД/логи — только `pan_masked`; реквизиты клиенту уходят двумя санкционированными путями: сообщением в Telegram при выпуске и разовым показом в кабинете (`card-details`, live-запрос после проверки `initData`, автоскрытие через 60 с). Recovery — cron `poll-payment` (`findStuckPaidOrders`).
+
+**После выпуска (клиентский путь, 2026-07-18):** экран карты в кабинете показывает live-баланс (снапшот тянет `getCardInfo` с бюджетом 4 с и кэширует его compare-and-set'ом `syncCardBalance` — БД-снимок сам не видит списаний клиента на сайте сервиса), назначение («Для оплаты: <сервис>») и срок (выпуск + 180 дней, синхронно с recycle-cron). Экран выполненного заказа ведёт клиента дальше: пер-сервисная инструкция из `services.payment_instructions`, переход на сайт сервиса, статусы «Ожидает оплаты на сайте / Подписка оплачена / Возникла проблема» (производные от append-only `order_events`, статус-машина не тронута) и «Не проходит оплата?» — чек-лист + отправка полного контекста заказа оператору одним нажатием.
 
 ### 7. Реферальная (партнёрская) программа
 
@@ -171,7 +176,7 @@ draft → clarifying → kyc_required ⇄ clarifying
 | | Production | Preview |
 |---|---|---|
 | URL | `www.oplatishka.com` (custom-домен, env `APP_URL`; `oplati-podpisku-web.vercel.app` тоже обслуживает) | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` |
-| Telegram-бот | `@test_prodipsa_bot` | `@dev_test_podpiska_bot` |
+| Telegram-бот | `@oplatishkaa_bot` (до 2026-07-03 — `@test_prodipsa_bot`) | `@dev_test_podpiska_bot` |
 | Триггер деплоя | merge в `main` | push в feature-ветку |
 
 Боты раздельные, потому что webhook у бота один. Deployment Protection выключена (иначе Telegram получает `401` до нашего кода) — защита на уровне эндпоинтов: secret-token, подпись L&P, `X-Internal-Token`, RLS. Детали и карта секретов — в [`CLAUDE.md`](../CLAUDE.md).
