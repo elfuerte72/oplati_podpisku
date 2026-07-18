@@ -12,6 +12,7 @@ import {
   PAYMENT_ISSUE_TYPES,
   type PaymentIssueType,
 } from '@/lib/cabinet/payment-issues';
+import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
 import {
   PAYMENT_ISSUE_EVENT,
   SUBSCRIPTION_ACTIVATED_EVENT,
@@ -24,6 +25,8 @@ export type DetailActionMessage = { tone: 'ok' | 'err'; text: string };
 
 type Props = {
   order: OrderDetail;
+  /** Есть ли у клиента активная карта (из снапшота кабинета) — НЕ выводится из fee=0 (L-22). */
+  hasActiveCard: boolean;
   busy: 'pay' | null;
   message: DetailActionMessage | null;
   onBack: () => void;
@@ -46,15 +49,18 @@ function Row({ label, value }: { label: string; value: string }) {
  * Рублёвый «чек» заказа. `cardIssueFeeKopecks` — снимок разовой надбавки за
  * выпуск карты (уже включён в `totalKopecks`):
  *  - `> 0` — первая оплата: показываем «Подписка + Выпуск карты = Итого»;
- *  - `= 0` — повторная: «Сумма» + заметка «карта уже есть»;
- *  - `null` — заказ до фичи: просто «Сумма» (как раньше).
+ *  - `= 0` И у клиента есть карта — «Сумма» + заметка «карта уже есть»
+ *    (L-22: fee=0 бывает и при отключённой env-надбавке — тогда заметка врала);
+ *  - иначе — просто «Сумма».
  */
 function RubBreakdown({
   totalKopecks,
   cardIssueFeeKopecks,
+  hasActiveCard,
 }: {
   totalKopecks: number;
   cardIssueFeeKopecks: number | null;
+  hasActiveCard: boolean;
 }) {
   if (cardIssueFeeKopecks !== null && cardIssueFeeKopecks > 0) {
     return (
@@ -72,7 +78,7 @@ function RubBreakdown({
       </>
     );
   }
-  if (cardIssueFeeKopecks === 0) {
+  if (showCardAlreadyOwnedNote(cardIssueFeeKopecks, hasActiveCard)) {
     return (
       <>
         <Row label="Сумма" value={formatRub(totalKopecks)} />
@@ -97,10 +103,12 @@ function PriceBreakdown({
   totalKopecks,
   cardIssueFeeKopecks,
   originalAmountUsdCents,
+  hasActiveCard,
 }: {
   totalKopecks: number;
   cardIssueFeeKopecks: number | null;
   originalAmountUsdCents: number | null;
+  hasActiveCard: boolean;
 }) {
   return (
     <>
@@ -118,7 +126,11 @@ function PriceBreakdown({
           <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
         </>
       )}
-      <RubBreakdown totalKopecks={totalKopecks} cardIssueFeeKopecks={cardIssueFeeKopecks} />
+      <RubBreakdown
+        totalKopecks={totalKopecks}
+        cardIssueFeeKopecks={cardIssueFeeKopecks}
+        hasActiveCard={hasActiveCard}
+      />
     </>
   );
 }
@@ -127,7 +139,13 @@ function PriceBreakdown({
  * Раскрывающийся блок «Как рассчитана сумма» (ТЗ §3): из чего сложился итог —
  * цена подписки, зафиксированный курс, комиссия сервиса, разовый выпуск карты.
  */
-function HowPriceComputed({ order }: { order: OrderDetail }) {
+function HowPriceComputed({
+  order,
+  hasActiveCard,
+}: {
+  order: OrderDetail;
+  hasActiveCard: boolean;
+}) {
   // Курс хранится как rate × 10000 (см. orders.usdt_rub_rate_kopecks в схеме).
   const rate =
     order.usdtRubRateKopecks !== null && order.usdtRubRateKopecks > 0
@@ -160,7 +178,7 @@ function HowPriceComputed({ order }: { order: OrderDetail }) {
             для первой карты).
           </li>
         )}
-        {order.cardIssueFeeKopecks === 0 && (
+        {showCardAlreadyOwnedNote(order.cardIssueFeeKopecks, hasActiveCard) && (
           <li>Выпуск карты не оплачивается — карта уже есть, платишь только за подписку.</li>
         )}
         <li>После создания заказа сумма не меняется — платишь ровно столько, сколько видишь.</li>
@@ -419,6 +437,7 @@ function AfterCardBlock({
  */
 export function OrderDetailView({
   order,
+  hasActiveCard,
   busy,
   message,
   onBack,
@@ -460,6 +479,7 @@ export function OrderDetailView({
             <PriceBreakdown
               totalKopecks={order.amountKopecks}
               cardIssueFeeKopecks={order.cardIssueFeeKopecks}
+              hasActiveCard={hasActiveCard}
               // USD-строку показываем только для долларовых заказов: formatUsd
               // жёстко форматирует в $, для не-USD валюты это был бы неверный
               // ярлык. Сейчас каталог всегда USD — проверка защитная.
@@ -470,7 +490,9 @@ export function OrderDetailView({
           {order.fulfilledAt && <Row label="Выполнен" value={formatExpires(order.fulfilledAt)} />}
         </dl>
 
-        {order.amountKopecks !== null && <HowPriceComputed order={order} />}
+        {order.amountKopecks !== null && (
+          <HowPriceComputed order={order} hasActiveCard={hasActiveCard} />
+        )}
 
         {order.payable && (
           <div className="mt-5">
