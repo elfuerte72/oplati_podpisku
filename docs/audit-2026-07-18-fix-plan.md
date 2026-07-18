@@ -96,31 +96,29 @@ Severity — из аудита. BLOCKER'ов нет. Оси независимы
 
 ## MEDIUM (приоритет 2)
 
-### [ ] M-1 (ось A) — цикл в реферальном дереве
+### [x] M-1 (ось A) — цикл в реферальном дереве — СДЕЛАНО
 
-`packages/db/src/repositories/referrals.ts:123` — `setReferrerOnce` проверяет только
-self-referral и `referred_by IS NULL`. Цикл A↔B возможен: реферер без покупок открывает
-ссылку своего же реферала → оба вечно фармят комиссию с покупок друг друга.
-**Фикс:** в `setReferrerOnce` (и merge-пути `link-tokens.ts:225`) пройти цепочку
-`referred_by` вверх от кандидата-реферера; если встретили самого пользователя — отказ
-(`{ok:false, reason:'cycle'}`). Глубина ограничена (уровень 1, но цепочка историческая —
-кап ~20 итераций). **Тест:** PGlite — A пригласил B, затем B пытается стать реферером A → отказ.
+`wouldCreateCycle` в `setReferrerOnce` (referrals.ts): обход `referred_by` вверх от
+кандидата-реферера, кап 16 уровней с fail-closed (тот же алгоритм, что в merge-пути
+`consumeLinkToken`, где чек уже был). Новый reason `'cycle'`. PGlite-тесты: прямой
+цикл A↔B, транзитивный A→B→C, позитивный контроль. TOCTOU-гонка конкурентных взаимных
+установок — принятый риск (прецедент merge-пути), задокументировано в коде.
 
-### [ ] M-2 (ось A) — payments/create: INSERT платежа и переход заказа вне транзакции
+### [x] M-2 (ось A) — payments/create: INSERT платежа и переход вне транзакции — СДЕЛАНО
 
-`route.ts:170–205` — `upsertPaymentByProviderRef` и `transitionOrder(pending_payment)` —
-два отдельных await. Сбой между ними: живой инвойс при заказе в `ready_for_payment`.
-**Фикс:** обернуть в `db.transaction` (по образцу `processInvoicePaid` — savepoint-паттерн).
-Учесть: L&P-вызов остаётся ДО транзакции (не держать lock на HTTP).
-**Тест:** PGlite — инжектированный сбой перехода откатывает INSERT платежа.
+`upsert + transitionOrder + setOrderExpiresAt` обёрнуты в `db.transaction` (L&P-вызов
+остался ДО транзакции); гонка 23505 ловится снаружи — транзакция откатывается целиком,
+проигравший получает инвойс победителя. `upsertPaymentByProviderRef`/`setOrderExpiresAt`
+переведены на `DBLike`. Тесты: route-тест `route.test.ts` (все три операции получают
+ОДИН tx-хендл; заодно часть T-1) + PGlite-регресс отката INSERT платежа.
 
-### [ ] M-3 (оси B+E, подтверждено двумя осями) — `amount_mismatch` без terminal-пути
+### [x] M-3 (оси B+E) — `amount_mismatch` без terminal-пути — СДЕЛАНО
 
-`apps/web/lib/loveandpay/handlers.ts:79–100` — недоплаченный инвойс не клеймится: платёж
-вечно `pending`, poll ре-алёртит 25 ч, заказ позже хоронится как `expired` при частично
-полученных деньгах. **Фикс:** завести явный исход — claim платежа в `failed` c
-`failure_reason='amount_mismatch'` + `notifyOps` (ручной возврат), заказ → `failed`
-(не `expired` — деньги частично пришли). **Тест:** unit handlers + PGlite claim.
+Недоплата терминальна: `claimPaymentTerminal` (pending→failed) + заказ → `failed`
+(event `payment_amount_mismatch` с expected/got) в одной транзакции (паттерн
+processInvoiceTerminal) + `notifyOps` DM владельцу РОВНО один раз (повторы
+webhook/poll получают claim=null и DM не шлют). Платёж выпадает из poll-окна —
+25-часовой ре-алерт исчез. Тесты: unit handlers (новое поведение + дедуп на повторе).
 
 ### [x] M-4 (ось B) — рассинхрон TTL заказа и инвойса L&P — СДЕЛАНО
 
@@ -251,11 +249,21 @@ Supabase free tier 500 MB. **Фикс (решение владельца):** п�
   каталога (за выключенным флагом BOT_AI_ENABLED) — при включении флага заменить индекс
   на стабильный ключ тарифа в callback_data.
 - [ ] L-21 (C) CSP `Report-Only` → enforced после периода наблюдения (план F-12, за владельцем).
+- [ ] L-22 (UX, находка владельца на смоуке 2026-07-18) — `OrderDetailView.tsx:49,81,164`
+  показывает «Карта уже есть — платишь только за подписку», выводя это ИЗ
+  `cardIssueFeeKopecks === 0`. Но fee=0 бывает и когда `CARD_ISSUE_FEE_USD_CENTS`
+  не задан/0 (dev/preview — у пользователя карты НЕТ, а UI утверждает обратное; на
+  проде fee=$4 задан, поэтому там текст появляется только в истинном кейсе).
+  **Фикс:** показывать «карта уже есть» по ФАКТУ наличия активной карты (в снапшоте
+  кабинета карта уже есть — `card !== null`), а не по нулевой надбавке; при fee=0 без
+  карты — просто не показывать строку. **Тест:** unit на ветвление текста.
 
 ## Пробелы тестового покрытия (закрывать вместе с фиксами соответствующих зон)
 
-- [ ] T-1 `app/api/payments/create/route.ts` — repeat_confirm, гонка 23505,
-  `respondWithExistingPendingPayment`, парс `storedInvoiceSchema` (закрывать вместе с M-2).
+- [ ] T-1 `app/api/payments/create/route.ts` — ЧАСТИЧНО закрыт вместе с M-2
+  (`route.test.ts`: транзакционная связка, дубль isNew=false, гейт order_expired).
+  Осталось: repeat_confirm, гонка 23505 → `respondWithExistingPendingPayment`,
+  парс `storedInvoiceSchema` из rawPayload.
 - [x] T-2 `toAgentHistory` — закрыт фиксом H-1.
 - [ ] T-3 оркестрация `expire-payments`/`poll-payment` (guard оплаченного, порядок
   claim→notify) — unit с моками (закрывать вместе с L-4/M-4).

@@ -175,7 +175,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
-    const amountRubFull = order.amountRub / 100;
+    // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
+    const orderAmountKopecks = order.amountRub;
+    const amountRubFull = orderAmountKopecks / 100;
     const successUrl = buildTelegramDeepLink(order.shortId);
     const description = `Оплата заказа ${order.shortId}`;
 
@@ -217,45 +219,56 @@ export async function POST(req: Request): Promise<NextResponse> {
       ? new Date(invoice.expiresAt)
       : new Date(Date.now() + INVOICE_TTL_HOURS * 60 * 60 * 1000);
 
+    // INSERT платежа + переход заказа + выравнивание срока — В ОДНОЙ транзакции
+    // (M-2 аудита 2026-07-18). Раньше это были отдельные await'ы: транзиентный
+    // сбой БД между ними оставлял живой L&P-инвойс с pending-платежом при
+    // заказе в ready_for_payment — оплата такого счёта упиралась в запрещённый
+    // переход ready_for_payment→paid, fulfillment не стартовал. Теперь сбой
+    // любого шага откатывает всё: платежа нет, заказ не тронут, повторный
+    // confirm создаст новый счёт начисто.
     let upsert: UpsertResult;
     try {
-      upsert = await upsertPaymentByProviderRef(db, {
-        orderId,
-        provider: 'loveandpay',
-        providerRef: invoice.id,
-        providerInvoiceNumber: invoice.invoiceNumber,
-        amountRub: order.amountRub,
-        status: 'pending',
-        expiresAt: invoiceExpiresAt,
-        rawPayload: { invoice } as Record<string, unknown>,
+      upsert = await db.transaction(async (tx) => {
+        const u = await upsertPaymentByProviderRef(tx, {
+          orderId,
+          provider: 'loveandpay',
+          providerRef: invoice.id,
+          providerInvoiceNumber: invoice.invoiceNumber,
+          amountRub: orderAmountKopecks,
+          status: 'pending',
+          expiresAt: invoiceExpiresAt,
+          rawPayload: { invoice } as Record<string, unknown>,
+        });
+        // isNew=true — двигаем order вперёд; дубль (повторный confirm_order)
+        // просто вернёт существующий инвойс без переходов.
+        if (u.isNew) {
+          await transitionOrder(tx, {
+            orderId,
+            toStatus: 'pending_payment',
+            actorType: 'system',
+            eventType: 'payment_invoice_created',
+            payload: { paymentId: u.payment.id, invoiceId: invoice.id, paymentMethod: paymentMethod ?? 'any' },
+          });
+          // M-4: срок заказа выравнивается по сроку счёта — иначе cron
+          // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
+          // после экспайра = деньги приняты, фулфилмента нет).
+          await setOrderExpiresAt(tx, orderId, invoiceExpiresAt);
+        }
+        return u;
       });
     } catch (err) {
       // Частичный unique payments_one_pending_per_order_idx (находка аудита I3):
       // два КОНКУРЕНТНЫХ confirm_order оба проходили проверку статуса выше и
       // создавали два живых инвойса — клиент мог оплатить второй по уже
-      // завершённому заказу. Теперь проигравший INSERT получает 23505 —
-      // возвращаем ему уже существующий pending-инвойс победителя (созданный
-      // здесь invoice остаётся неоплаченным висяком в L&P и истечёт сам).
+      // завершённому заказу. Проигравший INSERT получает 23505 (транзакция
+      // откатывается целиком) — возвращаем ему уже существующий pending-инвойс
+      // победителя (созданный здесь invoice остаётся висяком в L&P и истечёт сам).
       if (!isPendingPaymentConflict(err)) throw err;
       log.warn({ event: 'payments.create.concurrent_duplicate', orderId });
       return await respondWithExistingPendingPayment(orderId, paymentMethod);
     }
 
-    // Если payment был создан только что (isNew=true), двигаем order вперёд.
-    // Иначе (дубль — повторный вызов confirm_order) — возвращаем существующий ссылочный invoice.
-    if (upsert.isNew) {
-      await transitionOrder(db, {
-        orderId,
-        toStatus: 'pending_payment',
-        actorType: 'system',
-        eventType: 'payment_invoice_created',
-        payload: { paymentId: upsert.payment.id, invoiceId: invoice.id, paymentMethod: paymentMethod ?? 'any' },
-      });
-      // M-4: срок заказа выравнивается по сроку счёта — иначе cron
-      // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
-      // после экспайра = деньги приняты, фулфилмента нет).
-      await setOrderExpiresAt(db, orderId, invoiceExpiresAt);
-    } else {
+    if (!upsert.isNew) {
       log.info({
         event: 'payments.create.duplicate',
         orderId,

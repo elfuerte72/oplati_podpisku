@@ -23,6 +23,7 @@ import {
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
+import { setReferrerOnce } from './repositories/referrals.ts';
 import { getOrCreateUserByTelegramId } from './repositories/users.ts';
 import {
   getReferralBalanceUsdCents,
@@ -400,6 +401,38 @@ describe('findExpiredPayableOrders (guard оплаченного заказа C1
   });
 });
 
+describe('setReferrerOnce — цикл-чек реферального дерева (M-1)', () => {
+  it('прямой цикл A↔B: реферал не может стать реферером своего пригласившего', async () => {
+    const a = await makeUser();
+    const b = await makeUser({ referredBy: a.id });
+
+    const res = await setReferrerOnce(db, a.id, b.id);
+
+    expect(res).toEqual({ set: false, reason: 'cycle' });
+    const rows = await db.select().from(schema.users).where(eq(schema.users.id, a.id));
+    expect(firstOf(rows, 'user A').referredBy).toBeNull();
+  });
+
+  it('транзитивный цикл A→B→C: потомок в цепочке не может стать реферером корня', async () => {
+    const a = await makeUser();
+    const b = await makeUser({ referredBy: a.id });
+    const c = await makeUser({ referredBy: b.id });
+
+    const res = await setReferrerOnce(db, a.id, c.id);
+
+    expect(res).toEqual({ set: false, reason: 'cycle' });
+  });
+
+  it('несвязанный реферер ставится нормально (позитивный контроль)', async () => {
+    const x = await makeUser();
+    const y = await makeUser();
+
+    const res = await setReferrerOnce(db, x.id, y.id);
+
+    expect(res).toEqual({ set: true });
+  });
+});
+
 describe('setOrderExpiresAt (выравнивание срока заказа по сроку счёта, M-4)', () => {
   it('обновляет expires_at, не трогая статус', async () => {
     const user = await makeUser();
@@ -412,6 +445,36 @@ describe('setOrderExpiresAt (выравнивание срока заказа п
     const row = firstOf(rows, 'order');
     expect(row.expiresAt?.toISOString()).toBe(target.toISOString());
     expect(row.status).toBe('pending_payment');
+  });
+});
+
+describe('payments/create — атомарность INSERT платежа и перехода (M-2)', () => {
+  it('сбой транзакции после upsert откатывает INSERT платежа — живого инвойса-сироты не остаётся', async () => {
+    const user = await makeUser();
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'integration-test M-2',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+      expiresAt: null,
+    });
+
+    await expect(
+      db.transaction(async (tx) => {
+        const u = await upsertPaymentByProviderRef(tx, {
+          orderId: order.id,
+          provider: 'loveandpay',
+          providerRef: `inv-${++seq}`,
+          amountRub: 50000,
+        });
+        expect(u.isNew).toBe(true);
+        throw new Error('transient failure after upsert');
+      }),
+    ).rejects.toThrow('transient failure after upsert');
+
+    expect(await findPendingPaymentByOrderId(db, order.id)).toBeNull();
   });
 });
 

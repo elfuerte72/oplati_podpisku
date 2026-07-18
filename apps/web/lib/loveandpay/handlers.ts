@@ -18,6 +18,7 @@ import {
 
 import { childLogger } from '../logger.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 /**
@@ -96,6 +97,56 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
         invoiceNumber: data.invoiceNumber,
       },
     });
+
+    // Терминальный путь недоплаты (M-3 аудита 2026-07-18). Раньше платёж
+    // оставался pending навсегда: poll ре-алертил каждые 5 мин 25 часов, затем
+    // забывал, а cron позже хоронил заказ как «срок истёк» при частично
+    // принятых деньгах. Теперь: платёж → failed, заказ → failed (не expired —
+    // деньги частично пришли, нужен ручной возврат), DM владельцу один раз
+    // (повторы webhook/poll получают claim=null и DM не шлют). Паттерн
+    // транзакции — как в processInvoiceTerminal: транзиентный сбой перехода
+    // откатывает claim, OrderTransitionError (заказ уже ушёл иным путём) —
+    // фиксируем claim, переход пропускаем.
+    const mismatchClaimed = await db.transaction(async (tx) => {
+      const row = await claimPaymentTerminal(tx, payment.id, log);
+      if (!row) return null;
+      try {
+        await transitionOrder(tx, {
+          orderId: payment.orderId,
+          toStatus: 'failed',
+          actorType: 'payment_provider',
+          eventType: 'payment_amount_mismatch',
+          payload: {
+            paymentId: payment.id,
+            invoiceId: data.id,
+            invoiceNumber: data.invoiceNumber,
+            expectedKopecks: payment.amountRub,
+            gotKopecks,
+          },
+        });
+      } catch (err) {
+        if (!(err instanceof OrderTransitionError)) throw err;
+        log.warn({
+          event: 'loveandpay.handlers.mismatch_transition_skip',
+          orderId: payment.orderId,
+          err,
+        });
+        Sentry.captureException(err, {
+          level: 'warning',
+          tags: { source: 'loveandpay.handlers', step: 'transition_mismatch' },
+          extra: { orderId: payment.orderId, invoiceId: data.id },
+        });
+      }
+      return row;
+    });
+
+    if (mismatchClaimed) {
+      // Вне транзакции: DM не должен держать соединение/откатываться вместе с ней.
+      await notifyOps(
+        `Недоплата по заказу: выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (инвойс ${data.invoiceNumber ?? data.id}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
+      );
+    }
+
     return { kind: 'amount_mismatch', paymentId: payment.id, expectedKopecks: payment.amountRub, gotKopecks };
   }
 

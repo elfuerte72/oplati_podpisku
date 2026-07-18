@@ -338,7 +338,9 @@ export async function transitionOrder(
  * приняты, фулфилмента нет.
  */
 export async function setOrderExpiresAt(
-  db: DB,
+  // DBLike: с M-2 вызывается из транзакции payments/create вместе с upsert
+  // платежа и переходом заказа.
+  db: DBLike,
   orderId: string,
   expiresAt: Date,
   log: RepoLogger = noopLogger,
