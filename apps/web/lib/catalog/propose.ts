@@ -56,6 +56,7 @@ export type ProposeOrderCard = {
 
 export type ProposeFromCatalogError =
   | 'service_not_found'
+  | 'service_unavailable'
   | 'tier_not_found'
   | 'amount_required'
   | 'order_cap_exceeded'
@@ -75,6 +76,8 @@ const CUSTOM_AMOUNT_THRESHOLD_USD_CENTS = 1;
 
 const FAIL_TEXT: Record<ProposeFromCatalogError, string> = {
   service_not_found: 'Этот сервис сейчас недоступен. Выбери другой или напиши в чат — подключу оператора.',
+  service_unavailable:
+    'Этот сервис временно недоступен. Выбери другой или напиши в чат — подключу оператора.',
   tier_not_found: 'Такого тарифа уже нет. Открой список заново или напиши в чат.',
   amount_required: 'Для этого сервиса нужна сумма в долларах. Напиши число от $1 до $500.',
   order_cap_exceeded:
@@ -104,9 +107,22 @@ export async function proposeFromCatalog(
       return fail('service_not_found');
     }
 
-    // Сумма — строго серверная для тарифных сервисов.
+    // Сумма — строго серверная для тарифных сервисов. Битая политика — отказ,
+    // как в build.ts (M-7 аудита): раньше tiers=[] превращали every() в true,
+    // сервис становился «custom-amount» и принимал цену клиента.
     const policy = pricingPolicy.safeParse(service.pricingPolicy);
-    const tiers = policy.success ? policy.data.tiers : [];
+    if (!policy.success) {
+      log.error({ event: 'catalog.propose.broken_policy', slug });
+      Sentry.captureMessage('catalog.propose: битая pricing_policy', {
+        level: 'error',
+        tags: { source: 'catalog.propose' },
+        extra: { slug },
+      });
+      return fail('service_unavailable');
+    }
+    // Схема гарантирует ≥1 тариф — custom-amount только если политика ЯВНО
+    // из одних dummy-тарифов (маркер seed для Airbnb).
+    const tiers = policy.data.tiers;
     const isCustomAmount = tiers.every(
       (t) => (t.originalAmount ?? 0) <= CUSTOM_AMOUNT_THRESHOLD_USD_CENTS,
     );

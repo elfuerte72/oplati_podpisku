@@ -205,6 +205,26 @@ describe('proposeFromCatalog', () => {
     expect(res.text).toContain('500');
   });
 
+  it('битая pricing_policy → service_unavailable, клиентская сумма НЕ принимается (M-7)', async () => {
+    // Регресс: safeParse падал → tiers=[] → every() на пустом = true →
+    // сервис с фиксированной ценой превращался в custom-amount и принимал
+    // amountUsdCents клиента.
+    h.service = { ...tierService, pricingPolicy: { broken: true } };
+    h.proposeImpl.mockResolvedValue(okResult);
+
+    const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', amountUsdCents: 100 });
+
+    expect(res).toMatchObject({ ok: false, error: 'service_unavailable' });
+    expect(h.proposeImpl).not.toHaveBeenCalled();
+  });
+
+  it('pricing_policy = null (нет записи) у тарифного сервиса → тоже отказ (M-7)', async () => {
+    h.service = { ...tierService, pricingPolicy: null };
+    const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', amountUsdCents: 100 });
+    expect(res).toMatchObject({ ok: false, error: 'service_unavailable' });
+    expect(h.proposeImpl).not.toHaveBeenCalled();
+  });
+
   it('неожиданная ошибка → propose_failed', async () => {
     h.service = tierService;
     h.proposeImpl.mockRejectedValue(new Error('db down'));
