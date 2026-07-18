@@ -5,6 +5,7 @@ import {
   requestHumanInput,
   searchCatalogInput,
 } from '@oplati/types';
+import type { ZodError, ZodType, ZodTypeDef } from 'zod';
 
 import { getClient } from './client.ts';
 import { SYSTEM_PROMPT } from './prompts.ts';
@@ -97,13 +98,70 @@ export interface ToolHandlers {
  * вызова обработчика (инвариант «Zod на всех границах, включая AI tool inputs»).
  * `web_search` — server-side tool Anthropic, обработчика у нас нет, поэтому его
  * здесь нет. Ключи обязаны совпадать с именами tools в `./tools.ts`.
+ *
+ * `satisfies` (M-8 аудита) форсит двумя способами: (1) полноту — новый tool в
+ * `ToolHandlers` без схемы не соберётся, раньше он тихо проскакивал Zod-границу;
+ * (2) совпадение типа выхода схемы со входом обработчика.
  */
 const TOOL_INPUT_SCHEMAS = {
   search_catalog: searchCatalogInput,
   propose_order: proposeOrderInput,
   confirm_order: confirmOrderInput,
   request_human: requestHumanInput,
-} as const;
+} satisfies {
+  // Вход схемы — unknown (сырой tool_use.input модели; .default() делает вход
+  // шире выхода), выход обязан совпадать со входом обработчика.
+  [K in keyof ToolHandlers]: ZodType<Parameters<ToolHandlers[K]>[0], ZodTypeDef, unknown>;
+};
+
+function isKnownTool(name: string): name is keyof ToolHandlers {
+  return Object.hasOwn(TOOL_INPUT_SCHEMAS, name);
+}
+
+type ToolExecution = { result: unknown; isError: boolean };
+
+function invalidToolInput(error: ZodError): ToolExecution {
+  return { result: { error: `invalid tool input: ${error.message}` }, isError: true };
+}
+
+/**
+ * Типизированный диспатч tool_use → обработчик (вместо прежнего
+ * `(handler as any)(input)`): в каждой ветке компилятор сверяет выход схемы со
+ * входом конкретного обработчика. `default` с `never` делает switch
+ * экзостивным — новый tool без ветки не соберётся.
+ */
+async function executeToolUse(
+  handlers: ToolHandlers,
+  name: keyof ToolHandlers,
+  rawInput: unknown,
+): Promise<ToolExecution> {
+  switch (name) {
+    case 'search_catalog': {
+      const parsed = TOOL_INPUT_SCHEMAS.search_catalog.safeParse(rawInput);
+      if (!parsed.success) return invalidToolInput(parsed.error);
+      return { result: await handlers.search_catalog(parsed.data), isError: false };
+    }
+    case 'propose_order': {
+      const parsed = TOOL_INPUT_SCHEMAS.propose_order.safeParse(rawInput);
+      if (!parsed.success) return invalidToolInput(parsed.error);
+      return { result: await handlers.propose_order(parsed.data), isError: false };
+    }
+    case 'confirm_order': {
+      const parsed = TOOL_INPUT_SCHEMAS.confirm_order.safeParse(rawInput);
+      if (!parsed.success) return invalidToolInput(parsed.error);
+      return { result: await handlers.confirm_order(parsed.data), isError: false };
+    }
+    case 'request_human': {
+      const parsed = TOOL_INPUT_SCHEMAS.request_human.safeParse(rawInput);
+      if (!parsed.success) return invalidToolInput(parsed.error);
+      return { result: await handlers.request_human(parsed.data), isError: false };
+    }
+    default: {
+      const unreachable: never = name;
+      throw new Error(`unhandled tool: ${String(unreachable)}`);
+    }
+  }
+}
 
 export interface AgentContext {
   userId: string;
@@ -123,7 +181,12 @@ export interface AgentMessage {
  * после `propose_order` прикрепить inline-кнопки с orderId к ответному сообщению.
  */
 export interface ToolCallLog {
-  name: keyof ToolHandlers;
+  /**
+   * Имя tool'а из `tool_use` модели. Для наших tools совпадает с ключом
+   * `ToolHandlers`; тип `string`, потому что модель может назвать
+   * несуществующий tool — такой вызов логируется здесь с `isError: true`.
+   */
+  name: string;
   input: unknown;
   output: unknown;
   isError: boolean;
@@ -279,29 +342,28 @@ export async function runAgent(
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
       for (const tu of toolUses) {
-        const handler = ctx.toolHandlers[tu.name as keyof ToolHandlers];
         let result: unknown;
         let isError = false;
         try {
-          // Zod-граница: валидируем сырой input модели ДО обработчика. Провал
-          // (напр. customDescription длиннее лимита, отрицательная сумма) →
-          // is_error tool_result, обработчик мусор не получает (L6).
-          const schema = TOOL_INPUT_SCHEMAS[tu.name as keyof typeof TOOL_INPUT_SCHEMAS];
-          const parsed = schema?.safeParse(tu.input);
-          if (parsed && !parsed.success) {
-            isError = true;
-            result = { error: `invalid tool input: ${parsed.error.message}` };
+          if (isKnownTool(tu.name)) {
+            // Zod-граница: executeToolUse валидирует сырой input модели ДО
+            // обработчика. Провал (напр. customDescription длиннее лимита,
+            // отрицательная сумма) → is_error tool_result, обработчик мусор
+            // не получает (L6).
+            const execution = await executeToolUse(ctx.toolHandlers, tu.name, tu.input);
+            result = execution.result;
+            isError = execution.isError;
           } else {
-            const input = parsed?.success ? parsed.data : tu.input;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            result = await (handler as any)(input);
+            // Галлюцинация модели: несуществующий tool → is_error, не падение цикла.
+            isError = true;
+            result = { error: `unknown tool: ${tu.name}` };
           }
         } catch (err) {
           isError = true;
           result = { error: err instanceof Error ? err.message : String(err) };
         }
         toolCalls.push({
-          name: tu.name as keyof ToolHandlers,
+          name: tu.name,
           input: tu.input,
           output: result,
           isError,
