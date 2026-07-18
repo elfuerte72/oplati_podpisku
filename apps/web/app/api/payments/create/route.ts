@@ -210,6 +210,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       amountRub: order.amountRub,
     });
 
+    // Единый нормализованный срок инвойса: L&P не вернул expiresAt → считаем
+    // сами от TTL. Один и тот же момент уходит в payment, orders.expires_at и
+    // ответ клиенту — рассинхрон источников исключён.
+    const invoiceExpiresAt = invoice.expiresAt
+      ? new Date(invoice.expiresAt)
+      : new Date(Date.now() + INVOICE_TTL_HOURS * 60 * 60 * 1000);
+
     let upsert: UpsertResult;
     try {
       upsert = await upsertPaymentByProviderRef(db, {
@@ -219,7 +226,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         providerInvoiceNumber: invoice.invoiceNumber,
         amountRub: order.amountRub,
         status: 'pending',
-        expiresAt: invoice.expiresAt ? new Date(invoice.expiresAt) : null,
+        expiresAt: invoiceExpiresAt,
         rawPayload: { invoice } as Record<string, unknown>,
       });
     } catch (err) {
@@ -247,9 +254,6 @@ export async function POST(req: Request): Promise<NextResponse> {
       // M-4: срок заказа выравнивается по сроку счёта — иначе cron
       // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
       // после экспайра = деньги приняты, фулфилмента нет).
-      const invoiceExpiresAt = invoice.expiresAt
-        ? new Date(invoice.expiresAt)
-        : new Date(Date.now() + INVOICE_TTL_HOURS * 60 * 60 * 1000);
       await setOrderExpiresAt(db, orderId, invoiceExpiresAt);
     } else {
       log.info({
@@ -263,7 +267,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok: true,
       paymentUrl: invoice.paymentLink,
       qrPayload: invoice.qrPayload ?? null,
-      expiresAt: invoice.expiresAt,
+      expiresAt: invoiceExpiresAt.toISOString(),
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
     });

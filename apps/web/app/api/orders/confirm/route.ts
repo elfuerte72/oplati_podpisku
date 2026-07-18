@@ -9,6 +9,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   confirmOrder,
+  OrderExpiredError,
   PaymentProviderUnavailableError,
   TELEGRAM_LINK_REQUIRED,
   TelegramLinkRequiredError,
@@ -100,6 +101,19 @@ export async function POST(req: Request): Promise<NextResponse> {
         },
         // 409: ожидаемый бизнес-отказ (нет привязки), не сбой — клиент рисует
         // карточку привязки по error-полю, статус различает кейс в метриках.
+        { status: 409 },
+      );
+    }
+    // Фиксация цены протухла (H-2): заказ захоронен сервером, ретрай
+    // бессмысленен — зовём оформить заново по свежему курсу.
+    if (err instanceof OrderExpiredError) {
+      log.info({ event: 'web-chat.confirm.order_expired', orderId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'order_expired',
+          text: 'Срок фиксации цены истёк — оформи заказ заново, сумма пересчитается по свежему курсу.',
+        },
         { status: 409 },
       );
     }

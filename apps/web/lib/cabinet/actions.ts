@@ -19,6 +19,7 @@ import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import {
   confirmOrder,
+  OrderExpiredError,
   PaymentProviderUnavailableError,
   TelegramLinkRequiredError,
 } from '../tool-handlers/confirm-order.ts';
@@ -123,7 +124,7 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
     }
     // Гейт фиксации цены (H-2): payments/create ответил 409 order_expired —
     // заказ захоронен, «попробуй ещё раз» ввёл бы в заблуждение.
-    if (err instanceof Error && err.message.includes('order_expired')) {
+    if (err instanceof OrderExpiredError) {
       return {
         ok: false,
         error: 'not_payable',

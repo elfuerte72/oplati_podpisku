@@ -74,9 +74,16 @@ export async function alertOnLoveAndPayProxyDown(deps?: {
     const now = Date.now();
     if (now - lastOpsDmAt >= OPS_DM_DEDUP_MS) {
       lastOpsDmAt = now;
-      await notifyOps(
-        `КРИТИЧНО: прокси L&P (${proxyHost}) не отвечает — создание счетов на оплату падает у всех клиентов. Проверь VPS (squid) и при необходимости переключи LOVEANDPAY_PROXY_URL + redeploy.`,
-      );
+      // notifyOps глотает ошибки доставки сам, но страхуемся: сбой DM не
+      // должен уронить cron (Sentry-алёрт выше уже ушёл). Без captureException
+      // — анти-петля, как в notify-ops.ts.
+      try {
+        await notifyOps(
+          `КРИТИЧНО: прокси L&P (${proxyHost}) не отвечает — создание счетов на оплату падает у всех клиентов. Проверь VPS (squid) и при необходимости переключи LOVEANDPAY_PROXY_URL + redeploy.`,
+        );
+      } catch (notifyErr) {
+        log.error({ event: 'lnp_proxy.notify_failed', err: notifyErr });
+      }
     }
   }
 }
