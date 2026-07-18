@@ -79,7 +79,9 @@ const orderDetailSchema = orderSummarySchema.extend({
   originalAmount: z.number().nullable(),
   originalCurrency: z.string().nullable(),
   commissionPercent: z.number().nullable(),
-  usdtRubRateKopecks: z.number().int().nullable(),
+  // Курс × 10000 — строго положительный integer (пишется только как
+  // round(rate × 10000) в propose_order) либо null у заказов без курса.
+  usdtRubRateKopecks: z.number().int().positive().nullable(),
   instructions: instructionsSchema,
   cardIssueFeeKopecks: z.number().nullable(),
   paidAt: z.string().nullable(),

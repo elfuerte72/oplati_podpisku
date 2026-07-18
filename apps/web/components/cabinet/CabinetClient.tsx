@@ -218,6 +218,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return () => window.clearTimeout(timer);
   }, [cardDetails]);
 
+  // Заказ, открытый на экране детали прямо сейчас: ответы отставших запросов
+  // (клиент успел уйти или открыть другой заказ) не должны перезаписать detail.
+  const activeOrderIdRef = useRef<string | null>(null);
+
   const openOrder = useCallback(async (orderId: string) => {
     setActionMsg(null);
     setNotice(null);
@@ -225,7 +229,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     setDetailLoading(true);
     setView('detail');
     setDetail(null);
+    activeOrderIdRef.current = orderId;
     const res = await fetchOrderDetail(initDataRef.current, orderId);
+    if (activeOrderIdRef.current !== orderId) return; // уже смотрим другой заказ
     setDetailLoading(false);
     if (res.ok) {
       setDetail(res.data);
@@ -237,7 +243,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   const refreshDetail = useCallback(async (orderId: string) => {
     const res = await fetchOrderDetail(initDataRef.current, orderId);
-    if (res.ok) setDetail(res.data);
+    if (res.ok && activeOrderIdRef.current === orderId) setDetail(res.data);
   }, []);
 
   // «Не проходит оплата?» из детали заказа: контекст (заказ/сервис/тариф/сумма/
@@ -345,6 +351,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           busy={busy}
           message={actionMsg}
           onBack={() => {
+            activeOrderIdRef.current = null;
             setView('list');
             setDetail(null);
             setActionMsg(null);
