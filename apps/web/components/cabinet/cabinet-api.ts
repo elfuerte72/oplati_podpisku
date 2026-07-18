@@ -1,6 +1,9 @@
 'use client';
 
 import { z } from 'zod';
+import { servicePaymentInstructions } from '@oplati/types';
+
+import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
 
 /**
  * Клиент `/api/cabinet`: на каждый запрос шлём `initData` (подпись Telegram) +
@@ -21,6 +24,9 @@ const orderSummarySchema = z.object({
   repeatable: z.boolean(),
 });
 
+/** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */
+const instructionsSchema = servicePaymentInstructions.nullable();
+
 const cardViewSchema = z.object({
   id: z.string(),
   panMasked: z.string(),
@@ -28,6 +34,10 @@ const cardViewSchema = z.object({
   statusLabel: z.string(),
   balanceUsdCents: z.number(),
   createdAt: z.string(),
+  validUntil: z.string(),
+  purpose: z.string().nullable(),
+  purposeOrderId: z.string().nullable(),
+  instructions: instructionsSchema,
 });
 
 const cardDetailsResultSchema = z.discriminatedUnion('ok', [
@@ -43,7 +53,7 @@ const paymentViewSchema = z.object({
   createdAt: z.string(),
 });
 
-const eventViewSchema = z.object({ label: z.string(), at: z.string() });
+const eventViewSchema = z.object({ label: z.string(), at: z.string(), type: z.string() });
 
 const profileSchema = z.object({
   displayName: z.string().nullable(),
@@ -68,6 +78,8 @@ const orderDetailSchema = orderSummarySchema.extend({
   originalAmount: z.number().nullable(),
   originalCurrency: z.string().nullable(),
   commissionPercent: z.number().nullable(),
+  usdtRubRateKopecks: z.number().nullable(),
+  instructions: instructionsSchema,
   cardIssueFeeKopecks: z.number().nullable(),
   paidAt: z.string().nullable(),
   fulfilledAt: z.string().nullable(),
@@ -190,6 +202,52 @@ export type ProposePayload = {
 export async function doPropose(initData: string, payload: ProposePayload): Promise<OrderCreationResult> {
   const resp = await callCabinet({ action: 'propose', initData, ...payload });
   const parsed = resp ? orderCreationResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return parsed.data;
+  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
+}
+
+// ─── Пост-выпускные действия (ТЗ «клиентский путь» §6) ─────────────────────
+
+const paymentIssueResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), duplicate: z.boolean() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+]);
+
+export type PaymentIssueResult = z.infer<typeof paymentIssueResultSchema>;
+
+/** «Не проходит оплата?»: тип проблемы + контекст заказа уходят оператору. */
+export async function doReportPaymentIssue(
+  initData: string,
+  orderId: string,
+  issueType: PaymentIssueType,
+  comment?: string,
+): Promise<PaymentIssueResult> {
+  const resp = await callCabinet({
+    action: 'payment-issue',
+    initData,
+    orderId,
+    issueType,
+    ...(comment ? { comment } : {}),
+  });
+  const parsed = resp ? paymentIssueResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return parsed.data;
+  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
+}
+
+const subscriptionPaidResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+]);
+
+export type SubscriptionPaidResult = z.infer<typeof subscriptionPaidResultSchema>;
+
+/** «Подписка оплачена» — клиент подтвердил успех на сайте сервиса. */
+export async function doMarkSubscriptionPaid(
+  initData: string,
+  orderId: string,
+): Promise<SubscriptionPaidResult> {
+  const resp = await callCabinet({ action: 'subscription-paid', initData, orderId });
+  const parsed = resp ? subscriptionPaidResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return parsed.data;
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }

@@ -15,6 +15,7 @@ import {
   SpeechBubble,
   TypingBubble,
   formatExpires,
+  formatRub,
 } from '@/components/comic';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { LeftNav } from './LeftNav';
@@ -432,7 +433,8 @@ export function ChatClient() {
             service={card.service}
             rows={[
               { label: 'Номер заказа', value: card.shortId },
-              { label: 'Действует до', value: formatExpires(card.expiresAt) },
+              // Финальная сумма фиксируется при создании заказа (ТЗ §3).
+              { label: 'Цена зафиксирована до', value: formatExpires(card.expiresAt) },
             ]}
             amountKopecks={card.totalKopecks}
             amountUsdCents={card.usdCents}
@@ -448,7 +450,7 @@ export function ChatClient() {
                     ? 'Счёт создан'
                     : confirming === card.orderId
                       ? 'Создаю счёт…'
-                      : 'Подтвердить и оплатить'}
+                      : `Оплатить ${formatRub(card.totalKopecks)}`}
               </ComicButton>
             }
           />

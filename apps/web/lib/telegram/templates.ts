@@ -2,6 +2,7 @@ import 'server-only';
 
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
+import { PAYMENT_ISSUE_LABELS, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
 
 import { MIN_AMOUNT_USD, maxAmountUsdFor } from './amount';
 import { telegramBotLink } from './links';
@@ -117,10 +118,11 @@ export const CATALOG_UNAVAILABLE_TEXT =
 /**
  * Совет про НДС/VPN — показываем на ЛЮБОМ сервисе (и тарифы, и custom-amount),
  * чтобы реальный charge не вырос из-за локального налога: подписка $100 из-за
- * локации может списаться как $111. Карта американская, под US VPN — без НДС.
+ * локации может списаться как $111. Под US VPN — без НДС. Страну выпуска карты
+ * публично не указываем (ТЗ «клиентский путь» §2) — только локацию VPN.
  */
 export const VAT_VPN_HINT =
-  'Платим американской картой без НДС. На сайте сервиса включи VPN с локацией США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).';
+  'Платим виртуальной картой без НДС. На сайте сервиса включи VPN с локацией США — иначе из-за локации спишется больше (например, подписка $100 обойдётся в $111).';
 
 /**
  * Короткий блок правил оплаты картой (parse_mode HTML) для финального сообщения
@@ -260,6 +262,62 @@ export function buildSupportOperatorMessage(params: {
     Math.min(SUPPORT_MESSAGE_MAX_LEN, TELEGRAM_MESSAGE_LIMIT - header.length - 1),
   );
   return header + truncateEscapedHtml(escapeHtml(params.description), bodyBudget);
+}
+
+/**
+ * Сообщение оператору о проблеме с оплатой на сайте сервиса («Не проходит
+ * оплата?» в кабинете, ТЗ §6). В поддержку автоматически передаётся весь
+ * контекст: номер заказа, сервис, тариф, сумма, статус карты и тип ошибки.
+ * Чистая функция — тестируется без бота; пользовательские поля экранируются,
+ * комментарий обрезается по бюджету Telegram (после экранирования).
+ */
+export function buildPaymentIssueOperatorMessage(params: {
+  /** Числовой Telegram ID (в кабинете приходит строкой из проверенного initData). */
+  telegramId: number | string;
+  displayName?: string | null;
+  orderShortId: string;
+  service: string;
+  tierName?: string | null;
+  amountKopecks?: number | null;
+  cardStatusLabel?: string | null;
+  issueType: PaymentIssueType;
+  comment?: string | null;
+}): string {
+  const nameLine =
+    params.displayName && params.displayName.length > 0
+      ? escapeHtml(params.displayName)
+      : 'без имени';
+  const rows = [
+    '⚠️ <b>Не проходит оплата на сайте сервиса</b>',
+    '',
+    `<b>Клиент:</b> ${nameLine}`,
+    `<b>Telegram ID:</b> <code>${params.telegramId}</code>`,
+    `<b>Профиль:</b> <a href="tg://user?id=${params.telegramId}">открыть чат</a>`,
+    '',
+    `<b>Заказ:</b> ${escapeHtml(params.orderShortId)}`,
+    `<b>Сервис:</b> ${escapeHtml(params.service)}`,
+    ...(params.tierName ? [`<b>Тариф:</b> ${escapeHtml(params.tierName)}`] : []),
+    ...(params.amountKopecks !== null && params.amountKopecks !== undefined
+      ? [`<b>Сумма заказа:</b> ${formatRub(params.amountKopecks)}`]
+      : []),
+    ...(params.cardStatusLabel
+      ? [`<b>Статус карты:</b> ${escapeHtml(params.cardStatusLabel)}`]
+      : []),
+    `<b>Тип проблемы:</b> ${PAYMENT_ISSUE_LABELS[params.issueType]}`,
+  ];
+  const header = rows.join('\n');
+  const comment = params.comment?.trim();
+  if (!comment) return header;
+  const commentHeader = '\n\n<b>Комментарий клиента:</b>\n';
+  // -1 — запас под «…», добавляемый при обрезке.
+  const bodyBudget = Math.max(
+    0,
+    Math.min(
+      SUPPORT_MESSAGE_MAX_LEN,
+      TELEGRAM_MESSAGE_LIMIT - header.length - commentHeader.length - 1,
+    ),
+  );
+  return header + commentHeader + truncateEscapedHtml(escapeHtml(comment), bodyBudget);
 }
 
 /** Текст карточки заказа под кнопками «Подтвердить» / «Отменить». */

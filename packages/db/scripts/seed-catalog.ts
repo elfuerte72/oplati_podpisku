@@ -33,7 +33,13 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { inArray } from 'drizzle-orm';
-import { pricingPolicy, type PricingPolicy, type ServiceTier } from '@oplati/types';
+import {
+  pricingPolicy,
+  servicePaymentInstructions,
+  type PricingPolicy,
+  type ServicePaymentInstructions,
+  type ServiceTier,
+} from '@oplati/types';
 import pino from 'pino';
 import { services } from '../src/schema.ts';
 
@@ -102,10 +108,39 @@ type CatalogEntry = {
   category: string;
   requiresKyc: boolean;
   pricingPolicy: PricingPolicy;
+  /** Правила оплаты на сайте сервиса (ТЗ «клиентский путь» 2026-07). */
+  paymentInstructions?: ServicePaymentInstructions;
 };
 
 function policy(tiers: ServiceTier[]): PricingPolicy {
   return { tiers, margin: MARGIN };
+}
+
+// ─── Правила оплаты на сайте сервиса ──────────────────────────────────────
+//
+// VPN нельзя показывать общим советом (ТЗ §5) — для каждого сервиса храним
+// отдельные требования: нужен ли VPN, локация, валюта, billing-данные и ссылка
+// на страницу оплаты. Ссылки — те же проверенные, что в pricing-links.ts
+// (сверены по сайтам сервисов 2026-07-13).
+
+/** Billing-подсказка по умолчанию: адрес США приходит вместе с картой. */
+const US_BILLING_INSTRUCTIONS =
+  'В Billing Address введи данные адреса США — они придут вместе с реквизитами карты в Telegram и видны в личном кабинете.';
+
+/** Общая особенность: платим в веб-версии, не в мобильном приложении. */
+const WEB_CHECKOUT_NOTE =
+  'Оплачивай в веб-версии сервиса — в браузере, не в мобильном приложении.';
+
+/** Типовые правила для сервисов с оплатой на сайте: VPN США + цена в USD. */
+function usInstructions(paymentUrl: string, paymentNotes?: string): ServicePaymentInstructions {
+  return {
+    requiresVpn: true,
+    vpnLocation: 'США',
+    requiredCurrency: 'USD',
+    billingInstructions: US_BILLING_INSTRUCTIONS,
+    paymentUrl,
+    paymentNotes: paymentNotes ?? WEB_CHECKOUT_NOTE,
+  };
 }
 
 const CATALOG: readonly CatalogEntry[] = [
@@ -122,6 +157,7 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Pro 5x', 100),
       usd('Pro', 200),
     ]),
+    paymentInstructions: usInstructions('https://chatgpt.com/#pricing'),
   },
   {
     slug: 'claude-pro',
@@ -130,6 +166,7 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 20), usd('Max 5x', 100), usd('Max 20x', 200)]),
+    paymentInstructions: usInstructions('https://claude.ai/upgrade'),
   },
   {
     slug: 'midjourney-basic',
@@ -143,6 +180,7 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Pro', 60),
       usd('Mega', 120),
     ]),
+    paymentInstructions: usInstructions('https://www.midjourney.com/account'),
   },
   {
     slug: 'cursor-pro',
@@ -151,6 +189,7 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 20), usd('Pro+', 60), usd('Ultra', 200)]),
+    paymentInstructions: usInstructions('https://cursor.com/settings'),
   },
   {
     slug: 'gemini-advanced',
@@ -160,6 +199,7 @@ const CATALOG: readonly CatalogEntry[] = [
     requiresKyc: false,
     // Сверено по сайту 2026-07-08: Plus $4.99 (был снижен с $7.99), Pro $19.99, Ultra от $99.99.
     pricingPolicy: policy([usd('Plus', 4.99), usd('Pro', 19.99), usd('Ultra', 99.99)]),
+    paymentInstructions: usInstructions('https://gemini.google/us/subscriptions/?hl=en'),
   },
   {
     slug: 'perplexity-pro',
@@ -168,6 +208,7 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 20), usd('Max', 200)]),
+    paymentInstructions: usInstructions('https://www.perplexity.ai/pro'),
   },
   {
     slug: 'suno',
@@ -176,6 +217,7 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'ai',
     requiresKyc: false,
     pricingPolicy: policy([usd('Pro', 10), usd('Premier', 30)]),
+    paymentInstructions: usInstructions('https://suno.com/account'),
   },
   {
     slug: 'higgsfield',
@@ -189,6 +231,7 @@ const CATALOG: readonly CatalogEntry[] = [
     // год, картой не покрываются). Starter ($19/мес годовой, 270 кредитов) убран:
     // слабый тариф + месячной цены на сайте по умолчанию не видно.
     pricingPolicy: policy([usd('Plus', 59), usd('Ultra', 129)]),
+    paymentInstructions: usInstructions('https://higgsfield.ai/pricing'),
   },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
@@ -205,6 +248,7 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Individual', 10.99),
       usd('Family', 16.99),
     ]),
+    paymentInstructions: usInstructions('https://www.apple.com/apple-music/'),
   },
 
   // ─── Productivity ───────────────────────────────────────────────────────────
@@ -215,6 +259,7 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'productivity',
     requiresKyc: false,
     pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+    paymentInstructions: usInstructions('https://support.apple.com/en-us/118297', 'Пополняем баланс Apple Account — сумма зачисляется на твой Apple ID.'),
   },
   {
     slug: 'icloud-plus-200gb',
@@ -229,6 +274,7 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('6TB', 29.99),
       usd('12TB', 59.99),
     ]),
+    paymentInstructions: usInstructions('https://support.apple.com/en-us/108047'),
   },
   {
     slug: 'figma-professional',
@@ -241,6 +287,7 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Dev seat', 12),
       usd('Collab seat', 3),
     ]),
+    paymentInstructions: usInstructions('https://www.figma.com/pricing/'),
   },
 
   // ─── Social ──────────────────────────────────────────────────────────────────
@@ -257,6 +304,11 @@ const CATALOG: readonly CatalogEntry[] = [
     category: 'social',
     requiresKyc: false,
     pricingPolicy: policy([usd('Premium', 6.49), usd('Premium', 49.99, 'year')]),
+    paymentInstructions: {
+      requiresVpn: false,
+      paymentUrl: 'https://t.me/PremiumBot',
+      paymentNotes: 'Оплата через официального бота @PremiumBot — VPN не нужен.',
+    },
   },
 ];
 
@@ -472,8 +524,11 @@ async function main(): Promise<void> {
   try {
     for (const entry of CATALOG) {
       // Инвариант «Zod на границах»: валидируем структуру pricing_policy
-      // перед записью в jsonb-колонку.
+      // и payment_instructions перед записью в jsonb-колонки.
       const validatedPolicy = pricingPolicy.parse(entry.pricingPolicy);
+      const validatedInstructions = entry.paymentInstructions
+        ? servicePaymentInstructions.parse(entry.paymentInstructions)
+        : null;
 
       await db
         .insert(services)
@@ -484,6 +539,7 @@ async function main(): Promise<void> {
           category: entry.category,
           requiresKyc: entry.requiresKyc,
           pricingPolicy: validatedPolicy,
+          paymentInstructions: validatedInstructions,
           isActive: true,
         })
         .onConflictDoUpdate({
@@ -494,6 +550,7 @@ async function main(): Promise<void> {
             category: entry.category,
             requiresKyc: entry.requiresKyc,
             pricingPolicy: validatedPolicy,
+            paymentInstructions: validatedInstructions,
             isActive: true,
           },
         });

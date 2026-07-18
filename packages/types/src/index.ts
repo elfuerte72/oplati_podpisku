@@ -169,6 +169,29 @@ export const pricingPolicy = z.object({
 });
 export type PricingPolicy = z.infer<typeof pricingPolicy>;
 
+/**
+ * Пер-сервисные правила оплаты на сайте сервиса (ТЗ «клиентский путь» 2026-07):
+ * VPN нельзя показывать общим советом — для каждого сервиса храним отдельные
+ * требования. Лежат в `services.payment_instructions` (jsonb, nullable —
+ * сервис без записи получает generic-подсказку на витрине). Данные публичные
+ * (каталог под public-read RLS), секретов здесь быть не может.
+ */
+export const servicePaymentInstructions = z.object({
+  /** Нужен ли VPN для оплаты на сайте сервиса. */
+  requiresVpn: z.boolean(),
+  /** Локация VPN (показывается клиенту), напр. «США». */
+  vpnLocation: z.string().max(100).optional(),
+  /** Валюта, которая должна отображаться на сайте сервиса, напр. «USD». */
+  requiredCurrency: z.string().max(10).optional(),
+  /** Что вводить в Billing Address на сайте сервиса. */
+  billingInstructions: z.string().max(1000).optional(),
+  /** Прямая ссылка на страницу оплаты/подписки сервиса. */
+  paymentUrl: z.string().url().max(500).optional(),
+  /** Дополнительные особенности оплаты этого сервиса. */
+  paymentNotes: z.string().max(1000).optional(),
+});
+export type ServicePaymentInstructions = z.infer<typeof servicePaymentInstructions>;
+
 // ─── AI agent tool results ────────────────────────────────────────────────
 
 /**

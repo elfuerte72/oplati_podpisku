@@ -1,4 +1,9 @@
-import type { CardStatus, OrderStatus, PaymentStatus } from '@oplati/types';
+import type {
+  CardStatus,
+  OrderStatus,
+  PaymentStatus,
+  ServicePaymentInstructions,
+} from '@oplati/types';
 
 /**
  * View-типы личного кабинета (Telegram Mini App). Это контракт между
@@ -79,6 +84,13 @@ export type OrderSummary = {
   repeatable: boolean;
 };
 
+/**
+ * Срок жизни карты в днях (ТЗ §2: «Карта действует 180 дней») — совпадает с
+ * порогом release в cron `recycle-cards`. Используется для витринного
+ * «Действует до» на экране карты.
+ */
+export const CARD_LIFETIME_DAYS = 180;
+
 export type CardView = {
   /** id карты в нашей БД — для запроса реквизитов (`card-details`); не секрет. */
   id: string;
@@ -87,6 +99,14 @@ export type CardView = {
   statusLabel: string;
   balanceUsdCents: number;
   createdAt: string;
+  /** «Действует до» — createdAt + CARD_LIFETIME_DAYS (ISO). */
+  validUntil: string;
+  /** Название сервиса последнего заказа этой карты («Для оплаты: …»); null — нет заказа. */
+  purpose: string | null;
+  /** id последнего заказа карты — для «Не проходит оплата?» с контекстом. */
+  purposeOrderId: string | null;
+  /** Правила оплаты сервиса последнего заказа (кнопки «Перейти на сайт» / «Инструкция»). */
+  instructions: ServicePaymentInstructions | null;
 };
 
 export type PaymentView = {
@@ -100,12 +120,26 @@ export type PaymentView = {
 export type OrderEventView = {
   label: string;
   at: string;
+  /** Сырой event_type — клиент выводит из него пост-выпускной статус заказа. */
+  type: string;
 };
+
+/**
+ * События «жизни после выпуска карты» (ТЗ §6). Пишутся в append-only
+ * `order_events` (статус-машину заказа не трогаем — completed остаётся
+ * терминальным): клиент отметил подписку оплаченной / сообщил о проблеме.
+ */
+export const SUBSCRIPTION_ACTIVATED_EVENT = 'subscription_activated';
+export const PAYMENT_ISSUE_EVENT = 'payment_issue_reported';
 
 export type OrderDetail = OrderSummary & {
   originalAmount: number | null;
   originalCurrency: string | null;
   commissionPercent: number | null;
+  /** Зафиксированный курс USDT→RUB × 10000 (как в orders) — для «Как рассчитана сумма». */
+  usdtRubRateKopecks: number | null;
+  /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — блок после выпуска карты. */
+  instructions: ServicePaymentInstructions | null;
   /**
    * Снимок разовой надбавки за выпуск карты (RUB-копейки), уже включённой в
    * `amountKopecks`. `null` — заказ до фичи; `0` — повторная оплата (карта уже

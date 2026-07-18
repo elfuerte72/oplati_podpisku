@@ -1,9 +1,24 @@
+'use client';
+
+import { useState } from 'react';
+
+import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
+import {
+  PAYMENT_ISSUE_CHECKLIST,
+  PAYMENT_ISSUE_LABELS,
+  PAYMENT_ISSUE_TYPES,
+  type PaymentIssueType,
+} from '@/lib/cabinet/payment-issues';
+import {
+  PAYMENT_ISSUE_EVENT,
+  SUBSCRIPTION_ACTIVATED_EVENT,
+} from '@/lib/cabinet/types';
 
 import { StatusBadge } from './StatusBadge';
-import type { OrderDetail } from './cabinet-api';
+import type { OrderDetail, PaymentIssueResult, SubscriptionPaidResult } from './cabinet-api';
 
 export type DetailActionMessage = { tone: 'ok' | 'err'; text: string };
 
@@ -13,6 +28,9 @@ type Props = {
   message: DetailActionMessage | null;
   onBack: () => void;
   onPay: () => void;
+  onOpenExternalLink: (url: string) => void;
+  onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
+  onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
 };
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -44,11 +62,11 @@ function RubBreakdown({
         <Row label="Подписка" value={formatRub(totalKopecks - cardIssueFeeKopecks)} />
         <Row label="Выпуск карты" value={`+ ${formatRub(cardIssueFeeKopecks)}`} />
         <p className="font-body text-xs text-[var(--text-muted)]">
-          разово — за выпуск личной карты США; в следующих заказах этой строки не будет
+          разово — только для первой карты; в следующих заказах этой строки не будет
         </p>
         <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
         <div className="flex justify-between gap-4 font-display text-base font-bold">
-          <dt className="text-[var(--text)]">Итого</dt>
+          <dt className="text-[var(--text)]">Итого к оплате</dt>
           <dd className="text-[var(--text)]">{formatRub(totalKopecks)}</dd>
         </div>
       </>
@@ -106,11 +124,286 @@ function PriceBreakdown({
 }
 
 /**
- * Экран деталей заказа: сводка, кнопка «Оплатить», таймлайн событий, платежи и
- * карта. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
+ * Раскрывающийся блок «Как рассчитана сумма» (ТЗ §3): из чего сложился итог —
+ * цена подписки, зафиксированный курс, комиссия сервиса, разовый выпуск карты.
+ */
+function HowPriceComputed({ order }: { order: OrderDetail }) {
+  const rate =
+    order.usdtRubRateKopecks !== null && order.usdtRubRateKopecks > 0
+      ? (order.usdtRubRateKopecks / 10000).toFixed(2)
+      : null;
+  return (
+    <details className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+      <summary className="cursor-pointer list-none font-display text-sm font-bold text-[var(--text)]">
+        <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
+        Как рассчитана сумма
+      </summary>
+      <ul className="mt-2 space-y-1 font-body text-xs leading-snug text-[var(--text-muted)]">
+        {order.originalAmount !== null && order.originalAmount > 0 && (
+          <li>
+            Цена подписки — {formatUsd(order.originalAmount)}: столько стоит сервис в США,
+            эту сумму ты вводишь на его сайте.
+          </li>
+        )}
+        {rate && <li>Курс на момент заказа — 1 $ = {rate} ₽ (зафиксирован в заказе).</li>}
+        <li>Комиссия сервиса рассчитывается системой и уже включена в итог.</li>
+        {order.cardIssueFeeKopecks !== null && order.cardIssueFeeKopecks > 0 ? (
+          <li>
+            Выпуск виртуальной карты — {formatRub(order.cardIssueFeeKopecks)} (разово, только
+            для первой карты).
+          </li>
+        ) : (
+          <li>Выпуск карты не оплачивается — карта уже есть или включена в заказ.</li>
+        )}
+        <li>После создания заказа сумма не меняется — платишь ровно столько, сколько видишь.</li>
+      </ul>
+    </details>
+  );
+}
+
+/**
+ * Пост-выпускной статус заказа (ТЗ §6) — выводится из append-only событий:
+ * клиент отметил подписку оплаченной / сообщил о проблеме / ещё не оплатил на
+ * сайте сервиса. Статус-машину заказа не трогаем — completed терминален.
+ */
+type AfterCardStatus = 'awaiting_site_payment' | 'subscription_paid' | 'problem';
+
+function afterCardStatus(order: OrderDetail): AfterCardStatus {
+  if (order.events.some((e) => e.type === SUBSCRIPTION_ACTIVATED_EVENT)) {
+    return 'subscription_paid';
+  }
+  if (order.events.some((e) => e.type === PAYMENT_ISSUE_EVENT)) {
+    return 'problem';
+  }
+  return 'awaiting_site_payment';
+}
+
+const AFTER_CARD_STATUS_VIEW: Record<AfterCardStatus, { label: string; className: string }> = {
+  awaiting_site_payment: {
+    label: 'Ожидает оплаты на сайте сервиса',
+    className: 'border-[var(--color-skin)] text-[var(--text)]',
+  },
+  subscription_paid: {
+    label: 'Подписка оплачена',
+    className: 'border-[var(--success)] text-[var(--success)]',
+  },
+  problem: {
+    label: 'Возникла проблема — разбираемся',
+    className: 'border-[var(--color-stamp)] text-[var(--color-stamp)]',
+  },
+};
+
+/**
+ * Блок «что дальше» для выполненного заказа: пер-сервисная инструкция, переход
+ * на сайт сервиса, подтверждение оплаты подписки и «Не проходит оплата?» с
+ * чек-листом и отправкой полного контекста в поддержку одним нажатием.
+ */
+function AfterCardBlock({
+  order,
+  onOpenExternalLink,
+  onReportIssue,
+  onSubscriptionPaid,
+}: {
+  order: OrderDetail;
+  onOpenExternalLink: (url: string) => void;
+  onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
+  onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
+}) {
+  const [issueOpen, setIssueOpen] = useState(false);
+  const [issueType, setIssueType] = useState<PaymentIssueType>('card_declined');
+  const [comment, setComment] = useState('');
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState<DetailActionMessage | null>(null);
+
+  const status = afterCardStatus(order);
+  const view = AFTER_CARD_STATUS_VIEW[status];
+
+  const sendIssue = async () => {
+    if (sending) return;
+    setSending(true);
+    setNote(null);
+    const res = await onReportIssue(issueType, comment.trim() || undefined);
+    setSending(false);
+    if (res.ok) {
+      setIssueOpen(false);
+      setNote({
+        tone: 'ok',
+        text: res.duplicate
+          ? 'Обращение уже у оператора — он свяжется с тобой в Telegram.'
+          : 'Передал оператору всё по заказу. Он напишет тебе в Telegram.',
+      });
+    } else {
+      setNote({ tone: 'err', text: res.message });
+    }
+  };
+
+  const confirmPaid = async () => {
+    if (sending) return;
+    setSending(true);
+    setNote(null);
+    const res = await onSubscriptionPaid();
+    setSending(false);
+    if (!res.ok) setNote({ tone: 'err', text: res.message });
+  };
+
+  return (
+    <section
+      className={[
+        'bg-[var(--surface)] p-5',
+        'rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] shadow-[var(--shadow-comic)]',
+      ].join(' ')}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-display text-base font-bold text-[var(--text)]">
+          Оплата подписки на сайте
+        </h3>
+        <span
+          className={[
+            'shrink-0 rounded-full border-2 px-2.5 py-0.5 font-display text-[11px] font-bold',
+            view.className,
+          ].join(' ')}
+        >
+          {view.label}
+        </span>
+      </div>
+
+      <p className="mt-2 font-body text-sm leading-snug text-[var(--text-muted)]">
+        Карта выпущена и пополнена. Открой сайт сервиса, войди в свой аккаунт и введи
+        реквизиты карты — реквизиты на главном экране кабинета и в Telegram.
+      </p>
+
+      <ServiceInstructions instructions={order.instructions} className="mt-3" />
+
+      <div className="mt-3 flex flex-col gap-2">
+        {order.instructions?.paymentUrl && (
+          <ComicButton
+            variant="primary"
+            className="w-full px-4 py-2.5 text-sm"
+            onClick={() => {
+              const url = order.instructions?.paymentUrl;
+              if (url) onOpenExternalLink(url);
+            }}
+          >
+            Перейти на сайт сервиса
+          </ComicButton>
+        )}
+        <ComicButton
+          variant="surface"
+          className="w-full px-4 py-2.5 text-sm"
+          onClick={() => onOpenExternalLink(`${window.location.origin}/payment-instruction.html`)}
+        >
+          Инструкция по оплате
+        </ComicButton>
+        {status !== 'subscription_paid' && (
+          <ComicButton
+            variant="surface"
+            className="w-full px-4 py-2.5 text-sm"
+            disabled={sending}
+            onClick={() => void confirmPaid()}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <IconCheck size={16} />
+              Подписка оплачена
+            </span>
+          </ComicButton>
+        )}
+        <button
+          type="button"
+          onClick={() => setIssueOpen((v) => !v)}
+          className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline"
+        >
+          Не проходит оплата?
+        </button>
+      </div>
+
+      {issueOpen && (
+        <div className="mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] p-3.5">
+          <p className="font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
+            Сначала проверь
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {PAYMENT_ISSUE_CHECKLIST.map((item) => (
+              <li key={item} className="flex gap-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
+                <span aria-hidden className="text-[var(--accent)]">•</span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+
+          <p className="mt-3 font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
+            Не помогло? Что случилось:
+          </p>
+          <div className="mt-1.5 space-y-1">
+            {PAYMENT_ISSUE_TYPES.map((type) => (
+              <label key={type} className="flex items-center gap-2 font-body text-sm text-[var(--text)]">
+                <input
+                  type="radio"
+                  name="issue-type"
+                  checked={issueType === type}
+                  onChange={() => setIssueType(type)}
+                  className="accent-[var(--accent)]"
+                />
+                {PAYMENT_ISSUE_LABELS[type]}
+              </label>
+            ))}
+          </div>
+
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={2}
+            maxLength={1000}
+            placeholder="Комментарий (необязательно)"
+            aria-label="Комментарий к проблеме"
+            className="mt-2.5 w-full resize-none rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--bg)] px-3 py-2 font-body text-sm text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none"
+          />
+
+          <ComicButton
+            variant="primary"
+            className="mt-2 w-full px-4 py-2.5 text-sm"
+            disabled={sending}
+            onClick={() => void sendIssue()}
+          >
+            {sending ? 'Отправляю…' : 'Отправить в поддержку'}
+          </ComicButton>
+          <p className="mt-1.5 font-body text-[11px] leading-snug text-[var(--text-muted)]">
+            Оператору автоматически уйдут номер заказа, сервис, тариф, сумма и статус карты.
+          </p>
+        </div>
+      )}
+
+      {note && (
+        <p
+          className={[
+            'mt-3 rounded-[12px] border-2 px-3 py-2 font-body text-sm',
+            note.tone === 'ok'
+              ? 'border-[var(--color-teal-deep)] text-[var(--text)]'
+              : 'border-[var(--color-stamp)] text-[var(--color-stamp)]',
+          ].join(' ')}
+        >
+          {note.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Экран деталей заказа: сводка, кнопка «Оплатить <сумма>» (финальная сумма — на
+ * кнопке, ТЗ §3), таймлайн событий, платежи и блок «что дальше» после выпуска
+ * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
  * открытия платёжной ссылки).
  */
-export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) {
+export function OrderDetailView({
+  order,
+  busy,
+  message,
+  onBack,
+  onPay,
+  onOpenExternalLink,
+  onReportIssue,
+  onSubscriptionPaid,
+}: Props) {
   return (
     <div className="space-y-4">
       <button
@@ -152,16 +445,25 @@ export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) 
           )}
           {order.paidAt && <Row label="Оплачен" value={formatExpires(order.paidAt)} />}
           {order.fulfilledAt && <Row label="Выполнен" value={formatExpires(order.fulfilledAt)} />}
-          {order.expiresAt && order.payable && (
-            <Row label="Счёт действует до" value={formatExpires(order.expiresAt)} />
-          )}
         </dl>
+
+        {order.amountKopecks !== null && <HowPriceComputed order={order} />}
 
         {order.payable && (
           <div className="mt-5">
             <ComicButton variant="primary" onClick={onPay} disabled={busy !== null}>
-              {busy === 'pay' ? 'Готовлю счёт…' : 'Оплатить'}
+              {busy === 'pay'
+                ? 'Готовлю счёт…'
+                : order.amountKopecks !== null
+                  ? `Оплатить ${formatRub(order.amountKopecks)}`
+                  : 'Оплатить'}
             </ComicButton>
+            {order.expiresAt && (
+              <p className="mt-2 font-body text-xs text-[var(--text-muted)]">
+                Цена зафиксирована до {formatExpires(order.expiresAt)} — после оплаты сумма
+                не изменится.
+              </p>
+            )}
           </div>
         )}
 
@@ -178,6 +480,16 @@ export function OrderDetailView({ order, busy, message, onBack, onPay }: Props) 
           </p>
         )}
       </div>
+
+      {/* «Что дальше» — только когда карта выпущена и заказ выполнен. */}
+      {order.status === 'completed' && (
+        <AfterCardBlock
+          order={order}
+          onOpenExternalLink={onOpenExternalLink}
+          onReportIssue={onReportIssue}
+          onSubscriptionPaid={onSubscriptionPaid}
+        />
+      )}
 
       {order.payments.length > 0 && (
         <section className="space-y-2">

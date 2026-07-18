@@ -116,6 +116,7 @@ export {
   markRecycled,
   markActive,
   updateBalance,
+  syncCardBalance,
   idleAgedActiveCards,
   findCardsToRecycle,
   type Card,

@@ -58,6 +58,7 @@ import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
 import { getBot } from './bot';
+import { sendToSupportOperator } from './support';
 import {
   catalogAmountInvalidText,
   CATALOG_BACK_BUTTON,
@@ -95,12 +96,6 @@ const AWAITING_AMOUNT_META_KEY = 'awaiting_amount_for_slug';
 /** Ключ pending-state в meta assistant-сообщения: «жду описание проблемы для /support». */
 const AWAITING_SUPPORT_META_KEY = 'awaiting_support_message';
 
-/**
- * Дефолтный получатель обращений /support, если `SUPPORT_OPERATOR_CHAT_ID` не
- * задан в env (telegram_id владельца). Оператор должен один раз запустить бота,
- * иначе Telegram запретит слать ему личные сообщения.
- */
-const DEFAULT_SUPPORT_OPERATOR_CHAT_ID = '379336096';
 
 /**
  * Диспатч одиночного Telegram update.
@@ -1362,28 +1357,12 @@ function extractSupportInline(text: string): string | null {
 }
 
 /**
- * Пересылает обращение оператору в личку (Telegram ID из
- * `SUPPORT_OPERATOR_CHAT_ID`, иначе дефолт в коде). parse_mode HTML — сообщение
- * собирает чистый `buildSupportOperatorMessage` (экранирование + обрезка).
- * Возвращает `false` при сбое (в т.ч. 403 — оператор не запускал бота), чтобы
- * caller честно сообщил пользователю о неудаче.
+ * Пересылает обращение оператору в личку (общий помощник `sendToSupportOperator`:
+ * получатель из `SUPPORT_OPERATOR_CHAT_ID`, parse_mode HTML). Возвращает `false`
+ * при сбое, чтобы caller честно сообщил пользователю о неудаче.
  */
 async function notifyOperator(operatorMessage: string, updateId: number): Promise<boolean> {
-  const target = serverEnv.SUPPORT_OPERATOR_CHAT_ID ?? DEFAULT_SUPPORT_OPERATOR_CHAT_ID;
-  try {
-    await getBot().api.sendMessage(target, operatorMessage, { parse_mode: 'HTML' });
-    log.info({ event: 'telegram.support.notified', updateId });
-    return true;
-  } catch (err) {
-    if (err instanceof GrammyError && err.error_code === 403) {
-      // Оператор не запускал бота (или заблокировал) — DM невозможен. Критично.
-      log.error({ event: 'telegram.support.operator_unreachable', updateId, target });
-    } else {
-      log.error({ event: 'telegram.support.notify_failed', updateId, err });
-    }
-    Sentry.captureException(err, { tags: { source: 'telegram.support' } });
-    return false;
-  }
+  return sendToSupportOperator(operatorMessage, { updateId });
 }
 
 /**

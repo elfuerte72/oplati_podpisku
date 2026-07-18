@@ -15,7 +15,11 @@ import {
   primaryKey,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import type { OrderParameters, PricingPolicy } from '@oplati/types';
+import type {
+  OrderParameters,
+  PricingPolicy,
+  ServicePaymentInstructions,
+} from '@oplati/types';
 
 // ─── Enums ────────────────────────────────────────────────────────────────
 
@@ -231,6 +235,9 @@ export const services = pgTable('services', {
   category: text('category'),
   requiresKyc: boolean('requires_kyc').default(false).notNull(),
   pricingPolicy: jsonb('pricing_policy').$type<PricingPolicy>(),
+  // Пер-сервисные правила оплаты на сайте сервиса (VPN/валюта/billing/ссылка) —
+  // схема servicePaymentInstructions в @oplati/types. NULL — generic-подсказка.
+  paymentInstructions: jsonb('payment_instructions').$type<ServicePaymentInstructions>(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }).enableRLS();
