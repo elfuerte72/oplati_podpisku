@@ -26,7 +26,10 @@ import { handleTelegramUpdate } from '@/lib/telegram/handle-update';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const preferredRegion = 'fra1';
-export const maxDuration = 30;
+// 90с, а не 30 (спутник M-6 аудита): link-handoff и tool-loop агента зовут
+// self-call payments/create с таймаутом 45с — 30с убивали бы функцию до его
+// завершения (инвойс создан, клиент без ссылки).
+export const maxDuration = 90;
 
 const log = childLogger('telegram-bot');
 
