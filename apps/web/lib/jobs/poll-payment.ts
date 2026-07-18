@@ -18,6 +18,7 @@ import {
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
 import { issueCard } from './issue-card.ts';
+import { alertOnLoveAndPayProxyDown } from './proxy-health.ts';
 import { alertOnLowVccBalance } from './vcc-balance.ts';
 
 /**
@@ -177,6 +178,11 @@ export async function pollPayments(): Promise<{
     // баланса в ноль посреди дня (пополнение VCC — T+1).
     await alertOnLowVccBalance();
   }
+
+  // Мониторинг CONNECT-прокси L&P (H-3: SPOF приёма денег) — вне гейта
+  // PaySpace: приём рублей критичен независимо от выпуска карт. Сам ловит
+  // свои ошибки, cron не роняет.
+  await alertOnLoveAndPayProxyDown();
 
   log.info({
     event: 'cron.poll_payment.done',

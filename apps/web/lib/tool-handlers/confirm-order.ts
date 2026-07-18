@@ -1,6 +1,7 @@
 import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
+import { z } from 'zod';
 
 import type { ConfirmOrderResult } from '@oplati/agent';
 import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
@@ -37,6 +38,50 @@ export class TelegramLinkRequiredError extends Error {
       `${TELEGRAM_LINK_REQUIRED}: у пользователя не привязан Telegram. Подтверждение оплаты, чек и доступы доставляются только сообщением в Telegram, поэтому счёт не создан. Объясни это пользователю одной фразой и попроси нажать кнопку «Связать Telegram» под сообщением.`,
     );
     this.name = 'TelegramLinkRequiredError';
+  }
+}
+
+/**
+ * `/api/payments/create` ответил 503 `provider_unavailable` — лежит транспорт
+ * до L&P (squid-прокси / сеть / 5xx провайдера). Это НЕ ошибка запроса: заказ
+ * жив, счёт можно выставить позже. Текст читает и AI (tool-loop отдаёт ошибку
+ * модели) — формулировка объясняет, что сказать пользователю.
+ */
+export class PaymentProviderUnavailableError extends Error {
+  constructor() {
+    super(
+      'payment_provider_unavailable: приём оплаты временно недоступен — технический сбой на стороне платёжной системы. Счёт не создан, заказ сохранён. Скажи пользователю попробовать снова через несколько минут.',
+    );
+    this.name = 'PaymentProviderUnavailableError';
+  }
+}
+
+/**
+ * `/api/payments/create` ответил 409 `order_expired` — фиксация цены протухла
+ * (H-2), заказ захоронен сервером. Повторять бессмысленно — нужен новый заказ
+ * по свежему курсу.
+ */
+export class OrderExpiredError extends Error {
+  constructor() {
+    super(
+      'order_expired: срок фиксации цены истёк, заказ закрыт. Скажи пользователю оформить заказ заново — цена пересчитается по свежему курсу.',
+    );
+    this.name = 'OrderExpiredError';
+  }
+}
+
+/** Тело ошибки /api/payments/create (инвариант «Zod на границах»). */
+const errorBodySchema = z.object({ error: z.string() });
+
+function parseErrorCode(respText: string): string | null {
+  try {
+    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
+    return parsed.success ? parsed.data.error : null;
+  } catch (err) {
+    // Ожидаемый фоллбек (не-JSON тело → generic-классификация); само тело уже
+    // залогировано вызывающим кодом в `tool.confirm_order.failed`.
+    log.warn({ event: 'tool.confirm_order.error_body_not_json', err });
+    return null;
   }
 }
 
@@ -111,6 +156,13 @@ export async function confirmOrder(input: {
         httpStatus: resp.status,
         body: respText.slice(0, 500),
       });
+      const errorCode = parseErrorCode(respText);
+      if (resp.status === 503 && errorCode === 'provider_unavailable') {
+        throw new PaymentProviderUnavailableError();
+      }
+      if (resp.status === 409 && errorCode === 'order_expired') {
+        throw new OrderExpiredError();
+      }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }
 

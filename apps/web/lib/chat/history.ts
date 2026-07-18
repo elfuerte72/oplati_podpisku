@@ -8,8 +8,13 @@ import type { MessageHistoryItem } from '@oplati/db';
  *   - `operator` мапится на `assistant` (для AI оператор = «от имени сервиса»);
  *   - `system` отбрасывается;
  *   - схлопываем consecutive same-role (Anthropic ругается на повтор ролей);
+ *   - отрезаем ведущие `assistant` (Messages API требует user-first: окно
+ *     `loadRecentMessages(…, N)` режет историю по числу строк и при непарной
+ *     записи может начаться с assistant — без обрезки каждый ход отвечал бы 400);
  *   - гарантируем, что последнее сообщение — `user` (текущий ввод уже записан
  *     в БД до вызова, но подстраховываемся).
+ *
+ * Используется ОБОИМИ каналами (веб-чат и Telegram) — не дублировать логику.
  */
 export function toAgentHistory(
   history: MessageHistoryItem[],
@@ -30,6 +35,12 @@ export function toAgentHistory(
     } else {
       collapsed.push({ ...m });
     }
+  }
+
+  // После схлопывания роли чередуются — ведущий assistant максимум один, но
+  // while надёжнее к будущим правкам выше по функции.
+  while (collapsed[0]?.role === 'assistant') {
+    collapsed.shift();
   }
 
   const last = collapsed[collapsed.length - 1];

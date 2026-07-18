@@ -18,7 +18,8 @@ import {
 } from './repositories/payments.ts';
 import {
   createDraftOrder,
-  findExpiredPendingOrders,
+  findExpiredPayableOrders,
+  setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
@@ -350,7 +351,7 @@ describe('order_events append-only (DB-триггер)', () => {
   });
 });
 
-describe('findExpiredPendingOrders (guard оплаченного заказа, C1 defense-in-depth)', () => {
+describe('findExpiredPayableOrders (guard оплаченного заказа C1 + протухшие черновики H-2)', () => {
   it('заказ с succeeded-платежом НЕ попадает в expire, без него — попадает', async () => {
     const past = new Date(Date.now() - 60 * 60 * 1000);
     const user = await makeUser();
@@ -360,10 +361,57 @@ describe('findExpiredPendingOrders (guard оплаченного заказа, C
 
     const plainCase = await makeOrderWithPendingPayment({ userId: user.id, expiresAt: past });
 
-    const expired = await findExpiredPendingOrders(db);
+    const expired = await findExpiredPayableOrders(db);
     const ids = expired.map((o) => o.id);
     expect(ids).not.toContain(paidCase.order.id);
     expect(ids).toContain(plainCase.order.id);
+  });
+
+  it('черновик ready_for_payment с истёкшей фиксацией цены попадает в выборку, свежий — нет (H-2)', async () => {
+    // «Цена зафиксирована до expiresAt» форсится сервером: без этого черновик
+    // оставался вечно оплатимым по устаревшему снапшоту курса.
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const future = new Date(Date.now() + 60 * 60 * 1000);
+    const user = await makeUser();
+
+    const stale = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'integration-test stale draft',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+      expiresAt: past,
+    });
+    const fresh = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'integration-test fresh draft',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+      expiresAt: future,
+    });
+
+    const expired = await findExpiredPayableOrders(db);
+    const ids = expired.map((o) => o.id);
+    expect(ids).toContain(stale.id);
+    expect(ids).not.toContain(fresh.id);
+  });
+});
+
+describe('setOrderExpiresAt (выравнивание срока заказа по сроку счёта, M-4)', () => {
+  it('обновляет expires_at, не трогая статус', async () => {
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+    const target = new Date('2026-07-19T12:00:00.000Z');
+
+    await setOrderExpiresAt(db, order.id, target);
+
+    const rows = await db.select().from(schema.orders).where(eq(schema.orders.id, order.id));
+    const row = firstOf(rows, 'order');
+    expect(row.expiresAt?.toISOString()).toBe(target.toISOString());
+    expect(row.status).toBe('pending_payment');
   });
 });
 

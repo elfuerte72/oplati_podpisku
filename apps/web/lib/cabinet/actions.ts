@@ -16,7 +16,13 @@ import {
 import { orderParameters, type OrderParameters } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
-import { confirmOrder, TelegramLinkRequiredError } from '../tool-handlers/confirm-order.ts';
+import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
+import {
+  confirmOrder,
+  OrderExpiredError,
+  PaymentProviderUnavailableError,
+  TelegramLinkRequiredError,
+} from '../tool-handlers/confirm-order.ts';
 import { requestHuman } from '../tool-handlers/request-human.ts';
 import { proposeFromCatalog } from '../catalog/propose.ts';
 import { buildPaymentIssueOperatorMessage } from '../telegram/templates.ts';
@@ -71,6 +77,15 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
   if (!order || order.userId !== userId) {
     return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
   }
+  // Протухшая фиксация цены (H-2) — специфичный текст ДО generic-гейта:
+  // «нельзя оплатить» без объяснения выглядело бы как поломка.
+  if (order.status === 'expired') {
+    return {
+      ok: false,
+      error: 'not_payable',
+      message: 'Срок фиксации цены истёк — оформи заказ заново.',
+    };
+  }
   if (!isPayableStatus(order.status)) {
     return {
       ok: false,
@@ -110,6 +125,19 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
         ok: false,
         error: 'link_required',
         message: 'Нужно открыть кабинет из Telegram, чтобы получить ссылку на оплату.',
+      };
+    }
+    // Тех. сбой транспорта до L&P — заказ жив, честный текст вместо generic.
+    if (err instanceof PaymentProviderUnavailableError) {
+      return { ok: false, error: 'failed', message: PROVIDER_UNAVAILABLE_TEXT };
+    }
+    // Гейт фиксации цены (H-2): payments/create ответил 409 order_expired —
+    // заказ захоронен, «попробуй ещё раз» ввёл бы в заблуждение.
+    if (err instanceof OrderExpiredError) {
+      return {
+        ok: false,
+        error: 'not_payable',
+        message: 'Срок фиксации цены истёк — оформи заказ заново.',
       };
     }
     log.error({ event: 'cabinet.pay.failed', orderId, err });

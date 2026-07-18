@@ -1,11 +1,12 @@
 import * as Sentry from '@sentry/nextjs';
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import {
   findPendingPaymentByOrderId,
   getDb,
   getOrderById,
+  setOrderExpiresAt,
   transitionOrder,
   upsertPaymentByProviderRef,
   type UpsertResult,
@@ -13,7 +14,13 @@ import {
 import { OrderTransitionError } from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
+import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
+import {
+  isPaymentProviderUnavailable,
+  PROVIDER_UNAVAILABLE_TEXT,
+} from '@/lib/loveandpay/availability';
+import { isPriceLockExpired } from '@/lib/payments/expiry';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { getLoveAndPayClient, LoveAndPayApiError } from '@/lib/loveandpay';
 
@@ -39,6 +46,10 @@ export const preferredRegion = 'fra1';
 export const maxDuration = 60;
 
 const log = childLogger('payments-create');
+
+// Срок жизни счёта L&P (решение владельца 2026-07-18; было 24ч — СБП/карта
+// оплачиваются за минуты, длинное окно = опцион на курс за счёт маржи).
+const INVOICE_TTL_HOURS = 1;
 
 const requestSchema = z.object({
   orderId: z.string().uuid(),
@@ -106,6 +117,38 @@ export async function POST(req: Request): Promise<NextResponse> {
         { status: 409 },
       );
     }
+    // Гейт фиксации цены (H-2): черновик с истёкшим expires_at не доводим до
+    // счёта — курс в нём устарел. Хороним сразу (cron сделал бы то же в
+    // пределах 15 минут) и отвечаем 409, чтобы клиент оформил заказ заново.
+    if (isPriceLockExpired(order)) {
+      log.warn({
+        event: 'payments.create.order_expired',
+        orderId,
+        expiresAt: order.expiresAt,
+      });
+      try {
+        await transitionOrder(db, {
+          orderId,
+          toStatus: 'expired',
+          actorType: 'system',
+          eventType: 'order_expired',
+          payload: { shortId: order.shortId, reason: 'price_lock_expired' },
+        });
+      } catch (err) {
+        // Гонка с cron expire-payments: заказ уже захоронен — ответ тот же.
+        if (!(err instanceof OrderTransitionError)) throw err;
+        log.info({ event: 'payments.create.order_expired_race', orderId });
+      }
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'order_expired',
+          message: 'Срок фиксации цены истёк — оформите заказ заново.',
+        },
+        { status: 409 },
+      );
+    }
+
     if (!order.amountRub || order.amountRub <= 0) {
       log.error({ event: 'payments.create.invalid_amount', orderId, amountRub: order.amountRub });
       return NextResponse.json({ ok: false, error: 'invalid_amount' }, { status: 400 });
@@ -142,7 +185,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       currency: 'RUB',
       description,
       customer: {},
-      expiresInHours: 24,
+      expiresInHours: INVOICE_TTL_HOURS,
       successUrl,
       kycRequired: false,
       ...(paymentMethod !== undefined ? { paymentMethod } : {}),
@@ -167,6 +210,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       amountRub: order.amountRub,
     });
 
+    // Единый нормализованный срок инвойса: L&P не вернул expiresAt → считаем
+    // сами от TTL. Один и тот же момент уходит в payment, orders.expires_at и
+    // ответ клиенту — рассинхрон источников исключён.
+    const invoiceExpiresAt = invoice.expiresAt
+      ? new Date(invoice.expiresAt)
+      : new Date(Date.now() + INVOICE_TTL_HOURS * 60 * 60 * 1000);
+
     let upsert: UpsertResult;
     try {
       upsert = await upsertPaymentByProviderRef(db, {
@@ -176,7 +226,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         providerInvoiceNumber: invoice.invoiceNumber,
         amountRub: order.amountRub,
         status: 'pending',
-        expiresAt: invoice.expiresAt ? new Date(invoice.expiresAt) : null,
+        expiresAt: invoiceExpiresAt,
         rawPayload: { invoice } as Record<string, unknown>,
       });
     } catch (err) {
@@ -201,6 +251,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         eventType: 'payment_invoice_created',
         payload: { paymentId: upsert.payment.id, invoiceId: invoice.id, paymentMethod: paymentMethod ?? 'any' },
       });
+      // M-4: срок заказа выравнивается по сроку счёта — иначе cron
+      // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
+      // после экспайра = деньги приняты, фулфилмента нет).
+      await setOrderExpiresAt(db, orderId, invoiceExpiresAt);
     } else {
       log.info({
         event: 'payments.create.duplicate',
@@ -213,7 +267,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok: true,
       paymentUrl: invoice.paymentLink,
       qrPayload: invoice.qrPayload ?? null,
-      expiresAt: invoice.expiresAt,
+      expiresAt: invoiceExpiresAt.toISOString(),
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
     });
@@ -229,6 +283,17 @@ export async function POST(req: Request): Promise<NextResponse> {
     Sentry.captureException(err, {
       tags: { source: 'payments.create', orderId },
     });
+    // Тех. сбой транспорта/провайдера (лежит прокси, таймаут, 5xx L&P) —
+    // отличаем от прочих ошибок: клиент получает честное «технический сбой»,
+    // а healthcheck прокси запускается сразу (не ждём 5-минутный cron) —
+    // при упавшем VPS владельцу уходит DM.
+    if (isPaymentProviderUnavailable(err)) {
+      after(() => alertOnLoveAndPayProxyDown());
+      return NextResponse.json(
+        { ok: false, error: 'provider_unavailable', message: PROVIDER_UNAVAILABLE_TEXT },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { ok: false, error: 'internal_error', code: isApiErr ? err.code : 'unknown' },
       { status: 500 },
