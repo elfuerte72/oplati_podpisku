@@ -348,6 +348,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       <main className="mx-auto w-full max-w-md p-4">
         <OrderDetailView
           order={detail}
+          // Факт наличия карты — из снапшота, НЕ из fee=0 заказа (L-22): на
+          // dev/preview надбавка отключена env'ом и fee=0 у всех без карты.
+          hasActiveCard={snapshot.cards.some((c) => c.status === 'active')}
           busy={busy}
           message={actionMsg}
           onBack={() => {
