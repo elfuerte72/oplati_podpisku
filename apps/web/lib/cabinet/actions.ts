@@ -77,6 +77,15 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
   if (!order || order.userId !== userId) {
     return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
   }
+  // Протухшая фиксация цены (H-2) — специфичный текст ДО generic-гейта:
+  // «нельзя оплатить» без объяснения выглядело бы как поломка.
+  if (order.status === 'expired') {
+    return {
+      ok: false,
+      error: 'not_payable',
+      message: 'Срок фиксации цены истёк — оформи заказ заново.',
+    };
+  }
   if (!isPayableStatus(order.status)) {
     return {
       ok: false,

@@ -77,8 +77,11 @@ function parseErrorCode(respText: string): string | null {
   try {
     const parsed = errorBodySchema.safeParse(JSON.parse(respText));
     return parsed.success ? parsed.data.error : null;
-  } catch {
-    return null; // не-JSON тело — классифицируем как generic-ошибку
+  } catch (err) {
+    // Ожидаемый фоллбек (не-JSON тело → generic-классификация); само тело уже
+    // залогировано вызывающим кодом в `tool.confirm_order.failed`.
+    log.warn({ event: 'tool.confirm_order.error_body_not_json', err });
+    return null;
   }
 }
 
