@@ -10,6 +10,10 @@ vi.mock('../jobs/dispatcher.ts', () => ({
 vi.mock('../referral/accrue.ts', () => ({
   accrueReferralForPayment: vi.fn(),
 }));
+// DM владельцу при недоплате (M-3) — мокаем, чтобы не тянуть grammY-бота.
+vi.mock('../alerts/notify-ops.ts', () => ({
+  notifyOps: vi.fn(async () => {}),
+}));
 
 type Pay = {
   id: string;
@@ -81,6 +85,7 @@ import { OrderTransitionError } from '@oplati/types';
 import * as db from '@oplati/db';
 import { processInvoicePaid, processInvoiceTerminal } from './handlers.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 type MockedDb = typeof db & {
@@ -218,7 +223,7 @@ describe('processInvoicePaid', () => {
     expect(dispatchIssueCard).not.toHaveBeenCalled();
   });
 
-  it('оплачено меньше выставленного → amount_mismatch, fulfillment НЕ запускается', async () => {
+  it('оплачено меньше выставленного → amount_mismatch: платёж failed, заказ failed, DM оператору, fulfillment НЕ запускается (M-3)', async () => {
     (db as unknown as MockedDb).__setPayment({
       id: 'pay-1',
       orderId: 'order-1',
@@ -231,8 +236,34 @@ describe('processInvoicePaid', () => {
     const res = await processInvoicePaid({ data: { ...data, amount: 80 }, rawPayload: {} });
 
     expect(res.kind).toBe('amount_mismatch');
-    // Не клеймим платёж и не запускаем выпуск карты на полную сумму.
+    // Успешный claim НЕ выполняется (карта не выпускается на полную сумму) —
+    // вместо него терминальный: раньше платёж вечно висел pending (poll
+    // ре-алертил 25 ч), а заказ позже хоронился как «срок истёк» при частично
+    // принятых деньгах.
     expect(db.claimPaymentSucceeded).not.toHaveBeenCalled();
+    expect(db.claimPaymentTerminal).toHaveBeenCalledTimes(1);
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'failed', eventType: 'payment_amount_mismatch' }),
+    );
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+
+  it('повтор webhook после amount_mismatch → терминальный claim null → DM не дублируется', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+      amountRub: 10000,
+    });
+    (db as unknown as MockedDb).__forceTerminalClaimNull();
+
+    const res = await processInvoicePaid({ data: { ...data, amount: 80 }, rawPayload: {} });
+
+    expect(res.kind).toBe('amount_mismatch');
+    expect(notifyOps).not.toHaveBeenCalled();
     expect(db.transitionOrder).not.toHaveBeenCalled();
     expect(dispatchIssueCard).not.toHaveBeenCalled();
   });

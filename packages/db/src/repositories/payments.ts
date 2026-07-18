@@ -39,7 +39,9 @@ export type UpsertResult = {
  * (для recovery, если webhook пришёл раньше callback'а из `payments/create`).
  */
 export async function upsertPaymentByProviderRef(
-  db: DB,
+  // DBLike: с M-2 вызывается из транзакции payments/create (INSERT платежа +
+  // переход заказа atomically — сбой перехода откатывает и INSERT).
+  db: DBLike,
   input: UpsertPaymentByProviderRefInput,
   log: RepoLogger = noopLogger,
 ): Promise<UpsertResult> {

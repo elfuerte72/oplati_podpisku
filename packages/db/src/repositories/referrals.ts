@@ -112,13 +112,43 @@ export async function ensureReferralCode(
 
 export type SetReferrerResult =
   | { set: true }
-  | { set: false; reason: 'self_referral' | 'already_set' | 'user_not_found' };
+  | { set: false; reason: 'self_referral' | 'already_set' | 'user_not_found' | 'cycle' };
+
+/**
+ * Цикл-чек (M-1 аудита 2026-07-18): true, если `userId` встречается в цепочке
+ * `referred_by` вверх от `referrerId` — установка создала бы цикл A↔…↔A, и оба
+ * участника вечно фармили бы комиссию с покупок друг друга из маржи. Тот же
+ * алгоритм, что в merge-пути `consumeLinkToken` (isAncestor): cap 16 уровней,
+ * глубже — fail-closed (реальные цепочки на порядок мельче).
+ *
+ * TOCTOU-гонка (двое конкурентно ставят друг друга) теоретически возможна, но
+ * требует одновременных первых заходов обоих в момент, когда ни у одного нет
+ * реферера — принятый риск (прецедент: тот же чек в merge-пути).
+ */
+async function wouldCreateCycle(db: DB, userId: string, referrerId: string): Promise<boolean> {
+  let cur = referrerId;
+  const seen = new Set<string>([cur]);
+  for (let i = 0; i < 16; i++) {
+    const rows = await db.execute<{ referred_by: string | null }>(
+      sql`SELECT referred_by FROM users WHERE id = ${cur} LIMIT 1`,
+    );
+    const parent = rows[0]?.referred_by ?? null;
+    if (parent === null) return false;
+    if (parent === userId) return true;
+    if (seen.has(parent)) return false; // существующий цикл выше — наш сет его не создаёт
+    seen.add(parent);
+    cur = parent;
+  }
+  return true; // fail-closed на аномальной глубине
+}
 
 /**
  * Разовая установка реферера (immutable): проставляет `referred_by` только если
- * он ещё NULL и `referrerId !== userId` (запрет самореферала). Основной путь
- * захвата — INSERT в users-репозитории (referred_by сразу при создании); эта
- * функция нужна для отложенной привязки (web-cookie, merge) с теми же гарантиями.
+ * он ещё NULL, `referrerId !== userId` (запрет самореферала) и установка не
+ * создаёт цикл в дереве (см. `wouldCreateCycle`). Основной путь захвата —
+ * INSERT в users-репозитории (referred_by сразу при создании; цикл там
+ * невозможен — на новую строку никто не ссылается); эта функция нужна для
+ * отложенной привязки (web-cookie, merge, поздний захват) с теми же гарантиями.
  */
 export async function setReferrerOnce(
   db: DB,
@@ -129,6 +159,10 @@ export async function setReferrerOnce(
   if (referrerId === userId) {
     log.warn({ event: 'db.referral.self_referral_blocked', userId });
     return { set: false, reason: 'self_referral' };
+  }
+  if (await wouldCreateCycle(db, userId, referrerId)) {
+    log.warn({ event: 'db.referral.cycle_blocked', userId, referrerId });
+    return { set: false, reason: 'cycle' };
   }
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE users
