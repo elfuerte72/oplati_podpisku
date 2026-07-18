@@ -49,6 +49,7 @@ import {
 } from '@/lib/catalog/build';
 import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
+import { toAgentHistory } from '@/lib/chat/history';
 import { formatExpires, formatRub } from '@/components/comic/format';
 import { serverEnv } from '@/lib/env';
 import { childLogger } from '@/lib/logger';
@@ -1652,53 +1653,6 @@ async function sendSafely(
     log.error({ event: 'telegram.send.unknown_error', updateId, chatId, err });
     Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
   }
-}
-
-/**
- * Конвертирует историю из БД в формат Anthropic messages.
- *
- * - `user` / `assistant` идут как есть.
- * - `operator` мапится на `assistant` (для AI оператор = "от имени сервиса").
- * - `system` отбрасывается (если бы такие были).
- *
- * Anthropic требует чередования user/assistant и чтобы последнее сообщение было
- * user. Текущий вход (`currentUserText`) уже записан в БД через safeAppendMessage
- * перед этим вызовом, так что он должен быть последним user в `history`.
- * На всякий случай — если последнее сообщение не user или history пуст, добавляем
- * currentUserText явно.
- *
- * Также сжимаем последовательные одинаковые роли в одно сообщение (объединяем
- * через \n\n) — Anthropic ругается на consecutive same-role messages.
- */
-function toAgentHistory(
-  history: MessageHistoryItem[],
-  currentUserText: string,
-): Array<{ role: 'user' | 'assistant'; content: string }> {
-  const mapped = history
-    .filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'operator')
-    .map((m) => ({
-      role: (m.role === 'operator' ? 'assistant' : m.role) as 'user' | 'assistant',
-      content: m.content,
-    }));
-
-  // Сжимаем consecutive same-role.
-  const collapsed: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-  for (const m of mapped) {
-    const prev = collapsed[collapsed.length - 1];
-    if (prev && prev.role === m.role) {
-      prev.content = `${prev.content}\n\n${m.content}`;
-    } else {
-      collapsed.push({ ...m });
-    }
-  }
-
-  // Гарантируем что последнее сообщение — user.
-  const last = collapsed[collapsed.length - 1];
-  if (!last || last.role !== 'user') {
-    collapsed.push({ role: 'user', content: currentUserText });
-  }
-
-  return collapsed;
 }
 
 /**

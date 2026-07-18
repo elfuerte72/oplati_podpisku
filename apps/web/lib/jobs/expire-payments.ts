@@ -4,7 +4,7 @@ import * as Sentry from '@sentry/nextjs';
 
 import {
   deleteExpiredLinkTokens,
-  findExpiredPendingOrders,
+  findExpiredPayableOrders,
   getDb,
   getUserTelegramId,
   transitionOrder,
@@ -25,7 +25,7 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
   log.info({ event: 'cron.expire_payments.start' });
 
   const db = getDb();
-  const expired = await findExpiredPendingOrders(db);
+  const expired = await findExpiredPayableOrders(db);
 
   log.info({ event: 'cron.expire_payments.found', count: expired.length });
 

@@ -40,6 +40,21 @@ export class TelegramLinkRequiredError extends Error {
   }
 }
 
+/**
+ * `/api/payments/create` ответил 503 `provider_unavailable` — лежит транспорт
+ * до L&P (squid-прокси / сеть / 5xx провайдера). Это НЕ ошибка запроса: заказ
+ * жив, счёт можно выставить позже. Текст читает и AI (tool-loop отдаёт ошибку
+ * модели) — формулировка объясняет, что сказать пользователю.
+ */
+export class PaymentProviderUnavailableError extends Error {
+  constructor() {
+    super(
+      'payment_provider_unavailable: приём оплаты временно недоступен — технический сбой на стороне платёжной системы. Счёт не создан, заказ сохранён. Скажи пользователю попробовать снова через несколько минут.',
+    );
+    this.name = 'PaymentProviderUnavailableError';
+  }
+}
+
 export async function confirmOrder(input: {
   orderId: string;
   paymentMethod?: 'sbp' | 'card';
@@ -111,6 +126,9 @@ export async function confirmOrder(input: {
         httpStatus: resp.status,
         body: respText.slice(0, 500),
       });
+      if (resp.status === 503 && respText.includes('provider_unavailable')) {
+        throw new PaymentProviderUnavailableError();
+      }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }
 

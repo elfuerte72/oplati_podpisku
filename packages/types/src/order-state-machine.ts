@@ -42,7 +42,10 @@ export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   draft: ['clarifying', 'ready_for_payment', 'cancelled'],
   clarifying: ['kyc_required', 'ready_for_payment', 'cancelled'],
   kyc_required: ['clarifying', 'cancelled'],
-  ready_for_payment: ['pending_payment', 'cancelled'],
+  // → expired: фиксация цены (курс снапшотится при propose) протухла по
+  // orders.expires_at — черновик хоронит cron expire-payments или гейт
+  // payments-create; вечно оплатимый заказ по устаревшему курсу — дыра в марже.
+  ready_for_payment: ['pending_payment', 'cancelled', 'expired'],
   pending_payment: ['paid', 'expired', 'cancelled', 'failed'],
   paid: ['in_fulfillment', 'failed', 'refund_requested'],
   in_fulfillment: ['completed', 'failed'],

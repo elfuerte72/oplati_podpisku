@@ -22,6 +22,13 @@ describe('state machine', () => {
     }
   });
 
+  it('ready_for_payment протухает: → expired разрешён (фикс H-2 аудита 2026-07-18)', () => {
+    // «Цена зафиксирована до expiresAt» обязана форситься сервером: черновик с
+    // истёкшей фиксацией курса хоронится cron'ом/гейтом payments-create, иначе
+    // заказ остаётся вечно оплатимым по устаревшему курсу.
+    expect(isAllowedTransition('ready_for_payment', 'expired')).toBe(true);
+  });
+
   it('isAllowedTransition: разрешённый переход → true', () => {
     expect(isAllowedTransition('draft', 'clarifying')).toBe(true);
     expect(isAllowedTransition('ready_for_payment', 'pending_payment')).toBe(true);

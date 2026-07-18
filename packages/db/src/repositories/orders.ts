@@ -329,6 +329,24 @@ export async function transitionOrder(
   return result.order;
 }
 
+/**
+ * Обновляет `orders.expires_at` (статус НЕ трогает — это не state-переход).
+ *
+ * Использование: при выставлении счёта срок заказа выравнивается по сроку
+ * инвойса L&P (M-4 аудита 2026-07-18) — иначе cron `expire-payments` мог
+ * похоронить заказ при ещё живом инвойсе: оплата после экспайра = деньги
+ * приняты, фулфилмента нет.
+ */
+export async function setOrderExpiresAt(
+  db: DB,
+  orderId: string,
+  expiresAt: Date,
+  log: RepoLogger = noopLogger,
+): Promise<void> {
+  await db.update(orders).set({ expiresAt }).where(eq(orders.id, orderId));
+  log.info({ event: 'db.orders.expires_at_updated', orderId, expiresAt: expiresAt.toISOString() });
+}
+
 /** Устанавливает order.cardId — отдельной функцией, чтобы не плодить параметры в transitionOrder. */
 export async function setOrderCardId(
   db: DB,
@@ -341,19 +359,24 @@ export async function setOrderCardId(
 }
 
 /**
- * Поиск заказов с истекшим pending_payment — для cron `expire-payments`.
+ * Поиск оплатимых заказов с истёкшим `expires_at` — для cron `expire-payments`.
+ *
+ * Оба оплатимых статуса (H-2 аудита 2026-07-18): `pending_payment` (счёт
+ * выставлен, не оплачен) И `ready_for_payment` (черновик с зафиксированной
+ * ценой, счёт не выставлялся) — иначе черновик жил вечно и оставался оплатимым
+ * по устаревшему снапшоту курса.
  *
  * `NOT EXISTS (успешный платёж)` — защита от захоронения ОПЛАЧЕННОГО заказа
  * (находка аудита C1): если сбой оставил payment=succeeded при заказе в
  * pending_payment, cron не должен переводить его в expired — такой заказ чинит
  * poll-payment/оператор, а не «срок оплаты истёк».
  */
-export async function findExpiredPendingOrders(db: DB): Promise<OrderRow[]> {
+export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
     .from(orders)
     .where(
-      sql`${orders.status} = 'pending_payment' AND ${orders.expiresAt} IS NOT NULL AND ${orders.expiresAt} < now()
+      sql`${orders.status} IN ('ready_for_payment', 'pending_payment') AND ${orders.expiresAt} IS NOT NULL AND ${orders.expiresAt} < now()
           AND NOT EXISTS (
             SELECT 1 FROM ${payments}
             WHERE ${payments.orderId} = ${orders.id} AND ${payments.status} = 'succeeded'

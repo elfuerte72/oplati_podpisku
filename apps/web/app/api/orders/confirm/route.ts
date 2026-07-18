@@ -6,8 +6,10 @@ import { getDb, getOrCreateUserByWebSessionId } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   confirmOrder,
+  PaymentProviderUnavailableError,
   TELEGRAM_LINK_REQUIRED,
   TelegramLinkRequiredError,
 } from '@/lib/tool-handlers/confirm-order';
@@ -99,6 +101,15 @@ export async function POST(req: Request): Promise<NextResponse> {
         // 409: ожидаемый бизнес-отказ (нет привязки), не сбой — клиент рисует
         // карточку привязки по error-полю, статус различает кейс в метриках.
         { status: 409 },
+      );
+    }
+    // Тех. сбой транспорта до L&P (лежит прокси / таймаут / 5xx провайдера):
+    // заказ жив, честно говорим «сбой, попробуй позже» вместо generic-ошибки.
+    if (err instanceof PaymentProviderUnavailableError) {
+      log.error({ event: 'web-chat.confirm.provider_unavailable', orderId });
+      return NextResponse.json(
+        { ok: false, error: 'provider_unavailable', text: PROVIDER_UNAVAILABLE_TEXT },
+        { status: 503 },
       );
     }
     log.error({ event: 'web-chat.confirm.failed', orderId, err });

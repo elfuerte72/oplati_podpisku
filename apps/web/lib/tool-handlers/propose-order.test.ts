@@ -117,3 +117,13 @@ describe('proposeOrder — service-aware потолок суммы', () => {
     });
   });
 });
+
+describe('фиксация цены — TTL заказа', () => {
+  it('expiresAt = now + 2 часа (решение владельца 2026-07-18; было 24ч — суточный опцион на курс)', async () => {
+    const before = Date.now();
+    const r = await proposeOrder(customInput(10_000));
+    const ttlHours = (new Date(r.expiresAt).getTime() - before) / 3_600_000;
+    expect(ttlHours).toBeGreaterThan(1.9);
+    expect(ttlHours).toBeLessThanOrEqual(2.1);
+  });
+});

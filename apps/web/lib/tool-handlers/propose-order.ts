@@ -42,7 +42,10 @@ import { resolveUsdtRubRate } from '../rapira/rates.ts';
  */
 
 const log = childLogger('tool.propose_order');
-const TTL_HOURS = 24;
+// Фиксация цены: снапшот курса живёт 2 часа (решение владельца 2026-07-18;
+// было 24 — суточный односторонний опцион на курс за счёт маржи). Протухший
+// черновик хоронит cron expire-payments / гейт payments-create (H-2).
+const TTL_HOURS = 2;
 
 /**
  * Типизированные ошибки бизнес-границ. Агентский tool-loop передаёт модели
