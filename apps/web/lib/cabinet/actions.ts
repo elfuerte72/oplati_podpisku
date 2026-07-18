@@ -3,19 +3,31 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  appendOrderEvent,
+  findCardByIdForUser,
   getDb,
   getOrderById,
   getOrCreateActiveConversation,
   getServiceById,
+  getUserProfileById,
   findPaymentsByOrderId,
+  hasRecentOrderEvent,
 } from '@oplati/db';
-import type { OrderParameters } from '@oplati/types';
+import { orderParameters, type OrderParameters } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { confirmOrder, TelegramLinkRequiredError } from '../tool-handlers/confirm-order.ts';
 import { requestHuman } from '../tool-handlers/request-human.ts';
 import { proposeFromCatalog } from '../catalog/propose.ts';
-import { isPayableStatus } from './types.ts';
+import { buildPaymentIssueOperatorMessage } from '../telegram/templates.ts';
+import { sendToSupportOperator } from '../telegram/support.ts';
+import type { PaymentIssueType } from './payment-issues.ts';
+import {
+  CARD_STATUS_LABELS,
+  PAYMENT_ISSUE_EVENT,
+  SUBSCRIPTION_ACTIVATED_EVENT,
+  isPayableStatus,
+} from './types.ts';
 
 /**
  * Действия личного кабинета (Mini App). Каждое начинается с проверки
@@ -257,6 +269,164 @@ export async function repeatOrder(userId: string, orderId: string): Promise<Repe
       ok: false,
       error: 'failed',
       message: 'Не получилось повторить заказ. Попробуй ещё раз или напиши в чат.',
+    };
+  }
+}
+
+// ─── «Не проходит оплата?» — проблема с оплатой на сайте сервиса ──────────
+
+/** Окно дедупликации повторных жалоб по одному заказу (мс). */
+const PAYMENT_ISSUE_DEDUP_MS = 5 * 60 * 1000;
+
+export type ReportPaymentIssueResult =
+  | { ok: true; duplicate: boolean }
+  | { ok: false; error: 'not_found' | 'not_available' | 'failed'; message: string };
+
+/**
+ * Клиент нажал «Не проходит оплата?» и выбрал тип проблемы (ТЗ §6). В поддержку
+ * автоматически уходит весь контекст: номер заказа, сервис, тариф, сумма,
+ * статус карты и тип ошибки. Плюс append-only event в `order_events` —
+ * на экране заказа появляется статус «Возникла проблема». Статус-машину заказа
+ * не трогаем (completed остаётся терминальным).
+ */
+export async function reportPaymentIssue(
+  userId: string,
+  telegramId: string,
+  orderId: string,
+  issueType: PaymentIssueType,
+  comment?: string,
+): Promise<ReportPaymentIssueResult> {
+  const db = getDb();
+  const order = await getOrderById(db, orderId);
+  if (!order || order.userId !== userId) {
+    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
+  }
+  // Пост-выпускной флоу осмыслен только для выполненного заказа (карта выпущена,
+  // реквизиты отправлены) — иначе авторизованный клиент мог бы спамить события
+  // на свои draft-заказы. UI и не показывает кнопку раньше completed.
+  if (order.status !== 'completed') {
+    return {
+      ok: false,
+      error: 'not_available',
+      message: 'Эта кнопка станет доступна после выпуска карты по заказу.',
+    };
+  }
+
+  try {
+    // Дедуп: повторное нажатие в течение 5 минут не спамит оператора.
+    const duplicate = await hasRecentOrderEvent(db, {
+      orderId,
+      eventType: PAYMENT_ISSUE_EVENT,
+      withinMs: PAYMENT_ISSUE_DEDUP_MS,
+    });
+    if (duplicate) {
+      return { ok: true, duplicate: true };
+    }
+
+    const [profile, service, card] = await Promise.all([
+      getUserProfileById(db, userId),
+      order.serviceId ? getServiceById(db, order.serviceId) : Promise.resolve(null),
+      order.cardId ? findCardByIdForUser(db, order.cardId, userId) : Promise.resolve(null),
+    ]);
+
+    // Zod на границе jsonb: битые parameters не роняют жалобу — просто без тарифа.
+    const parsedParams = orderParameters.safeParse(order.parameters ?? {});
+    const tierName = parsedParams.success ? parsedParams.data.tierName ?? null : null;
+    const operatorMessage = buildPaymentIssueOperatorMessage({
+      telegramId,
+      displayName: profile?.displayName ?? null,
+      orderShortId: order.shortId,
+      service: service?.name ?? order.customServiceDescription ?? 'Заказ вне каталога',
+      tierName,
+      amountKopecks: order.amountRub,
+      cardStatusLabel: card ? CARD_STATUS_LABELS[card.status] : null,
+      issueType,
+      ...(comment !== undefined ? { comment } : {}),
+    });
+
+    const delivered = await sendToSupportOperator(operatorMessage, { orderId, issueType });
+    if (!delivered) {
+      return {
+        ok: false,
+        error: 'failed',
+        message: 'Не получилось передать оператору. Попробуй ещё раз через пару минут.',
+      };
+    }
+
+    await appendOrderEvent(db, {
+      orderId,
+      eventType: PAYMENT_ISSUE_EVENT,
+      actorType: 'user',
+      payload: { issueType },
+    });
+
+    return { ok: true, duplicate: false };
+  } catch (err) {
+    log.error({ event: 'cabinet.payment_issue.failed', orderId, err });
+    Sentry.captureException(err, { tags: { source: 'cabinet.payment_issue' }, extra: { orderId } });
+    return {
+      ok: false,
+      error: 'failed',
+      message: 'Не получилось отправить. Попробуй ещё раз через минуту.',
+    };
+  }
+}
+
+// ─── «Подписка оплачена» — клиент подтвердил успех на сайте сервиса ────────
+
+export type MarkSubscriptionActivatedResult =
+  | { ok: true }
+  | { ok: false; error: 'not_found' | 'not_available' | 'failed'; message: string };
+
+/**
+ * Клиент отметил, что подписка на сайте сервиса оплачена (ТЗ §6). Пишем
+ * append-only event — экран заказа показывает статус «Подписка оплачена».
+ * Идемпотентно: повторное нажатие не плодит события.
+ */
+export async function markSubscriptionActivated(
+  userId: string,
+  orderId: string,
+): Promise<MarkSubscriptionActivatedResult> {
+  const db = getDb();
+  const order = await getOrderById(db, orderId);
+  if (!order || order.userId !== userId) {
+    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
+  }
+  // Тот же гейт, что у reportPaymentIssue: события «после карты» — только для
+  // выполненного заказа.
+  if (order.status !== 'completed') {
+    return {
+      ok: false,
+      error: 'not_available',
+      message: 'Эта кнопка станет доступна после выпуска карты по заказу.',
+    };
+  }
+
+  try {
+    const already = await hasRecentOrderEvent(db, {
+      orderId,
+      eventType: SUBSCRIPTION_ACTIVATED_EVENT,
+      // «Когда-либо» — событие достаточно одно; год покрывает жизнь заказа.
+      withinMs: 365 * 24 * 60 * 60 * 1000,
+    });
+    if (!already) {
+      await appendOrderEvent(db, {
+        orderId,
+        eventType: SUBSCRIPTION_ACTIVATED_EVENT,
+        actorType: 'user',
+      });
+    }
+    return { ok: true };
+  } catch (err) {
+    log.error({ event: 'cabinet.subscription_activated.failed', orderId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'cabinet.subscription_activated' },
+      extra: { orderId },
+    });
+    return {
+      ok: false,
+      error: 'failed',
+      message: 'Не получилось сохранить. Попробуй ещё раз через минуту.',
     };
   }
 }

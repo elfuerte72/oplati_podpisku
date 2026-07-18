@@ -90,6 +90,42 @@ describe('buildCatalogService', () => {
     expect(svc?.tiers).toEqual([]);
   });
 
+  it('прокидывает payment_instructions в витрину (ТЗ §5)', () => {
+    const svc = buildCatalogService(
+      row({
+        paymentInstructions: {
+          requiresVpn: true,
+          vpnLocation: 'США',
+          requiredCurrency: 'USD',
+          paymentUrl: 'https://claude.ai/upgrade',
+        },
+      }),
+      RATE,
+      COMMISSION,
+      MIN_KOPECKS,
+    );
+    expect(svc?.instructions).toEqual({
+      requiresVpn: true,
+      vpnLocation: 'США',
+      requiredCurrency: 'USD',
+      paymentUrl: 'https://claude.ai/upgrade',
+    });
+  });
+
+  it('битые/отсутствующие payment_instructions НЕ прячут сервис — instructions: null', () => {
+    const broken = buildCatalogService(
+      row({ paymentInstructions: { vpnLocation: 'США' } }), // нет requiresVpn
+      RATE,
+      COMMISSION,
+      MIN_KOPECKS,
+    );
+    expect(broken).not.toBeNull();
+    expect(broken?.instructions).toBeNull();
+
+    const missing = buildCatalogService(row(), RATE, COMMISSION, MIN_KOPECKS);
+    expect(missing?.instructions).toBeNull();
+  });
+
   it('невалидная pricing_policy → null', () => {
     expect(buildCatalogService(row({ pricingPolicy: { tiers: [] } }), RATE, COMMISSION, MIN_KOPECKS)).toBeNull();
     expect(buildCatalogService(row({ pricingPolicy: null }), RATE, COMMISSION, MIN_KOPECKS)).toBeNull();
@@ -156,6 +192,7 @@ describe('sortCatalog', () => {
       requiresKyc: false,
       customAmount: false,
       tiers: [],
+      instructions: null,
     });
     const sorted = sortCatalog([
       mk('notion-plus', 'Notion Plus'),
@@ -181,6 +218,7 @@ describe('filterCatalogForDisplay', () => {
       requiresKyc: false,
       customAmount: false,
       tiers: [],
+      instructions: null,
     });
 
     const visible = filterCatalogForDisplay([
@@ -204,6 +242,7 @@ describe('groupCatalog', () => {
     requiresKyc: false,
     customAmount: false,
     tiers: [],
+    instructions: null,
   });
 
   it('группирует по темам в заданном порядке, внутри — по популярности', () => {

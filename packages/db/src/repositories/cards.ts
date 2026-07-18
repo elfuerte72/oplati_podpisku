@@ -214,6 +214,38 @@ export async function updateBalance(
 }
 
 /**
+ * Синхронизация баланса с провайдером: кабинет перед показом тянет live-баланс
+ * из PaySpace (`getCardInfo`) и кэширует его сюда — сам по себе БД-снимок знает
+ * только НАШИ движения (topup/withdraw), списания клиента на сайте сервиса в
+ * него не попадают.
+ *
+ * Compare-and-set: пишем только если баланс в БД всё ещё равен тому, что
+ * читатель видел (`expectedBalanceUsdCents`) — иначе параллельный
+ * `updateBalance` (topup из issue-card в момент просмотра кабинета) был бы
+ * молча затёрт устаревшим live-значением. `false` = проиграли гонку, кэш не
+ * тронут. В отличие от `updateBalance` НЕ трогает `last_used_at`: это пассивное
+ * чтение, а от `last_used_at` recycle-cron меряет простой — просмотр кабинета
+ * не должен бесконечно держать карту от идла.
+ */
+export async function syncCardBalance(
+  db: DB,
+  cardId: string,
+  balanceUsdCents: number,
+  expectedBalanceUsdCents: number,
+  log: RepoLogger = noopLogger,
+): Promise<boolean> {
+  const updated = await db
+    .update(cards)
+    .set({ balanceUsdCents })
+    .where(and(eq(cards.id, cardId), eq(cards.balanceUsdCents, expectedBalanceUsdCents)))
+    .returning({ id: cards.id });
+  const applied = updated.length > 0;
+
+  log.info({ event: 'db.cards.balance_synced', cardId, balanceUsdCents, applied });
+  return applied;
+}
+
+/**
  * Шаг 1 cron `recycle-cards`: active + простой > 90d → idle.
  * Чистое БД-изменение, без обращения к провайдеру. Возвращает число затронутых.
  *

@@ -10,7 +10,15 @@ import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { resolveCabinetUser } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
 import { getReferralLinkForCabinet } from '@/lib/cabinet/referral-read';
-import { payOrder, proposeNewOrder, repeatOrder, requestOperator } from '@/lib/cabinet/actions';
+import {
+  markSubscriptionActivated,
+  payOrder,
+  proposeNewOrder,
+  repeatOrder,
+  reportPaymentIssue,
+  requestOperator,
+} from '@/lib/cabinet/actions';
+import { PAYMENT_ISSUE_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
 
 /**
@@ -66,6 +74,14 @@ const requestSchema = z.discriminatedUnion('action', [
     tierPeriod: z.enum(['month', 'quarter', 'year']).optional(),
     amountUsdCents: z.number().int().positive().optional(),
   }),
+  // «Не проходит оплата?» (ТЗ §6): тип проблемы + опциональный комментарий.
+  orderAction.extend({
+    action: z.literal('payment-issue'),
+    issueType: z.enum(PAYMENT_ISSUE_TYPES),
+    comment: z.string().max(1000).optional(),
+  }),
+  // «Подписка оплачена» — клиент подтвердил успех на сайте сервиса.
+  orderAction.extend({ action: z.literal('subscription-paid') }),
 ]);
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
@@ -154,6 +170,22 @@ export async function POST(req: Request): Promise<NextResponse> {
           ...(body.amountUsdCents !== undefined ? { amountUsdCents: body.amountUsdCents } : {}),
         });
         return NextResponse.json(result, { status: 200 });
+      }
+      case 'payment-issue': {
+        const result = await reportPaymentIssue(
+          userId,
+          telegramId,
+          body.orderId,
+          body.issueType,
+          body.comment,
+        );
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
+      }
+      case 'subscription-paid': {
+        const result = await markSubscriptionActivated(userId, body.orderId);
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
       }
       case 'card-details': {
         // Разовый показ реквизитов: live-fetch из PaySpace, в БД не хранятся.

@@ -19,13 +19,16 @@ import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import {
+  doMarkSubscriptionPaid,
   doPay,
+  doReportPaymentIssue,
   fetchCardDetails,
   fetchOrderDetail,
   fetchSnapshot,
   type OrderDetail,
   type Snapshot,
 } from './cabinet-api';
+import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
@@ -207,6 +210,18 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   const hideCard = useCallback(() => setCardDetails(null), []);
 
+  // Автоскрытие реквизитов (ТЗ §4): показанные номер/CVC сами прячутся через
+  // минуту — чтобы не висели открытыми на экране в транспорте/на людях.
+  useEffect(() => {
+    if (!cardDetails) return;
+    const timer = window.setTimeout(() => setCardDetails(null), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [cardDetails]);
+
+  // Заказ, открытый на экране детали прямо сейчас: ответы отставших запросов
+  // (клиент успел уйти или открыть другой заказ) не должны перезаписать detail.
+  const activeOrderIdRef = useRef<string | null>(null);
+
   const openOrder = useCallback(async (orderId: string) => {
     setActionMsg(null);
     setNotice(null);
@@ -214,7 +229,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     setDetailLoading(true);
     setView('detail');
     setDetail(null);
+    activeOrderIdRef.current = orderId;
     const res = await fetchOrderDetail(initDataRef.current, orderId);
+    if (activeOrderIdRef.current !== orderId) return; // уже смотрим другой заказ
     setDetailLoading(false);
     if (res.ok) {
       setDetail(res.data);
@@ -226,8 +243,33 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   const refreshDetail = useCallback(async (orderId: string) => {
     const res = await fetchOrderDetail(initDataRef.current, orderId);
-    if (res.ok) setDetail(res.data);
+    if (res.ok && activeOrderIdRef.current === orderId) setDetail(res.data);
   }, []);
+
+  // «Не проходит оплата?» из детали заказа: контекст (заказ/сервис/тариф/сумма/
+  // статус карты) собирает сервер; после отправки перечитываем деталь, чтобы
+  // показать статус «Возникла проблема».
+  const reportIssue = useCallback(
+    async (issueType: PaymentIssueType, comment?: string) => {
+      if (!detail) {
+        return { ok: false as const, error: 'no_order', message: 'Заказ не открыт.' };
+      }
+      const res = await doReportPaymentIssue(initDataRef.current, detail.orderId, issueType, comment);
+      if (res.ok) void refreshDetail(detail.orderId);
+      return res;
+    },
+    [detail, refreshDetail],
+  );
+
+  // «Подписка оплачена» — фиксируем подтверждение клиента и обновляем деталь.
+  const confirmSubscriptionPaid = useCallback(async () => {
+    if (!detail) {
+      return { ok: false as const, error: 'no_order', message: 'Заказ не открыт.' };
+    }
+    const res = await doMarkSubscriptionPaid(initDataRef.current, detail.orderId);
+    if (res.ok) void refreshDetail(detail.orderId);
+    return res;
+  }, [detail, refreshDetail]);
 
   const onPay = useCallback(async () => {
     if (!detail) return;
@@ -309,11 +351,16 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           busy={busy}
           message={actionMsg}
           onBack={() => {
+            activeOrderIdRef.current = null;
             setView('list');
             setDetail(null);
             setActionMsg(null);
+            void reloadSnapshot();
           }}
           onPay={onPay}
+          onOpenExternalLink={openExternalLink}
+          onReportIssue={reportIssue}
+          onSubscriptionPaid={confirmSubscriptionPaid}
         />
       </main>
     );
@@ -346,6 +393,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     snapshot.cards.find((c) => c.status === 'active') ??
     [...snapshot.cards].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ??
     null;
+  // Заказ карты для «Не проходит оплата?» — сузили в переменную, чтобы замыкание
+  // держало string, а не nullable-поле.
+  const issueOrderId = primaryCard?.purposeOrderId ?? null;
 
   return (
     <>
@@ -408,6 +458,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         revealing={revealingCard}
         onReveal={primaryCard ? () => revealCard(primaryCard.id) : undefined}
         onHide={hideCard}
+        onOpenExternalLink={openExternalLink}
+        onOpenIssueOrder={issueOrderId ? () => void openOrder(issueOrderId) : undefined}
       />
 
       {/* Отдельная кнопка на реферальную программу. */}

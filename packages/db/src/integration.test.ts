@@ -31,7 +31,7 @@ import {
   createReferralPayout,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
-import { idleAgedActiveCards } from './repositories/cards.ts';
+import { idleAgedActiveCards, syncCardBalance, updateBalance } from './repositories/cards.ts';
 
 /**
  * Интеграционные тесты репозиториев на РЕАЛЬНОМ Postgres (PGlite, WASM) с
@@ -673,5 +673,62 @@ describe('idleAgedActiveCards (M5)', () => {
     );
     expect(oldRow.status).toBe('idle'); // раньше NULL last_used_at не матчился — баг M5
     expect(freshRow.status).toBe('active');
+  });
+});
+
+describe('syncCardBalance (live-баланс кабинета)', () => {
+  async function makeCard(balanceUsdCents: number) {
+    const user = await makeUser();
+    return firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: user.id,
+          providerCardId: `pc-sync-${++seq}`,
+          panMasked: '400000******0003',
+          status: 'active',
+          balanceUsdCents,
+          // lastUsedAt НЕ задаём → NULL, как у реальных выпущенных карт
+        })
+        .returning(),
+      'card',
+    );
+  }
+
+  it('ставит абсолютное значение и НЕ трогает last_used_at (в отличие от updateBalance)', async () => {
+    const card = await makeCard(2400);
+
+    // Пассивная синхронизация: баланс — абсолютом, простой карты не сбрасывается.
+    expect(await syncCardBalance(db, card.id, 315, 2400)).toBe(true);
+    const synced = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, card.id)),
+      'synced refetch',
+    );
+    expect(synced.balanceUsdCents).toBe(315);
+    expect(synced.lastUsedAt).toBeNull(); // иначе просмотр кабинета мешал бы recycle-cron
+
+    // Контраст: updateBalance — дельта + продление last_used_at (наши движения денег).
+    await updateBalance(db, card.id, 1000);
+    const topped = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, card.id)),
+      'topped refetch',
+    );
+    expect(topped.balanceUsdCents).toBe(1315);
+    expect(topped.lastUsedAt).not.toBeNull();
+  });
+
+  it('CAS: устаревший sync после параллельного topup проигрывает гонку и не затирает баланс', async () => {
+    const card = await makeCard(2400);
+
+    // Кабинет прочитал 2400 и пошёл в PaySpace; параллельно issue-card сделал topup.
+    await updateBalance(db, card.id, 1000); // 2400 → 3400
+
+    // Возврат stale-синка с ожиданием 2400 — должен быть отвергнут.
+    expect(await syncCardBalance(db, card.id, 315, 2400)).toBe(false);
+    const row = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, card.id)),
+      'refetch',
+    );
+    expect(row.balanceUsdCents).toBe(3400); // topup сохранён, live-значение не затёрло
   });
 });

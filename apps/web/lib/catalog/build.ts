@@ -1,4 +1,8 @@
-import { pricingPolicy } from '@oplati/types';
+import {
+  pricingPolicy,
+  servicePaymentInstructions,
+  type ServicePaymentInstructions,
+} from '@oplati/types';
 
 /**
  * Сборка кнопочного каталога веб-чата из строк `services` (решение владельца
@@ -28,6 +32,12 @@ export type CatalogService = {
   /** true — фиксированных тарифов нет (Airbnb): клиент вводит сумму сам. */
   customAmount: boolean;
   tiers: CatalogTier[];
+  /**
+   * Правила оплаты на сайте сервиса (VPN/валюта/billing/ссылка) — ТЗ §5:
+   * VPN не показываем общим советом. null — записи нет, витрина показывает
+   * generic-подсказку.
+   */
+  instructions: ServicePaymentInstructions | null;
 };
 
 type ServiceRowLike = {
@@ -36,6 +46,8 @@ type ServiceRowLike = {
   category: string | null;
   requiresKyc: boolean;
   pricingPolicy: unknown;
+  /** Опционально: строки без записи (и старые фикстуры) дают instructions: null. */
+  paymentInstructions?: unknown;
 };
 
 /**
@@ -74,11 +86,16 @@ export function buildCatalogService(
   const parsed = pricingPolicy.safeParse(row.pricingPolicy);
   if (!parsed.success) return null;
 
+  // Инструкции опциональны: битая/отсутствующая запись НЕ прячет сервис —
+  // клиент получит generic-подсказку вместо пер-сервисной.
+  const parsedInstructions = servicePaymentInstructions.safeParse(row.paymentInstructions);
+
   const base = {
     slug: row.slug,
     name: row.name,
     category: row.category,
     requiresKyc: row.requiresKyc,
+    instructions: parsedInstructions.success ? parsedInstructions.data : null,
   };
 
   const allDummy = parsed.data.tiers.every(

@@ -75,6 +75,20 @@ export function OrderPanel({
         </p>
       )}
 
+      {/* «Как рассчитана сумма» (ТЗ §3) — раскрывающийся блок без сюрпризов. */}
+      <details className="group mt-2 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2">
+        <summary className="cursor-pointer list-none font-display text-xs font-bold text-[var(--text)]">
+          <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
+          Как рассчитана сумма
+        </summary>
+        <p className="mt-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
+          Итог = цена подписки в долларах × курс на момент заказа + комиссия сервиса
+          (рассчитывается системой). Если это твой первый заказ и виртуальной карты ещё
+          нет, разово добавляется её выпуск — $4. После создания заказа сумма не меняется:
+          платишь ровно столько, сколько на кнопке.
+        </p>
+      </details>
+
       {(confirm || secondary) && (
         <div className="mt-4 flex items-center gap-3">
           {confirm}
