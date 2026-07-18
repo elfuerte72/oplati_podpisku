@@ -34,6 +34,15 @@ describe('servicePaymentInstructions', () => {
     ).toBe(false);
   });
 
+  it('отклоняет не-https paymentUrl (клиенту отдаём только защищённые ссылки)', () => {
+    expect(
+      servicePaymentInstructions.safeParse({
+        requiresVpn: true,
+        paymentUrl: 'http://example.com/pay',
+      }).success,
+    ).toBe(false);
+  });
+
   it('отклоняет слишком длинные поля', () => {
     expect(
       servicePaymentInstructions.safeParse({

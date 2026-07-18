@@ -4,16 +4,16 @@
  * (выбор типа проблемы), и сервером (сообщение оператору).
  */
 
-export const PAYMENT_ISSUE_LABELS = {
+export const PAYMENT_ISSUE_TYPES = ['card_declined', 'wrong_amount', 'vpn_issue', 'other'] as const;
+
+export type PaymentIssueType = (typeof PAYMENT_ISSUE_TYPES)[number];
+
+export const PAYMENT_ISSUE_LABELS: Record<PaymentIssueType, string> = {
   card_declined: 'Карта отклоняется при оплате',
   wrong_amount: 'Сумма отличается / не хватает средств',
   vpn_issue: 'Не получается с VPN или локацией',
   other: 'Другая проблема',
-} as const;
-
-export type PaymentIssueType = keyof typeof PAYMENT_ISSUE_LABELS;
-
-export const PAYMENT_ISSUE_TYPES = Object.keys(PAYMENT_ISSUE_LABELS) as PaymentIssueType[];
+};
 
 /** Чек-лист самопроверки перед обращением в поддержку — пункты из ТЗ §6. */
 export const PAYMENT_ISSUE_CHECKLIST: readonly string[] = [

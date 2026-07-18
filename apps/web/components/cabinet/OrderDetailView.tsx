@@ -128,9 +128,16 @@ function PriceBreakdown({
  * цена подписки, зафиксированный курс, комиссия сервиса, разовый выпуск карты.
  */
 function HowPriceComputed({ order }: { order: OrderDetail }) {
+  // Курс хранится как rate × 10000 (см. orders.usdt_rub_rate_kopecks в схеме).
   const rate =
     order.usdtRubRateKopecks !== null && order.usdtRubRateKopecks > 0
       ? (order.usdtRubRateKopecks / 10000).toFixed(2)
+      : null;
+  // USD-строки — только для долларовых заказов (как в PriceBreakdown): formatUsd
+  // жёстко ставит $, для иной валюты это был бы неверный ярлык.
+  const usdAmount =
+    order.originalCurrency === 'USD' && order.originalAmount !== null && order.originalAmount > 0
+      ? order.originalAmount
       : null;
   return (
     <details className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
@@ -139,21 +146,22 @@ function HowPriceComputed({ order }: { order: OrderDetail }) {
         Как рассчитана сумма
       </summary>
       <ul className="mt-2 space-y-1 font-body text-xs leading-snug text-[var(--text-muted)]">
-        {order.originalAmount !== null && order.originalAmount > 0 && (
+        {usdAmount !== null && (
           <li>
-            Цена подписки — {formatUsd(order.originalAmount)}: столько стоит сервис в США,
+            Цена подписки — {formatUsd(usdAmount)}: столько стоит сервис в США,
             эту сумму ты вводишь на его сайте.
           </li>
         )}
         {rate && <li>Курс на момент заказа — 1 $ = {rate} ₽ (зафиксирован в заказе).</li>}
         <li>Комиссия сервиса рассчитывается системой и уже включена в итог.</li>
-        {order.cardIssueFeeKopecks !== null && order.cardIssueFeeKopecks > 0 ? (
+        {order.cardIssueFeeKopecks !== null && order.cardIssueFeeKopecks > 0 && (
           <li>
             Выпуск виртуальной карты — {formatRub(order.cardIssueFeeKopecks)} (разово, только
             для первой карты).
           </li>
-        ) : (
-          <li>Выпуск карты не оплачивается — карта уже есть или включена в заказ.</li>
+        )}
+        {order.cardIssueFeeKopecks === 0 && (
+          <li>Выпуск карты не оплачивается — карта уже есть, платишь только за подписку.</li>
         )}
         <li>После создания заказа сумма не меняется — платишь ровно столько, сколько видишь.</li>
       </ul>
@@ -169,13 +177,21 @@ function HowPriceComputed({ order }: { order: OrderDetail }) {
 type AfterCardStatus = 'awaiting_site_payment' | 'subscription_paid' | 'problem';
 
 function afterCardStatus(order: OrderDetail): AfterCardStatus {
-  if (order.events.some((e) => e.type === SUBSCRIPTION_ACTIVATED_EVENT)) {
-    return 'subscription_paid';
+  // Решает ПОСЛЕДНЕЕ по времени событие: «оплатил» и следом «возникла проблема»
+  // должно показать проблему, а не навсегда застрять в «оплачено» (и наоборот).
+  let latest: { at: string; status: AfterCardStatus } | null = null;
+  for (const e of order.events) {
+    const status: AfterCardStatus | null =
+      e.type === SUBSCRIPTION_ACTIVATED_EVENT
+        ? 'subscription_paid'
+        : e.type === PAYMENT_ISSUE_EVENT
+          ? 'problem'
+          : null;
+    if (status && (!latest || e.at >= latest.at)) {
+      latest = { at: e.at, status };
+    }
   }
-  if (order.events.some((e) => e.type === PAYMENT_ISSUE_EVENT)) {
-    return 'problem';
-  }
-  return 'awaiting_site_payment';
+  return latest?.status ?? 'awaiting_site_payment';
 }
 
 const AFTER_CARD_STATUS_VIEW: Record<AfterCardStatus, { label: string; className: string }> = {
@@ -243,7 +259,11 @@ function AfterCardBlock({
     setNote(null);
     const res = await onSubscriptionPaid();
     setSending(false);
-    if (!res.ok) setNote({ tone: 'err', text: res.message });
+    if (res.ok) {
+      setNote({ tone: 'ok', text: 'Отлично! Отметил, что подписка оплачена. Пользуйся!' });
+    } else {
+      setNote({ tone: 'err', text: res.message });
+    }
   };
 
   return (
@@ -330,23 +350,25 @@ function AfterCardBlock({
             ))}
           </ul>
 
-          <p className="mt-3 font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
-            Не помогло? Что случилось:
-          </p>
-          <div className="mt-1.5 space-y-1">
-            {PAYMENT_ISSUE_TYPES.map((type) => (
-              <label key={type} className="flex items-center gap-2 font-body text-sm text-[var(--text)]">
-                <input
-                  type="radio"
-                  name="issue-type"
-                  checked={issueType === type}
-                  onChange={() => setIssueType(type)}
-                  className="accent-[var(--accent)]"
-                />
-                {PAYMENT_ISSUE_LABELS[type]}
-              </label>
-            ))}
-          </div>
+          <fieldset className="mt-3">
+            <legend className="font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
+              Не помогло? Что случилось:
+            </legend>
+            <div className="mt-1.5 space-y-1">
+              {PAYMENT_ISSUE_TYPES.map((type) => (
+                <label key={type} className="flex items-center gap-2 font-body text-sm text-[var(--text)]">
+                  <input
+                    type="radio"
+                    name="issue-type"
+                    checked={issueType === type}
+                    onChange={() => setIssueType(type)}
+                    className="accent-[var(--accent)]"
+                  />
+                  {PAYMENT_ISSUE_LABELS[type]}
+                </label>
+              ))}
+            </div>
+          </fieldset>
 
           <textarea
             value={comment}
@@ -374,6 +396,7 @@ function AfterCardBlock({
 
       {note && (
         <p
+          role="status"
           className={[
             'mt-3 rounded-[12px] border-2 px-3 py-2 font-body text-sm',
             note.tone === 'ok'

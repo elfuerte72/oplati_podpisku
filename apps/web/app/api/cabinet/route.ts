@@ -18,7 +18,7 @@ import {
   reportPaymentIssue,
   requestOperator,
 } from '@/lib/cabinet/actions';
-import { PAYMENT_ISSUE_TYPES, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import { PAYMENT_ISSUE_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
 
 /**
@@ -77,7 +77,7 @@ const requestSchema = z.discriminatedUnion('action', [
   // «Не проходит оплата?» (ТЗ §6): тип проблемы + опциональный комментарий.
   orderAction.extend({
     action: z.literal('payment-issue'),
-    issueType: z.enum(PAYMENT_ISSUE_TYPES as [PaymentIssueType, ...PaymentIssueType[]]),
+    issueType: z.enum(PAYMENT_ISSUE_TYPES),
     comment: z.string().max(1000).optional(),
   }),
   // «Подписка оплачена» — клиент подтвердил успех на сайте сервиса.

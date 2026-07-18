@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { formatRub } from '@/components/comic/format';
 
-import { buildPaymentIssueOperatorMessage } from './templates';
+import { buildPaymentIssueOperatorMessage, redactCardNumbers } from './templates';
 
 describe('buildPaymentIssueOperatorMessage', () => {
   const base = {
@@ -62,6 +62,21 @@ describe('buildPaymentIssueOperatorMessage', () => {
     });
     expect(msg.length).toBeLessThanOrEqual(4096);
     expect(msg).toContain('…');
+  });
+
+  it('PAN-подобные последовательности в комментарии маскируются (политика PII)', () => {
+    const msg = buildPaymentIssueOperatorMessage({
+      ...base,
+      comment: 'ввожу 4242 4242 4242 4242 и не проходит',
+    });
+    expect(msg).not.toContain('4242 4242 4242 4242');
+    expect(msg).toContain('**** 4242');
+  });
+
+  it('redactCardNumbers: маскирует 12–19 цифр с разделителями, не трогает телефон/суммы', () => {
+    expect(redactCardNumbers('карта 5592-6801-0010-1726, ок?')).toBe('карта **** 1726, ок?');
+    expect(redactCardNumbers('позвоните +7 999 123-45-67')).toBe('позвоните +7 999 123-45-67');
+    expect(redactCardNumbers('списалось 2490 руб')).toBe('списалось 2490 руб');
   });
 
   it('комментарий из «&» не раздувается экранированием за лимит', () => {

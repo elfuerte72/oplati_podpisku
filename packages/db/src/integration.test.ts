@@ -677,9 +677,9 @@ describe('idleAgedActiveCards (M5)', () => {
 });
 
 describe('syncCardBalance (live-баланс кабинета)', () => {
-  it('ставит абсолютное значение и НЕ трогает last_used_at (в отличие от updateBalance)', async () => {
+  async function makeCard(balanceUsdCents: number) {
     const user = await makeUser();
-    const card = firstOf(
+    return firstOf(
       await db
         .insert(schema.cards)
         .values({
@@ -687,15 +687,19 @@ describe('syncCardBalance (live-баланс кабинета)', () => {
           providerCardId: `pc-sync-${++seq}`,
           panMasked: '400000******0003',
           status: 'active',
-          balanceUsdCents: 2400,
+          balanceUsdCents,
           // lastUsedAt НЕ задаём → NULL, как у реальных выпущенных карт
         })
         .returning(),
       'card',
     );
+  }
+
+  it('ставит абсолютное значение и НЕ трогает last_used_at (в отличие от updateBalance)', async () => {
+    const card = await makeCard(2400);
 
     // Пассивная синхронизация: баланс — абсолютом, простой карты не сбрасывается.
-    await syncCardBalance(db, card.id, 315);
+    expect(await syncCardBalance(db, card.id, 315, 2400)).toBe(true);
     const synced = firstOf(
       await db.select().from(schema.cards).where(eq(schema.cards.id, card.id)),
       'synced refetch',
@@ -711,5 +715,20 @@ describe('syncCardBalance (live-баланс кабинета)', () => {
     );
     expect(topped.balanceUsdCents).toBe(1315);
     expect(topped.lastUsedAt).not.toBeNull();
+  });
+
+  it('CAS: устаревший sync после параллельного topup проигрывает гонку и не затирает баланс', async () => {
+    const card = await makeCard(2400);
+
+    // Кабинет прочитал 2400 и пошёл в PaySpace; параллельно issue-card сделал topup.
+    await updateBalance(db, card.id, 1000); // 2400 → 3400
+
+    // Возврат stale-синка с ожиданием 2400 — должен быть отвергнут.
+    expect(await syncCardBalance(db, card.id, 315, 2400)).toBe(false);
+    const row = firstOf(
+      await db.select().from(schema.cards).where(eq(schema.cards.id, card.id)),
+      'refetch',
+    );
+    expect(row.balanceUsdCents).toBe(3400); // topup сохранён, live-значение не затёрло
   });
 });

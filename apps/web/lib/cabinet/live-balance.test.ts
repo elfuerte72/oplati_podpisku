@@ -10,7 +10,7 @@ vi.mock('../pay-space/index.ts', () => ({
   getPaySpaceClient: () => ({ getCardInfo: pay.getCardInfo }),
 }));
 
-const repo = vi.hoisted(() => ({ syncCardBalance: vi.fn(async () => {}) }));
+const repo = vi.hoisted(() => ({ syncCardBalance: vi.fn(async () => true) }));
 vi.mock('@oplati/db', () => ({
   syncCardBalance: repo.syncCardBalance,
 }));
@@ -60,12 +60,20 @@ describe('pickPrimaryCard', () => {
 });
 
 describe('withLiveBalance', () => {
-  it('live-баланс отличается → обновлённый список + кэш в БД (по id основной карты)', async () => {
+  it('live-баланс отличается → обновлённый список + CAS-кэш в БД (по id основной карты)', async () => {
     const card = mkCard({ balanceUsdCents: 2400 });
     const result = await withLiveBalance(db, [card]);
     expect(result[0]?.balanceUsdCents).toBe(315);
     expect(pay.getCardInfo).toHaveBeenCalledWith(card.providerCardId);
-    expect(repo.syncCardBalance).toHaveBeenCalledWith(db, card.id, 315, expect.anything());
+    // CAS: ожидание — прочитанный БД-баланс (2400), новое значение — live (315).
+    expect(repo.syncCardBalance).toHaveBeenCalledWith(db, card.id, 315, 2400, expect.anything());
+  });
+
+  it('CAS проигран (параллельный topup) → отдаём БД-снимок без изменений', async () => {
+    repo.syncCardBalance.mockResolvedValueOnce(false);
+    const card = mkCard({ balanceUsdCents: 2400 });
+    const result = await withLiveBalance(db, [card]);
+    expect(result[0]?.balanceUsdCents).toBe(2400);
   });
 
   it('live совпадает с БД → без записи в БД', async () => {

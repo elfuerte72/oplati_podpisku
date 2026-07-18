@@ -20,6 +20,7 @@ import {
   type ServicePaymentInstructions,
 } from '@oplati/types';
 
+import { childLogger } from '../logger.ts';
 import { withLiveBalance } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
@@ -78,13 +79,21 @@ export function cardValidUntil(createdAt: Date): string {
   return new Date(createdAt.getTime() + CARD_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
+const log = childLogger('cabinet.read');
+
 /**
  * Безопасный парс `services.payment_instructions`: битая запись → null
- * (клиент увидит generic-подсказку, сервис не прячем).
+ * (клиент увидит generic-подсказку, сервис не прячем), но с warn в лог —
+ * иначе испорченная запись молча жила бы generic-текстом бесконечно.
  */
 function parseInstructions(raw: unknown): ServicePaymentInstructions | null {
+  if (raw === null || raw === undefined) return null;
   const parsed = servicePaymentInstructions.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) {
+    log.warn({ event: 'cabinet.read.instructions_invalid' });
+    return null;
+  }
+  return parsed.data;
 }
 
 /** Контекст карты для «Для оплаты: …» — из последнего заказа с этой картой. */

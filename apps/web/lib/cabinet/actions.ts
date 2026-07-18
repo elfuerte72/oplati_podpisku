@@ -13,7 +13,7 @@ import {
   findPaymentsByOrderId,
   hasRecentOrderEvent,
 } from '@oplati/db';
-import type { OrderParameters } from '@oplati/types';
+import { orderParameters, type OrderParameters } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { confirmOrder, TelegramLinkRequiredError } from '../tool-handlers/confirm-order.ts';
@@ -280,7 +280,7 @@ const PAYMENT_ISSUE_DEDUP_MS = 5 * 60 * 1000;
 
 export type ReportPaymentIssueResult =
   | { ok: true; duplicate: boolean }
-  | { ok: false; error: 'not_found' | 'failed'; message: string };
+  | { ok: false; error: 'not_found' | 'not_available' | 'failed'; message: string };
 
 /**
  * Клиент нажал «Не проходит оплата?» и выбрал тип проблемы (ТЗ §6). В поддержку
@@ -301,6 +301,16 @@ export async function reportPaymentIssue(
   if (!order || order.userId !== userId) {
     return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
   }
+  // Пост-выпускной флоу осмыслен только для выполненного заказа (карта выпущена,
+  // реквизиты отправлены) — иначе авторизованный клиент мог бы спамить события
+  // на свои draft-заказы. UI и не показывает кнопку раньше completed.
+  if (order.status !== 'completed') {
+    return {
+      ok: false,
+      error: 'not_available',
+      message: 'Эта кнопка станет доступна после выпуска карты по заказу.',
+    };
+  }
 
   try {
     // Дедуп: повторное нажатие в течение 5 минут не спамит оператора.
@@ -319,13 +329,15 @@ export async function reportPaymentIssue(
       order.cardId ? findCardByIdForUser(db, order.cardId, userId) : Promise.resolve(null),
     ]);
 
-    const params = (order.parameters ?? {}) as OrderParameters;
+    // Zod на границе jsonb: битые parameters не роняют жалобу — просто без тарифа.
+    const parsedParams = orderParameters.safeParse(order.parameters ?? {});
+    const tierName = parsedParams.success ? parsedParams.data.tierName ?? null : null;
     const operatorMessage = buildPaymentIssueOperatorMessage({
       telegramId,
       displayName: profile?.displayName ?? null,
       orderShortId: order.shortId,
       service: service?.name ?? order.customServiceDescription ?? 'Заказ вне каталога',
-      tierName: params.tierName ?? null,
+      tierName,
       amountKopecks: order.amountRub,
       cardStatusLabel: card ? CARD_STATUS_LABELS[card.status] : null,
       issueType,
@@ -364,7 +376,7 @@ export async function reportPaymentIssue(
 
 export type MarkSubscriptionActivatedResult =
   | { ok: true }
-  | { ok: false; error: 'not_found' | 'failed'; message: string };
+  | { ok: false; error: 'not_found' | 'not_available' | 'failed'; message: string };
 
 /**
  * Клиент отметил, что подписка на сайте сервиса оплачена (ТЗ §6). Пишем
@@ -379,6 +391,15 @@ export async function markSubscriptionActivated(
   const order = await getOrderById(db, orderId);
   if (!order || order.userId !== userId) {
     return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
+  }
+  // Тот же гейт, что у reportPaymentIssue: события «после карты» — только для
+  // выполненного заказа.
+  if (order.status !== 'completed') {
+    return {
+      ok: false,
+      error: 'not_available',
+      message: 'Эта кнопка станет доступна после выпуска карты по заказу.',
+    };
   }
 
   try {

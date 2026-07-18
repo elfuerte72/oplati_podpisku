@@ -265,11 +265,25 @@ export function buildSupportOperatorMessage(params: {
 }
 
 /**
+ * Маскирует последовательности, похожие на номер карты (12–19 цифр, допустимы
+ * пробелы/дефисы между группами), в свободном тексте клиента: полный PAN не
+ * должен попадать даже в DM оператору (политика «PAN/CVC не логируются
+ * никогда»). Оставляем последние 4 цифры — оператору хватает для сверки.
+ */
+export function redactCardNumbers(text: string): string {
+  return text.replace(/(?:\d[ -]?){11,18}\d/g, (match) => {
+    const digits = match.replace(/\D/g, '');
+    return `**** ${digits.slice(-4)}`;
+  });
+}
+
+/**
  * Сообщение оператору о проблеме с оплатой на сайте сервиса («Не проходит
  * оплата?» в кабинете, ТЗ §6). В поддержку автоматически передаётся весь
  * контекст: номер заказа, сервис, тариф, сумма, статус карты и тип ошибки.
  * Чистая функция — тестируется без бота; пользовательские поля экранируются,
- * комментарий обрезается по бюджету Telegram (после экранирования).
+ * PAN-подобные последовательности в комментарии маскируются, комментарий
+ * обрезается по бюджету Telegram (после экранирования).
  */
 export function buildPaymentIssueOperatorMessage(params: {
   /** Числовой Telegram ID (в кабинете приходит строкой из проверенного initData). */
@@ -317,7 +331,8 @@ export function buildPaymentIssueOperatorMessage(params: {
       TELEGRAM_MESSAGE_LIMIT - header.length - commentHeader.length - 1,
     ),
   );
-  return header + commentHeader + truncateEscapedHtml(escapeHtml(comment), bodyBudget);
+  const safeComment = redactCardNumbers(comment);
+  return header + commentHeader + truncateEscapedHtml(escapeHtml(safeComment), bodyBudget);
 }
 
 /** Текст карточки заказа под кнопками «Подтвердить» / «Отменить». */

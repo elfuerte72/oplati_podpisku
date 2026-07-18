@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import { IconArrowLeft, IconArrowRight, IconCheck } from '@/components/comic/icons';
@@ -48,6 +48,18 @@ const LAST = STEPS.length - 1;
 
 export function HowItWorksOverlay({ onClose }: { onClose: () => void }) {
   const [frame, setFrame] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Доступность: при открытии фокус уходит внутрь диалога (иначе клавиатурный
+  // пользователь остаётся «за» оверлеем), при закрытии возвращается на кнопку,
+  // которая его открыла.
+  useEffect(() => {
+    const opener = document.activeElement;
+    dialogRef.current?.focus();
+    return () => {
+      if (opener instanceof HTMLElement) opener.focus();
+    };
+  }, []);
 
   const go = useCallback((next: number) => {
     setFrame(Math.max(0, Math.min(LAST, next)));
@@ -80,8 +92,10 @@ export function HowItWorksOverlay({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         role="presentation"
-        className="halftone w-full max-w-lg rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] p-6 shadow-[var(--shadow-comic-lg)]"
+        tabIndex={-1}
+        className="halftone w-full max-w-lg rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] p-6 shadow-[var(--shadow-comic-lg)] focus:outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Верх: прогресс «N из 3» + «Пропустить» */}

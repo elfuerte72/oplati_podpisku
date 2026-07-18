@@ -185,8 +185,8 @@ export const servicePaymentInstructions = z.object({
   requiredCurrency: z.string().max(10).optional(),
   /** Что вводить в Billing Address на сайте сервиса. */
   billingInstructions: z.string().max(1000).optional(),
-  /** Прямая ссылка на страницу оплаты/подписки сервиса. */
-  paymentUrl: z.string().url().max(500).optional(),
+  /** Прямая ссылка на страницу оплаты/подписки сервиса (только https). */
+  paymentUrl: z.string().url().startsWith('https://').max(500).optional(),
   /** Дополнительные особенности оплаты этого сервиса. */
   paymentNotes: z.string().max(1000).optional(),
 });

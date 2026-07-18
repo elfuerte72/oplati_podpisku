@@ -73,9 +73,20 @@ export async function withLiveBalance(db: DB, cards: Card[]): Promise<Card[]> {
     }
     if (info.balanceUsdCents === primary.balanceUsdCents) return cards;
 
-    // Кэшируем свежее значение: даже если клиент больше не откроет кабинет,
-    // следующий снимок (и алёрты по балансу) стартуют от реальности.
-    await syncCardBalance(db, primary.id, info.balanceUsdCents, log);
+    // Кэшируем свежее значение compare-and-set'ом: если параллельно прошёл
+    // topup/withdraw (issue-card в момент просмотра кабинета), наш live-снимок
+    // уже устарел — проигрываем гонку и отдаём БД-значение как есть.
+    const applied = await syncCardBalance(
+      db,
+      primary.id,
+      info.balanceUsdCents,
+      primary.balanceUsdCents,
+      log,
+    );
+    if (!applied) {
+      log.info({ event: 'cabinet.live_balance.cas_skipped', cardId: primary.id });
+      return cards;
+    }
     return cards.map((c) =>
       c.id === primary.id ? { ...c, balanceUsdCents: info.balanceUsdCents } : c,
     );

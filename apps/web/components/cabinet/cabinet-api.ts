@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { servicePaymentInstructions } from '@oplati/types';
 
 import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import { fetchWithTimeout } from '@/lib/http';
 
 /**
  * Клиент `/api/cabinet`: на каждый запрос шлём `initData` (подпись Telegram) +
@@ -78,7 +79,7 @@ const orderDetailSchema = orderSummarySchema.extend({
   originalAmount: z.number().nullable(),
   originalCurrency: z.string().nullable(),
   commissionPercent: z.number().nullable(),
-  usdtRubRateKopecks: z.number().nullable(),
+  usdtRubRateKopecks: z.number().int().nullable(),
   instructions: instructionsSchema,
   cardIssueFeeKopecks: z.number().nullable(),
   paidAt: z.string().nullable(),
@@ -130,13 +131,23 @@ export type ApiResult<T> = ApiOk<T> | ApiError;
 
 const GENERIC_ERROR = 'network_error';
 
+/**
+ * Таймаут запросов кабинета. Щедрый, потому что `pay` под капотом создаёт счёт
+ * L&P через self-call (route maxDuration 60 с) — как 65 с у confirm в веб-чате.
+ */
+const CABINET_TIMEOUT_MS = 65_000;
+
 async function callCabinet(body: Record<string, unknown>): Promise<{ status: number; json: unknown } | null> {
   try {
-    const res = await fetch('/api/cabinet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const res = await fetchWithTimeout(
+      '/api/cabinet',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      CABINET_TIMEOUT_MS,
+    );
     const json: unknown = await res.json().catch(() => null);
     return { status: res.status, json };
   } catch {
@@ -231,6 +242,11 @@ export async function doReportPaymentIssue(
   });
   const parsed = resp ? paymentIssueResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return parsed.data;
+  // Ответ пришёл, но не наш контракт (401 протухшей сессии, 429 и т.п.) — это
+  // не «нет сети», честнее позвать переоткрыть кабинет.
+  if (resp) {
+    return { ok: false, error: 'unexpected', message: 'Не получилось. Переоткрой кабинет и попробуй ещё раз.' };
+  }
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
@@ -249,6 +265,9 @@ export async function doMarkSubscriptionPaid(
   const resp = await callCabinet({ action: 'subscription-paid', initData, orderId });
   const parsed = resp ? subscriptionPaidResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return parsed.data;
+  if (resp) {
+    return { ok: false, error: 'unexpected', message: 'Не получилось. Переоткрой кабинет и попробуй ещё раз.' };
+  }
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
