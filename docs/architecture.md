@@ -177,9 +177,11 @@ draft → clarifying → kyc_required ⇄ clarifying
 |---|---|---|
 | URL | `www.oplatishka.com` (custom-домен, env `APP_URL`; `oplati-podpisku-web.vercel.app` тоже обслуживает) | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` |
 | Telegram-бот | `@oplatishkaa_bot` (до 2026-07-03 — `@test_prodipsa_bot`) | `@dev_test_podpiska_bot` |
-| Триггер деплоя | merge в `main` | push в feature-ветку |
+| БД (Supabase) | `nyxijwpuvctmvemaemqn` | dev-проект `oqwofyipeuzgezdplixn` (отдельный аккаунт; с 2026-07-18, туда же смотрит локальная разработка) |
+| Модель агента | `claude-sonnet-4-6` | `claude-haiku-4-5-20251001` (дешевле для smoke) |
+| Триггер деплоя | squash-merge PR в `main` (прямой push запрещён ruleset'ом: required-чеки Tests/Type Check/Lint) | push в feature-ветку |
 
-Боты раздельные, потому что webhook у бота один. Deployment Protection выключена (иначе Telegram получает `401` до нашего кода) — защита на уровне эндпоинтов: secret-token, подпись L&P, `X-Internal-Token`, RLS. Детали и карта секретов — в [`CLAUDE.md`](../CLAUDE.md).
+Боты раздельные, потому что webhook у бота один. Deployment Protection выключена (иначе Telegram получает `401` до нашего кода) — защита на уровне эндпоинтов: secret-token, подпись L&P, `X-Internal-Token`, RLS. После мержа в `main` проверять появление Production-деплоя (2026-07-18 вебхук GitHub→Vercel потерял событие — см. [`incidents.md`](incidents.md)). Детали и карта секретов — в [`CLAUDE.md`](../CLAUDE.md).
 
 ## Наблюдаемость
 
