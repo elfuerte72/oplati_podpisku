@@ -213,6 +213,31 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
   });
 
   if (!outcome.claimed) {
+    // Различаем безобидный дубль (платёж уже succeeded — ретрай webhook / гонка
+    // с poll) и оплату ЗАХОРОНЕННОГО платежа: с L-4 cron expire-payments клеймит
+    // pending→failed превентивно, и поздний invoice.paid раньше утонул бы здесь
+    // как idempotent_skip — а деньги в L&P реально приняты (находка ревью волны
+    // 2026-07-19; до L-4 этот кейс алертился через OrderTransitionError).
+    // Статус перечитываем: `payment` прочитан до транзакции и мог устареть.
+    const current = await findPaymentByProviderRef(db, 'loveandpay', data.id);
+    if (current?.status === 'failed') {
+      log.error({
+        event: 'loveandpay.handlers.paid_after_terminal',
+        paymentId: payment.id,
+        orderId: payment.orderId,
+      });
+      Sentry.captureMessage('L&P invoice.paid по захороненному платежу — деньги приняты, нужен ручной возврат', {
+        level: 'error',
+        tags: { source: 'loveandpay.handlers', alert: 'paid_after_terminal' },
+        extra: { paymentId: payment.id, orderId: payment.orderId, invoiceId: data.id },
+      });
+      // Возможный повторный DM при ретрае webhook'а принят: кейс редкий и
+      // денежный, атомарного состояния для дедупа здесь уже нет (платёж failed).
+      await notifyOps(
+        `Оплата пришла по уже захороненному счёту (инвойс ${data.invoiceNumber ?? data.id}): деньги приняты L&P, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
+      );
+      return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'paid_after_terminal' };
+    }
     log.info({
       event: 'loveandpay.handlers.idempotent_skip',
       paymentId: payment.id,

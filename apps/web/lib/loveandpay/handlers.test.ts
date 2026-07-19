@@ -191,6 +191,29 @@ describe('processInvoicePaid', () => {
     expect(db.transitionOrder).not.toHaveBeenCalled();
     expect(dispatchIssueCard).not.toHaveBeenCalled();
     expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
+    // Безобидный дубль (уже succeeded) — без DM владельцу.
+    expect(notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('paid по ЗАХОРОНЕННОМУ платежу (failed после expire-cron, L-4) → DM владельцу, не тихий skip', async () => {
+    // Регресс находки ревью волны 2026-07-19: cron превентивно клеймит
+    // pending→failed, поздний invoice.paid раньше был бы неотличим от дубля —
+    // а деньги в L&P реально приняты.
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'failed',
+      provider: 'loveandpay',
+    });
+
+    const res = await processInvoicePaid({ data, rawPayload: {} });
+
+    expect(res).toMatchObject({ kind: 'idempotent_skip', reason: 'paid_after_terminal' });
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(notifyOps).mock.calls[0]?.[0])).toContain('возврат');
+    // Фулфилмент по-прежнему не запускается.
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
+    expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
   });
 
   it('гонка webhook ↔ poll: claim вернул null (другой вызов успел) → НЕ диспатчит issue-card', async () => {

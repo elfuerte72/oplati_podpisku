@@ -6,7 +6,7 @@ process.env.SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_ANON_KEY = 'test-anon';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
 process.env.SENTRY_ALERT_WEBHOOK_SECRET = 'top-secret';
-process.env.ALERT_TELEGRAM_CHAT_ID = '379336096';
+process.env.ALERT_TELEGRAM_CHAT_ID = '111222333';
 
 const h = vi.hoisted(() => ({ sendMessageMock: vi.fn() }));
 
@@ -41,7 +41,7 @@ describe('POST /api/alerts/sentry', () => {
     expect(res.status).toBe(200);
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
     const [chatId, text] = h.sendMessageMock.mock.calls[0]!;
-    expect(chatId).toBe('379336096');
+    expect(chatId).toBe('111222333');
     expect(text).toContain('PaySpaceApiError: insufficient funds');
   });
 

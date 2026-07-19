@@ -83,7 +83,12 @@ export function cardValidUntil(createdAt: Date, liveExpDate?: string): string {
   return new Date(createdAt.getTime() + CARD_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
-/** `MM/YY` → ISO конца месяца (23:59:59 UTC); мусор → null (fallback caller'а). */
+/**
+ * `MM/YY` → ISO конца месяца; мусор → null (fallback caller'а).
+ * 20:59:59 UTC = 23:59:59 по Москве: UI рендерит через formatExpires
+ * (Europe/Moscow), и полночь UTC показывалась бы как «02:59 1-го СЛЕДУЮЩЕГО
+ * месяца» (находка ревью волны 2026-07-19).
+ */
 function parseExpDate(expDate: string): string | null {
   const m = /^(\d{2})\/(\d{2})$/.exec(expDate);
   if (!m) return null;
@@ -91,7 +96,7 @@ function parseExpDate(expDate: string): string | null {
   const year = 2000 + Number(m[2]);
   if (month < 1 || month > 12) return null;
   // День 0 следующего месяца = последний день указанного.
-  return new Date(Date.UTC(year, month, 0, 23, 59, 59)).toISOString();
+  return new Date(Date.UTC(year, month, 0, 20, 59, 59)).toISOString();
 }
 
 const log = childLogger('cabinet.read');

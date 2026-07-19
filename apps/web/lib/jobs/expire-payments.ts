@@ -48,7 +48,11 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
       // L-4 аудита: висящий pending-платёж захороненного заказа клеймим тем же
       // проходом (pending → failed атомарным условным UPDATE) — иначе он вечно
       // числится «живым» и попадает в окно poll-payment. Гонку с оплатой
-      // разруливает сам claim: уже succeeded платёж он не тронет.
+      // разруливает сам claim: уже succeeded платёж он не тронет. Транзиентный
+      // сбой claim'а после перехода самолечится: платёж остаётся pending →
+      // poll-payment добьёт его через processInvoiceTerminal. Поздний
+      // invoice.paid по уже failed-платежу алертится в processInvoicePaid
+      // (paid_after_terminal — деньги приняты, нужен ручной возврат).
       const pendingPayment = await findPendingPaymentByOrderId(db, order.id);
       if (pendingPayment) {
         await claimPaymentTerminal(db, pendingPayment.id, log);
