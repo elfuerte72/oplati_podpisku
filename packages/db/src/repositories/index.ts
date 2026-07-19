@@ -24,6 +24,7 @@ export {
 
 export {
   appendMessage,
+  deleteOldMessages,
   getLastAssistantMessageMeta,
   loadRecentMessages,
   type AppendMessageInput,
@@ -114,7 +115,6 @@ export {
   findRecyclableCard,
   markIdle,
   markRecycled,
-  markActive,
   updateBalance,
   syncCardBalance,
   idleAgedActiveCards,
@@ -126,7 +126,6 @@ export {
 export {
   createDraftOrder,
   getOrderById,
-  getOrderByShortId,
   getOrdersByUserId,
   getOrderEventsByOrderId,
   transitionOrder,
@@ -155,6 +154,7 @@ export {
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
   findPendingPaymentByOrderId,
+  stripOldPaymentPayloads,
   findPaymentsByOrderId,
   type PaymentRow,
   type UpsertPaymentByProviderRefInput,

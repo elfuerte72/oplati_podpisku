@@ -183,20 +183,6 @@ export async function markRecycled(
   log.info({ event: 'db.cards.marked_recycled', cardId });
 }
 
-export async function markActive(
-  db: DB,
-  cardId: string,
-  userId: string,
-  log: RepoLogger = noopLogger,
-): Promise<void> {
-  await db
-    .update(cards)
-    .set({ status: 'active', userId, lastUsedAt: new Date() })
-    .where(eq(cards.id, cardId));
-
-  log.info({ event: 'db.cards.marked_active', cardId, userId });
-}
-
 export async function updateBalance(
   db: DB,
   cardId: string,

@@ -10,7 +10,7 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
 import { miniAppUrl, paymentInstructionUrl, siteUrl } from '@/lib/deployment-url';
-import { serverEnv } from '@/lib/env';
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 
 import { handleLinkDeepLink } from './link-flow';

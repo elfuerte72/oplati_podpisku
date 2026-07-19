@@ -14,9 +14,7 @@ import {
   markSubscriptionActivated,
   payOrder,
   proposeNewOrder,
-  repeatOrder,
   reportPaymentIssue,
-  requestOperator,
 } from '@/lib/cabinet/actions';
 import { PAYMENT_ISSUE_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
@@ -57,8 +55,6 @@ const requestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('snapshot'), initData: z.string().min(1) }),
   orderAction.extend({ action: z.literal('order') }),
   orderAction.extend({ action: z.literal('pay') }),
-  orderAction.extend({ action: z.literal('repeat') }),
-  orderAction.extend({ action: z.literal('operator') }),
   z.object({
     action: z.literal('card-details'),
     initData: z.string().min(1),
@@ -152,16 +148,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
       }
-      case 'repeat': {
-        const result = await repeatOrder(userId, body.orderId);
-        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
-        return NextResponse.json(result, { status });
-      }
-      case 'operator': {
-        const result = await requestOperator(userId, body.orderId);
-        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
-        return NextResponse.json(result, { status });
-      }
+      // Действия `repeat`/`operator` удалены (L-9 аудита, 2026-07-19): кнопки
+      // убраны из UI ещё 2026-07-03, repeatOrder был сломан для тарифных
+      // (tierName в parameters не пишется), операторов нет.
       case 'propose': {
         const result = await proposeNewOrder(userId, {
           slug: body.slug,

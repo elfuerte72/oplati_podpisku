@@ -3,15 +3,19 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  claimPaymentTerminal,
   deleteExpiredLinkTokens,
   findExpiredPayableOrders,
+  findPendingPaymentByOrderId,
   getDb,
+  getServiceById,
   getUserTelegramId,
   transitionOrder,
 } from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
 import { getBot } from '../telegram/bot.ts';
+import { buildOrderExpiredMessage } from '../telegram/templates.ts';
 
 /**
  * Cron `expire-payments` — каждые 15 минут. Находит заказы в pending_payment
@@ -41,14 +45,41 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
         payload: { shortId: order.shortId },
       });
 
+      // L-4 аудита: висящий pending-платёж захороненного заказа клеймим тем же
+      // проходом (pending → failed атомарным условным UPDATE) — иначе он вечно
+      // числится «живым» и попадает в окно poll-payment. Гонку с оплатой
+      // разруливает сам claim: уже succeeded платёж он не тронет. Транзиентный
+      // сбой claim'а после перехода самолечится: платёж остаётся pending →
+      // poll-payment добьёт его через processInvoiceTerminal. Поздний
+      // invoice.paid по уже failed-платежу алертится в processInvoicePaid
+      // (paid_after_terminal — деньги приняты, нужен ручной возврат).
+      const pendingPayment = await findPendingPaymentByOrderId(db, order.id);
+      if (pendingPayment) {
+        await claimPaymentTerminal(db, pendingPayment.id, log);
+      }
+
       const telegramId = await getUserTelegramId(db, order.userId);
       if (telegramId) {
+        // Название сервиса — best-effort: сбой lookup'а не должен лишить
+        // клиента уведомления (шаблон умеет в фоллбек «заказ»).
+        let serviceLabel: string | null = order.customServiceDescription ?? null;
+        if (order.serviceId) {
+          try {
+            serviceLabel = (await getServiceById(db, order.serviceId))?.name ?? serviceLabel;
+          } catch (err) {
+            log.warn({ event: 'cron.expire_payments.service_lookup_failed', orderId: order.id, err });
+          }
+        }
         try {
           // telegramId — СТРОКА (не Number): большие 64-битные chat_id теряют
           // точность в double, уведомление ушло бы не тому получателю (L4).
           await getBot().api.sendMessage(
             telegramId,
-            `Срок оплаты заказа ${order.shortId} истёк. Если ещё актуально — напишите /start, оформим заново.`,
+            buildOrderExpiredMessage({
+              serviceLabel,
+              amountKopecks: order.amountRub,
+              createdAt: order.createdAt,
+            }),
           );
         } catch (err) {
           log.warn({ event: 'cron.expire_payments.notify_failed', orderId: order.id, err });

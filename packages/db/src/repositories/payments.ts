@@ -34,9 +34,10 @@ export type UpsertResult = {
 
 /**
  * Идемпотентный upsert: если (provider, providerRef) уже есть — возвращает существующую
- * запись с `isNew=false`, иначе — создаёт с `isNew=true`. Используется в endpoint
- * `payments/create` (при дубле — не создаём второй invoice) и в `loveandpay/webhook`
- * (для recovery, если webhook пришёл раньше callback'а из `payments/create`).
+ * запись с `isNew=false`, иначе — создаёт с `isNew=true`. Единственный вызов —
+ * endpoint `payments/create` (при дубле — не создаём второй invoice); webhook
+ * платёж НЕ создаёт (L-7: прежний комментарий про recovery из webhook устарел —
+ * неизвестный providerRef там отвечает `not_found` + Sentry).
  */
 export async function upsertPaymentByProviderRef(
   // DBLike: с M-2 вызывается из транзакции payments/create (INSERT платежа +
@@ -283,4 +284,35 @@ export async function findPaymentsByOrderId(db: DB, orderId: string): Promise<Pa
     .from(payments)
     .where(eq(payments.orderId, orderId))
     .orderBy(sql`${payments.createdAt} DESC`);
+}
+
+/**
+ * Retention (M-13 аудита): очистка `raw_payload` у платежей старше
+ * `olderThanDays` (решение владельца 2026-07-19 — 180 дней): сверка с
+ * провайдером давно не нужна, а сырое тело инвойса — самая тяжёлая часть строки.
+ * Сама строка платежа (суммы/статусы/ссылки на заказ) остаётся навсегда.
+ * Возвращает число очищенных строк (батч `limit` за проход).
+ */
+export async function stripOldPaymentPayloads(
+  db: DB,
+  input: { olderThanDays: number; limit: number },
+  log: RepoLogger = noopLogger,
+): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    UPDATE ${payments}
+    SET raw_payload = NULL
+    WHERE ${payments.id} IN (
+      SELECT ${payments.id} FROM ${payments}
+      WHERE ${payments.rawPayload} IS NOT NULL
+        AND ${payments.createdAt} < now() - make_interval(days => ${input.olderThanDays})
+      ORDER BY ${payments.createdAt} ASC
+      LIMIT ${input.limit}
+    )
+    RETURNING ${payments.id} AS id
+  `);
+  const stripped = rows.length;
+  if (stripped > 0) {
+    log.info({ event: 'db.payments.retention_stripped', stripped, olderThanDays: input.olderThanDays });
+  }
+  return stripped;
 }

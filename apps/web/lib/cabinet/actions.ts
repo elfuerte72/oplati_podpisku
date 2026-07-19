@@ -5,15 +5,15 @@ import * as Sentry from '@sentry/nextjs';
 import {
   appendOrderEvent,
   findCardByIdForUser,
+  findPendingPaymentByOrderId,
   getDb,
   getOrderById,
   getOrCreateActiveConversation,
   getServiceById,
   getUserProfileById,
-  findPaymentsByOrderId,
   hasRecentOrderEvent,
 } from '@oplati/db';
-import { orderParameters, type OrderParameters } from '@oplati/types';
+import { orderParameters } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
@@ -23,7 +23,6 @@ import {
   PaymentProviderUnavailableError,
   TelegramLinkRequiredError,
 } from '../tool-handlers/confirm-order.ts';
-import { requestHuman } from '../tool-handlers/request-human.ts';
 import { proposeFromCatalog } from '../catalog/propose.ts';
 import { buildPaymentIssueOperatorMessage } from '../telegram/templates.ts';
 import { sendToSupportOperator } from '../telegram/support.ts';
@@ -56,7 +55,7 @@ export type PayOrderResult =
     };
 
 /** Достаёт платёжную ссылку из сохранённого invoice (для уже выставленного счёта). */
-function extractInvoiceLink(
+export function extractInvoiceLink(
   rawPayload: Record<string, unknown> | null,
 ): { paymentUrl: string; qrPayload: string | null; expiresAt: string | null } | null {
   if (!rawPayload || typeof rawPayload !== 'object') return null;
@@ -96,12 +95,12 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
 
   // Счёт уже выставлен (pending_payment) — отдаём существующую ссылку, не плодим
   // второй invoice. `/api/payments/create` всё равно отверг бы повторный вызов (409).
+  // Строго ЖИВОЙ платёж (L-5 аудита): нефильтрованный список мог отдать ссылку
+  // старого failed/expired инвойса — клиент оплатил бы мёртвый счёт.
   if (order.status === 'pending_payment') {
-    const payments = await findPaymentsByOrderId(db, orderId);
-    for (const payment of payments) {
-      const link = extractInvoiceLink(payment.rawPayload);
-      if (link) return { ok: true, ...link };
-    }
+    const pending = await findPendingPaymentByOrderId(db, orderId);
+    const link = pending ? extractInvoiceLink(pending.rawPayload) : null;
+    if (link) return { ok: true, ...link };
     return {
       ok: false,
       error: 'invoice_unavailable',
@@ -216,87 +215,6 @@ export async function proposeNewOrder(
       ok: false,
       error: 'failed',
       message: 'Не получилось создать заказ. Попробуй ещё раз через минуту.',
-    };
-  }
-}
-
-// ─── Повторить заказ ──────────────────────────────────────────────────────
-
-export type RepeatOrderResult =
-  | {
-      ok: true;
-      orderId: string;
-      shortId: string;
-      service: string;
-      totalKopecks: number;
-      expiresAt: string;
-    }
-  | {
-      ok: false;
-      error: 'not_found' | 'cannot_repeat_custom' | 'service_unavailable' | 'failed';
-      message: string;
-    };
-
-export async function repeatOrder(userId: string, orderId: string): Promise<RepeatOrderResult> {
-  const db = getDb();
-  const order = await getOrderById(db, orderId);
-  if (!order || order.userId !== userId) {
-    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
-  }
-  if (!order.serviceId) {
-    return {
-      ok: false,
-      error: 'cannot_repeat_custom',
-      message: 'Этот заказ был вне каталога — напиши в чат, оформим заново через оператора.',
-    };
-  }
-
-  const service = await getServiceById(db, order.serviceId);
-  if (!service || !service.isActive) {
-    return {
-      ok: false,
-      error: 'service_unavailable',
-      message: 'Этот сервис сейчас недоступен. Выбери другой в чате.',
-    };
-  }
-
-  const params = (order.parameters ?? {}) as OrderParameters;
-  const tierName = params.tierName;
-  // Для custom-amount сервисов сумма берётся из исходного заказа (USD-центы).
-  const amountUsdCents = order.originalAmount ?? undefined;
-
-  try {
-    const conversation = await getOrCreateActiveConversation(
-      db,
-      { userId, channel: 'telegram' },
-      dbLog,
-    );
-    const result = await proposeFromCatalog({
-      userId,
-      conversationId: conversation.id,
-      channel: 'telegram',
-      slug: service.slug,
-      ...(tierName !== undefined ? { tierName } : {}),
-      ...(amountUsdCents !== undefined ? { amountUsdCents } : {}),
-    });
-    if (!result.ok) {
-      return { ok: false, error: 'failed', message: result.text };
-    }
-    return {
-      ok: true,
-      orderId: result.card.orderId,
-      shortId: result.card.shortId,
-      service: result.card.service,
-      totalKopecks: result.card.totalKopecks,
-      expiresAt: result.card.expiresAt,
-    };
-  } catch (err) {
-    log.error({ event: 'cabinet.repeat.failed', orderId, err });
-    Sentry.captureException(err, { tags: { source: 'cabinet.repeat' }, extra: { orderId } });
-    return {
-      ok: false,
-      error: 'failed',
-      message: 'Не получилось повторить заказ. Попробуй ещё раз или напиши в чат.',
     };
   }
 }
@@ -459,47 +377,3 @@ export async function markSubscriptionActivated(
   }
 }
 
-// ─── Запросить оператора ──────────────────────────────────────────────────
-
-export type RequestOperatorResult =
-  | { ok: true; slaHours: number; withinBusinessHours: boolean; duplicate: boolean }
-  | { ok: false; error: 'not_found' | 'failed'; message: string };
-
-export async function requestOperator(
-  userId: string,
-  orderId: string,
-): Promise<RequestOperatorResult> {
-  const db = getDb();
-  const order = await getOrderById(db, orderId);
-  if (!order || order.userId !== userId) {
-    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
-  }
-
-  try {
-    const conversation = await getOrCreateActiveConversation(
-      db,
-      { userId, channel: 'telegram' },
-      dbLog,
-    );
-    const result = await requestHuman({
-      orderId,
-      reason: 'Запрос оператора из личного кабинета (Mini App)',
-      userId,
-      conversationId: conversation.id,
-    });
-    return {
-      ok: true,
-      slaHours: result.slaHours,
-      withinBusinessHours: result.withinBusinessHours,
-      duplicate: result.duplicate ?? false,
-    };
-  } catch (err) {
-    log.error({ event: 'cabinet.operator.failed', orderId, err });
-    Sentry.captureException(err, { tags: { source: 'cabinet.operator' }, extra: { orderId } });
-    return {
-      ok: false,
-      error: 'failed',
-      message: 'Не получилось отправить заявку. Попробуй ещё раз через минуту.',
-    };
-  }
-}

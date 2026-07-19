@@ -1,4 +1,11 @@
 /**
+ * УСТАРЕЛО (L-17, 2026-07-19): с включения IP-allowlist L&P (2026-07-16) запросы
+ * должны идти через CONNECT-прокси (LOVEANDPAY_PROXY_URL) — этот скрипт бьёт
+ * напрямую и с локальной машины получит DOMAIN_NOT_VERIFIED/SOURCE_IP_NOT_ALLOWED.
+ * Оставлен как справка по подписи; для живой проверки используйте прод-логи
+ * или healthcheck прокси (lib/jobs/proxy-health.ts).
+ */
+/**
  * Smoke: создание invoice через POST /api/v2/invoices.
  *
  * Запуск:

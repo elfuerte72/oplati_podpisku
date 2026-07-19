@@ -21,7 +21,7 @@ import {
 } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
-import { withLiveBalance } from './live-balance.ts';
+import { withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
   CARD_STATUS_LABELS,
@@ -67,16 +67,36 @@ function mapOrderSummary(order: OrderRow, serviceName: string | null): OrderSumm
     createdAt: order.createdAt.toISOString(),
     expiresAt: toIso(order.expiresAt),
     payable: isPayableStatus(order.status),
-    repeatable: order.serviceId !== null,
   };
 }
 
 /**
- * «Действует до» карты: дата выпуска + CARD_LIFETIME_DAYS (180 дней — ТЗ §2,
- * совпадает с порогом release в cron `recycle-cards`).
+ * «Действует до» карты. Приоритет — реальный `exp_date` самой карты (MM/YY из
+ * PaySpace `getCardInfo`, L-10 аудита): показываем конец указанного месяца.
+ * Fallback (карта без live-ответа / кривой формат) — расчётные
+ * дата выпуска + CARD_LIFETIME_DAYS (180 дней — ТЗ §2, совпадает с порогом
+ * release в cron `recycle-cards`).
  */
-export function cardValidUntil(createdAt: Date): string {
+export function cardValidUntil(createdAt: Date, liveExpDate?: string): string {
+  const parsed = liveExpDate ? parseExpDate(liveExpDate) : null;
+  if (parsed) return parsed;
   return new Date(createdAt.getTime() + CARD_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * `MM/YY` → ISO конца месяца; мусор → null (fallback caller'а).
+ * 20:59:59 UTC = 23:59:59 по Москве: UI рендерит через formatExpires
+ * (Europe/Moscow), и полночь UTC показывалась бы как «02:59 1-го СЛЕДУЮЩЕГО
+ * месяца» (находка ревью волны 2026-07-19).
+ */
+function parseExpDate(expDate: string): string | null {
+  const m = /^(\d{2})\/(\d{2})$/.exec(expDate);
+  if (!m) return null;
+  const month = Number(m[1]);
+  const year = 2000 + Number(m[2]);
+  if (month < 1 || month > 12) return null;
+  // День 0 следующего месяца = последний день указанного.
+  return new Date(Date.UTC(year, month, 0, 20, 59, 59)).toISOString();
 }
 
 const log = childLogger('cabinet.read');
@@ -105,7 +125,7 @@ type CardPurpose = {
 
 const EMPTY_PURPOSE: CardPurpose = { purpose: null, purposeOrderId: null, instructions: null };
 
-function mapCard(card: Card, purpose: CardPurpose = EMPTY_PURPOSE): CardView {
+function mapCard(card: CardWithLive, purpose: CardPurpose = EMPTY_PURPOSE): CardView {
   return {
     id: card.id,
     panMasked: card.panMasked,
@@ -113,7 +133,7 @@ function mapCard(card: Card, purpose: CardPurpose = EMPTY_PURPOSE): CardView {
     statusLabel: CARD_STATUS_LABELS[card.status],
     balanceUsdCents: card.balanceUsdCents,
     createdAt: card.createdAt.toISOString(),
-    validUntil: cardValidUntil(card.createdAt),
+    validUntil: cardValidUntil(card.createdAt, card.liveExpDate),
     ...purpose,
   };
 }

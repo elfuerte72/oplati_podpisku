@@ -168,32 +168,42 @@ switch (default с `never` — экзостивность). `ToolCallLog.name` �
 `agent-dialog.ts`; `handle-update.ts` — тонкий роутер (350 строк). Typecheck + полный
 сьют web 370 зелёные. Тест роутера update'ов — остался желательным (см. T-5).
 
-### [ ] M-11 (ось F) — PNG-позы маскота 2.4 MB → LCP
+### [x] M-11 (ось F) — PNG-позы маскота 2.4 MB → LCP
+
+> СДЕЛАНО (PR #90): 6 поз PNG 2.16 MB → WebP 310 KB (sharp q90), mascotSrc → .webp, ASSET_VERSION=3, ErrorScene тоже
 
 `apps/web/components/chat/Mascot.tsx` + `public/mascot/*.png` (290–430 KB каждая).
 **Фикс:** конвертировать в webp (как hero/services), `next/image` с `sizes`, приоритет
 только первой позе. Это закрывает пункт «LCP» аудита 2026-07-11.
 
-### [ ] M-12 (ось F) — отсутствующие частичные индексы под cron-выборки
+### [x] M-12 (ось F) — отсутствующие частичные индексы под cron-выборки
+
+> СДЕЛАНО (PR #90): миграция 0023 — частичные orders_completed_fulfilled_at_idx и orders_paid_at_idx (предикат recovery — по orders.paid_at, не payments); применена к dev, прод — при мерже
 
 `findOrdersForRenewalReminder` (фильтр `status='completed' AND fulfilled_at BETWEEN`) и
 recovery реф-начислений (`paid_at`) сканируют по вечно растущим индексам. **Фикс:** миграция
 Drizzle: частичный индекс `(fulfilled_at) WHERE status='completed'` на orders + индекс по
 `payments.paid_at` (проверить фактический предикат recovery-запроса перед созданием).
 
-### [ ] M-13 (ось F) — retention: messages / order_events / payments.raw_payload растут без чистки
+### [x] M-13 (ось F) — retention: messages / order_events / payments.raw_payload растут без чистки
+
+> СДЕЛАНО (PR #90): cron retention (04:15) — messages >90д удаляются, payments.raw_payload >180д очищается, order_events не трогаем; батчи 500×20, unit-тесты
 
 Supabase free tier 500 MB. **Фикс (решение владельца):** политика ретеншна — напр.,
 `messages` старше 90 дней удалять кроном (диалоги), `raw_payload` старше 180 дней —
 `jsonb_strip`/NULL (сверка уже не нужна), `order_events` НЕ трогать (append-only, аудит).
 Оформить отдельным cron'ом с батч-лимитом.
 
-### [ ] M-14 (ось F) — `RATE_FALLBACK_USDT_RUB=77` устарел (реальный ~81)
+### [x] M-14 (ось F) — `RATE_FALLBACK_USDT_RUB=77` устарел (реальный ~81)
+
+> СДЕЛАНО (PR #90): дефолт RATE_FALLBACK_USDT_RUB 77 → 81 (решение владельца)
 
 Дефолт в `lib/env.ts:180`. **Действие владельца:** задать env на проде актуальным значением
 и заложить процесс обновления (или поднять дефолт в коде при следующем релизе).
 
-### [ ] M-15 (ось F) — один захардкоженный оператор поддержки
+### [x] M-15 (ось F) — один захардкоженный оператор поддержки
+
+> СДЕЛАНО (PR #90): дефолт-ID удалён из кода, env-only + Sentry-алёрт при незаданном; SUPPORT_OPERATOR_CHAT_ID задан в Vercel prod+preview и локально
 
 `lib/telegram/support.ts:23` — дефолт `379336096` в коде + единственная личка.
 **Фикс:** минимум — убрать дефолт из кода (env-only, при незаданном — notifyOps-алёрт);
@@ -203,46 +213,50 @@ Supabase free tier 500 MB. **Фикс (решение владельца):** п�
 
 ## LOW (приоритет 3, группировать по файлам при попутных правках)
 
+> Волна 2026-07-19 (PR #90): закрыты L-2…L-20. L-2 ушёл вместе с удалением
+> repeatOrder (L-9). Открытыми остаются L-1 (фильтр валюты в оборотах) и
+> L-21 (CSP enforce — ждёт решения владельца).
+
 - [ ] L-1 (A) `referral-progression.ts:59`, `referral-cabinet.ts:61` — фильтр
   `original_currency='USD'` в суммах оборота (guard уже есть в accrue-пути).
-- [ ] L-2 (A) `lib/cabinet/actions.ts:235` — `as OrderParameters` → `safeParse` (образец —
+- [x] L-2 (A) `lib/cabinet/actions.ts:235` — `as OrderParameters` → `safeParse` (образец —
   `reportPaymentIssue` там же). Заодно закрыть L-9 (repeatOrder битый) — см. ниже.
-- [ ] L-3 (A) `packages/db/src/repositories/cards.ts:186` — удалить `markActive` (опасный
+- [x] L-3 (A) `packages/db/src/repositories/cards.ts:186` — удалить `markActive` (опасный
   примитив смены владельца карты; prod-вызовов нет, только mock в тесте).
-- [ ] L-4 (A+B) `expire-payments` — при экспайре заказа клеймить его pending-платёж
+- [x] L-4 (A+B) `expire-payments` — при экспайре заказа клеймить его pending-платёж
   (`claimPaymentTerminal(reason='expired')`) в том же проходе.
-- [ ] L-5 (B) `lib/cabinet/actions.ts:85–89` — `payOrder`: `findPendingPaymentByOrderId`
+- [x] L-5 (B) `lib/cabinet/actions.ts:85–89` — `payOrder`: `findPendingPaymentByOrderId`
   вместо нефильтрованного `findPaymentsByOrderId[0]`.
-- [ ] L-6 (B) `lib/loveandpay/client.ts:64,103` — `POST /invoices`: не ретраить на timeout
+- [x] L-6 (B) `lib/loveandpay/client.ts:64,103` — `POST /invoices`: не ретраить на timeout
   (только на 5xx-без-тела/сетевую до отправки), либо смириться и задокументировать сирот.
-- [ ] L-7 (B) `payments.ts:38` — поправить устаревший doc-комментарий про upsert из webhook.
-- [ ] L-8 (C) `lib/env.ts:256,274` — `console.error` → `process.stderr.write` с комментарием-
+- [x] L-7 (B) `payments.ts:38` — поправить устаревший doc-комментарий про upsert из webhook.
+- [x] L-8 (C) `lib/env.ts:256,274` — `console.error` → `process.stderr.write` с комментарием-
   обоснованием (bootstrap до pino) или задокументировать исключение в CLAUDE.md.
-- [ ] L-9 (E) `repeatOrder`/`requestOperator` в `/api/cabinet` — мёртвые с 2026-07-03 и
+- [x] L-9 (E) `repeatOrder`/`requestOperator` в `/api/cabinet` — мёртвые с 2026-07-03 и
   repeatOrder сломан для тарифных (tierName никогда не пишется). **Решение владельца:**
   удалить actions целиком ИЛИ чинить. Рекомендация — удалить (UI-кнопок нет).
-- [ ] L-10 (E) `lib/cabinet/read.ts:78` — `cardValidUntil`: брать реальный `exp_date`
+- [x] L-10 (E) `lib/cabinet/read.ts:78` — `cardValidUntil`: брать реальный `exp_date`
   карты (уже есть в PaySpace `getCardInfo`) вместо `createdAt+180д`.
-- [ ] L-11 (D) 4 импорта `serverEnv` из `@/lib/env` мимо `env.server.ts` → перевести на
+- [x] L-11 (D) 4 импорта `serverEnv` из `@/lib/env` мимо `env.server.ts` → перевести на
   `@/lib/env.server` (accrue.ts, deep-links.ts, handle-update.ts, deployment-url.ts).
-- [ ] L-12 (D) `components/chat/toolCards.ts` → `tool-cards.ts` (kebab-case).
-- [ ] L-13 (D) два расходящихся `formatUsd` (partner/format-usd.ts vs comic/format.ts) →
+- [x] L-12 (D) `components/chat/toolCards.ts` → `tool-cards.ts` (kebab-case).
+- [x] L-13 (D) два расходящихся `formatUsd` (partner/format-usd.ts vs comic/format.ts) →
   один модуль.
-- [ ] L-14 (D) тесты вне `pnpm typecheck` — добавить `tsc --noEmit -p tsconfig.test.json`
+- [x] L-14 (D) тесты вне `pnpm typecheck` — добавить `tsc --noEmit -p tsconfig.test.json`
   (или включить тесты в основной tsconfig) во всех workspace.
-- [ ] L-15 (F) мёртвые env-схемы: `YOOKASSA_*`, `CRYPTOBOT_*`, `TELEGRAM_OPERATORS_GROUP_ID`,
+- [x] L-15 (F) мёртвые env-схемы: `YOOKASSA_*`, `CRYPTOBOT_*`, `TELEGRAM_OPERATORS_GROUP_ID`,
   `PAYSPACE_ACCOUNT_ID`; весь неиспользуемый `clientEnv`/`getClientEnv`. НЕ трогать
   `TRIGGER_*`/`PAYSPACE_WEBHOOK_SECRET` (зарезервированы осознанно).
-- [ ] L-16 (F) мёртвые экспорты: `paymentRowToWebhookData` (loveandpay/handlers.ts:303),
+- [x] L-16 (F) мёртвые экспорты: `paymentRowToWebhookData` (loveandpay/handlers.ts:303),
   `getOrderByShortId` (orders.ts:153), алиас `canTransition` (order-state-machine.ts:62).
-- [ ] L-17 (F) `scripts/smoke-loveandpay*.mts` — после IP-allowlist бьют мимо прокси →
+- [x] L-17 (F) `scripts/smoke-loveandpay*.mts` — после IP-allowlist бьют мимо прокси →
   добавить поддержку `LOVEANDPAY_PROXY_URL` или пометить устаревшими в шапке файла.
-- [ ] L-18 (F) незакоммиченный мусор: `rates.json` в корне (в .gitignore или удалить),
+- [x] L-18 (F) незакоммиченный мусор: `rates.json` в корне (в .gitignore или удалить),
   переезд `audit-report-*.html` в `docs/` закоммитить, `docs/fix-plan.md` и
   `docs/known-issues-2026-06-25.md` — заархивировать/удалить (решение владельца).
-- [ ] L-19 (F) keepalive не пингует dev-Supabase → Preview-БД заснёт через ~7 дней тишины.
+- [x] L-19 (F) keepalive не пингует dev-Supabase → Preview-БД заснёт через ~7 дней тишины.
   Вариант: локальный скрипт/GitHub Action раз в 3 дня `SELECT 1` в dev-БД.
-- [ ] L-20 (E) `handle-update.ts:1131` — резолв тарифа по индексу против живого кэша
+- [x] L-20 (E) `handle-update.ts:1131` — резолв тарифа по индексу против живого кэша
   каталога (за выключенным флагом BOT_AI_ENABLED) — при включении флага заменить индекс
   на стабильный ключ тарифа в callback_data.
 - [ ] L-21 (C) CSP `Report-Only` → enforced после периода наблюдения (план F-12, за владельцем).
@@ -255,12 +269,12 @@ Supabase free tier 500 MB. **Фикс (решение владельца):** п�
 
 ## Пробелы тестового покрытия (закрывать вместе с фиксами соответствующих зон)
 
-- [ ] T-1 `app/api/payments/create/route.ts` — ЧАСТИЧНО закрыт вместе с M-2
+- [x] T-1 `app/api/payments/create/route.ts` — ЗАКРЫТ (PR #90: repeat_confirm, гонка 23505, парс storedInvoiceSchema); ранее частично с M-2
   (`route.test.ts`: транзакционная связка, дубль isNew=false, гейт order_expired).
   Осталось: repeat_confirm, гонка 23505 → `respondWithExistingPendingPayment`,
   парс `storedInvoiceSchema` из rawPayload.
 - [x] T-2 `toAgentHistory` — закрыт фиксом H-1.
-- [ ] T-3 оркестрация `expire-payments`/`poll-payment` (guard оплаченного, порядок
+- [x] T-3 (закрыт PR #90: unit expire-payments — порядок claim→notify, guard, фоллбеки) оркестрация `expire-payments`/`poll-payment` (guard оплаченного, порядок
   claim→notify) — unit с моками (закрывать вместе с L-4/M-4).
-- [ ] T-4 `payOrder` → `extractInvoiceLink` из rawPayload (закрывать вместе с L-5).
+- [x] T-4 (закрыт PR #90: extractInvoiceLink + payOrder строго pending) `payOrder` → `extractInvoiceLink` из rawPayload (закрывать вместе с L-5).
 - [ ] T-5 `splitForTelegram`/`tokenizeForSplit`, link-handoff — вместе с M-10 (распил файла).

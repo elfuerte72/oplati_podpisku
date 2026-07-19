@@ -54,9 +54,16 @@ export async function alertOnLoveAndPayProxyDown(deps?: {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      // Любой HTTP-статус (включая 4xx/5xx от самого L&P) = CONNECT прошёл,
+      // Любой HTTP-статус (включая 3xx/4xx/5xx от самого L&P) = CONNECT прошёл,
       // прокси жив. Нас интересует только транспорт, не приложение.
-      await fetchImpl(targetOrigin, { method: 'HEAD', signal: controller.signal });
+      // redirect: 'manual' обязателен (инцидент 2026-07-19): origin L&P стал
+      // отвечать 307-цепочкой, follow упирался в «redirect count exceeded» /
+      // таймаут — и здоровый прокси всю ночь считался лежащим (ложные DM).
+      await fetchImpl(targetOrigin, {
+        method: 'HEAD',
+        redirect: 'manual',
+        signal: controller.signal,
+      });
       log.info({ event: 'lnp_proxy.ok', proxy: proxyHost });
       return;
     } finally {

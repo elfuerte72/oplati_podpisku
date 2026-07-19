@@ -1,0 +1,26 @@
+# L-19 аудита: dev-Supabase (Preview-окружение) на free-плане засыпает после
+# ~7 дней без запросов — Vercel Cron `keepalive` пингует только прод-БД.
+# Пинг SELECT 1 по числам месяца 1,4,7,… (`*/3`): интервал 1–3 дня, на границе
+# месяца короче — для порога «7 дней тишины» этого с запасом достаточно.
+# Секрет DEV_DATABASE_URL — в GitHub Actions secrets (тот же, что в корневом .env).
+name: Keepalive dev Supabase
+
+on:
+  schedule:
+    - cron: '0 3 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SELECT 1 в dev-БД
+        env:
+          DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
+        run: |
+          if [ -z "$DEV_DATABASE_URL" ]; then
+            echo "::error::secret DEV_DATABASE_URL не задан"
+            exit 1
+          fi
+          psql "$DEV_DATABASE_URL" -c 'SELECT 1;'

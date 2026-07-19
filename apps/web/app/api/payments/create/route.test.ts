@@ -17,6 +17,8 @@ type OrderLike = {
   expiresAt: Date | null;
 };
 
+type PendingPaymentLike = { id: string; rawPayload: Record<string, unknown> | null };
+
 const h = vi.hoisted(() => ({
   // Сентинел транзакции: ассертим, что репо-функции получают именно его,
   // а не внешний db — это и есть гарантия «в одной транзакции» (M-2).
@@ -25,7 +27,10 @@ const h = vi.hoisted(() => ({
   upsertMock: vi.fn(),
   transitionMock: vi.fn(async () => ({})),
   setExpiresMock: vi.fn(async () => {}),
-  state: { order: null as OrderLike | null },
+  state: {
+    order: null as OrderLike | null,
+    pendingPayment: null as PendingPaymentLike | null,
+  },
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -34,7 +39,7 @@ vi.mock('@oplati/db', () => ({
   upsertPaymentByProviderRef: h.upsertMock,
   transitionOrder: h.transitionMock,
   setOrderExpiresAt: h.setExpiresMock,
-  findPendingPaymentByOrderId: vi.fn(async () => null),
+  findPendingPaymentByOrderId: vi.fn(async () => h.state.pendingPayment),
 }));
 
 vi.mock('@/lib/loveandpay', () => {
@@ -85,6 +90,7 @@ function makeRequest(body: unknown): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.state.pendingPayment = null;
   h.state.order = {
     id: ORDER_ID,
     shortId: 'AB12',
@@ -153,5 +159,74 @@ describe('POST /api/payments/create — атомарность записи пл
       expect.anything(),
       expect.objectContaining({ toStatus: 'expired', eventType: 'order_expired' }),
     );
+  });
+});
+
+const STORED_INVOICE = {
+  invoice: {
+    id: 'inv-winner',
+    invoiceNumber: 'INV-0002',
+    paymentLink: 'https://pay.example/inv-winner',
+    qrPayload: 'sbp://winner',
+    expiresAt: '2026-07-19T01:00:00.000Z',
+  },
+};
+
+describe('POST /api/payments/create — идемпотентность повторного confirm (T-1)', () => {
+  it('repeat_confirm: заказ уже в pending_payment → 200 с существующим инвойсом из rawPayload', async () => {
+    h.state.order = {
+      id: ORDER_ID,
+      shortId: 'AB12',
+      status: 'pending_payment',
+      amountRub: 100_000,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    };
+    h.state.pendingPayment = { id: 'pay-winner', rawPayload: STORED_INVOICE };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { ok: boolean; paymentUrl: string };
+
+    expect(resp.status).toBe(200);
+    expect(json.ok).toBe(true);
+    // storedInvoiceSchema распарсил rawPayload победителя.
+    expect(json.paymentUrl).toBe('https://pay.example/inv-winner');
+    // Новый инвойс НЕ создавался.
+    expect(h.upsertMock).not.toHaveBeenCalled();
+  });
+
+  it('repeat_confirm без живого инвойса (или с битым rawPayload) → 409 invalid_status', async () => {
+    h.state.order = {
+      id: ORDER_ID,
+      shortId: 'AB12',
+      status: 'pending_payment',
+      amountRub: 100_000,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    };
+    h.state.pendingPayment = { id: 'pay-broken', rawPayload: { garbage: true } };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(409);
+    expect(json.error).toBe('invalid_status');
+  });
+
+  it('гонка 23505 (unique pending на заказ) → проигравший получает инвойс победителя', async () => {
+    // INSERT платежа проигравшего ловит 23505 по payments_one_pending_per_order_idx —
+    // транзакция откатывается, роут отвечает существующим pending-инвойсом.
+    h.upsertMock.mockImplementation(async () => {
+      throw Object.assign(new Error('duplicate key'), {
+        code: '23505',
+        constraint_name: 'payments_one_pending_per_order_idx',
+      });
+    });
+    h.state.pendingPayment = { id: 'pay-winner', rawPayload: STORED_INVOICE };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { ok: boolean; paymentUrl: string };
+
+    expect(resp.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.paymentUrl).toBe('https://pay.example/inv-winner');
   });
 });

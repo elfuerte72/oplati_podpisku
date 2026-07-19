@@ -6,7 +6,7 @@ import { buildPaymentIssueOperatorMessage, redactCardNumbers } from './templates
 
 describe('buildPaymentIssueOperatorMessage', () => {
   const base = {
-    telegramId: '379336096',
+    telegramId: '111222333',
     displayName: 'Иван Петров',
     orderShortId: 'ORD-7KX42',
     service: 'ChatGPT',
@@ -24,8 +24,8 @@ describe('buildPaymentIssueOperatorMessage', () => {
     expect(msg).toContain(formatRub(249_000));
     expect(msg).toContain('Активна');
     expect(msg).toContain('Карта отклоняется при оплате');
-    expect(msg).toContain('<code>379336096</code>');
-    expect(msg).toContain('tg://user?id=379336096');
+    expect(msg).toContain('<code>111222333</code>');
+    expect(msg).toContain('tg://user?id=111222333');
   });
 
   it('опциональные поля опускаются без пустых строк-ярлыков', () => {

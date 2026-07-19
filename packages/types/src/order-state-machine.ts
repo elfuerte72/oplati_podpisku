@@ -61,9 +61,6 @@ export function isAllowedTransition(from: OrderStatus, to: OrderStatus): boolean
   return (allowedTransitions[from] as readonly OrderStatus[]).includes(to);
 }
 
-/** Backward-compat alias — старые модули используют `canTransition`. */
-export const canTransition = isAllowedTransition;
-
 /**
  * Бросается из `transitionOrder()` если переход запрещён `allowedTransitions`.
  * Carrier-поля `orderId`, `from`, `to` позволяют залогировать причину без

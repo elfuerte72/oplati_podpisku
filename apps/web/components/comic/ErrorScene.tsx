@@ -30,7 +30,7 @@ export function ErrorScene({
         {/* Маскот смотрит вниз — ставим его над кодом ошибки с нахлёстом,
             чтобы взгляд упирался прямо в цифры. */}
         <Image
-          src="/mascot/attentive.png"
+          src="/mascot/attentive.webp"
           alt="Оплатишка озадаченно смотрит вниз"
           width={210}
           height={210}

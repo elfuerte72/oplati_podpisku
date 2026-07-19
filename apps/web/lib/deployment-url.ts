@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { serverEnv } from '@/lib/env';
+import { serverEnv } from '@/lib/env.server';
 
 /**
  * URL-хелперы деплоя в одном месте, чтобы Vercel-логика не разъезжалась между

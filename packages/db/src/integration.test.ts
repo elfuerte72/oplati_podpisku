@@ -14,8 +14,10 @@ import {
   claimPaymentSucceeded,
   claimPaymentTerminal,
   findPendingPaymentByOrderId,
+  stripOldPaymentPayloads,
   upsertPaymentByProviderRef,
 } from './repositories/payments.ts';
+import { deleteOldMessages } from './repositories/messages.ts';
 import {
   createDraftOrder,
   findExpiredPayableOrders,
@@ -841,5 +843,71 @@ describe('syncCardBalance (live-баланс кабинета)', () => {
       'refetch',
     );
     expect(row.balanceUsdCents).toBe(3400); // topup сохранён, live-значение не затёрло
+  });
+});
+
+describe('retention (M-13): deleteOldMessages / stripOldPaymentPayloads', () => {
+  const OLD = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
+
+  it('удаляет только сообщения старше порога, уважая батч-лимит', async () => {
+    const user = await makeUser();
+    const conv = firstOf(
+      await db
+        .insert(schema.conversations)
+        .values({ userId: user.id, channel: 'telegram' })
+        .returning(),
+      'conversations insert',
+    );
+    for (let i = 0; i < 3; i++) {
+      await db.insert(schema.messages).values({
+        conversationId: conv.id,
+        role: 'user',
+        content: `old-${i}`,
+        createdAt: OLD,
+      });
+    }
+    await db
+      .insert(schema.messages)
+      .values({ conversationId: conv.id, role: 'user', content: 'fresh' });
+
+    // Батч меньше бэклога → удаляет ровно limit, остальное — следующим проходом.
+    expect(await deleteOldMessages(db, { olderThanDays: 90, limit: 2 })).toBe(2);
+    expect(await deleteOldMessages(db, { olderThanDays: 90, limit: 10 })).toBe(1);
+    // Свежее сообщение не тронуто; чистить больше нечего.
+    expect(await deleteOldMessages(db, { olderThanDays: 90, limit: 10 })).toBe(0);
+    const left = await db
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.conversationId, conv.id));
+    expect(left.map((m) => m.content)).toEqual(['fresh']);
+  });
+
+  it('raw_payload чистится только у старых платежей; сама строка платежа остаётся', async () => {
+    const user = await makeUser();
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await db
+      .update(schema.payments)
+      .set({ createdAt: OLD, rawPayload: { invoice: { id: 'inv-old' } } })
+      .where(eq(schema.payments.id, payment.id));
+    const { payment: freshPayment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await db
+      .update(schema.payments)
+      .set({ rawPayload: { invoice: { id: 'inv-fresh' } } })
+      .where(eq(schema.payments.id, freshPayment.id));
+
+    expect(await stripOldPaymentPayloads(db, { olderThanDays: 180, limit: 10 })).toBe(1);
+    expect(await stripOldPaymentPayloads(db, { olderThanDays: 180, limit: 10 })).toBe(0);
+
+    const oldRow = firstOf(
+      await db.select().from(schema.payments).where(eq(schema.payments.id, payment.id)),
+      'old payment',
+    );
+    expect(oldRow.rawPayload).toBeNull();
+    expect(oldRow.amountRub).toBe(50000); // строка платежа цела
+    const freshRow = firstOf(
+      await db.select().from(schema.payments).where(eq(schema.payments.id, freshPayment.id)),
+      'fresh payment',
+    );
+    expect(freshRow.rawPayload).not.toBeNull();
   });
 });

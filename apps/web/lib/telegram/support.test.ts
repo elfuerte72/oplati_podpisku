@@ -5,7 +5,7 @@ import { buildSupportOperatorMessage, SUPPORT_MESSAGE_MAX_LEN } from './template
 describe('buildSupportOperatorMessage', () => {
   it('включает имя, @username, id, tg-ссылку и текст', () => {
     const msg = buildSupportOperatorMessage({
-      telegramId: 379336096,
+      telegramId: 111222333,
       firstName: 'Иван',
       lastName: 'Петров',
       username: 'ivan',
@@ -13,8 +13,8 @@ describe('buildSupportOperatorMessage', () => {
     });
     expect(msg).toContain('Иван Петров');
     expect(msg).toContain('@ivan');
-    expect(msg).toContain('<code>379336096</code>');
-    expect(msg).toContain('tg://user?id=379336096');
+    expect(msg).toContain('<code>111222333</code>');
+    expect(msg).toContain('tg://user?id=111222333');
     expect(msg).toContain('Не приходит ссылка на оплату');
   });
 

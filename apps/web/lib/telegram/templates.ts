@@ -351,6 +351,41 @@ export function orderCardText(card: {
   );
 }
 
+/** Дата оформления заказа для уведомлений: «19 июля» (Europe/Moscow, как formatExpires). */
+function formatOrderDate(date: Date): string {
+  try {
+    return date.toLocaleDateString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'long',
+    });
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Уведомление «срок оплаты истёк» (cron expire-payments). Вместо внутреннего
+ * номера ORD-XXXXX (решение владельца 2026-07-19: клиенту он ни о чём) —
+ * название сервиса, сумма и дата оформления. Фоллбеки: без названия —
+ * нейтральный «заказ», без суммы — сумма опускается.
+ */
+export function buildOrderExpiredMessage(input: {
+  serviceLabel: string | null;
+  amountKopecks: number | null;
+  createdAt: Date;
+}): string {
+  const label = input.serviceLabel ?? 'заказ';
+  const amount =
+    input.amountKopecks !== null && input.amountKopecks > 0
+      ? ` на ${formatRub(input.amountKopecks)}`
+      : '';
+  return (
+    `Срок оплаты истёк: ${label}${amount}, оформлен ${formatOrderDate(input.createdAt)}. ` +
+    'Если ещё актуально — напишите /start, оформим заново.'
+  );
+}
+
 /**
  * Рабочие часы оператора в часовом поясе Europe/Moscow.
  * Используются для расчёта SLA-текста в request_human и в системном промпте.

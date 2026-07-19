@@ -50,9 +50,9 @@ describe('beforeSend: карточные реквизиты и секреты', 
 
     const out = beforeSend(event);
     const ctx = (out?.extra as Record<string, Record<string, unknown>>).ctx;
-    expect(ctx.initData).toBe('[REDACTED]');
-    expect(ctx.init_data).toBe('[REDACTED]');
-    expect(ctx.signature).toBe('[REDACTED]');
+    expect(ctx?.initData).toBe('[REDACTED]');
+    expect(ctx?.init_data).toBe('[REDACTED]');
+    expect(ctx?.signature).toBe('[REDACTED]');
   });
 
   it('редактирует секрет ?s= в query_string, не задевая другие параметры', () => {

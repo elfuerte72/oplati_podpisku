@@ -16,15 +16,13 @@ import { getBot } from './bot';
 const log = childLogger('telegram.support');
 
 /**
- * Дефолтный получатель обращений, если `SUPPORT_OPERATOR_CHAT_ID` не задан в
- * env (telegram_id владельца). Оператор должен один раз запустить бота, иначе
- * Telegram запретит слать ему личные сообщения (403).
+ * Целевой chat_id оператора поддержки — ТОЛЬКО из env (M-15 аудита, 2026-07-19:
+ * прежний дефолт с telegram_id владельца в коде удалён — личный ID светился в
+ * репозитории, а смена оператора требовала правки кода). Оператор должен один
+ * раз запустить бота, иначе Telegram запретит слать ему личные сообщения (403).
  */
-export const DEFAULT_SUPPORT_OPERATOR_CHAT_ID = '379336096';
-
-/** Целевой chat_id оператора поддержки (env → дефолт в коде). */
-export function supportOperatorChatId(): string {
-  return serverEnv.SUPPORT_OPERATOR_CHAT_ID ?? DEFAULT_SUPPORT_OPERATOR_CHAT_ID;
+export function supportOperatorChatId(): string | null {
+  return serverEnv.SUPPORT_OPERATOR_CHAT_ID ?? null;
 }
 
 /**
@@ -36,6 +34,16 @@ export async function sendToSupportOperator(
   logCtx: Record<string, unknown> = {},
 ): Promise<boolean> {
   const target = supportOperatorChatId();
+  if (!target) {
+    // Обращение клиента некому доставить — конфигурационная авария, не штатный
+    // кейс: шумим в лог и Sentry, caller честно скажет клиенту «не получилось».
+    log.error({ event: 'telegram.support.no_operator_configured', ...logCtx });
+    Sentry.captureMessage('SUPPORT_OPERATOR_CHAT_ID не задан — обращение в поддержку не доставлено', {
+      level: 'error',
+      tags: { source: 'telegram.support' },
+    });
+    return false;
+  }
   try {
     await getBot().api.sendMessage(target, operatorMessage, { parse_mode: 'HTML' });
     log.info({ event: 'telegram.support.notified', ...logCtx });

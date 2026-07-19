@@ -3,18 +3,9 @@
  * в bps; форматируем на отображении (как `formatRub` для рублей).
  */
 
-/** USD-центы → `$1,800` / `$0.96` (целые без копеек, дробные с 2 знаками). */
-export function formatUsd(cents: number): string {
-  const sign = cents < 0 ? '-' : '';
-  const abs = Math.abs(cents) / 100;
-  const dec = Number.isInteger(abs) ? 0 : 2;
-  return `${sign}${new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: dec,
-    maximumFractionDigits: 2,
-  }).format(abs)}`;
-}
+// Единая реализация живёт в comic/format (L-13) — здесь реэкспорт, чтобы не
+// менять импорты партнёрских компонентов.
+export { formatUsd } from '../comic/format';
 
 /** bps → `6%` / `2.5%`. */
 export function formatBps(bps: number): string {

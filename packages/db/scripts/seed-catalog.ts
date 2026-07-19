@@ -526,6 +526,19 @@ async function main(): Promise<void> {
       // Инвариант «Zod на границах»: валидируем структуру pricing_policy
       // и payment_instructions перед записью в jsonb-колонки.
       const validatedPolicy = pricingPolicy.parse(entry.pricingPolicy);
+      // Кнопки тарифов Telegram резолвятся по стабильному ключу (period,
+      // originalAmount) — L-20; дубль пары внутри сервиса дал бы кнопке ДРУГОЙ
+      // тариф при верной цене. Fail-fast на seed'е, а не тихо в проде.
+      const tierKeys = new Set<string>();
+      for (const t of validatedPolicy.tiers) {
+        const key = `${t.period}:${t.originalAmount ?? 0}`;
+        if (tierKeys.has(key)) {
+          throw new Error(
+            `seed: у сервиса ${entry.slug} два тарифа с одинаковым (period, originalAmount)=${key} — ключ кнопки Telegram неоднозначен (L-20)`,
+          );
+        }
+        tierKeys.add(key);
+      }
       const validatedInstructions = entry.paymentInstructions
         ? servicePaymentInstructions.parse(entry.paymentInstructions)
         : null;

@@ -17,13 +17,17 @@ const LABELS: Record<MascotPose, string> = {
   wave: 'Оплатишка машет',
 };
 
-// Версия ассетов: bump при замене PNG — пробивает кэш браузера и next/image
-// (URL входит в ключ кэша оптимизатора). Экспорт — для IntroOverlay (рисует
-// маскота напрямую через next/image со своей анимацией «нарисовывания»).
-export const ASSET_VERSION = '2';
+/**
+ * Версия ассетов: bump при замене картинок — пробивает кэш браузера и
+ * next/image (URL входит в ключ кэша оптимизатора). Экспорт — для IntroOverlay
+ * (рисует маскота напрямую через next/image со своей анимацией «нарисовывания»).
+ * v3 — PNG (290–430 KB) конвертированы в WebP (36–72 KB): M-11 аудита, LCP.
+ */
+export const ASSET_VERSION = '3';
 
+/** URL позы маскота (WebP + версия ассетов для сброса кэша). */
 export function mascotSrc(pose: MascotPose): string {
-  return `/mascot/${pose}.png?v=${ASSET_VERSION}`;
+  return `/mascot/${pose}.webp?v=${ASSET_VERSION}`;
 }
 
 const POSES: MascotPose[] = ['idle', 'attentive', 'thinking', 'presenting', 'celebrate', 'wave'];
@@ -38,7 +42,7 @@ const POSES: MascotPose[] = ['idle', 'attentive', 'thinking', 'presenting', 'cel
  * CSS-кроссфейдом — раньше <img> пересоздавался по key={pose} и картинка
  * догружалась заново, из-за чего маскот на миг исчезал. Теперь после первого
  * рендера смена позы мгновенна и плавна (opacity + лёгкий scale, ease-pop).
- * Ассеты — PNG с прозрачным фоном («стикер»), объём — drop-shadow по силуэту.
+ * Ассеты — WebP с прозрачным фоном («стикер»), объём — drop-shadow по силуэту.
  */
 export function Mascot({ pose, size = 48 }: { pose: MascotPose; size?: number }) {
   return (

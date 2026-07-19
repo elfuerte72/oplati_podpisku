@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@oplati/types';
 
-import { serverEnv } from '@/lib/env';
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/ratelimit';
 
@@ -323,10 +323,11 @@ async function handleCallbackQuery(
       break;
     }
     case 'tier': {
+      // `tier:<slug>:<period>:<usdCents>` — стабильный ключ (L-20); легаси
+      // `tier:<slug>:<idx>` resolveTier осознанно отвергает («тариф недоступен»).
       const slug = parts[1];
-      const idx = Number(parts[2]);
-      if (slug && Number.isInteger(idx) && idx >= 0) {
-        await handleTierSelected(cb, chatId, messageId, slug, idx, updateId);
+      if (slug && parts.length >= 3) {
+        await handleTierSelected(cb, chatId, messageId, slug, parts.slice(2), updateId);
         return;
       }
       break;

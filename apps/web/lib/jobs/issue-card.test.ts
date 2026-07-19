@@ -9,7 +9,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
 // цена $20.00 → карта ceil(2000 × 1.20) = 2400 центов.
 process.env.PAYSPACE_CARD_BUFFER_PERCENT = '20';
 // Прямой ops-алерт в Telegram при провале выпуска (notifyOps).
-process.env.ALERT_TELEGRAM_CHAT_ID = '379336096';
+process.env.ALERT_TELEGRAM_CHAT_ID = '111222333';
 
 type OrderLike = {
   id: string;
@@ -59,7 +59,6 @@ vi.mock('@oplati/db', () => ({
   findActiveByUserId: vi.fn(async () => h.dbState.activeCard),
   findRecyclableCard: vi.fn(async () => null),
   createCard: vi.fn(async () => ({ id: 'card-new', providerCardId: 'pc-new', panMasked: '****1234' })),
-  markActive: vi.fn(async () => {}),
   markIdle: vi.fn(async () => {}),
   updateBalance: vi.fn(async () => {}),
   setOrderCardId: vi.fn(async () => {}),
@@ -254,7 +253,7 @@ describe('issueCard', () => {
     // Прямой ops-алерт владельцу: оплаченный заказ не доехал.
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
     expect(h.sendMessageMock).toHaveBeenCalledWith(
-      '379336096',
+      '111222333',
       expect.stringContaining('НЕ доставлен'),
     );
   });

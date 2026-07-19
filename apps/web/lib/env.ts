@@ -5,14 +5,13 @@ import { z } from 'zod';
  *
  * - `serverEnv` — server-only переменные (секреты, DATABASE_URL, service_role).
  *   Использовать ТОЛЬКО из server-кода. При попытке импорта на клиенте сработает `import 'server-only'`.
- * - `clientEnv` — публичные `NEXT_PUBLIC_*`, доступны и на сервере, и в браузере.
- * - Оба объекта — **lazy** (геттер): парсинг идёт при первом обращении, а не на этапе
+ * - Объект — **lazy** (геттер): парсинг идёт при первом обращении, а не на этапе
  *   импорта. Это спасает `next build` в CI/CD, когда `.env.local` отсутствует
  *   и build попадает на import-time evaluation.
  * - На старте приложения (`instrumentation.ts`) делаем явный `serverEnv` touch,
  *   чтобы падение было fail-fast, а не при первом запросе.
  *
- * Sprint-1 опциональные: Telegram/YooKassa/CryptoBot/Upstash — помечены `.optional()`.
+ * Sprint-1 опциональные: Telegram/Upstash — помечены `.optional()`.
  */
 
 // -------------------------------------------------------------------------
@@ -73,9 +72,9 @@ const serverEnvSchema = z.object({
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
   TELEGRAM_WEBHOOK_SECRET: optionalEnvString(),
-  TELEGRAM_OPERATORS_GROUP_ID: optionalEnvString(),
   // Куда бот пересылает обращения из /support (interim-handoff, пока нет
-  // forum-topics). Не задан → дефолт в коде (telegram_id владельца). Оператор
+  // forum-topics). ЕДИНСТВЕННЫЙ источник получателя (M-15: дефолт из кода
+  // удалён 2026-07-19); не задан → обращения не доставляются + Sentry. Оператор
   // ОБЯЗАН один раз запустить бота (/start), иначе Telegram не даст слать ему DM.
   // Формат — числовой chat_id (может быть отрицательным для групп) или @username;
   // мусорное значение fail-fast на старте, а не молчаливым сбоем sendMessage.
@@ -102,13 +101,6 @@ const serverEnvSchema = z.object({
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
 
-  // Платежи (Sprint 2)
-  YOOKASSA_SHOP_ID: optionalEnvString(),
-  YOOKASSA_SECRET_KEY: optionalEnvString(),
-  YOOKASSA_WEBHOOK_SECRET: optionalEnvString(),
-  CRYPTOBOT_TOKEN: optionalEnvString(),
-  CRYPTOBOT_WEBHOOK_SECRET: optionalEnvString(),
-
   // Love & Pay (MVP) — RUB-acquiring; preview = pk_test_*, prod = pk_live_*
   LOVEANDPAY_API_KEY: optionalEnvString(),
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
@@ -126,9 +118,6 @@ const serverEnvSchema = z.object({
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
-  // accountId неявен в API-ключе и провайдеру не передаётся; оставлен для обратной
-  // совместимости env, в коде НЕ используется (проверить и убрать после live-вызова).
-  PAYSPACE_ACCOUNT_ID: optionalEnvString(),
   // HMAC-секрет подписи исходящих запросов (X-Signature). Задан в кабинете → подпись
   // обязательна для всех запросов.
   PAYSPACE_REQUEST_SECRET: optionalEnvString(),
@@ -186,7 +175,9 @@ const serverEnvSchema = z.object({
 
   // Fallback USDT→RUB курс, если публичный endpoint Rapira временно недоступен.
   // Значение — рубли за 1 USDT; живой `askPrice` Rapira имеет приоритет.
-  RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(77),
+  // 81 — решение владельца 2026-07-19 (M-14: прежний дефолт 77 занижал цену
+  // при сбое Rapira и съедал маржу); при дрейфе рынка обновлять env/дефолт.
+  RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(81),
 
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
   INTERNAL_API_TOKEN: optionalEnvString(),
@@ -231,20 +222,13 @@ const serverEnvSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).optional(),
 });
 
-const clientEnvSchema = z.object({
-  NEXT_PUBLIC_SENTRY_DSN: optionalUrl(),
-  NEXT_PUBLIC_APP_URL: optionalUrl(),
-});
-
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
-export type ClientEnv = z.infer<typeof clientEnvSchema>;
 
 // -------------------------------------------------------------------------
 // Lazy-парсинг
 // -------------------------------------------------------------------------
 
 let cachedServerEnv: ServerEnv | null = null;
-let cachedClientEnv: ClientEnv | null = null;
 
 function formatIssues(issues: z.ZodIssue[]): string {
   return issues
@@ -262,29 +246,13 @@ export function getServerEnv(): ServerEnv {
   const parsed = serverEnvSchema.safeParse(process.env);
   if (!parsed.success) {
     const msg = `Invalid server env:\n${formatIssues(parsed.error.issues)}`;
-    console.error(msg);
+    // Не pino (L-8): env валидируется на bootstrap ДО инициализации логгера —
+    // logger.ts сам зависит от serverEnv, console тут единственный канал.
+    process.stderr.write(`${msg}\n`);
     throw new Error(msg);
   }
   cachedServerEnv = parsed.data;
   return cachedServerEnv;
-}
-
-export function getClientEnv(): ClientEnv {
-  if (cachedClientEnv) return cachedClientEnv;
-
-  // В браузере process.env содержит только NEXT_PUBLIC_* — inline на build-time.
-  const source = {
-    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
-    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
-  };
-  const parsed = clientEnvSchema.safeParse(source);
-  if (!parsed.success) {
-    const msg = `Invalid client env:\n${formatIssues(parsed.error.issues)}`;
-    console.error(msg);
-    throw new Error(msg);
-  }
-  cachedClientEnv = parsed.data;
-  return cachedClientEnv;
 }
 
 /** Proxy с ленивым разрешением — можно писать `serverEnv.SUPABASE_URL`. */
@@ -293,9 +261,3 @@ export const serverEnv = new Proxy({} as ServerEnv, {
     return getServerEnv()[key as keyof ServerEnv];
   },
 }) as ServerEnv;
-
-export const clientEnv = new Proxy({} as ClientEnv, {
-  get(_target, key: string | symbol) {
-    return getClientEnv()[key as keyof ClientEnv];
-  },
-}) as ClientEnv;
