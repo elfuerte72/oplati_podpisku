@@ -6,6 +6,38 @@
 
 ---
 
+## 2026-07-19 — Волна аудита: M-11…M-15 + LOW-чистка (L-2…L-20)
+
+Одной веткой (3 фазы, каждая с ревью и полным сьютом; web 401 / types 105 / db 28).
+
+### Fixed
+
+- **M-14**: запасной курс USDT→RUB при недоступной Rapira поднят 77 → 81 ₽.
+- **M-15**: telegram_id владельца удалён из кода — получатель поддержки только
+  из env (`SUPPORT_OPERATOR_CHAT_ID` задан на prod+preview); не задан → Sentry.
+- **L-4**: при захоронении просроченного заказа клеймится и его pending-платёж.
+- **L-5**: `payOrder` отдаёт ссылку строго живого (pending) инвойса.
+- **L-6**: таймаут `POST /invoices` L&P больше не ретраится (риск двойного счёта).
+- **L-10**: «Действует до» карты — реальный `exp_date` из PaySpace (fallback 180д).
+
+### Changed
+
+- **M-11**: позы маскота PNG (2.16 MB) → WebP (310 KB), `ASSET_VERSION=3`.
+- **M-12**: миграция 0023 — частичные индексы под кроны renewal-reminder и
+  referral-recovery (`orders.fulfilled_at WHERE completed`, `orders.paid_at`).
+- **M-13**: новый cron `retention` (04:15) — переписка старше 90 дней удаляется,
+  `payments.raw_payload` старше 180 дней очищается; `order_events` не трогаются.
+- **L-9**: мёртвые actions `repeat`/`operator` удалены из `/api/cabinet`.
+- **L-20**: callback тарифа — стабильный ключ `period:usdCents` вместо индекса.
+- Чистка: L-3 (markActive), L-7/8 (доки/stderr), L-11 (env.server), L-12
+  (tool-cards.ts), L-13 (единый formatUsd), L-15/16 (мёртвые env/экспорты),
+  L-17 (смоук-скрипты помечены устаревшими), L-18 (мусор в корне), L-19
+  (GitHub Action пинг dev-Supabase), **L-14: тесты включены в `pnpm typecheck`**.
+- Тесты: +T-1 (repeat_confirm/23505/storedInvoice), +T-3 (expire-payments),
+  +T-4 (payOrder/extractInvoiceLink), retention, поддержка без оператора.
+
+---
+
 ## 2026-07-19 — Понятное уведомление об истёкшем заказе + фикс ложных алёртов прокси
 
 ### Fixed
