@@ -5,12 +5,12 @@ import * as Sentry from '@sentry/nextjs';
 import {
   appendOrderEvent,
   findCardByIdForUser,
+  findPendingPaymentByOrderId,
   getDb,
   getOrderById,
   getOrCreateActiveConversation,
   getServiceById,
   getUserProfileById,
-  findPaymentsByOrderId,
   hasRecentOrderEvent,
 } from '@oplati/db';
 import { orderParameters, type OrderParameters } from '@oplati/types';
@@ -56,7 +56,7 @@ export type PayOrderResult =
     };
 
 /** Достаёт платёжную ссылку из сохранённого invoice (для уже выставленного счёта). */
-function extractInvoiceLink(
+export function extractInvoiceLink(
   rawPayload: Record<string, unknown> | null,
 ): { paymentUrl: string; qrPayload: string | null; expiresAt: string | null } | null {
   if (!rawPayload || typeof rawPayload !== 'object') return null;
@@ -96,12 +96,12 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
 
   // Счёт уже выставлен (pending_payment) — отдаём существующую ссылку, не плодим
   // второй invoice. `/api/payments/create` всё равно отверг бы повторный вызов (409).
+  // Строго ЖИВОЙ платёж (L-5 аудита): нефильтрованный список мог отдать ссылку
+  // старого failed/expired инвойса — клиент оплатил бы мёртвый счёт.
   if (order.status === 'pending_payment') {
-    const payments = await findPaymentsByOrderId(db, orderId);
-    for (const payment of payments) {
-      const link = extractInvoiceLink(payment.rawPayload);
-      if (link) return { ok: true, ...link };
-    }
+    const pending = await findPendingPaymentByOrderId(db, orderId);
+    const link = pending ? extractInvoiceLink(pending.rawPayload) : null;
+    if (link) return { ok: true, ...link };
     return {
       ok: false,
       error: 'invoice_unavailable',

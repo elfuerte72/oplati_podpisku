@@ -74,6 +74,51 @@ describe('LoveAndPayClient.createInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('таймаут POST /invoices НЕ ретраится — второй счёт не создаётся (L-6)', async () => {
+    const abortErr = new Error('This operation was aborted');
+    abortErr.name = 'AbortError';
+    const fetchMock = vi.fn().mockRejectedValue(abortErr);
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      c.createInvoice({
+        amount: 100,
+        currency: 'RUB',
+        description: 'test',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toThrow('aborted');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('таймаут GET (idempotent) ретраится как раньше', async () => {
+    const abortErr = new Error('This operation was aborted');
+    abortErr.name = 'AbortError';
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(abortErr)
+      .mockResolvedValueOnce(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    const invoice = await c.getInvoice('INV-1');
+    expect(invoice.id).toBe('INV-1');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('не ретраит 401', async () => {
     const fetchMock = vi
       .fn()

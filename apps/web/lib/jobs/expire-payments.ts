@@ -3,8 +3,10 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  claimPaymentTerminal,
   deleteExpiredLinkTokens,
   findExpiredPayableOrders,
+  findPendingPaymentByOrderId,
   getDb,
   getServiceById,
   getUserTelegramId,
@@ -42,6 +44,15 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
         eventType: 'order_expired',
         payload: { shortId: order.shortId },
       });
+
+      // L-4 аудита: висящий pending-платёж захороненного заказа клеймим тем же
+      // проходом (pending → failed атомарным условным UPDATE) — иначе он вечно
+      // числится «живым» и попадает в окно poll-payment. Гонку с оплатой
+      // разруливает сам claim: уже succeeded платёж он не тронет.
+      const pendingPayment = await findPendingPaymentByOrderId(db, order.id);
+      if (pendingPayment) {
+        await claimPaymentTerminal(db, pendingPayment.id, log);
+      }
 
       const telegramId = await getUserTelegramId(db, order.userId);
       if (telegramId) {

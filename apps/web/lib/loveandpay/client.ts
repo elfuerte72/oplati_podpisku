@@ -16,6 +16,8 @@ import { signRequest } from './sign.ts';
  * - HMAC v2 подпись исходящих (см. `./sign.ts`).
  * - `fetch` всегда с `AbortController` (timeout 30s — L&P медленный).
  * - Retry для 429/5xx: max 3, exponential backoff (500ms, 1s, 2s). 400/401/403 — no-retry.
+ *   Таймаут (AbortError) НЕ ретраится для POST (L-6: /invoices не идемпотентен —
+ *   повтор мог бы создать второй счёт), для GET — ретраится.
  * - Zod-парсинг ответов через `@oplati/types`. Контракт-дрифт → `LoveAndPayContractError`.
  *
  * Singleton через `getLoveAndPayClient()` в `./index.ts` (lazy init, чтобы build
@@ -238,12 +240,19 @@ export class LoveAndPayClient {
         throw apiErr;
       } catch (err) {
         clearTimeout(timeoutId);
-        // AbortError / network: ретраим как 5xx.
+        // Network-ошибка (соединение не установилось — запрос до сервера не
+        // дошёл): ретраим как 5xx. Таймаут (AbortError) — ретраим только GET
+        // (L-6 аудита): POST /invoices не идемпотентен, L&P мог успеть создать
+        // счёт после нашего обрыва — повтор выставил бы клиенту второй invoice.
+        // Осиротевший счёт не страшен: клиент жмёт «Оплатить» ещё раз, а
+        // повторный confirm идемпотентно вернёт живой pending-инвойс.
         const isAbort = err instanceof Error && err.name === 'AbortError';
         const isContract = err instanceof LoveAndPayContractError;
+        const timeoutRetryAllowed = method === 'GET';
         if (
           !isContract &&
-          (isAbort || (err instanceof TypeError && /fetch/i.test(err.message))) &&
+          ((isAbort && timeoutRetryAllowed) ||
+            (err instanceof TypeError && /fetch/i.test(err.message))) &&
           attempt < MAX_RETRIES - 1
         ) {
           const backoffMs = 500 * Math.pow(2, attempt);
