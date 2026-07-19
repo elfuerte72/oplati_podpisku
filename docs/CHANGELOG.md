@@ -35,6 +35,14 @@
   (GitHub Action пинг dev-Supabase), **L-14: тесты включены в `pnpm typecheck`**.
 - Тесты: +T-1 (repeat_confirm/23505/storedInvoice), +T-3 (expire-payments),
   +T-4 (payOrder/extractInvoiceLink), retention, поддержка без оператора.
+- Пост-ревью волны (независимый ревьюер): восстановлен алёрт «оплата пришла по
+  захороненному счёту» (`paid_after_terminal` → DM + Sentry; регресс L-4),
+  срок карты — конец месяца по Москве (20:59:59Z), fail-fast на дубль ключа
+  тарифа в seed (L-20), реальный telegram_id владельца убран из тестовых фикстур.
+- Документация прибрана: живая справка в `docs/`, история (старые планы,
+  отчёты аудитов, мокапы) — в `docs/history/`; новый `docs/BACKLOG.md` с
+  отложенными задачами (CSP enforce, внешний мониторинг VPS, E2/E3 рефералки,
+  VCC-preflight, forum-topics).
 
 ---
 

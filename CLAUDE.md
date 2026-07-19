@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Источник правды — код + этот файл.** Старая спецификация (24 файла в `docs/`, спека-first workflow, ai-factory) удалена 2026-06-10 — история в git. Текущая `docs/` — справочная документация: [`docs/architecture.md`](docs/architecture.md) (архитектура и устройство кодовой базы), [`docs/database.html`](docs/database.html) (как работает БД), [`docs/ai-cost-protection.md`](docs/ai-cost-protection.md) (слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов), [`docs/incidents.md`](docs/incidents.md) (журнал инцидентов и отложенных рисков — новые инциденты фиксировать там), [`docs/audit-2026-07-18-fix-plan.md`](docs/audit-2026-07-18-fix-plan.md) (ТЗ по находкам полного аудита: статусы чекбоксами, фиксы по Prove-It), [`docs/CHANGELOG.md`](docs/CHANGELOG.md). Если поведение не очевидно из кода — спросите владельца, не додумывайте.
+**Источник правды — код + этот файл.** Старая спецификация (24 файла в `docs/`, спека-first workflow, ai-factory) удалена 2026-06-10 — история в git. Текущая `docs/` — справочная документация: [`docs/architecture.md`](docs/architecture.md) (архитектура и устройство кодовой базы), [`docs/database.html`](docs/database.html) (как работает БД), [`docs/ai-cost-protection.md`](docs/ai-cost-protection.md) (слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов), [`docs/incidents.md`](docs/incidents.md) (журнал инцидентов и отложенных рисков — новые инциденты фиксировать там), [`docs/audit-2026-07-18-fix-plan.md`](docs/audit-2026-07-18-fix-plan.md) (ТЗ по находкам полного аудита: статусы чекбоксами, фиксы по Prove-It), [`docs/CHANGELOG.md`](docs/CHANGELOG.md) (история разработки — вести обязательно), [`docs/BACKLOG.md`](docs/BACKLOG.md) (осознанно отложенные задачи: CSP enforce, внешний мониторинг VPS и др.), [`docs/LOVEANDPAY_API_ACCESS_SETUP.md`](docs/LOVEANDPAY_API_ACCESS_SETUP.md). Исторические документы (старые планы, отчёты аудитов, мокапы) — в `docs/history/`, не удалять: это история фиксов. Если поведение не очевидно из кода — спросите владельца, не додумывайте.
 
 ## О проекте
 
@@ -70,7 +70,7 @@ apps/web/          Next.js 16 — единый деплой: веб-чат (page
 packages/types/    Zod-схемы и state machine заказа — источник правды контрактов
 packages/db/       Drizzle schema (src/schema.ts, 16 таблиц) + repositories + migrations/
 packages/agent/    AI-агент (runAgent/runAgentNoTools), промпты, tool-схемы; НЕ импортирует db
-docs/              справочная документация (architecture.md, database.html, CHANGELOG.md)
+docs/              справочная документация (architecture, CHANGELOG, BACKLOG, incidents) + history/ (архив)
 ```
 
 Таблицы БД: `users`, `link_tokens`, `staff`, `conversations`, `messages`, `services` (каталог, без цен; RLS public-read только для `is_active=true`), `orders`, `order_events`, `payments`, `cards`, `attachments`, `ai_usage_daily` (дневной счётчик токенов), `referral_partners` (профиль/статус партнёра), `referral_accruals` (append-only ledger начислений+бонусов), `referral_payouts` (заявки на вывод; `method`/`fee_usd_cents`/`destination` — реквизиты и комиссия, Этап E, nullable), `referral_monthly_stats` (агрегаты прогрессии, `PK(user_id, month)`). RLS включён.
