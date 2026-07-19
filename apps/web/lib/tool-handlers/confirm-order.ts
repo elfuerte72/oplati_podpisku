@@ -133,7 +133,10 @@ export async function confirmOrder(input: {
   log.info({ event: 'tool.confirm_order.start', orderId: input.orderId });
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  // 45с < maxDuration=60 у payments/create и с запасом внутри maxDuration=90
+  // вызывающих роутов (/api/chat, /api/bot) — self-call не должен переживать
+  // собственную функцию (M-6 аудита).
+  const timeoutId = setTimeout(() => controller.abort(), 45_000);
   try {
     const resp = await fetch(url, {
       method: 'POST',

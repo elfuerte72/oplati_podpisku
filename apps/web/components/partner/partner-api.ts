@@ -1,20 +1,26 @@
 'use client';
 
 import type { ReferralSnapshot } from '@/lib/cabinet/referral-types';
+import {
+  referralErrorResponseSchema,
+  referralPayoutResponseSchema,
+  referralSnapshotResponseSchema,
+  type ReferralPayoutResponse,
+} from '@/lib/cabinet/referral-api-schemas';
 
 /**
  * Клиент `/api/cabinet/referral` — переиспользуется обеими поверхностями:
  * сайт `/partner` (auth по cookie, `initData` опускается) и секция мини-аппа
  * (передаёт `initData`). Никаких токенов на клиенте — авторизация в роуте.
+ * Ответы парсятся Zod-схемами из `referral-api-schemas` (M-9 аудита: раньше
+ * здесь были `as`-касты при том, что близнец `cabinet-api.ts` парсит схемами).
  */
 
 export type SnapshotResult =
   | { ok: true; snapshot: ReferralSnapshot }
   | { ok: false; error: string; status: number };
 
-export type PayoutResult =
-  | { ok: true; payoutId: string; amountUsdCents: number }
-  | { ok: false; error: string; minPayoutUsdCents?: number; balanceUsdCents?: number };
+export type PayoutResult = ReferralPayoutResponse;
 
 async function postReferral(body: Record<string, unknown>): Promise<{ status: number; json: unknown }> {
   const res = await fetch('/api/cabinet/referral', {
@@ -31,16 +37,22 @@ async function postReferral(body: Record<string, unknown>): Promise<{ status: nu
   return { status: res.status, json };
 }
 
+/** Код ошибки из тела ответа; `unknown`, если тело не наш контракт. */
+function errorCode(json: unknown): string {
+  const parsed = referralErrorResponseSchema.safeParse(json);
+  return parsed.success ? parsed.data.error : 'unknown';
+}
+
 export async function fetchReferralSnapshot(initData?: string): Promise<SnapshotResult> {
   const { status, json } = await postReferral({
     action: 'snapshot',
     ...(initData ? { initData } : {}),
   });
-  const body = json as { ok?: boolean; snapshot?: ReferralSnapshot; error?: string } | null;
-  if (body?.ok && body.snapshot) {
-    return { ok: true, snapshot: body.snapshot };
+  const parsed = referralSnapshotResponseSchema.safeParse(json);
+  if (parsed.success) {
+    return { ok: true, snapshot: parsed.data.snapshot };
   }
-  return { ok: false, error: body?.error ?? 'unknown', status };
+  return { ok: false, error: errorCode(json), status };
 }
 
 export async function requestPayout(amountUsdCents: number, initData?: string): Promise<PayoutResult> {
@@ -49,7 +61,7 @@ export async function requestPayout(amountUsdCents: number, initData?: string): 
     amountUsdCents,
     ...(initData ? { initData } : {}),
   });
-  const body = json as PayoutResult | null;
-  if (body && 'ok' in body) return body;
-  return { ok: false, error: 'unknown' };
+  const parsed = referralPayoutResponseSchema.safeParse(json);
+  if (parsed.success) return parsed.data;
+  return { ok: false, error: errorCode(json) };
 }

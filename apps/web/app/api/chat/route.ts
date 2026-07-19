@@ -53,7 +53,10 @@ import { toAgentHistory } from '@/lib/chat/history';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const preferredRegion = 'fra1';
-export const maxDuration = 30;
+// 90с, а не 30 (M-6 аудита): tool-loop может внутри хода сделать self-call
+// payments/create (у того maxDuration=60, свой таймаут 45с) — 30с обрезали бы
+// chat-функцию ПОСЛЕ создания инвойса, но до записи usage и ответа клиенту.
+export const maxDuration = 90;
 
 const log = childLogger('web-chat');
 const dbLog = childLogger('db');

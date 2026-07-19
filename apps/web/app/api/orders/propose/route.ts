@@ -43,6 +43,8 @@ const bodySchema = z
 /** HTTP-статус по типу доменной ошибки proposeFromCatalog. */
 const ERROR_STATUS: Record<ProposeFromCatalogError, number> = {
   service_not_found: 404,
+  // Битая pricing_policy — проблема наших данных, не клиента (M-7).
+  service_unavailable: 503,
   tier_not_found: 404,
   amount_required: 400,
   order_cap_exceeded: 429,

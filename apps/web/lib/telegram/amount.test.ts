@@ -62,6 +62,35 @@ describe('parseCustomAmountUsd', () => {
   });
 });
 
+describe('parseCustomAmountUsd — запятая-разделитель тысяч (M-5 аудита)', () => {
+  it('«1,000» — разделитель тысяч, НЕ $1', () => {
+    expect(parseCustomAmountUsd('1,000', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 100_000 });
+    // Для обычного сервиса $1000 выше потолка $500 → invalid (переспросить),
+    // но ни в коем случае НЕ ok на $1.
+    expect(parseCustomAmountUsd('1,000', NORMAL)).toEqual({ kind: 'invalid' });
+  });
+
+  it('«2,500» для высоколимитного → $2500', () => {
+    expect(parseCustomAmountUsd('2,500', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 250_000 });
+  });
+
+  it('«1,000.50» — тысячи + десятичная точка', () => {
+    expect(parseCustomAmountUsd('1,000.50', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 100_050 });
+  });
+
+  it('«1,5» остаётся десятичной дробью', () => {
+    expect(parseCustomAmountUsd('1,5', NORMAL)).toEqual({ kind: 'ok', usdCents: 150 });
+  });
+
+  it('«1,00» — двусмысленно (обрубленные тысячи?) → invalid, переспросить', () => {
+    expect(parseCustomAmountUsd('1,00', NORMAL)).toEqual({ kind: 'invalid' });
+  });
+
+  it('«1.000,50» (европейский формат) → invalid, не misparse', () => {
+    expect(parseCustomAmountUsd('1.000,50', HIGH_VALUE)).toEqual({ kind: 'invalid' });
+  });
+});
+
 describe('parseCustomAmountUsd — высоколимитные сервисы (до $5000)', () => {
   it('сумма >$500 проходит для Airbnb/Booking', () => {
     expect(parseCustomAmountUsd('610', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 61_000 });
