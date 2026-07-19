@@ -62,6 +62,22 @@ describe('alertOnLoveAndPayProxyDown (H-3: SPOF-мониторинг squid-пр�
     expect(h.notifyOpsMock).not.toHaveBeenCalled();
   });
 
+  it('редиректы НЕ follow-ятся: redirect manual + 3xx = прокси жив (регресс 2026-07-19)', async () => {
+    // Реальный кейс: origin L&P стал отвечать 307 → цепочка редиректов →
+    // fetch с follow бросал «redirect count exceeded» → ложный «прокси лежит»
+    // всю ночь при живом VPS. Сам 3xx-ответ ПРИШЁЛ через прокси = транспорт жив.
+    const fetchImpl = okFetch(307);
+
+    await alertOnLoveAndPayProxyDown({ fetchImpl });
+
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
+    expect(h.notifyOpsMock).not.toHaveBeenCalled();
+    const init = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[1] as
+      | RequestInit
+      | undefined;
+    expect(init?.redirect).toBe('manual');
+  });
+
   it('прокси лежит (сетевая ошибка) → Sentry-алёрт + DM владельцу, без секретов прокси', async () => {
     await alertOnLoveAndPayProxyDown({ fetchImpl: downFetch() });
 
