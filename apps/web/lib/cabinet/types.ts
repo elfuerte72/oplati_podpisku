@@ -80,8 +80,6 @@ export type OrderSummary = {
   expiresAt: string | null;
   /** Можно ли оплатить заказ из кабинета (кнопка «Оплатить»). */
   payable: boolean;
-  /** Есть ли каталожный сервис — определяет доступность «Повторить заказ». */
-  repeatable: boolean;
 };
 
 /**

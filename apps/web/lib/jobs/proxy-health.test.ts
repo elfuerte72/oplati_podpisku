@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
     LOVEANDPAY_PROXY_URL: undefined as string | undefined,
     LOVEANDPAY_BASE_URL: 'https://api.loveandpay.io/api/v1',
   },
-  notifyOpsMock: vi.fn(async () => {}),
+  notifyOpsMock: vi.fn(async (_text: string) => {}),
 }));
 
 vi.mock('../env.server.ts', () => ({ serverEnv: h.env }));

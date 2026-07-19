@@ -26,7 +26,7 @@ import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
 import { ThemeToggle } from './ThemeToggle';
 import { StartScreen } from './StartScreen';
-import { parseToolCards, type ChatCard } from './toolCards';
+import { parseToolCards, type ChatCard } from './tool-cards';
 
 type ChatItem =
   | { kind: 'start'; id: string }

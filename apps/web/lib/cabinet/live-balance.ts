@@ -2,6 +2,13 @@ import 'server-only';
 
 import { syncCardBalance, type Card, type DB } from '@oplati/db';
 
+/**
+ * Карта снапшота, обогащённая live-данными PaySpace: `liveExpDate` (MM/YY) —
+ * реальный срок действия с самой карты (L-10 аудита; расчётный fallback
+ * createdAt+180д остаётся для карт без live-ответа).
+ */
+export type CardWithLive = Card & { liveExpDate?: string };
+
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 import { childLogger } from '../logger.ts';
 
@@ -58,7 +65,7 @@ async function withBudget<T>(promise: Promise<T>, budgetMs: number): Promise<T |
  * список без изменений: показать последний известный баланс лучше, чем уронить
  * кабинет.
  */
-export async function withLiveBalance(db: DB, cards: Card[]): Promise<Card[]> {
+export async function withLiveBalance(db: DB, cards: Card[]): Promise<CardWithLive[]> {
   const primary = pickPrimaryCard(cards);
   if (!primary || !isPaySpaceConfigured()) return cards;
 
@@ -71,7 +78,10 @@ export async function withLiveBalance(db: DB, cards: Card[]): Promise<Card[]> {
       log.warn({ event: 'cabinet.live_balance.budget_exceeded', cardId: primary.id });
       return cards;
     }
-    if (info.balanceUsdCents === primary.balanceUsdCents) return cards;
+    // Реальный срок действия карты — из того же ответа (L-10), баланс ниже.
+    const withExp = (list: Card[]): CardWithLive[] =>
+      list.map((c) => (c.id === primary.id ? { ...c, liveExpDate: info.expDate } : c));
+    if (info.balanceUsdCents === primary.balanceUsdCents) return withExp(cards);
 
     // Кэшируем свежее значение compare-and-set'ом: если параллельно прошёл
     // topup/withdraw (issue-card в момент просмотра кабинета), наш live-снимок
@@ -85,9 +95,9 @@ export async function withLiveBalance(db: DB, cards: Card[]): Promise<Card[]> {
     );
     if (!applied) {
       log.info({ event: 'cabinet.live_balance.cas_skipped', cardId: primary.id });
-      return cards;
+      return withExp(cards);
     }
-    return cards.map((c) =>
+    return withExp(cards).map((c) =>
       c.id === primary.id ? { ...c, balanceUsdCents: info.balanceUsdCents } : c,
     );
   } catch (err) {

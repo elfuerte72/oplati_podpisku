@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Полный технический аудит Оплатишки — 11 июля 2026</title>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --paper: #fffdf8;
+      --ink: #18181b;
+      --muted: #64615b;
+      --line: #d8d1c4;
+      --high: #b42318;
+      --medium: #9a6700;
+      --low: #2563a6;
+      --good: #137a4b;
+      --accent: #0f766e;
+      --code: #20242b;
+      --code-ink: #eff4f6;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    h1, h2, h3, p, li, td, th, dd, code { overflow-wrap: anywhere; }
+    a { color: #075f8c; text-underline-offset: 2px; }
+    header {
+      background: #132f2c;
+      color: #fff;
+      padding: 54px 24px 46px;
+      border-bottom: 8px solid #f0b429;
+    }
+    header .wrap, main, footer { max-width: 1180px; margin: 0 auto; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.7rem); line-height: 1.04; }
+    header p { max-width: 860px; margin: 8px 0; color: #dce9e7; font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 20px; font-size: .92rem; }
+    .meta span { padding: 5px 10px; border: 1px solid #54736f; border-radius: 999px; }
+    main { padding: 30px 20px 72px; }
+    nav {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; gap: 8px; overflow-x: auto;
+      margin: 0 -20px 30px; padding: 10px 20px;
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+    }
+    nav a { white-space: nowrap; padding: 7px 11px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); text-decoration: none; color: var(--ink); font-size: .9rem; }
+    section { margin-top: 46px; scroll-margin-top: 72px; }
+    h2 { margin: 0 0 18px; font-size: 1.75rem; line-height: 1.15; }
+    h3 { margin: 0 0 8px; font-size: 1.15rem; }
+    p { margin: 8px 0 14px; }
+    .lead { font-size: 1.08rem; max-width: 980px; }
+    .grid { display: grid; gap: 16px; }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card, .finding, .callout {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 3px 0 rgba(24, 24, 27, .05);
+    }
+    .score { font-size: 2.2rem; line-height: 1; font-weight: 800; margin-bottom: 8px; }
+    .score-high { color: var(--high); }
+    .score-medium { color: var(--medium); }
+    .score-low { color: var(--low); }
+    .score-good { color: var(--good); }
+    .caption { color: var(--muted); font-size: .9rem; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: .76rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+    .high { color: var(--high); background: #fee4e2; }
+    .medium { color: #744d00; background: #fff0c2; }
+    .low { color: var(--low); background: #e1effe; }
+    .good { color: var(--good); background: #dff5e9; }
+    .finding { margin: 14px 0; border-left-width: 6px; }
+    .finding.high-border { border-left-color: var(--high); }
+    .finding.medium-border { border-left-color: var(--medium); }
+    .finding.low-border { border-left-color: var(--low); }
+    .finding-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .finding-head h3 { margin: 0; }
+    .finding dl { display: grid; grid-template-columns: 130px 1fr; gap: 5px 12px; margin: 12px 0 0; }
+    dt { color: var(--muted); font-weight: 700; }
+    dd { margin: 0; }
+    table { width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #e8e2d7; font-size: .86rem; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .table-wrap { overflow-x: auto; border-radius: 12px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; background: #e9e5dc; border-radius: 4px; padding: 1px 4px; }
+    pre { overflow-x: auto; background: var(--code); color: var(--code-ink); border-radius: 10px; padding: 15px; font-size: .84rem; line-height: 1.5; }
+    pre code { padding: 0; background: none; color: inherit; }
+    ul, ol { margin: 8px 0 14px; padding-left: 23px; }
+    li { margin: 5px 0; }
+    .callout { border-left: 6px solid var(--accent); }
+    .callout.warning { border-left-color: var(--high); }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: stretch; }
+    .flow div { position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; font-size: .88rem; }
+    .flow div:not(:last-child)::after { content: "→"; position: absolute; right: -11px; top: 35%; z-index: 2; font-weight: 800; }
+    .roadmap { counter-reset: step; }
+    .roadmap article { position: relative; padding-left: 54px; margin: 18px 0; }
+    .roadmap article::before { counter-increment: step; content: counter(step); position: absolute; left: 0; top: 0; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: #132f2c; color: white; font-weight: 800; }
+    .muted { color: var(--muted); }
+    .mt-16 { margin-top: 16px; }
+    .mt-18 { margin-top: 18px; }
+    .mt-24 { margin-top: 24px; }
+    footer { padding: 22px 20px 50px; color: var(--muted); border-top: 1px solid var(--line); font-size: .9rem; }
+    @media (max-width: 900px) {
+      .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .flow div:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -17px; }
+    }
+    @media (max-width: 620px) {
+      header { padding-top: 38px; }
+      .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+      .finding dl { grid-template-columns: 1fr; }
+      dt { margin-top: 6px; }
+    }
+    @media print {
+      body { background: white; font-size: 11pt; }
+      nav { display: none; }
+      header { background: white; color: black; border-bottom: 3px solid black; padding: 20px 0; }
+      header p { color: #333; }
+      main { padding: 0; }
+      section { break-inside: avoid; }
+      .finding { break-inside: avoid; box-shadow: none; }
+      a { color: black; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Полный технический аудит «Оплатишки»</h1>
+      <p>Код, транзакционная логика PostgreSQL, безопасность, Supabase, Vercel, производительность, наблюдаемость, зависимости и мёртвый код.</p>
+      <div class="meta">
+        <span>Дата: 11 июля 2026</span>
+        <span>Commit: caa1eaa1f254</span>
+        <span>Ветка: main</span>
+        <span>Аудит: read-only для production</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <nav aria-label="Содержание">
+      <a href="#summary">Резюме</a>
+      <a href="#scope">Методика</a>
+      <a href="#findings">Находки</a>
+      <a href="#database">База данных</a>
+      <a href="#security">Безопасность</a>
+      <a href="#infrastructure">Vercel</a>
+      <a href="#performance">Производительность</a>
+      <a href="#quality">Качество кода</a>
+      <a href="#roadmap">План исправлений</a>
+      <a href="#appendix">Приложение</a>
+    </nav>
+
+    <section id="summary">
+      <h2>1. Управленческое резюме</h2>
+      <p class="lead"><strong>Проект технически работоспособен, а критический денежный путь спроектирован заметно выше среднего:</strong> успешная оплата имеет атомарный claim, переходы заказов централизованы, аудит событий защищён на уровне БД, миграции production полностью совпадают с репозиторием, RLS включён, сборка и 370 тестов проходят. Критических уязвимостей или подтверждённой утечки данных не обнаружено.</p>
+      <p class="lead">До масштабирования и приёма крупных заказов необходимо закрыть четыре риска высокой важности: изоляцию Preview от production-секретов и данных, защиту main/secret scanning, финансовый preflight для заказов до $5000 и противоречие по выдаче PAN/CVC в веб-кабинете. Общий статус: <strong>условно готов к эксплуатации при текущем малом объёме, не готов к безопасному масштабированию без remediation High</strong>.</p>
+
+      <div class="grid grid-4">
+        <div class="card"><div class="score score-high">4</div><strong>High</strong><div class="caption">закрыть до масштабирования</div></div>
+        <div class="card"><div class="score score-medium">12</div><strong>Medium</strong><div class="caption">следующие 2–4 недели</div></div>
+        <div class="card"><div class="score score-low">4</div><strong>Low</strong><div class="caption">технический долг</div></div>
+        <div class="card"><div class="score score-good">370</div><strong>тестов пройдено</strong><div class="caption">95 types + 18 DB + 257 web</div></div>
+      </div>
+
+      <div class="grid grid-3 mt-16">
+        <div class="card"><h3>База данных</h3><p><span class="badge good">сильная сторона</span></p><p>Транзакции оплаты и заказов в основном корректны; live-инварианты чистые; найден один разрыв атомарности terminal-пути.</p></div>
+        <div class="card"><h3>Безопасность</h3><p><span class="badge medium">нужны изменения</span></p><p>Хорошая проверка webhook-подписей, RLS, rate limits и Zod; инфраструктурная изоляция и секрет-гигиена требуют усиления.</p></div>
+        <div class="card"><h3>Качество и скорость</h3><p><span class="badge medium">смешанный результат</span></p><p>Build/typecheck/lint/test зелёные; mobile Lighthouse 68, LCP 7,7 с; есть крупные модули и подтверждённый мёртвый код.</p></div>
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2>2. Объём и методика</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Что проверено</h3>
+          <ul>
+            <li>Весь monorepo: около 33 тыс. строк TypeScript/SQL и конфигурация.</li>
+            <li>Границы пакетов, state machine, платежи L&amp;P, PaySpace, Telegram/Web/Mini App, cron и referral.</li>
+            <li>Production Supabase через MCP: схема, RLS, policies, grants, функции, индексы, advisors, статистика и целостность.</li>
+            <li>Production Vercel через MCP/API/CLI: проект, deployment, env-метаданные, регионы, runtime errors, домены и аналитика.</li>
+            <li>GitHub: workflows, последние runs, branch protection, Dependabot, secret/code scanning.</li>
+            <li>Black-box HTTP-проверки production без платежных или иных изменяющих операций.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Инструменты и проверки</h3>
+          <ul>
+            <li><code>pnpm -r test</code>, свежие <code>turbo typecheck lint build --force</code>.</li>
+            <li><code>pnpm audit --prod</code>, <code>pnpm outdated -r</code>, GitHub Dependabot API.</li>
+            <li>Knip для неиспользуемых файлов/экспортов, Madge для циклов, поиск секретов и опасных паттернов.</li>
+            <li>Lighthouse mobile, повторные HTTP timing и проверка security headers.</li>
+            <li>Ручная трассировка транзакций и отказов между внешними API и БД.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout mt-16">
+        <strong>Ограничения.</strong> Не выполнялись реальные платежи, выпуск/пополнение карт и отправка сообщений production-ботом. Значения секретов не читались и не фиксировались. Vercel runtime log API вернул <code>403</code> для сырых логов; доступна только агрегированная выдача runtime errors. Firewall rules и WAF-конфигурация не были доступны через подключённый Vercel-коннектор. Secret scanning GitHub выключен, поэтому история git проверена только локальными эвристиками, без полноценного historical secret scanner.
+      </div>
+    </section>
+
+    <section id="findings">
+      <h2>3. Реестр находок</h2>
+
+      <article class="finding high-border">
+        <div class="finding-head"><span class="badge high">High · F-01</span><h3>Preview получает production-доступ к Supabase и общим внешним сервисам</h3></div>
+        <p>По live-метаданным Vercel переменные <code>DATABASE_URL</code>, <code>DATABASE_URL_DIRECT</code>, <code>SUPABASE_SERVICE_ROLE_KEY</code> и Anthropic доступны одновременно Production и Preview. Любой доверенный feature-branch, попавший в Preview, исполняется с возможностью обойти RLS и менять production-данные. Git fork protection включён, но он не защищает от ошибки или вредоносного кода в ветке участника команды.</p>
+        <dl><dt>Риск</dt><dd>Утечка/изменение данных, обход RLS, запуск затратных AI-вызовов из preview-кода.</dd><dt>Исправление</dt><dd>Отдельный Supabase project/branch и sandbox-провайдеры для Preview. До миграции — убрать service-role и прямой DB URL из общих Preview, использовать custom environment только для доверенной ветки.</dd><dt>Приоритет</dt><dd>P0, до следующего внешнего preview.</dd></dl>
+      </article>
+
+      <article class="finding high-border">
+        <div class="finding-head"><span class="badge high">High · F-02</span><h3>Public-репозиторий: main не защищён, secret scanning и code scanning выключены</h3></div>
+        <p>GitHub API подтвердил: репозиторий публичный, branch protection для <code>main</code> отсутствует, secret scanning выключен, CodeQL-анализ не настроен. Четыре Actions workflow работают и последние runs зелёные, но прямой push может обойти review и required checks.</p>
+        <dl><dt>Риск</dt><dd>Supply-chain ошибка или компрометация участника сразу попадает в auto-deploy Production.</dd><dt>Исправление</dt><dd>Включить ruleset: PR-only, 1–2 approvals, required Tests/Typecheck/Lint/Security, запрет force push/deletion, signed commits по возможности; включить GitHub secret scanning/push protection и CodeQL.</dd><dt>Доказательство</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/actions">GitHub Actions</a>.</dd></dl>
+      </article>
+
+      <article class="finding high-border">
+        <div class="finding-head"><span class="badge high">High · F-03</span><h3>Заказ до $5000 принимается без резерва или preflight VCC-баланса</h3></div>
+        <p>Для Airbnb, Booking, Steam и Apple App Store сервер разрешает сумму до $5000. Комментарий в коде прямо фиксирует, что PaySpace может упасть уже после приёма RUB, после чего заказ станет <code>failed</code> и потребует ручного возврата. Проверка только дневного количества заказов не ограничивает суммарную финансовую экспозицию.</p>
+        <dl><dt>Риск</dt><dd>Принятые деньги без возможности автоматического исполнения; кассовый и репутационный риск, особенно при нескольких параллельных заказах.</dd><dt>Исправление</dt><dd>До создания L&amp;P invoice выполнять свежий VCC balance preflight с запасом и issue fee; для крупных заказов — атомарная внутренняя reservation/лимит outstanding exposure и ручное подтверждение оператора. До этого вернуть cap $500.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/tool-handlers/propose-order.ts#L65-L85">propose-order.ts:65–85</a>.</dd></dl>
+      </article>
+
+      <article class="finding high-border">
+        <div class="finding-head"><span class="badge high">High · F-04</span><h3>Полные PAN/CVC выдаются через веб-кабинет вопреки зафиксированному инварианту</h3></div>
+        <p>Mini App action <code>card-details</code> после проверки Telegram initData и ownership получает полные реквизиты из PaySpace и возвращает их JSON-ответом в браузер. Реализация содержит хорошие меры: <code>server-only</code>, live-fetch, отсутствие записи в БД/лог, <code>cache-control: no-store</code>. Однако AGENTS и архитектурная модель утверждают, что единственный путь полных реквизитов — Telegram-сообщение.</p>
+        <dl><dt>Риск</dt><dd>Незапланированное расширение PCI/секретной поверхности: браузер, WebView, расширения, скриншоты, клиентская телеметрия и future-XSS.</dd><dt>Исправление</dt><dd>Либо удалить action и сохранить single-channel модель, либо формально принять новую модель: threat model, короткоживущий one-time reveal, запрет повторного показа, CSP, cache-control + pragma, клиентская телеметрия без payload и обновление документации.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/cabinet/card-secrets.ts#L10-L58">card-secrets.ts:10–58</a>, <a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/app/api/cabinet/route.ts#L158-L164">route.ts:158–164</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-05</span><h3>Terminal payment claim и переход заказа не объединены транзакцией</h3></div>
+        <p><code>processInvoiceTerminal</code> сначала коммитит <code>payments.pending → failed</code>, затем отдельно вызывает <code>transitionOrder(expired|cancelled)</code>. Если второй шаг падает, повтор webhook увидит payment не pending и навсегда пропустит переход заказа. Исключение дополнительно проглатывается после warning.</p>
+        <dl><dt>Риск</dt><dd>Payment=<code>failed</code>, order=<code>pending_payment</code>; cancelled может ждать общего expire cron, а диагностика зависит от логов.</dd><dt>Исправление</dt><dd>Передавать <code>DBLike</code> и выполнять conditional claim + order transition в одной <code>db.transaction</code>; добавить PGlite integration test с ошибкой между шагами и recovery query.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/loveandpay/handlers.ts#L225-L263">handlers.ts:225–263</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-06</span><h3>PII/секрет-редакция неполна, пользовательское описание логируется открыто</h3></div>
+        <p>Pino/Sentry denylist не покрывает <code>pan</code>, <code>cvc</code>, <code>cvv</code>, <code>cardNo</code>, <code>initData</code>, <code>signature</code> и exception/context strings. Кроме того, <code>customDescription</code> и <code>serviceName</code> пишутся в production-лог, хотя это свободный пользовательский текст и может содержать PII.</p>
+        <dl><dt>Риск</dt><dd>Утечка персональных или карточных данных через логи/Sentry при будущем refactor или неожиданном provider error.</dd><dt>Исправление</dt><dd>Не логировать свободный текст; перейти к allowlist-полям событий; расширить рекурсивный scrubber и обрабатывать exception values, contexts, query key <code>s</code>; добавить canary-тесты со всеми вариантами имён секретных полей.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/logger.ts#L17-L55">logger.ts:17–55</a>, <a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/sentry.ts#L13-L74">sentry.ts:13–74</a>, <a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/lib/tool-handlers/propose-order.ts#L146-L154">propose-order.ts:146–154</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-07</span><h3>Production-функции фактически исполняются в iad1, а БД находится в eu-west-1</h3></div>
+        <p>В коде 25 route handlers экспортируют <code>preferredRegion = 'fra1'</code>, однако live Vercel project показывает <code>serverlessFunctionRegion: iad1</code>, а ответы API содержат <code>x-vercel-id: fra1::iad1::…</code>. Supabase расположен в <code>eu-west-1</code>. Это подтверждает трансатлантический compute→DB hop.</p>
+        <dl><dt>Риск</dt><dd>Повышенная latency каждой последовательности SQL-запросов, длиннее блокировки/транзакции и хуже UX.</dd><dt>Исправление</dt><dd>Задать project-level <code>regions: ["fra1"]</code> в <code>apps/web/vercel.json</code>, redeploy и повторно проверить <code>x-vercel-id</code>; измерить p95 API до/после.</dd><dt>Справка</dt><dd><a href="https://vercel.com/docs/project-configuration#regions">Vercel regions</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-08</span><h3>Секрет Sentry relay передаётся в query string</h3></div>
+        <p>Endpoint осознанно принимает <code>?s=SECRET</code>; комментарий подтверждает попадание значения в Vercel access logs. Sentry scrubber не редактирует ключ <code>s</code>.</p>
+        <dl><dt>Риск</dt><dd>Секрет сохраняется в логах, истории инструментов и URL; его кража позволяет спамить Telegram alert chat.</dd><dt>Исправление</dt><dd>Предпочесть webhook-посредник с header auth либо подписанный body; если провайдер ограничен — отдельный длинный one-purpose token, строгий rate limit, немедленная ротация и явная URL-redaction.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/app/api/alerts/sentry/route.ts#L45-L53">route.ts:45–53</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-09</span><h3>Supabase: mutable search_path и избыточные table grants</h3></div>
+        <p>Security Advisor отмечает <code>public.forbid_order_events_mutation</code> как функцию с mutable <code>search_path</code>. Функция доступна на EXECUTE публичным ролям. Также anon/authenticated имеют широкие grants на большинство таблиц, хотя RLS без policies сейчас фактически всё запрещает.</p>
+        <dl><dt>Риск</dt><dd>Defense-in-depth слабее: будущая policy или SECURITY DEFINER-функция может неожиданно расширить доступ; mutable search path — стандартный риск подмены объектов.</dd><dt>Исправление</dt><dd><code>ALTER FUNCTION ... SET search_path = ''</code> и schema-qualified объекты; revoke EXECUTE у PUBLIC/anon/authenticated; отозвать ненужные DML/TRUNCATE/TRIGGER grants и оставить только требуемый SELECT каталога.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/packages/db/migrations/0018_order_events_append_only_trigger.sql#L7-L14">migration 0018:7–14</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-10</span><h3>Восемь внешних ключей без индексов; pool max=10 на serverless-инстанс</h3></div>
+        <p>Performance Advisor перечисляет FK без покрывающих индексов: <code>attachments.message_id</code>, <code>attachments.order_id</code>, <code>messages.staff_id</code>, <code>orders.card_id</code>, <code>orders.conversation_id</code>, <code>orders.service_id</code>, <code>orders.supervisor_id</code>, <code>referral_accruals.source_user_id</code>. DB-клиент допускает 10 соединений на каждый warm function instance при live <code>max_connections=60</code>.</p>
+        <dl><dt>Риск</dt><dd>Медленные cascade/restrict-проверки и lookup при росте; connection pressure во время всплеска функций.</dd><dt>Исправление</dt><dd>Добавить индексы, подтверждённые query workload; уменьшить app pool до 1–3 для transaction pooler и нагрузочно проверить. Не удалять пока «unused» индексы — данных мало.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/packages/db/src/index.ts#L14-L22">db/index.ts:14–22</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-11</span><h3>Preview APP_URL отсутствует; в runtime есть повторяющиеся ошибки</h3></div>
+        <p>Vercel Runtime Errors за 7 дней показывает preview-ошибку валидации <code>APP_URL Required</code> на <code>/api/profile</code> и <code>/api/health</code>. Production также накопил 149 событий Node <code>DEP0169 url.parse</code> по 47 пользователям и разным routes.</p>
+        <dl><dt>Риск</dt><dd>Неработающие preview smoke tests и шум, скрывающий реальные ошибки.</dd><dt>Исправление</dt><dd>Задать Preview APP_URL через Vercel system URL/branch-aware resolver; найти транзитивный источник <code>url.parse</code> и обновить пакет. Добавить alert по росту error cluster.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-12</span><h3>Нет Content-Security-Policy и Permissions-Policy</h3></div>
+        <p>Production корректно отдаёт HSTS, X-Frame-Options, nosniff и Referrer-Policy. CSP намеренно отложен в конфигурации, но после появления browser-path для PAN/CVC эта защита становится существенно важнее.</p>
+        <dl><dt>Риск</dt><dd>Успешная XSS или компрометация клиентского dependency получает более широкие возможности эксфильтрации.</dd><dt>Исправление</dt><dd>Сначала CSP Report-Only с nonce/hash для Next, затем enforce; добавить минимальный Permissions-Policy. Не полагаться только на X-Frame-Options.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/next.config.ts#L8-L25">next.config.ts:8–25</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-13</span><h3>Часть секретов Vercel имеет тип encrypted, а не sensitive</h3></div>
+        <p>Некоторые старые критические переменные, включая DB/service-role/Anthropic, помечены как encrypted, тогда как новые PaySpace/Telegram-секреты — sensitive. Encrypted защищает хранение, но sensitive дополнительно скрывает значение от дальнейшего просмотра через dashboard/API.</p>
+        <dl><dt>Риск</dt><dd>Лишняя доступность production credential для пользователей с доступом к проекту.</dd><dt>Исправление</dt><dd>Пересоздать все секреты как Sensitive, сузить targets, проверить RBAC и audit log; после смены выполнить redeploy и ротацию наиболее привилегированных ключей.</dd><dt>Справка</dt><dd><a href="https://vercel.com/docs/environment-variables/sensitive-environment-variables">Vercel sensitive variables</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-14</span><h3>Mobile performance: Lighthouse 68, LCP 7,7 секунды</h3></div>
+        <p>Свежий production Lighthouse: Performance 68, FCP 3,0 с, LCP/TTI 7,7 с, Speed Index 4,3 с, TBT 20 мс, CLS 0. Главный LCP — <code>/mascot/hero.webp</code>; Lighthouse не видит high fetch priority, оценивает лишние 26 KiB изображения и 62 KiB unused JS.</p>
+        <dl><dt>Риск</dt><dd>Медленный первый экран на мобильной сети и снижение конверсии первого визита.</dd><dt>Исправление</dt><dd>Явный <code>fetchPriority="high"</code>/корректный preload, точнее <code>sizes</code>, меньший hero variant, lazy-load второго intro-кадра, анализ client bundle. Перепроверить реальным mobile RUM; Speed Insights включён, но данных пока нет.</dd><dt>Код</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/blob/caa1eaa1f254e2a35357a6e6f11b1b8e8769ad89/apps/web/components/intro/IntroOverlay.tsx#L120-L138">IntroOverlay.tsx:120–138</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-15</span><h3>Dependency security backlog расходится с локальным production audit</h3></div>
+        <p><code>pnpm audit --prod</code> нашёл только LOW в <code>@babel/core 7.29.0</code> (fix 7.29.6). GitHub при этом держит 11 open Dependabot alerts, включая Vitest/Vite/esbuild/js-yaml; большая часть относится к dev-server сценариям и неверно помечена GitHub как runtime, но backlog затрудняет оценку реального риска. Security workflow допускает известный critical Vitest advisory.</p>
+        <dl><dt>Риск</dt><dd>Уязвимые локальные dev servers и alert fatigue; реальная новая проблема может затеряться.</dd><dt>Исправление</dt><dd>Обновить Vitest ≥3.2.6 или текущую совместимую major, Vite/transitives и Babel; закрыть/документированно dismiss ложные runtime alerts; не публиковать Vitest/Vite UI в сеть.</dd><dt>Доказательство</dt><dd><a href="https://github.com/elfuerte72/oplati_podpisku/security/dependabot">Dependabot alerts</a>.</dd></dl>
+      </article>
+
+      <article class="finding medium-border">
+        <div class="finding-head"><span class="badge medium">Medium · F-16</span><h3>CI не измеряет coverage и не линтит три package workspace</h3></div>
+        <p>CI запускает тесты, typecheck, web ESLint и dependency audit. Но lint task существует только у <code>apps/web</code>, а coverage threshold отсутствует. Terminal transaction defect не покрыт integration-тестом отказа между claim и transition.</p>
+        <dl><dt>Риск</dt><dd>Регрессии в <code>@oplati/db</code>, <code>@oplati/agent</code> и <code>@oplati/types</code> проходят без lint; зелёное количество тестов не отражает покрытие отказов.</dd><dt>Исправление</dt><dd>Добавить lint scripts всем пакетам, coverage по критическим модулям и mutation/fault-injection тесты для payment/order/card workflows. Required checks закрепить branch ruleset.</dd></dl>
+      </article>
+
+      <div class="table-wrap mt-18">
+        <table>
+          <thead><tr><th>Низкий риск</th><th>Наблюдение</th><th>Рекомендация</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge low">Low · F-17</span></td><td>В live <code>link_tokens</code> 255 просроченных неиспользованных строк; cleanup отсутствует.</td><td>Добавить небольшой cron/batched delete по <code>expires_at</code>, оставить короткий retention для расследований.</td></tr>
+            <tr><td><span class="badge low">Low · F-18</span></td><td>Knip подтверждает неиспользуемый каталог <code>apps/web/lib/supabase/*</code>, зависимости <code>@supabase/ssr</code>/<code>supabase-js</code>, 3 scripts и ряд экспортов.</td><td>Удалить после ручной проверки scripts; это уменьшит supply-chain и bundle/tooling surface.</td></tr>
+            <tr><td><span class="badge low">Low · F-19</span></td><td><code>handle-update.ts</code> — 1789 строк, PartnerCabinet — 957, ChatClient — 644; Madge показывает type/barrel cycles; в agent dispatch есть <code>as any</code>.</td><td>Разделить по use-case, вынести DB types из barrel, заменить dynamic dispatch типизированной map.</td></tr>
+            <tr><td><span class="badge low">Low · F-20</span></td><td>Документация расходится с live/кодом: 12 vs 16 таблиц, fra1 vs iad1, $500 vs $5000, buffer 20% vs default 0, Telegram-only vs Mini App card reveal.</td><td>Обновить AGENTS/architecture/env docs в одном PR после продуктовых решений; автоматизировать проверяемые факты.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="database">
+      <h2>4. База данных и транзакционная логика</h2>
+      <div class="callout">
+        <strong>Итог по БД: хороший.</strong> Все 20 Drizzle migration hashes <strong>байт-в-байт совпали</strong> с live <code>drizzle.__drizzle_migrations</code>. В production 16 public-таблиц, у всех включён RLS. Единственная public policy разрешает только SELECT активных services. Остальные таблицы deny-by-default для anon/authenticated; server-side доступ идёт через доверенный DB/service role.
+      </div>
+
+      <h3 class="mt-24">Успешный платёж: корректный атомарный путь</h3>
+      <div class="flow" role="img" aria-label="Успешный платёж">
+        <div>Подписанный <code>invoice.paid</code></div>
+        <div>Conditional payment claim</div>
+        <div><code>SELECT … FOR UPDATE</code> заказа</div>
+        <div>Order status + event в одной tx</div>
+        <div>Асинхронный issue-card</div>
+      </div>
+      <ul>
+        <li><code>UNIQUE(provider, provider_ref)</code> и partial unique «один pending payment на order» подтверждены live.</li>
+        <li><code>claimPaymentSucceeded</code> выполняет <code>pending → succeeded</code> conditional UPDATE; webhook и poll не дублируют side effects.</li>
+        <li><code>transitionOrderDetailed</code> блокирует заказ, валидирует state machine и записывает status/event в одной транзакции.</li>
+        <li>Создание draft-заказа и события <code>created</code> также атомарно.</li>
+        <li>Issue-card сначала делает claim <code>paid → in_fulfillment</code>, поэтому внешний выпуск at-most-once на уровне приложения.</li>
+      </ul>
+
+      <h3>Live-проверки целостности</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Проверка</th><th>Результат</th><th>Вывод</th></tr></thead>
+          <tbody>
+            <tr><td>Orders без created event</td><td>0</td><td class="good">Норма</td></tr>
+            <tr><td>Succeeded payment при неисполненном order</td><td>0</td><td class="good">Норма</td></tr>
+            <tr><td>Completed order без card</td><td>0</td><td class="good">Норма</td></tr>
+            <tr><td>Stuck <code>in_fulfillment</code> &gt;30 мин</td><td>0</td><td class="good">Норма</td></tr>
+            <tr><td>Stuck <code>paid</code> &gt;10 мин</td><td>0</td><td class="good">Норма</td></tr>
+            <tr><td>JSON keys pan/cvc/cvv/cardNumber</td><td>0</td><td class="good">Полные реквизиты не найдены</td></tr>
+            <tr><td>Просроченные unused link tokens</td><td>255</td><td>Нужен cleanup</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Триггер <code>order_events_append_only</code> live и блокирует UPDATE/DELETE даже для server-role/direct DB. <code>pg_stat_user_tables</code> содержит 3 исторических delete операции; статистика не позволяет определить дату и причину, но текущая защита активна. Рекомендуется после исправления <code>search_path</code> добавить отдельный тест миграции, который ожидает отказ UPDATE/DELETE.</p>
+
+      <h3>Supabase advisors и настройки</h3>
+      <ul>
+        <li>PostgreSQL 17.6, регион <code>eu-west-1</code>, состояние ACTIVE_HEALTHY.</li>
+        <li><code>statement_timeout=2min</code>; <code>lock_timeout=0</code> и <code>idle_in_transaction_session_timeout=0</code>. Для служебных миграций и долгих job стоит установить безопасные локальные timeouts.</li>
+        <li>0 deadlocks и 0 temp files в текущей статистике; 94 rollbacks на ~1,9 млн commits — тревожного сигнала нет.</li>
+        <li>Advisor INFO «RLS enabled, no policy» для server-only таблиц является намеренным deny-by-default, не дефектом.</li>
+      </ul>
+    </section>
+
+    <section id="security">
+      <h2>5. Безопасность</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Что реализовано хорошо</h3>
+          <ul>
+            <li>Telegram secret-token, L&amp;P HMAC/signature и internal/cron secrets проверяются до бизнес-логики; сравнение timing-safe.</li>
+            <li>Black-box: неверный Telegram secret → 401; L&amp;P без подписи → безопасный 200 skipped; cron без auth → 401.</li>
+            <li>Zod на webhook, AI tools, route bodies и provider responses.</li>
+            <li>Rate limit до дорогого AI/записи для web/chat/bot/link; production Upstash env присутствуют.</li>
+            <li>AI budget, Haiku router, tool-loop cap и per-user order cap ограничивают расходы.</li>
+            <li>PAN/CVC не найден в БД; PaySpace raw body защищён non-enumerable полем и redact path.</li>
+            <li>Сессия web использует HttpOnly/Secure/SameSite cookie.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Главные security-действия</h3>
+          <ol>
+            <li>Изолировать Preview и production credentials.</li>
+            <li>Защитить main, включить secret scanning/push protection и CodeQL.</li>
+            <li>Принять решение по browser card reveal; затем CSP.</li>
+            <li>Убрать PII из логов и усилить Sentry scrubber.</li>
+            <li>Сузить Supabase grants и Vercel env targets/types.</li>
+          </ol>
+        </div>
+      </div>
+      <p>Deployment Protection выключен согласно архитектурному решению, чтобы Telegram webhook не перехватывался Vercel. Это допустимо только при сохранении endpoint-level подписей и rate limits. Настройки Vercel Firewall/WAF не удалось прочитать подключённым MCP, поэтому заявленный WAF-слой не считается независимо подтверждённым данным аудитом.</p>
+    </section>
+
+    <section id="infrastructure">
+      <h2>6. Vercel и инфраструктура</h2>
+      <div class="grid grid-3">
+        <div class="card"><h3>Deployment</h3><p><span class="badge good">READY</span></p><p>Production соответствует commit <code>caa1eaa</code>, Node.js 24, plan Pro, project не paused.</p></div>
+        <div class="card"><h3>Домены</h3><p><code>www.oplatishka.com</code> работает; apex делает 308 на www. Default Vercel domain также активен.</p></div>
+        <div class="card"><h3>Наблюдаемость</h3><p>Web Analytics и Speed Insights включены; Speed Insights ещё не имеет данных. Sentry/runtime errors подключены.</p></div>
+      </div>
+
+      <h3 class="mt-24">Конфигурация cron</h3>
+      <p>Vercel plan Pro поддерживает заданные интервалы. Все семь cron route защищены общим auth helper. Расписания соответствуют коду: payment poll, expiry, reminders, recycle, keepalive и referral jobs. Recovery для stuck <code>paid</code> присутствует; отдельного recovery для split terminal transition нет.</p>
+
+      <h3>Live HTTP</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Endpoint</th><th>Результат</th><th>Комментарий</th></tr></thead>
+          <tbody>
+            <tr><td><code>/</code></td><td>200, CDN HIT</td><td>Повторный TTFB 0,74–0,78 с с точки аудита; static prerender.</td></tr>
+            <tr><td><code>/api/health</code></td><td>200</td><td>Функция фактически iad1.</td></tr>
+            <tr><td><code>/api/catalog</code></td><td>200</td><td>Функция фактически iad1.</td></tr>
+            <tr><td><code>/api/profile</code></td><td>200</td><td>Функция фактически iad1.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="performance">
+      <h2>7. Производительность и оптимизация</h2>
+      <div class="grid grid-4">
+        <div class="card"><div class="score">68</div><strong>Performance</strong><div class="caption">Lighthouse mobile</div></div>
+        <div class="card"><div class="score">100</div><strong>Accessibility category</strong><div class="caption">есть 1 experimental serious audit</div></div>
+        <div class="card"><div class="score">100</div><strong>Best Practices</strong><div class="caption">production run</div></div>
+        <div class="card"><div class="score">63</div><strong>SEO</strong><div class="caption">страница намеренно noindex</div></div>
+      </div>
+      <div class="grid grid-2 mt-16">
+        <div class="card">
+          <h3>Core metrics лабораторного прогона</h3>
+          <ul><li>FCP: 3,0 с</li><li>LCP: 7,7 с</li><li>TTI: 7,7 с</li><li>TBT: 20 мс</li><li>CLS: 0</li><li>Transfer: 746 KiB</li></ul>
+        </div>
+        <div class="card">
+          <h3>Приоритет оптимизации</h3>
+          <ol><li>Устранить region mismatch compute↔DB.</li><li>Оптимизировать hero LCP/preload/sizes.</li><li>Отложить JS и изображение второго intro frame.</li><li>Разобрать 62 KiB unused JS и мёртвые Supabase dependencies.</li><li>Собрать p75 RUM через Speed Insights до дальнейших микроправок.</li></ol>
+        </div>
+      </div>
+      <p>Lighthouse также обнаружил mismatch доступного имени полноэкранной intro-кнопки: видимый текст не совпадает с <code>aria-label="Дальше"</code>. Несмотря на итоговый score 100, audit помечает влияние как serious; лучше использовать более описательное accessible name либо вынести текст из кнопки.</p>
+    </section>
+
+    <section id="quality">
+      <h2>8. Качество кода, тесты и мёртвый код</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Проверки</h3>
+          <table>
+            <tbody>
+              <tr><td>Fresh production build</td><td><span class="badge good">pass</span></td></tr>
+              <tr><td>Fresh typecheck</td><td><span class="badge good">pass</span></td></tr>
+              <tr><td>ESLint web</td><td><span class="badge good">pass</span></td></tr>
+              <tr><td>Vitest types</td><td>95 pass</td></tr>
+              <tr><td>PGlite DB integration</td><td>18 pass</td></tr>
+              <tr><td>Vitest web</td><td>257 pass</td></tr>
+              <tr><td>Package boundaries</td><td><span class="badge good">нарушений не найдено</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Сильные инженерные решения</h3>
+          <ul>
+            <li>Единый agent для Telegram и Web; DB из agent скрыта ToolHandlers-интерфейсом.</li>
+            <li>Integer money и Zod contracts последовательно соблюдаются.</li>
+            <li>Ошибки внешних provider contracts типизированы; fetch имеет timeout.</li>
+            <li>Платёжная идемпотентность проверяется условным UPDATE, не stale read.</li>
+            <li>Graceful degradation реализован осознанно, а важные сбои отправляются в Sentry.</li>
+            <li>Forward-only миграции и enum sequencing соблюдены.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3 class="mt-24">Результат dead-code анализа</h3>
+      <p>Knip считает неиспользуемыми четыре Supabase client-файла; поиск по всему репозиторию подтвердил, что их импортируют только собственные barrel-файлы и документация. Вместе с ними можно удалить <code>@supabase/ssr</code> и <code>@supabase/supabase-js</code>, поскольку приложение работает через Drizzle/postgres-js. Отдельные scripts Knip может считать false positive, потому их следует проверять по operational runbooks перед удалением. Неиспользуемые exports/types — в основном API surface, который можно сузить после <code>rg</code>-проверки.</p>
+
+      <h3>Циклы</h3>
+      <p>Madge показал 15 циклов, главным образом <code>db/index → repositories/index → repository → type DB from index</code> и <code>types/index ↔ loveandpay</code>. Большинство импортов type-only и исчезает в runtime, поэтому это не подтверждённый production cycle. Тем не менее перенос <code>DB/DBLike</code> в отдельный <code>db-types.ts</code> и запрет импорта barrel из leaf-модулей улучшат анализируемость и исключат будущий runtime-cycle.</p>
+    </section>
+
+    <section id="roadmap">
+      <h2>9. Рекомендуемый план исправлений</h2>
+      <div class="roadmap">
+        <article class="card"><h3>P0 — 1–2 дня: инфраструктурная изоляция</h3><p>Отделить Preview Supabase/provider credentials; защитить main required checks; включить secret scanning/push protection; мигрировать привилегированные env в Sensitive. Ротировать service-role/DB credentials после изменения области доступа.</p></article>
+        <article class="card"><h3>P0 — 2–4 дня: финансовые и карточные границы</h3><p>Временно ограничить high-value orders либо внедрить VCC preflight/reservation. Принять продуктово-безопасностное решение по PAN/CVC в Mini App и привести код/документацию к одному инварианту.</p></article>
+        <article class="card"><h3>P1 — неделя: целостность и секрет-гигиена</h3><p>Сделать terminal claim + order transition атомарными и покрыть PGlite fault test. Убрать user text из логов, усилить Pino/Sentry scrubbers, заменить query-secret alert relay.</p></article>
+        <article class="card"><h3>P1 — неделя: Vercel/Supabase hardening</h3><p>Зафиксировать fra1 project-level и проверить live header; сузить grants, исправить function search_path, добавить нужные FK indexes, уменьшить connection pool.</p></article>
+        <article class="card"><h3>P2 — 2–4 недели: качество и скорость</h3><p>Обновить зависимости и Dependabot backlog, добавить lint/coverage для всех packages, оптимизировать LCP, удалить dead Supabase subsystem, разделить крупнейшие модули и обновить docs.</p></article>
+      </div>
+    </section>
+
+    <section id="appendix">
+      <h2>10. Приложение: воспроизводимость</h2>
+      <p>Ключевые локальные команды аудита:</p>
+      <pre><code>pnpm -r test
+pnpm exec turbo typecheck lint --force
+pnpm exec turbo build --force
+pnpm audit --prod
+pnpm outdated -r
+pnpm dlx knip
+pnpm dlx madge --circular --extensions ts,tsx apps/web packages
+pnpm dlx lighthouse https://www.oplatishka.com --preset=perf
+gh run list --limit 12
+gh api repos/elfuerte72/oplati_podpisku/branches/main/protection</code></pre>
+      <p>Production build выполнялся локально на Node 22.22.3 при заявленном engine Node ≥24, поэтому pnpm показал warning; сама сборка, TypeScript и tests прошли. CI и Vercel используют Node 24, что соответствует проекту.</p>
+      <p class="muted">Severity означает приоритет риска, а не факт эксплуатации. High-находки F-01/F-02/F-03/F-04 подтверждены конфигурацией или кодом, но признаков фактической утечки, несанкционированного доступа или потери денег в ходе аудита не обнаружено.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p><strong>Отчёт подготовлен для репозитория elfuerte72/oplati_podpisku.</strong> Все production-проверки были read-only; секретные значения, полные платёжные реквизиты и пользовательский контент в документ не включены.</p>
+  </footer>
+</body>
+</html>

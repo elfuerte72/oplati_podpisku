@@ -11,7 +11,7 @@ import {
 } from '@oplati/db';
 import { planCommissionAccruals, type AccrualBeneficiary } from '@oplati/types';
 
-import { serverEnv } from '@/lib/env';
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 
 const log = childLogger('referral-accrue');

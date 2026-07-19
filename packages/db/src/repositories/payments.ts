@@ -34,9 +34,10 @@ export type UpsertResult = {
 
 /**
  * Идемпотентный upsert: если (provider, providerRef) уже есть — возвращает существующую
- * запись с `isNew=false`, иначе — создаёт с `isNew=true`. Используется в endpoint
- * `payments/create` (при дубле — не создаём второй invoice) и в `loveandpay/webhook`
- * (для recovery, если webhook пришёл раньше callback'а из `payments/create`).
+ * запись с `isNew=false`, иначе — создаёт с `isNew=true`. Единственный вызов —
+ * endpoint `payments/create` (при дубле — не создаём второй invoice); webhook
+ * платёж НЕ создаёт (L-7: прежний комментарий про recovery из webhook устарел —
+ * неизвестный providerRef там отвечает `not_found` + Sentry).
  */
 export async function upsertPaymentByProviderRef(
   // DBLike: с M-2 вызывается из транзакции payments/create (INSERT платежа +

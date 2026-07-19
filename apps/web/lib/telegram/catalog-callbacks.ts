@@ -77,12 +77,17 @@ function buildServiceListKeyboard(services: CatalogService[]): InlineKeyboard {
   return kb;
 }
 
-/** Клавиатура тарифов сервиса: по одному в ряд (лейбл с ценой) + «Назад». */
+/**
+ * Клавиатура тарифов сервиса: по одному в ряд (лейбл с ценой) + «Назад».
+ * callback_data несёт стабильный ключ тарифа `period:usdCents` (L-20 аудита):
+ * прежний индекс в живом кэше каталога протухал при переупорядочивании тарифов —
+ * старая кнопка в истории чата создавала бы ДРУГОЙ тариф.
+ */
 function buildTierListKeyboard(slug: string, tiers: CatalogService['tiers']): InlineKeyboard {
   const kb = new InlineKeyboard();
-  tiers.forEach((t, i) => {
-    kb.text(catalogTierButtonLabel(t), `tier:${slug}:${i}`).row();
-  });
+  for (const t of tiers) {
+    kb.text(catalogTierButtonLabel(t), `tier:${slug}:${t.period}:${t.usdCents}`).row();
+  }
   kb.text(CATALOG_BACK_BUTTON, 'back');
   return kb;
 }
@@ -173,8 +178,9 @@ export async function handleServiceSelected(
 }
 
 /**
- * Выбран тариф (`tier:<slug>:<idx>`). Резолвим имя тарифа из каталога (цена
- * строго серверная) и создаём заказ через общий `proposeFromCatalog`. Успех —
+ * Выбран тариф (`tier:<slug>:<period>:<usdCents>`). Резолвим тариф из каталога
+ * по стабильному ключу (цена строго серверная) и создаём заказ через общий
+ * `proposeFromCatalog`; легаси-индексы отвергаются в resolveTier. Успех —
  * редактируем сообщение в карточку заказа с кнопками «Подтвердить»/«Отменить».
  */
 export async function handleTierSelected(
@@ -182,7 +188,7 @@ export async function handleTierSelected(
   chatId: number,
   messageId: number | undefined,
   slug: string,
-  idx: number,
+  tierRef: readonly string[],
   updateId: number,
 ): Promise<void> {
   const ctx = await resolveCallbackContext(cb, updateId);
@@ -198,7 +204,7 @@ export async function handleTierSelected(
     log.error({ event: 'telegram.catalog.service_lookup_failed', updateId, slug, err });
     Sentry.captureException(err, { tags: { source: 'telegram.catalog', step: 'tier' } });
   }
-  const tier = service?.tiers[idx];
+  const tier = service ? resolveTier(service.tiers, tierRef) : undefined;
   if (!service || !tier) {
     await showOrEdit(
       chatId,
@@ -230,6 +236,24 @@ export async function handleTierSelected(
     updateId,
     buildConfirmKeyboard(result.card.orderId),
   );
+}
+
+/**
+ * Резолв тарифа по callback-ссылке: ТОЛЬКО стабильный ключ `[period, usdCents]`
+ * (L-20). Легаси-индексы со старых сообщений осознанно НЕ резолвим: каталог с
+ * тех пор переупорядочивался, и индекс по живому кэшу попал бы в ДРУГОЙ тариф —
+ * ровно баг, который закрывает L-20. Старая кнопка получит честное «тариф уже
+ * недоступен, открой /menu».
+ */
+function resolveTier(
+  tiers: CatalogService['tiers'],
+  tierRef: readonly string[],
+): CatalogService['tiers'][number] | undefined {
+  if (tierRef.length !== 2) return undefined;
+  const [period, cents] = tierRef;
+  const usdCents = Number(cents);
+  if (!Number.isInteger(usdCents)) return undefined;
+  return tiers.find((t) => t.period === period && t.usdCents === usdCents);
 }
 
 /**

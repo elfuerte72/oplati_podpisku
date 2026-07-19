@@ -53,7 +53,7 @@ describe('getCardSecretsForUser', () => {
     expect(r).toEqual({ ok: false, error: 'unavailable' });
     // В Sentry уходит только сообщение + cardId, без объекта ошибки (защита от утечки).
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
-    const [, opts] = sentry.captureMessage.mock.calls[0];
+    const [, opts] = sentry.captureMessage.mock.calls[0]!;
     expect(JSON.stringify(opts)).not.toContain('contract drift');
   });
 

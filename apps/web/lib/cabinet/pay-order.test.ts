@@ -44,7 +44,6 @@ vi.mock('../tool-handlers/confirm-order.ts', () => {
   };
 });
 
-vi.mock('../tool-handlers/request-human.ts', () => ({ requestHuman: vi.fn() }));
 vi.mock('../catalog/propose.ts', () => ({ proposeFromCatalog: vi.fn() }));
 vi.mock('../telegram/support.ts', () => ({ sendToSupportOperator: vi.fn(async () => true) }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));

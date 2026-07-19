@@ -59,7 +59,6 @@ vi.mock('@oplati/db', () => ({
   findActiveByUserId: vi.fn(async () => h.dbState.activeCard),
   findRecyclableCard: vi.fn(async () => null),
   createCard: vi.fn(async () => ({ id: 'card-new', providerCardId: 'pc-new', panMasked: '****1234' })),
-  markActive: vi.fn(async () => {}),
   markIdle: vi.fn(async () => {}),
   updateBalance: vi.fn(async () => {}),
   setOrderCardId: vi.fn(async () => {}),

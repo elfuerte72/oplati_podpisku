@@ -114,7 +114,6 @@ export {
   findRecyclableCard,
   markIdle,
   markRecycled,
-  markActive,
   updateBalance,
   syncCardBalance,
   idleAgedActiveCards,
@@ -126,7 +125,6 @@ export {
 export {
   createDraftOrder,
   getOrderById,
-  getOrderByShortId,
   getOrdersByUserId,
   getOrderEventsByOrderId,
   transitionOrder,

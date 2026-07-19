@@ -22,7 +22,6 @@ const orderSummarySchema = z.object({
   createdAt: z.string(),
   expiresAt: z.string().nullable(),
   payable: z.boolean(),
-  repeatable: z.boolean(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */

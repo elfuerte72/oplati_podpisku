@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseToolCards } from './toolCards';
+import { parseToolCards } from './tool-cards';
 
 /**
  * parseToolCards — клиентский парсер ToolCallLog[] в комикс-карточки.

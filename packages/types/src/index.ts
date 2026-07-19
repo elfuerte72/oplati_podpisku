@@ -72,7 +72,6 @@ export {
   type OrderStatus,
   allowedTransitions,
   isAllowedTransition,
-  canTransition,
   OrderTransitionError,
 } from './order-state-machine.ts';
 

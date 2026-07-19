@@ -8,7 +8,6 @@ import {
   findPaymentByProviderRef,
   getDb,
   transitionOrder,
-  type PaymentRow,
 } from '@oplati/db';
 import {
   OrderTransitionError,
@@ -344,22 +343,4 @@ export function loveAndPayTerminalReason(
   if (externalStatus === 'EXPIRED') return 'expired';
   if (externalStatus === 'CANCELLED') return 'cancelled';
   return null;
-}
-
-/**
- * Превращает `PaymentRow` в input для cron'а — нужно когда мы стартуем
- * processInvoicePaid от данных, полученных по polling (getInvoice), а не
- * webhook'у.
- */
-export function paymentRowToWebhookData(
-  payment: PaymentRow,
-  invoiceData: { id: string; invoiceNumber: string; amount: number; currency: string; status: LoveAndPayInvoiceStatus },
-): LoveAndPayWebhookData {
-  return {
-    id: invoiceData.id,
-    invoiceNumber: invoiceData.invoiceNumber,
-    amount: invoiceData.amount,
-    currency: invoiceData.currency,
-    status: invoiceData.status,
-  };
 }

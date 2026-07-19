@@ -12,7 +12,7 @@ import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 
 import { HowItWorksOverlay } from './HowItWorksOverlay';
 import { ServiceLogo } from './ServiceLogos';
-import type { ChatCard } from './toolCards';
+import type { ChatCard } from './tool-cards';
 
 /**
  * Стартовый экран чата (пока диалога нет): hero-приветствие display-шрифтом

@@ -150,11 +150,6 @@ export async function getOrderById(db: DB, id: string): Promise<OrderRow | null>
   return rows[0] ?? null;
 }
 
-export async function getOrderByShortId(db: DB, shortId: string): Promise<OrderRow | null> {
-  const rows = await db.select().from(orders).where(eq(orders.shortId, shortId)).limit(1);
-  return rows[0] ?? null;
-}
-
 export type OrderEventRow = typeof orderEvents.$inferSelect;
 
 /**
