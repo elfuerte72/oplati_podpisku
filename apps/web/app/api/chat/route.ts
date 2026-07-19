@@ -26,6 +26,7 @@ import {
   recordAgentUsage,
   type AgentUsageLike,
 } from '@/lib/ai/budget';
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { createToolHandlers } from '@/lib/tool-handlers';
@@ -72,6 +73,14 @@ const AI_DOWN_TEXT =
 
 const RATE_LIMITED_TEXT =
   'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.';
+
+/**
+ * Ответ при выключенном AI-диалоге (WEB_AI_ENABLED, дефолт выключено):
+ * покупка на сайте кнопочная, поэтому вместо агента — мгновенная заготовка,
+ * уводящая в каталог. UI не меняется, сообщение рисуется обычным пузырём.
+ */
+const CHAT_DISABLED_TEXT =
+  'Я принимаю заказы через каталог — нажми «Выбрать сервис», и оформим всё в пару кликов. Если нужна помощь, напиши в поддержку в нашем Telegram-боте (кнопка «Поддержка» в меню /start).';
 
 type WebChatContext = { userId: string; conversationId: string };
 
@@ -136,6 +145,18 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
   const text = parsed.data.message;
+
+  // AI-диалог на сайте — за флагом WEB_AI_ENABLED (решение владельца 2026-07-19,
+  // по образцу BOT_AI_ENABLED). Выключен → мгновенная заготовка: ни Anthropic,
+  // ни сессии/записей в БД. Rate-limit осознанно НЕ зовём — ответ статический
+  // и дешевле самого лимитера; DoS-поверхности здесь нет.
+  if (!serverEnv.WEB_AI_ENABLED) {
+    log.info({ event: 'web-chat.disabled_by_flag', messageLength: text.length });
+    return NextResponse.json(
+      { ok: true, text: CHAT_DISABLED_TEXT, toolCalls: [] },
+      { status: 200 },
+    );
+  }
 
   if (!process.env.ANTHROPIC_API_KEY) {
     log.warn({ event: 'web-chat.disabled', reason: 'no_anthropic_key' });

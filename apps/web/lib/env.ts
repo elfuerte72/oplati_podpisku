@@ -175,6 +175,15 @@ const serverEnvSchema = z.object({
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
 
+  // AI-диалог в ВЕБ-чате сайта (/api/chat). Выключено по умолчанию (решение
+  // владельца 2026-07-19): покупка кнопочная, диалог в воронке не участвует —
+  // на любое сообщение уходит мгновенная заготовка без вызова Anthropic и
+  // записей в БД (UI сайта не меняется). '1'/'true' возвращает AI-диалог.
+  // Код агента цел — это временный выключатель по образцу BOT_AI_ENABLED.
+  WEB_AI_ENABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
+
   // Fallback USDT→RUB курс, если публичный endpoint Rapira временно недоступен.
   // Значение — рубли за 1 USDT; живой `askPrice` Rapira имеет приоритет.
   RATE_FALLBACK_USDT_RUB: z.coerce.number().positive().default(77),
