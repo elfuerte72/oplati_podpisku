@@ -285,3 +285,34 @@ export async function findPaymentsByOrderId(db: DB, orderId: string): Promise<Pa
     .where(eq(payments.orderId, orderId))
     .orderBy(sql`${payments.createdAt} DESC`);
 }
+
+/**
+ * Retention (M-13 аудита): очистка `raw_payload` у платежей старше
+ * `olderThanDays` (решение владельца 2026-07-19 — 180 дней): сверка с
+ * провайдером давно не нужна, а сырое тело инвойса — самая тяжёлая часть строки.
+ * Сама строка платежа (суммы/статусы/ссылки на заказ) остаётся навсегда.
+ * Возвращает число очищенных строк (батч `limit` за проход).
+ */
+export async function stripOldPaymentPayloads(
+  db: DB,
+  input: { olderThanDays: number; limit: number },
+  log: RepoLogger = noopLogger,
+): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    UPDATE ${payments}
+    SET raw_payload = NULL
+    WHERE ${payments.id} IN (
+      SELECT ${payments.id} FROM ${payments}
+      WHERE ${payments.rawPayload} IS NOT NULL
+        AND ${payments.createdAt} < now() - make_interval(days => ${input.olderThanDays})
+      ORDER BY ${payments.createdAt} ASC
+      LIMIT ${input.limit}
+    )
+    RETURNING ${payments.id} AS id
+  `);
+  const stripped = rows.length;
+  if (stripped > 0) {
+    log.info({ event: 'db.payments.retention_stripped', stripped, olderThanDays: input.olderThanDays });
+  }
+  return stripped;
+}

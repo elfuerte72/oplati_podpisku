@@ -24,6 +24,7 @@ export {
 
 export {
   appendMessage,
+  deleteOldMessages,
   getLastAssistantMessageMeta,
   loadRecentMessages,
   type AppendMessageInput,
@@ -153,6 +154,7 @@ export {
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
   findPendingPaymentByOrderId,
+  stripOldPaymentPayloads,
   findPaymentsByOrderId,
   type PaymentRow,
   type UpsertPaymentByProviderRefInput,

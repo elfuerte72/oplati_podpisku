@@ -161,3 +161,31 @@ export async function getLastAssistantMessageMeta(
 // keep these imports referenced so tsc with verbatimModuleSyntax doesn't drop them
 void asc;
 void sql;
+
+/**
+ * Retention (M-13 аудита): удаление переписки старше `olderThanDays` батчами
+ * по `limit` строк (cron `retention`, решение владельца 2026-07-19 — 90 дней).
+ * История заказов/событий не затрагивается — это отдельные append-only таблицы.
+ * Возвращает число удалённых строк (0 — чистить нечего, cron останавливается).
+ */
+export async function deleteOldMessages(
+  db: DB,
+  input: { olderThanDays: number; limit: number },
+  log: RepoLogger = noopLogger,
+): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    DELETE FROM ${messages}
+    WHERE ${messages.id} IN (
+      SELECT ${messages.id} FROM ${messages}
+      WHERE ${messages.createdAt} < now() - make_interval(days => ${input.olderThanDays})
+      ORDER BY ${messages.createdAt} ASC
+      LIMIT ${input.limit}
+    )
+    RETURNING ${messages.id} AS id
+  `);
+  const deleted = rows.length;
+  if (deleted > 0) {
+    log.info({ event: 'db.messages.retention_deleted', deleted, olderThanDays: input.olderThanDays });
+  }
+  return deleted;
+}

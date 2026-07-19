@@ -301,6 +301,17 @@ export const orders = pgTable(
     stuckPaidIdx: index('orders_stuck_paid_idx')
       .on(t.paidAt)
       .where(sql`${t.status} = 'paid'`),
+    // M-12 аудита: cron-выборки по вечно растущей таблице.
+    // renewal-reminder: status='completed' AND fulfilled_at BETWEEN … — частичный
+    // индекс только по завершённым.
+    completedFulfilledIdx: index('orders_completed_fulfilled_at_idx')
+      .on(t.fulfilledAt)
+      .where(sql`${t.status} = 'completed'`),
+    // referral-recovery (каждый час): o.paid_at >= now() - 30 days — предикат
+    // по orders.paid_at (НЕ payments), частичный по непустым.
+    paidAtIdx: index('orders_paid_at_idx')
+      .on(t.paidAt)
+      .where(sql`${t.paidAt} IS NOT NULL`),
     serviceOrCustom: check(
       'orders_service_or_custom',
       sql`${t.serviceId} IS NOT NULL OR ${t.customServiceDescription} IS NOT NULL`,

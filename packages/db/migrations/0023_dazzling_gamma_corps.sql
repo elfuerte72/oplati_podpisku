@@ -1,0 +1,2 @@
+CREATE INDEX "orders_completed_fulfilled_at_idx" ON "orders" USING btree ("fulfilled_at") WHERE "orders"."status" = 'completed';--> statement-breakpoint
+CREATE INDEX "orders_paid_at_idx" ON "orders" USING btree ("paid_at") WHERE "orders"."paid_at" IS NOT NULL;
