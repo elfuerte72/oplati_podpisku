@@ -128,40 +128,40 @@ webhook/poll получают claim=null и DM не шлют). Платёж вы
 (`TTL_HOURS` в propose-order.ts), **счёт 24ч → 1ч** (`INVOICE_TTL_HOURS` в
 payments/create). Сделано в сеансе аудита.
 
-### [x] M-5 (ось E) — «1,000» парсится как $1 — СДЕЛАНО
+### [x] M-5 (ось E) — «1,000» парсится как $1 — СДЕЛАНО (PR #88)
 
 `normalizeSeparators` в `amount.ts`: запятые с ровно 3 цифрами после (и точкой только
 в конце) — разделители тысяч, убираются; одна запятая с 1–2 цифрами — десятичная;
 нулевая дробь (`1,00`) и европейский `1.000,50` — двусмысленны → invalid (переспросить).
 Тест-таблица в `amount.test.ts` (20 кейсов, включая `1,000`→1000 и `2,500`→$2500).
 
-### [x] M-6 (ось E) — `maxDuration=30` у `/api/chat` меньше бюджета tool-loop — СДЕЛАНО
+### [x] M-6 (ось E) — `maxDuration=30` у `/api/chat` меньше бюджета tool-loop — СДЕЛАНО (PR #88)
 
 `maxDuration=90` у `/api/chat` И у `/api/bot` (спутник: link-handoff и tool-loop бота
 зовут тот же self-call), таймаут self-call в `confirm-order.ts` 60с → 45с. Конфиг —
 проверить смоуком на Preview.
 
-### [x] M-7 (ось E) — битая `pricing_policy` открывает клиентскую цену — СДЕЛАНО
+### [x] M-7 (ось E) — битая `pricing_policy` открывает клиентскую цену — СДЕЛАНО (PR #88)
 
 Битая политика → `service_unavailable` (новый код ошибки, HTTP 503 в propose-route) +
 Sentry-алерт (это баг данных каталога). Custom-amount — только если политика распарсилась
 и ЯВНО состоит из dummy-тарифов. Unit: битый jsonb и `null` → отказ, `proposeOrder`
 не вызывается.
 
-### [x] M-8 (ось D) — tool-loop агента: `(handler as any)(input)` — СДЕЛАНО
+### [x] M-8 (ось D) — tool-loop агента: `(handler as any)(input)` — СДЕЛАНО (PR #88)
 
 `TOOL_INPUT_SCHEMAS satisfies { [K in keyof ToolHandlers]: ZodType<вход обработчика> }`
 (компилятор форсит и полноту, и совпадение типов) + типизированный `executeToolUse` со
 switch (default с `never` — экзостивность). `ToolCallLog.name` честно `string`
 (галлюцинированный tool логируется с `is_error`, раньше прятался за кастом).
 
-### [x] M-9 (ось D) — `partner-api.ts` кастит ответы `as` вместо Zod — СДЕЛАНО
+### [x] M-9 (ось D) — `partner-api.ts` кастит ответы `as` вместо Zod — СДЕЛАНО (PR #88)
 
 Общий модуль `lib/cabinet/referral-api-schemas.ts` (снапшот/выплата/ошибка;
 `satisfies z.ZodType<ReferralSnapshot>` привязывает схему к серверному типу),
 `partner-api.ts` парсит им ответы. Unit парса — 8 тестов.
 
-### [x] M-10 (ось D) — `handle-update.ts` 1772 строки — СДЕЛАНО
+### [x] M-10 (ось D) — `handle-update.ts` 1772 строки — СДЕЛАНО (PR #88)
 
 Распил по флоу, поведение 1:1: `persist.ts` (БД), `send.ts` (отправка/split),
 `start-menu.ts`, `link-flow.ts`, `support-flow.ts`, `catalog-callbacks.ts`,
