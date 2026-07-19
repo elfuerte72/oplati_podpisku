@@ -128,48 +128,45 @@ webhook/poll получают claim=null и DM не шлют). Платёж вы
 (`TTL_HOURS` в propose-order.ts), **счёт 24ч → 1ч** (`INVOICE_TTL_HOURS` в
 payments/create). Сделано в сеансе аудита.
 
-### [ ] M-5 (ось E) — «1,000» парсится как $1
+### [x] M-5 (ось E) — «1,000» парсится как $1 — СДЕЛАНО
 
-`apps/web/lib/telegram/amount.ts:46` — `replace(/,/g, '.')` превращает запятую-разделитель
-тысяч в десятичную точку. **Фикс:** запятая с ровно 3 цифрами после и без другой точки —
-разделитель тысяч (убрать); `1,5` — десятичная. **Тест:** таблица кейсов: `1,000`→1000,
-`1,5`→1.5, `1,000.50`→1000.5, `1,00`→invalid.
+`normalizeSeparators` в `amount.ts`: запятые с ровно 3 цифрами после (и точкой только
+в конце) — разделители тысяч, убираются; одна запятая с 1–2 цифрами — десятичная;
+нулевая дробь (`1,00`) и европейский `1.000,50` — двусмысленны → invalid (переспросить).
+Тест-таблица в `amount.test.ts` (20 кейсов, включая `1,000`→1000 и `2,500`→$2500).
 
-### [ ] M-6 (ось E) — `maxDuration=30` у `/api/chat` меньше бюджета tool-loop
+### [x] M-6 (ось E) — `maxDuration=30` у `/api/chat` меньше бюджета tool-loop — СДЕЛАНО
 
-`app/api/chat/route.ts:56` — self-call `payments/create` имеет таймаут 60с и собственный
-`maxDuration=60`; медленный L&P убивает chat-функцию посреди хода (инвойс создан, клиент
-получил ошибку, `recordAgentUsage` не выполнен). **Фикс:** `maxDuration=90` у `/api/chat`
-+ ужать таймаут self-call в `confirm-order.ts` до 45с. **Тест:** нет (конфиг), проверить smoke.
+`maxDuration=90` у `/api/chat` И у `/api/bot` (спутник: link-handoff и tool-loop бота
+зовут тот же self-call), таймаут self-call в `confirm-order.ts` 60с → 45с. Конфиг —
+проверить смоуком на Preview.
 
-### [ ] M-7 (ось E) — битая `pricing_policy` открывает клиентскую цену
+### [x] M-7 (ось E) — битая `pricing_policy` открывает клиентскую цену — СДЕЛАНО
 
-`apps/web/lib/catalog/propose.ts:109–120` — `safeParse` упал → `tiers=[]` → `every()` на
-пустом массиве = true → `isCustomAmount=true` → сервис с фиксированной ценой принимает
-`amountUsdCents` клиента. **Фикс:** битая политика тарифного сервиса → отказ
-(`service_unavailable`), как делает `build.ts:87` (возвращает null). Custom-amount —
-только если политика ЯВНО `custom_amount`. **Тест:** unit — битый jsonb → отказ, не клиентская цена.
+Битая политика → `service_unavailable` (новый код ошибки, HTTP 503 в propose-route) +
+Sentry-алерт (это баг данных каталога). Custom-amount — только если политика распарсилась
+и ЯВНО состоит из dummy-тарифов. Unit: битый jsonb и `null` → отказ, `proposeOrder`
+не вызывается.
 
-### [ ] M-8 (ось D) — tool-loop агента: `(handler as any)(input)` + невынужденная полнота схем
+### [x] M-8 (ось D) — tool-loop агента: `(handler as any)(input)` — СДЕЛАНО
 
-`packages/agent/src/index.ts:282–304` — `TOOL_INPUT_SCHEMAS` покрывает 4 tool'а только
-конвенцией; пятый tool без схемы тихо уронит Zod-границу. **Фикс:** типизировать реестр
-`satisfies Record<keyof ToolHandlers, ZodSchema>` — компилятор форсит полноту; убрать
-`as any` через генерик-диспатч или switch. **Тест:** существующий agent tool-inputs
-сьют + компиляция.
+`TOOL_INPUT_SCHEMAS satisfies { [K in keyof ToolHandlers]: ZodType<вход обработчика> }`
+(компилятор форсит и полноту, и совпадение типов) + типизированный `executeToolUse` со
+switch (default с `never` — экзостивность). `ToolCallLog.name` честно `string`
+(галлюцинированный tool логируется с `is_error`, раньше прятался за кастом).
 
-### [ ] M-9 (ось D) — `partner-api.ts` кастит ответы `as` вместо Zod
+### [x] M-9 (ось D) — `partner-api.ts` кастит ответы `as` вместо Zod — СДЕЛАНО
 
-`apps/web/components/partner/partner-api.ts:39,52` — при том что близнец `cabinet-api.ts`
-парсит схемами. **Фикс:** Zod-схемы ответов `/api/cabinet/referral` (вынести в общий
-модуль, использовать в обоих). **Тест:** unit парса.
+Общий модуль `lib/cabinet/referral-api-schemas.ts` (снапшот/выплата/ошибка;
+`satisfies z.ZodType<ReferralSnapshot>` привязывает схему к серверному типу),
+`partner-api.ts` парсит им ответы. Unit парса — 8 тестов.
 
-### [ ] M-10 (ось D) — `handle-update.ts` 1772 строки
+### [x] M-10 (ось D) — `handle-update.ts` 1772 строки — СДЕЛАНО
 
-Распилить по флоу: `start-menu.ts`, `support-flow.ts`, `link-flow.ts`, `catalog-callbacks.ts`,
-`agent-dialog.ts` + тонкий роутер. Чисто механический рефакторинг, поведение не менять.
-Делать ПОСЛЕ закрытия M-3..M-6 (не смешивать с поведенческими фиксами). **Тест:** typecheck
-+ существующий сьют; желателен новый тест роутера update'ов.
+Распил по флоу, поведение 1:1: `persist.ts` (БД), `send.ts` (отправка/split),
+`start-menu.ts`, `link-flow.ts`, `support-flow.ts`, `catalog-callbacks.ts`,
+`agent-dialog.ts`; `handle-update.ts` — тонкий роутер (350 строк). Typecheck + полный
+сьют web 370 зелёные. Тест роутера update'ов — остался желательным (см. T-5).
 
 ### [ ] M-11 (ось F) — PNG-позы маскота 2.4 MB → LCP
 
