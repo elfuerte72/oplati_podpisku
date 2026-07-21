@@ -147,8 +147,9 @@ const serverEnvSchema = z.object({
     .string()
     .uuid()
     .default('e819a231-6e10-46c6-8411-7001dd67e9e1'),
-  // Лимит трафика выдаваемой подписки в ГБ; 0 = безлимит (сброс счётчика — MONTH).
-  REMNAWAVE_TRAFFIC_LIMIT_GB: z.coerce.number().int().nonnegative().default(0),
+  // Лимит трафика подписки в ГБ на пользователя (сброс счётчика раз в месяц,
+  // strategy MONTH); 0 = безлимит. Дефолт 200 ГБ (решение владельца 2026-07-21).
+  REMNAWAVE_TRAFFIC_LIMIT_GB: z.coerce.number().int().nonnegative().default(200),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),

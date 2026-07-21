@@ -8,6 +8,7 @@ import { findVpnSubscriptionByUserId, getDb, upsertVpnSubscription } from '@opla
 import type { RemnawaveUser, TelegramCallbackQuery } from '@oplati/types';
 
 import { siteUrl } from '@/lib/deployment-url';
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import {
   addOneMonthUtc,
@@ -76,7 +77,7 @@ async function sendVpnStepsAlbum(chatId: number, updateId: number): Promise<void
     type: 'photo',
     media: `${base}/vpn/${name}`,
     ...(i === 0
-      ? { caption: 'Как добавить подписку в Happ: «+» → «URL подписки» → вставить ссылку.' }
+      ? { caption: 'Подключаем за 3 шага: жми «+», выбери «URL подписки», вставь ссылку.' }
       : {}),
   }));
   try {
@@ -116,9 +117,35 @@ async function replyWithSubscription(
   subscriptionUrl: string,
   expireAt: Date,
 ): Promise<void> {
-  const html = buildVpnMessageHtml({ kind, subscriptionUrl, expireAt });
+  const html = buildVpnMessageHtml({
+    kind,
+    subscriptionUrl,
+    expireAt,
+    trafficLimitGb: serverEnv.REMNAWAVE_TRAFFIC_LIMIT_GB,
+  });
   await safeAppendMessage(ctx, 'assistant', html, { source: 'vpn' }, updateId);
   await sendSafely(chatId, html, updateId, vpnKeyboard(), { parseMode: 'HTML' });
+}
+
+/**
+ * Подтягивает лимит трафика юзера панели к настройке env: легаси-юзеры,
+ * созданные до введения лимита 200 ГБ, оставались безлимитными. Best-effort,
+ * сбой синка не блокирует выдачу ссылки.
+ */
+async function syncTrafficLimit(panelUser: RemnawaveUser, updateId: number): Promise<void> {
+  const targetBytes = serverEnv.REMNAWAVE_TRAFFIC_LIMIT_GB * 1024 ** 3;
+  if (panelUser.trafficLimitBytes === undefined || panelUser.trafficLimitBytes === targetBytes) {
+    return;
+  }
+  try {
+    await getRemnawaveClient().updateUser({
+      uuid: panelUser.uuid,
+      trafficLimitBytes: targetBytes,
+    });
+    log.info({ event: 'telegram.vpn.traffic_synced', updateId });
+  } catch (err) {
+    log.warn({ event: 'telegram.vpn.traffic_sync_failed', updateId, err });
+  }
 }
 
 /**
@@ -166,6 +193,8 @@ export async function handleVpnCallback(
         telegramId,
         expireAt: addOneMonthUtc(new Date()),
       });
+    } else {
+      await syncTrafficLimit(panelUser, updateId);
     }
     await persistSnapshot(ctx, telegramId, panelUser);
     log.info({ event: created ? 'telegram.vpn.issued' : 'telegram.vpn.adopted', updateId, chatId });
@@ -235,6 +264,7 @@ export async function handleVpnRefreshCallback(
         throw err;
       }
     }
+    await syncTrafficLimit(panelUser, updateId);
     await persistSnapshot(ctx, telegramId, panelUser);
     log.info({ event: 'telegram.vpn.refreshed', updateId, chatId });
     await replyWithSubscription(

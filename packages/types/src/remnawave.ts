@@ -26,6 +26,9 @@ export const remnawaveUserSchema = z.object({
   // ISO-8601 UTC; coerce — панель отдаёт строку.
   expireAt: z.coerce.date(),
   telegramId: z.number().int().nullable().optional(),
+  // Лимит трафика в байтах; 0 = безлимит. Нужен для синка легаси-юзеров
+  // (созданных до введения лимита) к текущей настройке.
+  trafficLimitBytes: z.number().int().nonnegative().optional(),
 });
 export type RemnawaveUser = z.infer<typeof remnawaveUserSchema>;
 

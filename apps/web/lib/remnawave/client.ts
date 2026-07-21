@@ -45,9 +45,20 @@ export type CreateVpnUserInput = {
   expireAt: Date;
 };
 
+export type UpdateVpnUserInput = {
+  /** `response.uuid` юзера панели (НЕ vlessUuid). */
+  uuid: string;
+  /** Новый лимит трафика в байтах; 0 = безлимит. */
+  trafficLimitBytes?: number;
+  /** Новый срок действия (продление по оплате — будущий этап). */
+  expireAt?: Date;
+};
+
 export type RemnawaveClient = {
   findUserByTelegramId(telegramId: string): Promise<RemnawaveUser | null>;
   createUser(input: CreateVpnUserInput): Promise<RemnawaveUser>;
+  /** PATCH /users: меняет только переданные поля (контракт — дока владельца). */
+  updateUser(input: UpdateVpnUserInput): Promise<RemnawaveUser>;
   /** Перевыпуск ссылки-подписки: старый shortUuid умирает, expireAt не меняется. */
   revokeSubscription(uuid: string): Promise<RemnawaveUser>;
   deleteUser(uuid: string): Promise<boolean>;
@@ -148,6 +159,17 @@ export function createRemnawaveClient(options: RemnawaveClientOptions): Remnawav
         trafficLimitBytes,
         trafficLimitStrategy: 'MONTH',
         activeInternalSquads: [squadUuid],
+      });
+      return data.response;
+    },
+
+    async updateUser(input) {
+      const data = await request('PATCH', '/users', remnawaveUserResponseSchema, {
+        uuid: input.uuid,
+        ...(input.trafficLimitBytes !== undefined
+          ? { trafficLimitBytes: input.trafficLimitBytes }
+          : {}),
+        ...(input.expireAt ? { expireAt: input.expireAt.toISOString() } : {}),
       });
       return data.response;
     },

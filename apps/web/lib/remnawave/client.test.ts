@@ -106,6 +106,26 @@ describe('createUser', () => {
   });
 });
 
+describe('updateUser', () => {
+  it('PATCH /users шлёт uuid и только переданные поля', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResp(200, { response: panelUser({ trafficLimitBytes: 214748364800 }) }),
+    );
+    const client = makeClient(fetchMock);
+    await client.updateUser({
+      uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+      trafficLimitBytes: 214748364800,
+    });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://panel.test/api/users');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({
+      uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+      trafficLimitBytes: 214748364800,
+    });
+  });
+});
+
 describe('revokeSubscription', () => {
   it('POST /users/{uuid}/actions/revoke → юзер с НОВЫМ shortUuid', async () => {
     const fetchMock = vi.fn().mockResolvedValue(

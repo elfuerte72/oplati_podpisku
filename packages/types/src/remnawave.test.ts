@@ -42,6 +42,7 @@ describe('remnawaveUserResponseSchema (create / revoke)', () => {
     );
     expect(parsed.response.status).toBe('ACTIVE');
     expect(parsed.response.expireAt).toEqual(new Date('2026-08-21T00:00:00.000Z'));
+    expect(parsed.response.trafficLimitBytes).toBe(0);
     // Внутренние поля панели не протаскиваем (vlessUuid ≠ рабочий id).
     expect('vlessUuid' in parsed.response).toBe(false);
   });
