@@ -171,3 +171,10 @@ export {
   type ServiceRow,
   type CatalogSearchItem,
 } from './services.ts';
+
+export {
+  findVpnSubscriptionByUserId,
+  upsertVpnSubscription,
+  type VpnSubscription,
+  type UpsertVpnSubscriptionInput,
+} from './vpn-subscriptions.ts';

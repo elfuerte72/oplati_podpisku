@@ -43,6 +43,16 @@ export {
 } from './rapira.ts';
 
 export {
+  remnawaveUserStatus,
+  type RemnawaveUserStatus,
+  remnawaveUserSchema,
+  type RemnawaveUser,
+  remnawaveUsersByTelegramIdResponseSchema,
+  remnawaveUserResponseSchema,
+  remnawaveDeleteResponseSchema,
+} from './remnawave.ts';
+
+export {
   paySpaceErrorSchema,
   type PaySpaceError,
   paySpaceVccCardSchema,

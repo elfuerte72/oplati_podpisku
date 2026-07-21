@@ -169,6 +169,13 @@
       "when": 1784449619682,
       "tag": "0023_dazzling_gamma_corps",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784649095260,
+      "tag": "0024_windy_nebula",
+      "breakpoints": true
     }
   ]
 }

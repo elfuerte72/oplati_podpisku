@@ -58,7 +58,7 @@ export const START_APP_BUTTON = '📱 Открыть приложение';
 /** Подпись кнопки поддержки в стартовом меню (callback `support`). */
 export const START_SUPPORT_BUTTON = '🛟 Поддержка';
 
-/** Подпись кнопки VPN (продукт в разработке; callback `vpn`). */
+/** Подпись кнопки VPN (выдача ссылки-подписки Remnawave; callback `vpn`). */
 export const START_VPN_BUTTON = '🛡 VPN';
 
 /** Подпись url-кнопки Telegram-канала в стартовом меню. */
@@ -79,9 +79,81 @@ export const CARD_HOWTO_BUTTON = '📖 Как оплатить — пошаго�
 /** Подпись url-кнопки официального прайса купленного сервиса. */
 export const SERVICE_PRICING_BUTTON = 'Открыть прайс сервиса';
 
-/** Ответ на кнопку VPN, пока продукт в разработке. */
-export const VPN_MOCK_TEXT =
-  'VPN Оплатишки пока в разработке — скоро его можно будет подключить прямо здесь, с оплатой в рублях. Как запустим — напишу первым. А подписки можно оплатить уже сейчас: жми «Открыть приложение».';
+// ─── VPN Оплатишки (Remnawave) ────────────────────────────────────────────
+//
+// Кнопка «VPN» выдаёт персональную ссылку-подписку: клиент ставит Happ,
+// добавляет ссылку как «URL подписки» и получает оба сервера (Литва + «При
+// белых списках»). Тексты и клавиатура — здесь, логика — vpn-flow.ts.
+
+/** Официальные сторы приложения Happ (проверены 2026-07-21). */
+export const HAPP_APPSTORE_URL =
+  'https://apps.apple.com/us/app/happ-proxy-utility/id6504287215';
+export const HAPP_GOOGLEPLAY_URL =
+  'https://play.google.com/store/apps/details?id=com.happproxy';
+
+/** Подписи url-кнопок сторов под сообщением со ссылкой. */
+export const VPN_APPSTORE_BUTTON = '📱 Happ для iPhone (App Store)';
+export const VPN_GOOGLEPLAY_BUTTON = '🤖 Happ для Android (Google Play)';
+
+/** Подпись callback-кнопки перевыпуска ссылки (`vpn:refresh`). */
+export const VPN_REFRESH_BUTTON = '🔄 Обновить ссылку';
+
+/** Remnawave не настроен (нет токена) или недоступна БД. */
+export const VPN_UNAVAILABLE_TEXT =
+  'VPN сейчас недоступен — ведём технические работы. Попробуй ещё раз чуть позже.';
+
+/** Ошибка панели/сети при выдаче или обновлении ссылки. */
+export const VPN_ERROR_TEXT =
+  'Не получилось выдать VPN-ссылку прямо сейчас — что-то на нашей стороне. Попробуй ещё раз через пару минут.';
+
+/** «Действует до 21 августа 2026 г.» (Europe/Moscow, как остальные даты бота). */
+function formatVpnExpiry(date: Date): string {
+  try {
+    return date.toLocaleDateString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Сообщение со ссылкой-подпиской (parse_mode HTML: ссылка в `<code>` —
+ * копируется тапом). Три варианта вступления: `new` — первая выдача,
+ * `existing` — повторное нажатие возвращает ту же ссылку, `refreshed` —
+ * после «Обновить ссылку» (старая отозвана в панели). Ссылка приходит из
+ * панели, но экранируем как любой внешний ввод.
+ */
+export function buildVpnMessageHtml(params: {
+  kind: 'new' | 'existing' | 'refreshed';
+  subscriptionUrl: string;
+  expireAt: Date;
+}): string {
+  const intro =
+    params.kind === 'new'
+      ? '🛡 <b>Твой VPN готов!</b>'
+      : params.kind === 'refreshed'
+        ? '🛡 <b>Готово — выпустил новую ссылку.</b> Старая больше не работает: удали прежнюю подписку в Happ и добавь эту.'
+        : '🛡 <b>У тебя уже есть VPN-ссылка</b> — держи её ещё раз. Если она перестала работать или попала не в те руки, нажми «Обновить ссылку» ниже.';
+  return [
+    intro,
+    '',
+    'Ссылка-подписка (нажми, чтобы скопировать):',
+    `<code>${escapeHtml(params.subscriptionUrl)}</code>`,
+    '',
+    '<b>Как подключить:</b>',
+    '1. Установи приложение Happ — кнопки ниже.',
+    '2. В Happ нажми «+» в правом верхнем углу.',
+    '3. Выбери «URL подписки».',
+    '4. Вставь ссылку в поле URL и нажми «Готово».',
+    '',
+    'Внутри появятся два сервера — Литва и «При белых списках»: переключайся, если что-то не открывается.',
+    `Доступ действует до ${formatVpnExpiry(params.expireAt)}.`,
+  ].join('\n');
+}
 
 /**
  * Ответ на callback `channel`. Кнопка канала в новых меню — url-кнопка, но у

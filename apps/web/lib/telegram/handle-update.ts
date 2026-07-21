@@ -29,9 +29,9 @@ import {
   CHANNEL_LINK_TEXT,
   MEDIA_REPLY,
   SUPPORT_BUTTON,
-  VPN_MOCK_TEXT,
   type MediaKind,
 } from './templates';
+import { handleVpnCallback, handleVpnRefreshCallback } from './vpn-flow';
 
 /**
  * Тонкий роутер Telegram-апдейтов (распил M-10 аудита, 2026-07: прежний
@@ -245,7 +245,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
  *   - `cat` / `back` → показать список сервисов (кнопочный каталог);
  *   - `own`          → подсказка «напиши текстом» (увод в чат с агентом);
  *   - `support`      → обращение в поддержку: просим описать проблему;
- *   - `vpn`          → заглушка стартового меню (продукт ещё не запущен);
+ *   - `vpn`          → выдать ссылку-подписку VPN (Remnawave, vpn-flow.ts);
+ *   - `vpn:refresh`  → перевыпустить ссылку (revoke в панели + новая ссылка);
  *   - `channel`      → легаси старых меню: ссылка на Telegram-канал;
  *   - `svc:<slug>`   → выбран сервис: тарифы или запрос суммы (custom-amount);
  *   - `tier:<slug>:<idx>` → выбран тариф: создать заказ → кнопки confirm/cancel;
@@ -306,8 +307,12 @@ async function handleCallbackQuery(
       await handleSupportCallback(cb, chatId, updateId);
       return;
     case 'vpn':
-      // Заглушка: VPN в разработке. Меню на исходном сообщении не трогаем.
-      await sendSafely(chatId, VPN_MOCK_TEXT, updateId);
+      // VPN Оплатишки: выдача/перевыпуск ссылки-подписки Remnawave.
+      if (parts[1] === 'refresh') {
+        await handleVpnRefreshCallback(cb, chatId, updateId);
+        return;
+      }
+      await handleVpnCallback(cb, chatId, updateId);
       return;
     case 'channel':
       // Легаси: в новых меню это url-кнопка. Callback приходит только со старых
