@@ -108,7 +108,11 @@ async function persistSnapshot(
   );
 }
 
-/** Ссылка + инструкция клиенту (HTML) с кнопками сторов и «Обновить ссылку». */
+/**
+ * Ссылка + инструкция клиенту (HTML) с кнопками сторов и «Обновить ссылку».
+ * Перед сообщением всегда идёт альбом со скриншотами шагов (решение владельца
+ * 2026-07-21: фотки и при повторном нажатии — инструкция всегда под рукой).
+ */
 async function replyWithSubscription(
   ctx: PersistContext,
   chatId: number,
@@ -117,6 +121,7 @@ async function replyWithSubscription(
   subscriptionUrl: string,
   expireAt: Date,
 ): Promise<void> {
+  await sendVpnStepsAlbum(chatId, updateId);
   const html = buildVpnMessageHtml({
     kind,
     subscriptionUrl,
@@ -198,11 +203,6 @@ export async function handleVpnCallback(
     }
     await persistSnapshot(ctx, telegramId, panelUser);
     log.info({ event: created ? 'telegram.vpn.issued' : 'telegram.vpn.adopted', updateId, chatId });
-
-    // Скриншоты шагов — только при первой выдаче (повторы не спамят альбомом).
-    if (created) {
-      await sendVpnStepsAlbum(chatId, updateId);
-    }
     await replyWithSubscription(
       ctx,
       chatId,
