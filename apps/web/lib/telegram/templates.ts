@@ -106,15 +106,20 @@ export const VPN_UNAVAILABLE_TEXT =
 export const VPN_ERROR_TEXT =
   'Ой, ссылка сейчас не выдалась. Попробуй ещё раз через пару минут, я уже разбираюсь!';
 
-/** «Действует до 21 августа 2026 г.» (Europe/Moscow, как остальные даты бота). */
+/**
+ * «21 августа 2026» (Europe/Moscow). Хвост « г.» из ru-RU-формата убираем:
+ * дальше в шаблоне идёт точка предложения, и получалось «2026 г.. Трафик».
+ */
 function formatVpnExpiry(date: Date): string {
   try {
-    return date.toLocaleDateString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    });
+    return date
+      .toLocaleDateString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+      .replace(/\s*г\.\s*$/, '');
   } catch {
     return date.toISOString().slice(0, 10);
   }

@@ -10,7 +10,9 @@ describe('buildVpnMessageHtml', () => {
   it('ссылка — в <code> (копируется тапом), срок по-русски, флаги стран', () => {
     const html = buildVpnMessageHtml({ kind: 'new', ...BASE });
     expect(html).toContain(`<code>${URL}</code>`);
-    expect(html).toContain('августа 2026');
+    // Без хвоста « г.» из ru-RU-формата — иначе в предложении двойная точка.
+    expect(html).toContain('до 21 августа 2026. ');
+    expect(html).not.toContain('..');
     expect(html).toContain('Happ');
     expect(html).toContain('URL подписки');
     expect(html).toContain('🇱🇹 Литва');
