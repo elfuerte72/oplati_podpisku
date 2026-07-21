@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-07-21 — VPN Оплатишки: кнопка «VPN» в боте (Remnawave)
+
+### Added
+
+- Кнопка «🛡 VPN» в /start-меню бота выдаёт персональную ссылку-подписку
+  Remnawave (`panel.mxpkn8ns.ru`): юзер панели создаётся по telegramId
+  (username `tg_<id>`, срок +1 календарный месяц, Default-Squad, трафик
+  200 ГБ/мес), клиенту уходит ссылка в `<code>` + пошаговая инструкция Happ
+  (альбом скриншотов при каждой выдаче, кнопки App Store / Google Play).
+- Повторное нажатие возвращает ТУ ЖЕ ссылку (идемпотентность: снимок в БД →
+  `by-telegram-id` в панели → создание). Кнопка «Обновить ссылку»
+  (`vpn:refresh`) перевыпускает её через `actions/revoke` — старая умирает
+  сразу, срок НЕ продлевается; юзера панели удалили вручную (404) → выпуск заново.
+- Новая таблица `vpn_subscriptions` (миграция 0024; RLS deny-by-default,
+  unique по user_id / telegram_id / remnawave_uuid) + репозиторий upsert.
+- Клиент `lib/remnawave/` (Bearer server-side, timeout 10s, без ретраев),
+  Zod-контракт `@oplati/types` — подтверждён живыми вызовами (create 201 /
+  by-telegram-id 200+`[]` / revoke меняет shortUuid / delete `isDeleted`);
+  справочник — `docs/remnawave-api.md`. env: `REMNAWAVE_API_TOKEN`
+  (Sensitive, prod+preview), `REMNAWAVE_BASE_URL` / `REMNAWAVE_SQUAD_UUID` /
+  `REMNAWAVE_TRAFFIC_LIMIT_GB`.
+- Тесты: types +5 (контракт), web +18 (клиент, `addOneMonthUtc` с клампом
+  конца месяца, HTML-шаблон), db +2 (PGlite upsert-снимок).
+  Продление VPN по оплате (L&P) — осознанно следующий этап.
+
+---
+
 ## 2026-07-19 — Волна аудита: M-11…M-15 + LOW-чистка (L-2…L-20)
 
 Одной веткой (3 фазы, каждая с ревью и полным сьютом; web 401 / types 105 / db 30).

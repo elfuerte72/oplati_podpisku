@@ -58,7 +58,7 @@ export const START_APP_BUTTON = '📱 Открыть приложение';
 /** Подпись кнопки поддержки в стартовом меню (callback `support`). */
 export const START_SUPPORT_BUTTON = '🛟 Поддержка';
 
-/** Подпись кнопки VPN (продукт в разработке; callback `vpn`). */
+/** Подпись кнопки VPN (выдача ссылки-подписки Remnawave; callback `vpn`). */
 export const START_VPN_BUTTON = '🛡 VPN';
 
 /** Подпись url-кнопки Telegram-канала в стартовом меню. */
@@ -79,9 +79,92 @@ export const CARD_HOWTO_BUTTON = '📖 Как оплатить — пошаго�
 /** Подпись url-кнопки официального прайса купленного сервиса. */
 export const SERVICE_PRICING_BUTTON = 'Открыть прайс сервиса';
 
-/** Ответ на кнопку VPN, пока продукт в разработке. */
-export const VPN_MOCK_TEXT =
-  'VPN Оплатишки пока в разработке — скоро его можно будет подключить прямо здесь, с оплатой в рублях. Как запустим — напишу первым. А подписки можно оплатить уже сейчас: жми «Открыть приложение».';
+// ─── VPN Оплатишки (Remnawave) ────────────────────────────────────────────
+//
+// Кнопка «VPN» выдаёт персональную ссылку-подписку: клиент ставит Happ,
+// добавляет ссылку как «URL подписки» и получает оба сервера (Литва + «При
+// белых списках»). Тексты и клавиатура — здесь, логика — vpn-flow.ts.
+
+/** Официальные сторы приложения Happ (проверены 2026-07-21). */
+export const HAPP_APPSTORE_URL =
+  'https://apps.apple.com/us/app/happ-proxy-utility/id6504287215';
+export const HAPP_GOOGLEPLAY_URL =
+  'https://play.google.com/store/apps/details?id=com.happproxy';
+
+/** Подписи url-кнопок сторов под сообщением со ссылкой. */
+export const VPN_APPSTORE_BUTTON = '📱 Happ для iPhone';
+export const VPN_GOOGLEPLAY_BUTTON = '🤖 Happ для Android';
+
+/** Подпись callback-кнопки перевыпуска ссылки (`vpn:refresh`). */
+export const VPN_REFRESH_BUTTON = '🔄 Обновить ссылку';
+
+/** Remnawave не настроен (нет токена) или недоступна БД. */
+export const VPN_UNAVAILABLE_TEXT =
+  'VPN ненадолго отдыхает: ведём технические работы. Загляни чуть позже!';
+
+/** Ошибка панели/сети при выдаче или обновлении ссылки. */
+export const VPN_ERROR_TEXT =
+  'Ой, ссылка сейчас не выдалась. Попробуй ещё раз через пару минут, я уже разбираюсь!';
+
+/**
+ * «21 августа 2026» (Europe/Moscow). Хвост « г.» из ru-RU-формата убираем:
+ * дальше в шаблоне идёт точка предложения, и получалось «2026 г.. Трафик».
+ */
+function formatVpnExpiry(date: Date): string {
+  try {
+    return date
+      .toLocaleDateString('ru-RU', {
+        timeZone: 'Europe/Moscow',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+      .replace(/\s*г\.\s*$/, '');
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Сообщение со ссылкой-подпиской (parse_mode HTML: ссылка в `<code>`,
+ * копируется тапом). Три варианта вступления: `new` (первая выдача),
+ * `existing` (повторное нажатие возвращает ту же ссылку), `refreshed`
+ * (после «Обновить ссылку»: старая отозвана в панели). Ссылка приходит из
+ * панели, но экранируем как любой внешний ввод. `trafficLimitGb` — лимит из
+ * env, чтобы текст не разъезжался с реальной настройкой (0 = безлимит).
+ */
+export function buildVpnMessageHtml(params: {
+  kind: 'new' | 'existing' | 'refreshed';
+  subscriptionUrl: string;
+  expireAt: Date;
+  trafficLimitGb: number;
+}): string {
+  const intro =
+    params.kind === 'new'
+      ? '🛡 <b>Твой VPN готов!</b>'
+      : params.kind === 'refreshed'
+        ? '🛡 <b>Ссылка обновлена!</b> Старая больше не работает. В Happ удали прежнюю подписку и добавь новую.'
+        : '🛡 <b>Твоя VPN-ссылка уже выпущена, лови её ещё раз.</b> Если она не работает или попала в чужие руки, жми «Обновить ссылку» внизу.';
+  const traffic =
+    params.trafficLimitGb > 0
+      ? `Трафик: ${params.trafficLimitGb} ГБ в месяц, хватит с запасом.`
+      : 'Трафик безлимитный.';
+  return [
+    intro,
+    '',
+    'Ссылка-подписка, тапни и она скопируется:',
+    `<code>${escapeHtml(params.subscriptionUrl)}</code>`,
+    '',
+    '<b>Как подключить:</b>',
+    '1. Скачай приложение Happ, кнопки ниже.',
+    '2. В Happ нажми «+» в правом верхнем углу.',
+    '3. Выбери «URL подписки».',
+    '4. Вставь ссылку и жми «Готово».',
+    '',
+    'Внутри два сервера: 🇱🇹 Литва и 🇷🇺 «При белых списках». Что-то не открывается? Просто переключись.',
+    `Доступ действует до ${formatVpnExpiry(params.expireAt)}. ${traffic}`,
+  ].join('\n');
+}
 
 /**
  * Ответ на callback `channel`. Кнопка канала в новых меню — url-кнопка, но у

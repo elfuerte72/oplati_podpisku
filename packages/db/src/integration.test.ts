@@ -36,6 +36,10 @@ import {
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
 import { idleAgedActiveCards, syncCardBalance, updateBalance } from './repositories/cards.ts';
+import {
+  findVpnSubscriptionByUserId,
+  upsertVpnSubscription,
+} from './repositories/vpn-subscriptions.ts';
 
 /**
  * Интеграционные тесты репозиториев на РЕАЛЬНОМ Postgres (PGlite, WASM) с
@@ -909,5 +913,52 @@ describe('retention (M-13): deleteOldMessages / stripOldPaymentPayloads', () => 
       'fresh payment',
     );
     expect(freshRow.rawPayload).not.toBeNull();
+  });
+});
+
+describe('upsertVpnSubscription (снимок VPN-ссылки Remnawave, один на пользователя)', () => {
+  it('создаёт строку, а на конфликте user_id обновляет ссылку на месте (created_at цел)', async () => {
+    const user = await makeUser();
+    const expireAt = new Date('2026-08-21T00:00:00.000Z');
+    const base = {
+      userId: user.id,
+      telegramId: String(user.telegramId),
+      remnawaveUuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+      status: 'ACTIVE',
+      expireAt,
+    };
+
+    const first = await upsertVpnSubscription(db, {
+      ...base,
+      shortUuid: 'AAAA1111',
+      subscriptionUrl: 'https://sub.test/api/sub/AAAA1111',
+    });
+
+    // «Обновить ссылку»: revoke в панели выдал новый shortUuid — upsert
+    // перезаписывает снимок, не плодя вторую строку.
+    const second = await upsertVpnSubscription(db, {
+      ...base,
+      shortUuid: 'BBBB2222',
+      subscriptionUrl: 'https://sub.test/api/sub/BBBB2222',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.shortUuid).toBe('BBBB2222');
+    expect(second.createdAt.getTime()).toBe(first.createdAt.getTime());
+
+    const found = await findVpnSubscriptionByUserId(db, user.id);
+    expect(found?.subscriptionUrl).toBe('https://sub.test/api/sub/BBBB2222');
+    expect(found?.expireAt.getTime()).toBe(expireAt.getTime());
+
+    const rows = await db
+      .select()
+      .from(schema.vpnSubscriptions)
+      .where(eq(schema.vpnSubscriptions.userId, user.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('у пользователя без подписки find возвращает null', async () => {
+    const user = await makeUser();
+    expect(await findVpnSubscriptionByUserId(db, user.id)).toBeNull();
   });
 });

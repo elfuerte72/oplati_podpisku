@@ -411,6 +411,44 @@ export const cards = pgTable(
   }),
 ).enableRLS();
 
+// ─── VPN subscriptions (Remnawave) ────────────────────────────────────────
+// Одна строка = одна выданная ссылка-подписка VPN на пользователя (кнопка
+// «VPN» в боте). Источник истины по доступу — панель Remnawave; здесь снимок
+// для идемпотентной выдачи той же ссылки без похода в панель.
+// `remnawave_uuid` — id юзера панели для revoke/PATCH/DELETE (это
+// `response.uuid`, НЕ `vlessUuid`). «Обновить ссылку» = revoke в панели →
+// UPDATE строки на месте (short_uuid/subscription_url меняются, expire_at
+// осознанно НЕ продлевается — иначе кнопка была бы бесплатным продлением).
+
+export const vpnSubscriptions = pgTable(
+  'vpn_subscriptions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Дубль telegram_id (text — как users.telegram_id): ключ поиска юзера в
+    // панели (`by-telegram-id`), устойчив к merge веб/telegram-строк users.
+    telegramId: text('telegram_id').notNull(),
+    remnawaveUuid: uuid('remnawave_uuid').notNull(),
+    shortUuid: text('short_uuid').notNull(),
+    subscriptionUrl: text('subscription_url').notNull(),
+    // Зеркало статуса панели (ACTIVE/DISABLED/LIMITED/EXPIRED) на момент
+    // последней операции; панель сама переводит в EXPIRED по expire_at.
+    status: text('status').notNull().default('ACTIVE'),
+    expireAt: timestamp('expire_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // Один VPN на пользователя (и на telegram-аккаунт, и на юзера панели) —
+    // повторное нажатие кнопки возвращает существующую ссылку, дубли не плодятся.
+    userIdx: uniqueIndex('vpn_subscriptions_user_id_idx').on(t.userId),
+    telegramIdx: uniqueIndex('vpn_subscriptions_telegram_id_idx').on(t.telegramId),
+    remnawaveIdx: uniqueIndex('vpn_subscriptions_remnawave_uuid_idx').on(t.remnawaveUuid),
+  }),
+).enableRLS();
+
 // ─── Referral (партнёрская программа) ─────────────────────────────────────
 // Append-only ledger начислений + профиль партнёра + заявки на вывод. Деньги —
 // USD-центы integer. RLS deny-by-default (service_role обходит); партнёр читает

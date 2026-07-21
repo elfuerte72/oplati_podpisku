@@ -47,9 +47,18 @@ export async function sendSafely(
   text: string,
   updateId: number,
   replyMarkup?: InlineKeyboard,
+  opts?: { parseMode?: 'HTML' },
 ): Promise<void> {
   try {
-    await getBot().api.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);
+    const other = {
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...(opts?.parseMode ? { parse_mode: opts.parseMode } : {}),
+    };
+    await getBot().api.sendMessage(
+      chatId,
+      text,
+      Object.keys(other).length > 0 ? other : undefined,
+    );
   } catch (err) {
     if (err instanceof GrammyError) {
       if (err.error_code === 403) {
