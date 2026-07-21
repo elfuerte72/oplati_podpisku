@@ -103,11 +103,12 @@ export async function upsertVpnSubscription(
     throw new Error('upsertVpnSubscription: INSERT … ON CONFLICT не вернул строку');
   }
 
+  // shortUuid не логируем: это хвост ссылки-подписки, по нему ссылка
+  // восстанавливается из логов (политика «токены не логируются»).
   log.info({
     event: 'db.vpn_subscriptions.upserted',
     userId: input.userId,
     remnawaveUuid: input.remnawaveUuid,
-    shortUuid: input.shortUuid,
   });
 
   return mapRow(row);

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildVpnMessageHtml } from './templates';
 
-const URL = 'https://sub.mxpkn8ns.ru/api/sub/4wXbnJkbCGcZDKPP';
+const URL = 'https://sub.example.com/api/sub/TESTshortUuid001';
 const EXPIRE = new Date('2026-08-21T00:00:00.000Z');
 const BASE = { subscriptionUrl: URL, expireAt: EXPIRE, trafficLimitGb: 200 };
 

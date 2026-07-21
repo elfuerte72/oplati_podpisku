@@ -7,15 +7,16 @@ import {
 } from './remnawave.ts';
 
 /**
- * Контракт Remnawave. Фикстуры — сокращённые ЖИВЫЕ ответы панели
- * (сняты 2026-07-21 с panel.mxpkn8ns.ru: create 201 / by-telegram-id 200 /
- * revoke 200 / delete 200).
+ * Контракт Remnawave. ФОРМА фикстуры — сокращённый живой ответ панели
+ * (снят 2026-07-21: create 201 / by-telegram-id 200 / revoke 200 / delete
+ * 200), но все идентификаторы синтетические — реальные shortUuid/ссылки в
+ * репозиторий не кладём даже мёртвыми (находка ревью).
  */
 
 const LIVE_USER = {
-  uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+  uuid: '11111111-2222-4333-8444-555555555555',
   id: 8,
-  shortUuid: '4wXbnJkbCGcZDKPP',
+  shortUuid: 'TESTshortUuid001',
   username: 'tg_999000111222',
   status: 'ACTIVE',
   trafficLimitBytes: 0,
@@ -23,22 +24,22 @@ const LIVE_USER = {
   expireAt: '2026-08-21T00:00:00.000Z',
   telegramId: 999000111222,
   email: null,
-  vlessUuid: '94d841ad-1117-46f0-b58f-30901a6f3171',
+  vlessUuid: '66666666-7777-4888-8999-000000000000',
   subRevokedAt: null,
   createdAt: '2026-07-21T15:42:45.202Z',
-  subscriptionUrl: 'https://sub.mxpkn8ns.ru/api/sub/4wXbnJkbCGcZDKPP',
+  subscriptionUrl: 'https://sub.example.com/api/sub/TESTshortUuid001',
   activeInternalSquads: [
-    { uuid: 'e819a231-6e10-46c6-8411-7001dd67e9e1', name: 'Default-Squad' },
+    { uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', name: 'Default-Squad' },
   ],
 };
 
 describe('remnawaveUserResponseSchema (create / revoke)', () => {
   it('парсит живой ответ панели, лишние поля отбрасывает', () => {
     const parsed = remnawaveUserResponseSchema.parse({ response: LIVE_USER });
-    expect(parsed.response.uuid).toBe('dd971f3c-9332-4821-9337-9ca95682758c');
-    expect(parsed.response.shortUuid).toBe('4wXbnJkbCGcZDKPP');
+    expect(parsed.response.uuid).toBe('11111111-2222-4333-8444-555555555555');
+    expect(parsed.response.shortUuid).toBe('TESTshortUuid001');
     expect(parsed.response.subscriptionUrl).toBe(
-      'https://sub.mxpkn8ns.ru/api/sub/4wXbnJkbCGcZDKPP',
+      'https://sub.example.com/api/sub/TESTshortUuid001',
     );
     expect(parsed.response.status).toBe('ACTIVE');
     expect(parsed.response.expireAt).toEqual(new Date('2026-08-21T00:00:00.000Z'));

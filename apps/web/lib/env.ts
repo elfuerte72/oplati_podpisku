@@ -140,7 +140,12 @@ const serverEnvSchema = z.object({
   // Токен — ОТДЕЛЬНЫЙ API-токен для бэкенда (роль API, не мастер-токен
   // владельца), живёт только в env. Не задан → кнопка отвечает «недоступно».
   REMNAWAVE_API_TOKEN: optionalEnvString(),
-  REMNAWAVE_BASE_URL: z.string().url().default('https://panel.mxpkn8ns.ru/api'),
+  // Только https: Bearer-токен уходит в заголовке каждого запроса.
+  REMNAWAVE_BASE_URL: z
+    .string()
+    .url()
+    .startsWith('https://')
+    .default('https://panel.mxpkn8ns.ru/api'),
   // Внутренний squad по умолчанию (Default-Squad): даёт юзеру ОБА подключения
   // (Lithuania + «При белых списках»); без сквада подписка пустая.
   REMNAWAVE_SQUAD_UUID: z
@@ -149,7 +154,13 @@ const serverEnvSchema = z.object({
     .default('e819a231-6e10-46c6-8411-7001dd67e9e1'),
   // Лимит трафика подписки в ГБ на пользователя (сброс счётчика раз в месяц,
   // strategy MONTH); 0 = безлимит. Дефолт 200 ГБ (решение владельца 2026-07-21).
-  REMNAWAVE_TRAFFIC_LIMIT_GB: z.coerce.number().int().nonnegative().default(200),
+  // Кап 100k ГБ — чтобы перевод в байты (×1024³) не вышел за safe integer.
+  REMNAWAVE_TRAFFIC_LIMIT_GB: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(100_000)
+    .default(200),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),

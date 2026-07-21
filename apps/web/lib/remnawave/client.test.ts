@@ -27,13 +27,13 @@ function makeClient(fetchMock: ReturnType<typeof vi.fn>, trafficLimitBytes = 0) 
 /** Сокращённый живой ответ панели (2026-07-21). */
 function panelUser(over: Record<string, unknown> = {}) {
   return {
-    uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
-    shortUuid: '4wXbnJkbCGcZDKPP',
+    uuid: '11111111-2222-4333-8444-555555555555',
+    shortUuid: 'TESTshortUuid001',
     username: 'tg_999000111222',
     status: 'ACTIVE',
     expireAt: '2026-08-21T00:00:00.000Z',
     telegramId: 999000111222,
-    subscriptionUrl: 'https://sub.test/api/sub/4wXbnJkbCGcZDKPP',
+    subscriptionUrl: 'https://sub.test/api/sub/TESTshortUuid001',
     ...over,
   };
 }
@@ -52,7 +52,7 @@ describe('findUserByTelegramId', () => {
     const fetchMock = vi.fn().mockResolvedValue(makeResp(200, { response: [panelUser()] }));
     const client = makeClient(fetchMock);
     const user = await client.findUserByTelegramId('999000111222');
-    expect(user?.uuid).toBe('dd971f3c-9332-4821-9337-9ca95682758c');
+    expect(user?.uuid).toBe('11111111-2222-4333-8444-555555555555');
     expect(user?.expireAt).toEqual(new Date('2026-08-21T00:00:00.000Z'));
   });
 
@@ -80,7 +80,7 @@ describe('createUser', () => {
     const client = makeClient(fetchMock, 214748364800);
     const expireAt = new Date('2026-08-21T00:00:00.000Z');
     const user = await client.createUser({ telegramId: '999000111222', expireAt });
-    expect(user.shortUuid).toBe('4wXbnJkbCGcZDKPP');
+    expect(user.shortUuid).toBe('TESTshortUuid001');
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://panel.test/api/users');
@@ -113,14 +113,14 @@ describe('updateUser', () => {
     );
     const client = makeClient(fetchMock);
     await client.updateUser({
-      uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+      uuid: '11111111-2222-4333-8444-555555555555',
       trafficLimitBytes: 214748364800,
     });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://panel.test/api/users');
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(init.body as string)).toEqual({
-      uuid: 'dd971f3c-9332-4821-9337-9ca95682758c',
+      uuid: '11111111-2222-4333-8444-555555555555',
       trafficLimitBytes: 214748364800,
     });
   });
@@ -131,18 +131,18 @@ describe('revokeSubscription', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       makeResp(200, {
         response: panelUser({
-          shortUuid: 'sAJdR4Au1b84cqhk',
-          subscriptionUrl: 'https://sub.test/api/sub/sAJdR4Au1b84cqhk',
+          shortUuid: 'TESTshortUuid002',
+          subscriptionUrl: 'https://sub.test/api/sub/TESTshortUuid002',
           subRevokedAt: '2026-07-21T15:43:04.835Z',
         }),
       }),
     );
     const client = makeClient(fetchMock);
-    const user = await client.revokeSubscription('dd971f3c-9332-4821-9337-9ca95682758c');
-    expect(user.shortUuid).toBe('sAJdR4Au1b84cqhk');
+    const user = await client.revokeSubscription('11111111-2222-4333-8444-555555555555');
+    expect(user.shortUuid).toBe('TESTshortUuid002');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(
-      'https://panel.test/api/users/dd971f3c-9332-4821-9337-9ca95682758c/actions/revoke',
+      'https://panel.test/api/users/11111111-2222-4333-8444-555555555555/actions/revoke',
     );
     expect(init.method).toBe('POST');
   });
@@ -150,7 +150,7 @@ describe('revokeSubscription', () => {
   it('404 (юзера панели удалили вручную) → RemnawaveApiError.status === 404', async () => {
     const fetchMock = vi.fn().mockResolvedValue(makeResp(404, { message: 'User not found' }));
     const client = makeClient(fetchMock);
-    await expect(client.revokeSubscription('dd971f3c-0000-4000-8000-000000000000')).rejects.toSatisfy(
+    await expect(client.revokeSubscription('00000000-0000-4000-8000-000000000000')).rejects.toSatisfy(
       (err: unknown) => err instanceof RemnawaveApiError && err.status === 404,
     );
   });
@@ -162,7 +162,7 @@ describe('deleteUser', () => {
       .fn()
       .mockResolvedValue(makeResp(200, { response: { isDeleted: true } }));
     const client = makeClient(fetchMock);
-    await expect(client.deleteUser('dd971f3c-9332-4821-9337-9ca95682758c')).resolves.toBe(true);
+    await expect(client.deleteUser('11111111-2222-4333-8444-555555555555')).resolves.toBe(true);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe('DELETE');
   });

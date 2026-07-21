@@ -128,7 +128,16 @@ async function replyWithSubscription(
     expireAt,
     trafficLimitGb: serverEnv.REMNAWAVE_TRAFFIC_LIMIT_GB,
   });
-  await safeAppendMessage(ctx, 'assistant', html, { source: 'vpn' }, updateId);
+  // В историю messages — БЕЗ ссылки (находка ревью): ссылка-подписка — это
+  // credential, она уже хранится в vpn_subscriptions, дубль в переписке
+  // (с 90-дневной ретенцией и без нужды) только расширяет поверхность утечки.
+  const redactedHtml = buildVpnMessageHtml({
+    kind,
+    subscriptionUrl: '[ссылка скрыта]',
+    expireAt,
+    trafficLimitGb: serverEnv.REMNAWAVE_TRAFFIC_LIMIT_GB,
+  });
+  await safeAppendMessage(ctx, 'assistant', redactedHtml, { source: 'vpn' }, updateId);
   await sendSafely(chatId, html, updateId, vpnKeyboard(), { parseMode: 'HTML' });
 }
 
@@ -192,13 +201,24 @@ export async function handleVpnCallback(
     // Идемпотентность к панели: юзер мог быть создан раньше (или снимок в БД
     // потерялся) — один telegramId = один юзер панели, дубли не плодим.
     let panelUser = await client.findUserByTelegramId(telegramId);
-    const created = panelUser === null;
+    let created = false;
     if (!panelUser) {
-      panelUser = await client.createUser({
-        telegramId,
-        expireAt: addOneMonthUtc(new Date()),
-      });
-    } else {
+      try {
+        panelUser = await client.createUser({
+          telegramId,
+          expireAt: addOneMonthUtc(new Date()),
+        });
+        created = true;
+      } catch (err) {
+        // Дребезг кнопки: параллельный callback создал юзера первым (username
+        // в панели уникален, второй create падает) — перечитываем и едем дальше.
+        const raced = await client.findUserByTelegramId(telegramId);
+        if (!raced) throw err;
+        log.info({ event: 'telegram.vpn.create_raced', updateId, chatId });
+        panelUser = raced;
+      }
+    }
+    if (!created) {
       await syncTrafficLimit(panelUser, updateId);
     }
     await persistSnapshot(ctx, telegramId, panelUser);
@@ -255,10 +275,13 @@ export async function handleVpnRefreshCallback(
     } catch (err) {
       if (err instanceof RemnawaveApiError && err.status === 404) {
         // Юзера панели удалили вручную — снимок протух, выпускаем заново.
+        // Живой срок сохраняем (перевыпуск ссылки не продлевает доступ),
+        // истёкший — новый месяц (иначе создали бы уже EXPIRED юзера).
         log.warn({ event: 'telegram.vpn.refresh_recreate', updateId, chatId });
         panelUser = await client.createUser({
           telegramId,
-          expireAt: addOneMonthUtc(new Date()),
+          expireAt:
+            existing.expireAt > new Date() ? existing.expireAt : addOneMonthUtc(new Date()),
         });
       } else {
         throw err;
