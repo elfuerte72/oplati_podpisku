@@ -6,31 +6,34 @@
 
 ---
 
-## 2026-07-22 — Сайт без VPN из РФ: reverse-proxy на Timeweb (beta)
+## 2026-07-22 — Сайт без VPN из РФ: reverse-proxy на Timeweb (ПРОД переведён)
 
 РКН/ТСПУ блокирует IP Vercel и дросселирует Cloudflare у мобильных операторов
-РФ. Проверено живьём: Cloudflare-проксирование (оранжевое облако, off ECH/HTTP3)
-для Мегафона НЕ помогло (CF сам под дросселем — обрыв после ~16 КБ). Рабочее
-решение — reverse-proxy через российский VPS Timeweb. **Прод НЕ переключён**,
-поднят тестовый `beta.oplatishka.com`; владелец открыл с телефона без VPN —
-работает. Ранбук перевода прода — в BACKLOG.
+РФ (Cloudflare-проксирование для Мегафона НЕ помогло — CF сам под дросселем,
+обрыв после ~16 КБ). Прод (`www`/apex) переведён на reverse-proxy через
+российский VPS Timeweb; владелец подтвердил доступ из РФ без VPN со стилями.
+Полная схема и три подводных камня — в CLAUDE.md; откат/хвосты — в BACKLOG.
 
-### Added
+### Added / Changed
 
 - `getClientIp` (`apps/web/lib/ratelimit.ts`) — поддержка reverse-proxy: за
   прокси Vercel затирает `x-real-ip`/`x-forwarded-for` IP-адресом соединения
-  (= IP прокси; per-IP rate-limit схлопнул бы всех в один IP), а кастомные
-  заголовки пробрасывает (замерено эмпирически). Прокси кладёт реальный IP
-  клиента в `X-Client-IP` + секрет в `X-Proxy-Secret`; доверяем `X-Client-IP`
-  ТОЛЬКО при timing-safe совпадении секрета (`*.vercel.app` идёт мимо прокси,
-  где заголовок подделает любой клиент — CWE-348). Новый env
-  `PROXY_SHARED_SECRET` (optional): не задан → ветка мертва, поведение прежнее.
-- Инфраструктура (на Timeweb VPS, вне репо): Traefik-маршрут + Caddy-sidecar
-  `oplatishka-proxy` (инъекция `X-Client-IP` через `{client_ip}`), TLS
-  Let's Encrypt. Цепочка: `клиент → Traefik(443) → Caddy → Vercel`.
-- Тесты web +5: реальный IP при верном секрете, спуфинг с неверным секретом,
-  ротация подделанного заголовка не сбрасывает ключ, мёртвая ветка без env,
-  fallback при пустом `X-Client-IP`.
+  (= IP прокси; per-IP rate-limit схлопнул бы всех в один IP), кастомные
+  заголовки пробрасывает (замерено). Прокси кладёт реальный IP в `X-Client-IP`
+  + секрет `X-Proxy-Secret`; доверяем только при timing-safe совпадении секрета
+  `PROXY_SHARED_SECRET` (`*.vercel.app` мимо прокси → подделка, CWE-348).
+- `miniAppUrl()` (`deployment-url.ts`) — Mini App-кабинет на production ведёт на
+  `MINIAPP_BASE_URL` (`oplati-podpisku-web.vercel.app`), НАПРЯМУЮ на Vercel мимо
+  прокси: кабинет открывается из Telegram (VPN уже есть), лишний хоп через
+  Timeweb только замедлял. `siteUrl()` остаётся за прокси. Env не задан →
+  fallback на APP_URL. Second entry — Direct Link в @BotFather (сменён владельцем).
+- DNS `www`/apex → A на Timeweb `104.171.133.70` (CF серое облако). Vercel
+  **System Bypass** для Timeweb IP (обязательно — авто-митигации Vercel иначе
+  челленджат весь прокси-трафик как атаку). Timeweb: Traefik(443,TLS LE) +
+  Caddy-sidecar (единый Host/SNI = www — фикс SNI-пула Caddy) + middleware
+  `strip-altsvc` (снята реклама HTTP/3, ТСПУ режет QUIC).
+- Тесты web +11: ratelimit `X-Client-IP` за секретом (5), deployment-url —
+  miniAppUrl/siteUrl прод/preview/fallback (6).
 
 ---
 

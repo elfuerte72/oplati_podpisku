@@ -37,50 +37,38 @@ Vercel — нужен независимый «второй глаз». От р�
 
 ## Инфраструктура
 
-### Сайт без VPN из РФ — reverse-proxy на Timeweb (beta работает, прод НЕ переключён; 2026-07-22)
+### Сайт без VPN из РФ — reverse-proxy на Timeweb (ПРОД ПЕРЕВЕДЁН 2026-07-22)
 
 РКН/ТСПУ блокирует IP Vercel и дросселирует Cloudflare у мобильных операторов
-РФ. **Проверено живьём:** Cloudflare-проксирование (оранжевое облако, off
-ECH/HTTP3) для Мегафона НЕ помогло — CF сам под дросселем (обрыв после ~16 КБ:
-HTML доходит, CSS/JS режется). Рабочее решение — **reverse-proxy через
-российский VPS Timeweb** (`104.171.133.70`, Москва): для пользователя обычный
-РФ-сайт, ТСПУ не трогает. Владелец 2026-07-22: доступность из РФ без VPN —
-принципиальное условие; Telegram-часть не трогаем (ЦА в TG через VPN, бот сам
-под блоком и работает только с VPN).
+РФ (Cloudflare-проксирование для Мегафона НЕ помогло — CF сам под дросселем).
+Прод (`www`/apex) переведён на **reverse-proxy через российский VPS Timeweb**
+(`104.171.133.70`): `клиент → Traefik(443,TLS Let's Encrypt) → Caddy-sidecar →
+Vercel`. Владелец подтвердил — открывается из РФ без VPN со стилями. Полная
+техническая суть, три подводных камня (Vercel System Bypass, Caddy SNI-пул,
+alt-svc) и схема — в [`CLAUDE.md`](../CLAUDE.md) раздел «Доступ сайта из РФ без
+VPN». Смоук после перевода зелёный (заказ ORD-S3MGS создан чисто, денежный путь
+изолирован от прокси).
 
-**Сделано (beta):** `beta.oplatishka.com` (CF DNS → A на Timeweb, серое облако)
-проксируется на прод-Vercel через `Traefik(443,TLS) → Caddy-sidecar → Vercel`;
-владелец открыл с телефона Мегафон **без VPN — работает со стилями**. Смоук
-зелёный, прод (`www`/apex) не тронут. Код `getClientIp` под прокси готов
-(ветка `feat/cf-proxy-ru-access`, PR #92; env `PROXY_SHARED_SECRET` не задан →
-инертен). Реальный IP клиента доходит в `X-Client-IP` (проверено замером).
-Оферта Timeweb Cloud VPS reverse-proxy своего сайта не запрещает.
+**Оставшиеся хвосты (не блокеры):**
+- **Внешний uptime-мониторинг Timeweb-VPS** (`104.171.133.70:443`) — теперь это
+  точка отказа сайта из РФ (деньги/webhook изолированы, но сам сайт и открытие
+  кабинета зависят). Тот же UptimeRobot, что предложен для squid-прокси (см.
+  выше H-3): Add Monitor тип HTTPS/Port на `104.171.133.70`. **За владельцем.**
+- **Direct Link кабинета в @BotFather** — увести Web App URL на
+  `oplati-podpisku-web.vercel.app/cabinet` (второй вход в Mini App; web_app-
+  кнопка в /start уже уведена кодом PR #93). **За владельцем.**
+- **Fallback при падении Timeweb** — сейчас откат ручной (DNS назад на Vercel).
+  Обдумать авто-fallback (напр. CF Load Balancer с health-check, или мониторинг
+  → быстрый ручной откат по алёрту).
 
-**Ранбук перевода прода (`www`/apex → Timeweb) — по явному «go», обратимо:**
-  1. Webhook L&P: в кабинете L&P сменить URL на
-     `https://oplati-podpisku-web.vercel.app/api/payments/loveandpay`
-     (напрямую Vercel, мимо прокси; страховка — cron `poll-payment` ≤5 мин).
-     Telegram-webhook при желании тоже на `oplati-podpisku-web.vercel.app/api/bot`.
-  2. Задать `PROXY_SHARED_SECRET` (Vercel Production+Preview) = значение из
-     Caddyfile на VPS (`/opt/oplatishka-proxy/Caddyfile`, `X-Proxy-Secret`) →
-     redeploy (иначе стейл env, ветка мертва). Мерж PR #92 в main.
-  3. На Timeweb добавить Traefik-маршрут + Caddy-конфиг для `www.oplatishka.com`
-     и `oplatishka.com` (по образцу `oplatishka-beta.yml`; SNI/Host =
-     соответствующий домен, оба — алиасы прод-проекта в Vercel).
-  4. CF DNS: `www` и apex → A-запись на `104.171.133.70`, серое облако (DNS
-     only). TXT `_loveandpay` не трогать (верификация L&P от прокси не зависит).
-  5. Смоук: check-host RU-узлы + телефон без VPN; тестовая оплата e2e (webhook
-     дошёл, заказ `paid`); `getWebhookInfo` бота; Mini App из бота; rate-limit
-     по реальному IP (не схлопнут).
-- **Открытые перед продом технические хвосты:** (a) `alt-svc: h3` рекламируется
-  Traefik'ом (глобально в Dokploy, чужие сайты) — при переводе прода снять на
-  нашем маршруте через Caddy (`header_down -Alt-Svc`), чтобы браузер не уходил в
-  QUIC; (b) Caddy-sidecar и Timeweb-VPS — новая единая точка отказа сайта из РФ
-  (webhook'и и деньги от неё изолированы, см. CLAUDE.md): нужен внешний
-  uptime-мониторинг (тот же UptimeRobot, что для squid) и решение про fallback.
-- **Откат:** CF DNS `www`/apex обратно на Vercel (убрать A, вернуть CNAME) —
-  трафик мгновенно идёт напрямую; `PROXY_SHARED_SECRET` можно оставить (без
-  прокси-заголовков ветка не срабатывает).
+**Откат прода на прямой Vercel (если Timeweb ляжет / проблемы):**
+  1. CF DNS `www` (id `81026358472632bb71aa43d3273b2463`) и apex (id
+     `da0004e7f03985447fbb39cbf2ddc308`) — PUT обратно в `CNAME
+     9633a34b256abace.vercel-dns-016.com`, proxied=false. Трафик мгновенно идёт
+     напрямую на Vercel.
+  2. (опц.) `vercel firewall system-bypass remove 104.171.133.70 --yes`.
+  3. `PROXY_SHARED_SECRET` можно оставить (без прокси-заголовков ветка кода не
+     срабатывает). `MINIAPP_BASE_URL` тоже безвреден.
 
 ## Код (мелкое, из аудита 2026-07-18)
 
