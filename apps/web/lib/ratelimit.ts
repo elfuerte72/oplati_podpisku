@@ -73,23 +73,24 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
  * `x-forwarded-for` — только fallback (локально/не-Vercel), и то ПРАВЫЙ элемент,
  * добавленный ближайшим доверенным прокси.
  *
- * За Cloudflare-прокси (оранжевое облако, доступ из РФ без VPN) адрес
- * соединения — это CF-edge, и `x-real-ip` для всех посетителей схлопывается в
- * несколько IP Cloudflare: per-IP лимит начал бы резать живых пользователей.
- * Реальный адрес CF кладёт в `CF-Connecting-IP`, но домен `*.vercel.app`
- * принимает трафик МИМО CF, где этот заголовок подделает любой клиент — та же
- * CWE-348. Поэтому CF-ветка включается только при совпадении секрета
- * `x-cf-proxy-secret` (проставляет Transform Rule зоны, значение —
- * `CLOUDFLARE_PROXY_SECRET`), сравнение timing-safe. Секрет не задан →
- * ветка мертва, поведение прежнее.
+ * За реверс-прокси (российский VPS, доступ из РФ без VPN — РКН блокирует IP
+ * Vercel) адрес соединения для Vercel — это IP прокси, и `x-real-ip` для ВСЕХ
+ * посетителей схлопывается в один IP: per-IP лимит начал бы резать живых
+ * пользователей. Эмпирически проверено: Vercel затирает стандартные
+ * `x-real-ip`/`x-forwarded-for` IP-адресом соединения, но кастомные заголовки
+ * пробрасывает. Поэтому прокси кладёт реальный IP клиента в `X-Client-IP`, а в
+ * `X-Proxy-Secret` — общий секрет; доверяем `X-Client-IP` ТОЛЬКО при timing-safe
+ * совпадении секрета (домен `*.vercel.app` принимает трафик МИМО прокси, где оба
+ * заголовка подделает любой клиент — та же CWE-348). Секрет
+ * (`PROXY_SHARED_SECRET`) не задан → ветка мертва, поведение прежнее.
  */
 export function getClientIp(req: Request): string {
-  const cfSecret = serverEnv.CLOUDFLARE_PROXY_SECRET;
-  if (cfSecret) {
-    const providedSecret = req.headers.get('x-cf-proxy-secret');
-    const cfIp = req.headers.get('cf-connecting-ip')?.trim();
-    if (providedSecret && cfIp && timingSafeEqualStr(providedSecret, cfSecret)) {
-      return cfIp;
+  const proxySecret = serverEnv.PROXY_SHARED_SECRET;
+  if (proxySecret) {
+    const providedSecret = req.headers.get('x-proxy-secret');
+    const clientIp = req.headers.get('x-client-ip')?.trim();
+    if (providedSecret && clientIp && timingSafeEqualStr(providedSecret, proxySecret)) {
+      return clientIp;
     }
   }
 
