@@ -6,6 +6,7 @@ import { Redis } from '@upstash/redis';
 
 import { serverEnv } from './env.server.ts';
 import { childLogger } from './logger.ts';
+import { timingSafeEqualStr } from './security/timing-safe.ts';
 
 /**
  * Per-identity rate-limit на дорогие AI-эндпоинты (`/api/chat`, `/api/bot`).
@@ -71,8 +72,28 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
  * нельзя: ротация заголовка обнуляла бы per-IP лимит. Приоритет — `x-real-ip`;
  * `x-forwarded-for` — только fallback (локально/не-Vercel), и то ПРАВЫЙ элемент,
  * добавленный ближайшим доверенным прокси.
+ *
+ * За реверс-прокси (российский VPS, доступ из РФ без VPN — РКН блокирует IP
+ * Vercel) адрес соединения для Vercel — это IP прокси, и `x-real-ip` для ВСЕХ
+ * посетителей схлопывается в один IP: per-IP лимит начал бы резать живых
+ * пользователей. Эмпирически проверено: Vercel затирает стандартные
+ * `x-real-ip`/`x-forwarded-for` IP-адресом соединения, но кастомные заголовки
+ * пробрасывает. Поэтому прокси кладёт реальный IP клиента в `X-Client-IP`, а в
+ * `X-Proxy-Secret` — общий секрет; доверяем `X-Client-IP` ТОЛЬКО при timing-safe
+ * совпадении секрета (домен `*.vercel.app` принимает трафик МИМО прокси, где оба
+ * заголовка подделает любой клиент — та же CWE-348). Секрет
+ * (`PROXY_SHARED_SECRET`) не задан → ветка мертва, поведение прежнее.
  */
 export function getClientIp(req: Request): string {
+  const proxySecret = serverEnv.PROXY_SHARED_SECRET;
+  if (proxySecret) {
+    const providedSecret = req.headers.get('x-proxy-secret');
+    const clientIp = req.headers.get('x-client-ip')?.trim();
+    if (providedSecret && clientIp && timingSafeEqualStr(providedSecret, proxySecret)) {
+      return clientIp;
+    }
+  }
+
   const realIp = req.headers.get('x-real-ip')?.trim();
   if (realIp) return realIp;
 

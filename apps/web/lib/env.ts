@@ -232,6 +232,16 @@ const serverEnvSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: optionalEnvString(),
   KV_REST_API_URL: optionalUrl(),
   KV_REST_API_TOKEN: optionalEnvString(),
+  // Реверс-прокси перед Vercel (доступ сайта из РФ без VPN): РКН блокирует IP
+  // Vercel, поэтому пользовательский трафик идёт через российский VPS-прокси
+  // (Timeweb, Traefik). Эмпирически проверено: Vercel ЗАТИРАЕТ стандартные
+  // `x-real-ip`/`x-forwarded-for` на IP соединения (= IP прокси), а кастомные
+  // заголовки пробрасывает. Поэтому прокси кладёт реальный IP клиента в
+  // `X-Client-IP` и секрет в `X-Proxy-Secret`; getClientIp верит `X-Client-IP`
+  // ТОЛЬКО при timing-safe совпадении секрета (домен `*.vercel.app` принимает
+  // трафик мимо прокси, где заголовок подделает любой клиент — CWE-348).
+  // Не задан → ветка выключена, поведение как раньше (прямой Vercel).
+  PROXY_SHARED_SECRET: optionalEnvString(),
   RATE_LIMIT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),

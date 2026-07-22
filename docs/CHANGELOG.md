@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-07-22 — Сайт без VPN из РФ: reverse-proxy на Timeweb (beta)
+
+РКН/ТСПУ блокирует IP Vercel и дросселирует Cloudflare у мобильных операторов
+РФ. Проверено живьём: Cloudflare-проксирование (оранжевое облако, off ECH/HTTP3)
+для Мегафона НЕ помогло (CF сам под дросселем — обрыв после ~16 КБ). Рабочее
+решение — reverse-proxy через российский VPS Timeweb. **Прод НЕ переключён**,
+поднят тестовый `beta.oplatishka.com`; владелец открыл с телефона без VPN —
+работает. Ранбук перевода прода — в BACKLOG.
+
+### Added
+
+- `getClientIp` (`apps/web/lib/ratelimit.ts`) — поддержка reverse-proxy: за
+  прокси Vercel затирает `x-real-ip`/`x-forwarded-for` IP-адресом соединения
+  (= IP прокси; per-IP rate-limit схлопнул бы всех в один IP), а кастомные
+  заголовки пробрасывает (замерено эмпирически). Прокси кладёт реальный IP
+  клиента в `X-Client-IP` + секрет в `X-Proxy-Secret`; доверяем `X-Client-IP`
+  ТОЛЬКО при timing-safe совпадении секрета (`*.vercel.app` идёт мимо прокси,
+  где заголовок подделает любой клиент — CWE-348). Новый env
+  `PROXY_SHARED_SECRET` (optional): не задан → ветка мертва, поведение прежнее.
+- Инфраструктура (на Timeweb VPS, вне репо): Traefik-маршрут + Caddy-sidecar
+  `oplatishka-proxy` (инъекция `X-Client-IP` через `{client_ip}`), TLS
+  Let's Encrypt. Цепочка: `клиент → Traefik(443) → Caddy → Vercel`.
+- Тесты web +5: реальный IP при верном секрете, спуфинг с неверным секретом,
+  ротация подделанного заголовка не сбрасывает ключ, мёртвая ветка без env,
+  fallback при пустом `X-Client-IP`.
+
+---
+
 ## 2026-07-21 — VPN Оплатишки: кнопка «VPN» в боте (Remnawave)
 
 ### Added

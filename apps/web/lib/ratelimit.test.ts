@@ -160,3 +160,77 @@ describe('getClientIp (M3: анти-спуфинг)', () => {
     expect(getClientIp(reqWith({}))).toBe('unknown');
   });
 });
+
+describe('getClientIp за реверс-прокси (X-Client-IP за секретом)', () => {
+  // За российским VPS-прокси Vercel затирает x-real-ip/x-forwarded-for на IP
+  // прокси (адрес соединения) — эмпирически проверено. Реальный посетитель — в
+  // кастомном X-Client-IP; верим ему только при секрете X-Proxy-Secret:
+  // *.vercel.app принимает трафик мимо прокси, где оба заголовка подделает
+  // любой клиент (CWE-348).
+  const PROXY_SECRET = 'timeweb-proxy-shared-secret';
+
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request('https://example.com/api', { headers });
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    delete process.env.PROXY_SHARED_SECRET;
+  });
+
+  afterEach(() => {
+    delete process.env.PROXY_SHARED_SECRET;
+    vi.resetModules();
+  });
+
+  it('секрет совпал → берёт X-Client-IP, а не x-real-ip (= IP прокси)', async () => {
+    process.env.PROXY_SHARED_SECRET = PROXY_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-client-ip': '198.51.100.7', // реальный посетитель
+      'x-proxy-secret': PROXY_SECRET,
+      'x-real-ip': '104.171.133.70', // IP прокси (Vercel видит адрес соединения)
+    });
+    expect(getClientIp(req)).toBe('198.51.100.7');
+  });
+
+  it('неверный секрет (спуфинг мимо прокси через *.vercel.app) → x-real-ip', async () => {
+    process.env.PROXY_SHARED_SECRET = PROXY_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-client-ip': '6.6.6.6', // подделка клиента
+      'x-proxy-secret': 'wrong-secret',
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+
+  it('ротация подделанного X-Client-IP без секрета не сбрасывает per-IP ключ', async () => {
+    process.env.PROXY_SHARED_SECRET = PROXY_SECRET;
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'x-client-ip': 'spoof-1', 'x-real-ip': '203.0.113.5' }));
+    const b = getClientIp(reqWith({ 'x-client-ip': 'spoof-2', 'x-real-ip': '203.0.113.5' }));
+    expect(a).toBe('203.0.113.5');
+    expect(b).toBe('203.0.113.5');
+  });
+
+  it('PROXY_SHARED_SECRET не задан → прокси-заголовки игнорируются (ветка мертва)', async () => {
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-client-ip': '6.6.6.6',
+      'x-proxy-secret': 'anything',
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+
+  it('секрет совпал, но X-Client-IP пуст → fallback на x-real-ip', async () => {
+    process.env.PROXY_SHARED_SECRET = PROXY_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-proxy-secret': PROXY_SECRET,
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+});
