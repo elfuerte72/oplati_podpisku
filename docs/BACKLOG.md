@@ -37,41 +37,50 @@ Vercel — нужен независимый «второй глаз». От р�
 
 ## Инфраструктура
 
-### Cloudflare-прокси перед Vercel — сайт без VPN из РФ (В РАБОТЕ с 2026-07-22)
+### Сайт без VPN из РФ — reverse-proxy на Timeweb (beta работает, прод НЕ переключён; 2026-07-22)
 
-РКН/ТСПУ блокирует IP-диапазоны Vercel на части потребительских провайдеров РФ —
-`oplatishka.com` у таких пользователей не открывается без VPN (DNS корректен,
-из московских ДЦ-узлов check-host сайт отвечает 200; блокировка неравномерная).
-Блокировка бьёт и по Mini App `/cabinet` (тот же домен). 2026-07-22 владелец
-поднял приоритет: доступность сайта из РФ без VPN — принципиальное условие;
-Telegram-часть не трогаем (ЦА сидит в TG через VPN). DNS домена уже на
-Cloudflare (серое облако = только DNS).
+РКН/ТСПУ блокирует IP Vercel и дросселирует Cloudflare у мобильных операторов
+РФ. **Проверено живьём:** Cloudflare-проксирование (оранжевое облако, off
+ECH/HTTP3) для Мегафона НЕ помогло — CF сам под дросселем (обрыв после ~16 КБ:
+HTML доходит, CSS/JS режется). Рабочее решение — **reverse-proxy через
+российский VPS Timeweb** (`104.171.133.70`, Москва): для пользователя обычный
+РФ-сайт, ТСПУ не трогает. Владелец 2026-07-22: доступность из РФ без VPN —
+принципиальное условие; Telegram-часть не трогаем (ЦА в TG через VPN, бот сам
+под блоком и работает только с VPN).
 
-- **Чек-лист включения (по порядку):**
-  1. ~~Правка `getClientIp` (`apps/web/lib/ratelimit.ts`) — доверенное чтение
-     `CF-Connecting-IP` через секрет Transform Rule (домен `*.vercel.app` идёт
-     мимо CF — голое чтение заголовка = спуфинг CWE-348).~~ **Сделано** —
-     ветка `feat/cf-proxy-ru-access`, env `CLOUDFLARE_PROXY_SECRET` (не задан →
-     поведение прежнее), см. CHANGELOG 2026-07-22.
-  2. CF SSL/TLS = Full (Strict).
-  3. Выключить ECH (ТСПУ режет TLS с ECH — без этого CF-прокси сам под блоком).
-  4. Сгенерировать секрет → env `CLOUDFLARE_PROXY_SECRET` (prod+preview) +
-     Transform Rule зоны CF: заголовок `x-cf-proxy-secret` на все запросы.
-  5. Денежный/ботовый пути мимо CF: Telegram-webhook перерегистрировать на
-     `oplati-podpisku-web.vercel.app/api/bot` (домен идёт напрямую на Vercel;
-     Telegram-серверам блокировки РФ безразличны); для webhook L&P — WAF
-     skip-правило на `/api/payments/loveandpay` (страховка — cron
-     `poll-payment` дожимает потерянные вебхуки за ≤5 мин), Bot Fight Mode
-     не включать.
-  6. Оранжевое облако на оба CNAME (TXT `_loveandpay` не трогать — верификация
-     L&P не зависит от прокси; IP-whitelist L&P — исходящий путь через VPS
-     `177.7.34.106`, CF его не касается).
-  7. Смоук: check-host с RU-узлов + телефон владельца без VPN, тестовая
-     оплата e2e, `getWebhookInfo` бота, Mini App из бота.
-- **Вариант беты без риска для прода:** поддомен `beta.oplatishka.com`
-  (оранжевое облако, привязан к preview-ветке в Vercel) — проверить доступ из
-  РФ без VPN до переключения www/apex.
-- **Откат:** серое облако обратно — трафик мгновенно идёт напрямую на Vercel.
+**Сделано (beta):** `beta.oplatishka.com` (CF DNS → A на Timeweb, серое облако)
+проксируется на прод-Vercel через `Traefik(443,TLS) → Caddy-sidecar → Vercel`;
+владелец открыл с телефона Мегафон **без VPN — работает со стилями**. Смоук
+зелёный, прод (`www`/apex) не тронут. Код `getClientIp` под прокси готов
+(ветка `feat/cf-proxy-ru-access`, PR #92; env `PROXY_SHARED_SECRET` не задан →
+инертен). Реальный IP клиента доходит в `X-Client-IP` (проверено замером).
+Оферта Timeweb Cloud VPS reverse-proxy своего сайта не запрещает.
+
+**Ранбук перевода прода (`www`/apex → Timeweb) — по явному «go», обратимо:**
+  1. Webhook L&P: в кабинете L&P сменить URL на
+     `https://oplati-podpisku-web.vercel.app/api/payments/loveandpay`
+     (напрямую Vercel, мимо прокси; страховка — cron `poll-payment` ≤5 мин).
+     Telegram-webhook при желании тоже на `oplati-podpisku-web.vercel.app/api/bot`.
+  2. Задать `PROXY_SHARED_SECRET` (Vercel Production+Preview) = значение из
+     Caddyfile на VPS (`/opt/oplatishka-proxy/Caddyfile`, `X-Proxy-Secret`) →
+     redeploy (иначе стейл env, ветка мертва). Мерж PR #92 в main.
+  3. На Timeweb добавить Traefik-маршрут + Caddy-конфиг для `www.oplatishka.com`
+     и `oplatishka.com` (по образцу `oplatishka-beta.yml`; SNI/Host =
+     соответствующий домен, оба — алиасы прод-проекта в Vercel).
+  4. CF DNS: `www` и apex → A-запись на `104.171.133.70`, серое облако (DNS
+     only). TXT `_loveandpay` не трогать (верификация L&P от прокси не зависит).
+  5. Смоук: check-host RU-узлы + телефон без VPN; тестовая оплата e2e (webhook
+     дошёл, заказ `paid`); `getWebhookInfo` бота; Mini App из бота; rate-limit
+     по реальному IP (не схлопнут).
+- **Открытые перед продом технические хвосты:** (a) `alt-svc: h3` рекламируется
+  Traefik'ом (глобально в Dokploy, чужие сайты) — при переводе прода снять на
+  нашем маршруте через Caddy (`header_down -Alt-Svc`), чтобы браузер не уходил в
+  QUIC; (b) Caddy-sidecar и Timeweb-VPS — новая единая точка отказа сайта из РФ
+  (webhook'и и деньги от неё изолированы, см. CLAUDE.md): нужен внешний
+  uptime-мониторинг (тот же UptimeRobot, что для squid) и решение про fallback.
+- **Откат:** CF DNS `www`/apex обратно на Vercel (убрать A, вернуть CNAME) —
+  трафик мгновенно идёт напрямую; `PROXY_SHARED_SECRET` можно оставить (без
+  прокси-заголовков ветка не срабатывает).
 
 ## Код (мелкое, из аудита 2026-07-18)
 
