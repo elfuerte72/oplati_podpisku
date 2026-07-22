@@ -19,9 +19,25 @@ export function deploymentBaseUrl(): string {
     : `https://${ownHost}`;
 }
 
+/**
+ * База для Mini App-кабинета. На production — прямой Vercel-домен
+ * (`MINIAPP_BASE_URL`, напр. `oplati-podpisku-web.vercel.app`), МИМО
+ * reverse-proxy (Timeweb): кабинет открывается только из Telegram, где у РФ-
+ * пользователя VPN уже есть, а лишний хоп через прокси лишь добавляет задержку
+ * и завязку на Timeweb. Не задан → fallback на `deploymentBaseUrl()` (кабинет
+ * через прокси, как было). Preview/локально — собственный host деплоя.
+ */
+function miniAppBaseUrl(): string {
+  if (process.env.VERCEL_ENV === 'production') {
+    const direct = serverEnv.MINIAPP_BASE_URL;
+    return direct ? direct.replace(/\/$/, '') : deploymentBaseUrl();
+  }
+  return deploymentBaseUrl();
+}
+
 /** URL Mini App для web_app-кнопки стартового меню (открывает /cabinet). */
 export function miniAppUrl(): string {
-  return `${deploymentBaseUrl()}/cabinet`;
+  return `${miniAppBaseUrl()}/cabinet`;
 }
 
 /** URL главного сайта (корень) для url-кнопки «Сайт» в /start. */

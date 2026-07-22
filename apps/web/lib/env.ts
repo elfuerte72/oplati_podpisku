@@ -44,6 +44,14 @@ const serverEnvSchema = z.object({
   // App
   APP_URL: z.string().url(),
 
+  // База для Mini App-кабинета (web_app-кнопка в /start). Кабинет открывается
+  // ТОЛЬКО из Telegram, где у пользователя РФ уже есть VPN → *.vercel.app
+  // доступен напрямую. Ведём кабинет мимо reverse-proxy (Timeweb) прямо на
+  // Vercel: меньше latency (нет лишнего хопа РФ→Vercel) и нет зависимости
+  // кабинета от прокси. Сайт (siteUrl) остаётся на APP_URL за прокси — он для
+  // РФ БЕЗ VPN. Не задан → fallback на APP_URL (кабинет через прокси, как было).
+  MINIAPP_BASE_URL: optionalUrl(),
+
   // Supabase
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(1),
