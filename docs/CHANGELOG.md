@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-07-22 — Подготовка Cloudflare-прокси: доверенный CF-Connecting-IP
+
+Первый шаг плана «сайт без VPN из РФ» (см. BACKLOG «Cloudflare-прокси перед
+Vercel»): РКН/ТСПУ блокирует IP Vercel, включаем оранжевое облако CF перед
+`oplatishka.com`. Этот шаг — только код, поведение прода не меняется, пока
+секрет не задан.
+
+### Added
+
+- `getClientIp` (`apps/web/lib/ratelimit.ts`): за CF-прокси `x-real-ip` — это
+  IP CF-edge (per-IP rate-limit схлопнул бы всех посетителей в несколько
+  адресов Cloudflare), реальный адрес — в `CF-Connecting-IP`. Заголовку верим
+  ТОЛЬКО при совпадении секрета `x-cf-proxy-secret` (проставляет Transform
+  Rule зоны CF; timing-safe сравнение) — `*.vercel.app` принимает трафик мимо
+  CF, где заголовок подделает любой клиент (CWE-348). Новый env
+  `CLOUDFLARE_PROXY_SECRET` (optional): не задан → ветка мертва, поведение
+  прежнее.
+- Тесты web +5: CF-IP при верном секрете, спуфинг с неверным секретом,
+  ротация подделанного заголовка не сбрасывает ключ, мёртвая ветка без env,
+  fallback при пустом `CF-Connecting-IP`.
+
+---
+
 ## 2026-07-21 — VPN Оплатишки: кнопка «VPN» в боте (Remnawave)
 
 ### Added

@@ -160,3 +160,76 @@ describe('getClientIp (M3: анти-спуфинг)', () => {
     expect(getClientIp(reqWith({}))).toBe('unknown');
   });
 });
+
+describe('getClientIp за Cloudflare-прокси (CF-Connecting-IP за секретом)', () => {
+  // За оранжевым облаком x-real-ip = IP CF-edge (адрес соединения для Vercel),
+  // реальный посетитель — в CF-Connecting-IP. Верим ему только при секрете
+  // x-cf-proxy-secret от Transform Rule: *.vercel.app принимает трафик мимо CF,
+  // где заголовок подделает любой клиент (CWE-348).
+  const CF_SECRET = 'cf-transform-rule-secret';
+
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request('https://example.com/api', { headers });
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    delete process.env.CLOUDFLARE_PROXY_SECRET;
+  });
+
+  afterEach(() => {
+    delete process.env.CLOUDFLARE_PROXY_SECRET;
+    vi.resetModules();
+  });
+
+  it('секрет совпал → берёт CF-Connecting-IP, а не x-real-ip (= CF-edge)', async () => {
+    process.env.CLOUDFLARE_PROXY_SECRET = CF_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'cf-connecting-ip': '198.51.100.7', // реальный посетитель
+      'x-cf-proxy-secret': CF_SECRET,
+      'x-real-ip': '172.68.0.1', // edge-сервер Cloudflare
+    });
+    expect(getClientIp(req)).toBe('198.51.100.7');
+  });
+
+  it('неверный секрет (спуфинг мимо CF через *.vercel.app) → x-real-ip', async () => {
+    process.env.CLOUDFLARE_PROXY_SECRET = CF_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'cf-connecting-ip': '6.6.6.6', // подделка клиента
+      'x-cf-proxy-secret': 'wrong-secret',
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+
+  it('ротация подделанного CF-Connecting-IP без секрета не сбрасывает per-IP ключ', async () => {
+    process.env.CLOUDFLARE_PROXY_SECRET = CF_SECRET;
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'cf-connecting-ip': 'spoof-1', 'x-real-ip': '203.0.113.5' }));
+    const b = getClientIp(reqWith({ 'cf-connecting-ip': 'spoof-2', 'x-real-ip': '203.0.113.5' }));
+    expect(a).toBe('203.0.113.5');
+    expect(b).toBe('203.0.113.5');
+  });
+
+  it('CLOUDFLARE_PROXY_SECRET не задан → CF-заголовки игнорируются (ветка мертва)', async () => {
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'cf-connecting-ip': '6.6.6.6',
+      'x-cf-proxy-secret': 'anything',
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+
+  it('секрет совпал, но CF-Connecting-IP пуст → fallback на x-real-ip', async () => {
+    process.env.CLOUDFLARE_PROXY_SECRET = CF_SECRET;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-cf-proxy-secret': CF_SECRET,
+      'x-real-ip': '203.0.113.5',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+});

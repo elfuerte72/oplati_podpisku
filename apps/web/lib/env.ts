@@ -232,6 +232,13 @@ const serverEnvSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: optionalEnvString(),
   KV_REST_API_URL: optionalUrl(),
   KV_REST_API_TOKEN: optionalEnvString(),
+  // Cloudflare-прокси перед Vercel (доступ сайта из РФ без VPN): за оранжевым
+  // облаком `x-real-ip` содержит IP CF-edge, реальный адрес посетителя — в
+  // `CF-Connecting-IP`. Верить ему можно ТОЛЬКО когда запрос действительно
+  // прошёл через CF: Transform Rule зоны добавляет заголовок
+  // `x-cf-proxy-secret` с этим значением, getClientIp сверяет timing-safe.
+  // Не задан → CF-ветка полностью выключена (поведение как раньше).
+  CLOUDFLARE_PROXY_SECRET: optionalEnvString(),
   RATE_LIMIT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),

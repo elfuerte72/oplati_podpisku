@@ -6,6 +6,7 @@ import { Redis } from '@upstash/redis';
 
 import { serverEnv } from './env.server.ts';
 import { childLogger } from './logger.ts';
+import { timingSafeEqualStr } from './security/timing-safe.ts';
 
 /**
  * Per-identity rate-limit на дорогие AI-эндпоинты (`/api/chat`, `/api/bot`).
@@ -71,8 +72,27 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
  * нельзя: ротация заголовка обнуляла бы per-IP лимит. Приоритет — `x-real-ip`;
  * `x-forwarded-for` — только fallback (локально/не-Vercel), и то ПРАВЫЙ элемент,
  * добавленный ближайшим доверенным прокси.
+ *
+ * За Cloudflare-прокси (оранжевое облако, доступ из РФ без VPN) адрес
+ * соединения — это CF-edge, и `x-real-ip` для всех посетителей схлопывается в
+ * несколько IP Cloudflare: per-IP лимит начал бы резать живых пользователей.
+ * Реальный адрес CF кладёт в `CF-Connecting-IP`, но домен `*.vercel.app`
+ * принимает трафик МИМО CF, где этот заголовок подделает любой клиент — та же
+ * CWE-348. Поэтому CF-ветка включается только при совпадении секрета
+ * `x-cf-proxy-secret` (проставляет Transform Rule зоны, значение —
+ * `CLOUDFLARE_PROXY_SECRET`), сравнение timing-safe. Секрет не задан →
+ * ветка мертва, поведение прежнее.
  */
 export function getClientIp(req: Request): string {
+  const cfSecret = serverEnv.CLOUDFLARE_PROXY_SECRET;
+  if (cfSecret) {
+    const providedSecret = req.headers.get('x-cf-proxy-secret');
+    const cfIp = req.headers.get('cf-connecting-ip')?.trim();
+    if (providedSecret && cfIp && timingSafeEqualStr(providedSecret, cfSecret)) {
+      return cfIp;
+    }
+  }
+
   const realIp = req.headers.get('x-real-ip')?.trim();
   if (realIp) return realIp;
 
