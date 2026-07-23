@@ -4,14 +4,15 @@ import { formatSentryAlertMessage, sentryAlertPayloadSchema } from '@/lib/alerts
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
-import { getBot } from '@/lib/telegram/bot';
+import { sendAlert } from '@/lib/telegram/alert-bot';
 
 /**
  * POST /api/alerts/sentry — relay алёртов Sentry в Telegram.
  *
  * Sentry alert rule (экшен «Send a notification via a webhook») бьёт сюда с
  * секретом в query (`?s=<SENTRY_ALERT_WEBHOOK_SECRET>`); endpoint форматирует
- * issue и шлёт владельцу в Telegram (`ALERT_TELEGRAM_CHAT_ID`) через бота.
+ * issue и шлёт владельцу в Telegram (`ALERT_TELEGRAM_CHAT_ID`) через отдельный
+ * alert-бот (`sendAlert`; fallback — прод-бот, если `ALERT_BOT_TOKEN` не задан).
  *
  * Гейт — секрет в query или заголовке `X-Alert-Token` (timing-safe). Не
  * сконфигурирован (нет секрета/chat id) → no-op 200, чтобы Sentry не пометил
@@ -70,7 +71,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const text = formatSentryAlertMessage(parsed.data);
 
   try {
-    await getBot().api.sendMessage(chatId, text);
+    await sendAlert(chatId, text);
     log.info({ event: 'alerts.sentry.forwarded' });
   } catch (err) {
     // НЕ captureException — иначе alert→webhook→fail→alert петля. Только лог.

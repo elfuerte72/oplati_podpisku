@@ -231,6 +231,12 @@ const serverEnvSchema = z.object({
   SENTRY_ALERT_WEBHOOK_SECRET: optionalEnvString(),
   ALERT_TELEGRAM_CHAT_ID: optionalEnvString(),
 
+  // Отдельный alert-бот (@oplatishkaAlert_bot) — канал ВСЕХ операционных алёртов
+  // (notifyOps: proxy-health/недоплаты; Sentry-relay). Изолирован от прод-бота
+  // (клиенты) и dev-бота (тестирование фич перед PR): наблюдатель не должен
+  // зависеть от наблюдаемого. Не задан → fallback на прод-бот (backward-compat).
+  ALERT_BOT_TOKEN: optionalEnvString(),
+
   // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
   // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —
   // RATE_LIMIT_DISABLED='1'/'true' (читается в lib/ratelimit.ts).

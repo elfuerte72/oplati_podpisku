@@ -2,7 +2,7 @@ import 'server-only';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
-import { getBot } from '../telegram/bot.ts';
+import { sendAlert } from '../telegram/alert-bot.ts';
 
 const log = childLogger('alerts.ops');
 
@@ -24,7 +24,7 @@ export async function notifyOps(text: string): Promise<void> {
     return;
   }
   try {
-    await getBot().api.sendMessage(chatId, text);
+    await sendAlert(chatId, text);
     log.info({ event: 'alerts.ops.sent' });
   } catch (err) {
     log.error({ event: 'alerts.ops.failed', err });
