@@ -29,17 +29,18 @@
 
 - [x] **1.1 `output: 'standalone'`** в `apps/web/next.config.ts`. На Vercel не влияет
       (Vercel собирает по-своему), для Docker — обязателен.
-- [ ] **1.2 `Dockerfile`** (корень репо) + **`.dockerignore`**. Multi-stage под
-      pnpm+Turborepo-монорепо: `corepack enable` → prune/install по lockfile →
-      `turbo build --filter=web` → рантайм-слой из `.next/standalone` + `public` +
+- [x] **1.2 `Dockerfile`** (корень репо) + **`.dockerignore`**. Multi-stage под
+      pnpm+Turborepo-монорепо: `corepack enable` → install по lockfile →
+      `pnpm --filter web build` → рантайм-слой из `.next/standalone` + `public` +
       `.next/static`. Node 24-slim, non-root user, `EXPOSE 3000`,
-      `HEALTHCHECK` → `GET /api/health`. Единственный `NEXT_PUBLIC_*` в проекте —
-      `NEXT_PUBLIC_SENTRY_DSN` → build-arg (запекается на билде).
+      `HEALTHCHECK` → `GET /api/health` (node fetch — curl в slim нет).
+      Единственный `NEXT_PUBLIC_*` в проекте — `NEXT_PUBLIC_SENTRY_DSN` →
+      build-arg. Проверено локальным билдом: образ 446 МБ, контейнер healthy.
 - [x] **1.3 Self-call `payments/create`**: в `confirm-order.ts:129` цепочка
       `VERCEL_URL → APP_URL`. Добавлен приоритетный env `SELF_BASE_URL`
       (`http://127.0.0.1:3000` в контейнере): денежный self-call не выходит в интернет
       и не зависит от Traefik/DNS. Не задан → поведение прежнее (Vercel не затронут).
-- [ ] **1.4 `getClientIp` за Dokploy-Traefik** (`apps/web/lib/ratelimit.ts:87`).
+- [x] **1.4 `getClientIp` за Dokploy-Traefik** (`apps/web/lib/ratelimit.ts:87`).
       Сейчас приоритет — `x-real-ip` («Vercel проставляет сам»). За Traefik это
       **небезопасно**: Traefik по умолчанию НЕ затирает клиентский `X-Real-Ip` →
       подделка → обход rate-limit (тот же CWE-348, что уже дважды чинили).
@@ -49,16 +50,16 @@
       **Контракт Traefik НЕ выдумывать** — подтвердить живым вызовом на тестовом
       контуре (curl с поддельными `x-real-ip`/`x-forwarded-for` → лог фактических
       заголовков) и только потом закрепить. + unit-тест нового режима.
-- [ ] **1.5 `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` →
+- [x] **1.5 `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` →
       `.optional()`** в `apps/web/lib/env.ts` (в рантайме не используются — только
       redact-лист логгера). Vercel-прод продолжает их задавать — ничего не ломается.
-- [ ] **1.6 Роли Postgres для чистого инстанса**: `packages/db/` — init-SQL
+- [x] **1.6 Роли Postgres для чистого инстанса**: `packages/db/` — init-SQL
       (`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN;
       CREATE ROLE service_role NOLOGIN BYPASSRLS;`) — миграция `0010` делает
       `GRANT TO anon, authenticated` и упадёт без них. Оформить как idempotent
       pre-migrate скрипт (`db:init-roles`), НЕ как Drizzle-миграцию (на Supabase
       роли уже есть — конфликт).
-- [ ] **1.7 Crontab-манифест** `infra/crontab` (файл в репо → копируется на VPS в
+- [x] **1.7 Crontab-манифест** `infra/crontab` (файл в репо → копируется на VPS в
       `/etc/cron.d/oplatishka`): 7 джобов из `vercel.json` (без `keepalive` — на
       чистом Postgres автопаузы нет) как `curl -fsS -H "Authorization: Bearer $CRON_SECRET"
       https://<домен>/api/cron/<job>`. Код cron-роутов НЕ меняется — авторизация
@@ -68,7 +69,7 @@
       `after()` из `next/server` — работает в self-hosted standalone (Next ≥15.1);
       `preferredRegion`/`maxDuration` экспорты — инертны вне Vercel;
       cron-роуты, webhook-роуты, Sentry, pino → stdout.
-- [ ] **1.9 `pnpm typecheck` + `pnpm --filter web test` + lint** зелёные; локальный
+- [x] **1.9 `pnpm typecheck` + `pnpm --filter web test` + lint** зелёные; локальный
       `docker build` + запуск контейнера с dev-env — смоук `GET /api/health`.
 
 ## Фаза 2 — инфраструктура VPS/Dokploy (через Dokploy MCP + SSH)

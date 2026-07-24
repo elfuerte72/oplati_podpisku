@@ -32,6 +32,12 @@ function buildCspReportOnly(): string | null {
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Standalone-выход для self-host в Docker (Dokploy, docs/dokploy-migration-plan.md):
+  // `next build` дополнительно собирает `.next/standalone` — минимальный
+  // `server.js` + вытрейсенные node_modules. Vercel этот режим игнорирует
+  // (собирает своим пайплайном), на прод-деплой Vercel не влияет. Корень
+  // трейсинга монорепо Next выводит сам по единственному pnpm-lock.yaml в корне.
+  output: 'standalone',
   transpilePackages: ['@oplati/agent', '@oplati/db', '@oplati/types'],
   typedRoutes: true,
   // Базовые security-заголовки для всего приложения (платёжно-связанный UI).
