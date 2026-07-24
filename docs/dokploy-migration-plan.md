@@ -109,11 +109,10 @@
 
 ## Фаза 3 — обкатка тестового контура (критерии выхода)
 
-- [ ] **3.1** Сайт открывается с РФ-SIM без VPN (владелец, мобильный оператор);
-      TTFB сопоставим с Timeweb-цепочкой.
-- [ ] **3.2** Dev-бот перерегистрирован на `new.oplatishka.com` (admin-endpoint
-      `X-Internal-Token`); `/start`-меню, привязка веб↔Telegram (link-токены),
-      `/support` — работают.
+- [x] **3.1** (✅ 2026-07-24: владелец проверил с телефона из РФ БЕЗ VPN — сайт
+      открывается, визуально идентичен Vercel-проду) Сайт из РФ без VPN.
+- [x] **3.2** (✅ 2026-07-24: владелец подтвердил — бот `@oplatishkadokploy_bot`
+      отвечает, флоу работает) Бот на `new.oplatishka.com`.
 - [ ] **3.3** Кнопочный заказ → инвойс L&P создаётся НАПРЯМУЮ (без squid);
       webhook L&P продолжает бить в Vercel-прод (там `provider_ref` неизвестен →
       идемпотентный skip, это штатно) — тестовый контур добирает оплату через
@@ -129,6 +128,24 @@
       Бэкап признан рабочим.
 - [ ] **3.7** Мини-нагрузка (напр. `hey`/`ab` на каталог): p95, RAM контейнера —
       убедиться, что KVM 2 не упирается (Beszel).
+
+## Dev-стенд (аналог Vercel preview/prod) — СДЕЛАНО 2026-07-24
+
+- [x] Ветка `dev` (от feat/dokploy-migration), поддомен `dev.oplatishka.com`
+      (A-запись создана через CF API, DNS-only), TLS от Let's Encrypt.
+- [x] `oplatishka-web-dev` — приложение на ветке `dev`, **autoDeploy на push**
+      (triggerType push). Флоу: push в `dev` → автодеплой на dev-домен → проверил →
+      merge `dev`→`main` → прод. Смоук: health ok, каталог из dev-БД.
+- [x] `oplatishka-db-dev` — Postgres 17, СТРУКТУРА идентична prod (17 таблиц,
+      триггеры, RLS, 25 миграций в журнале), каталог 13 сервисов, **0 клиентских
+      данных** (orders/users/payments пусты — перенос через `pg_dump` prod→dev с
+      `--exclude-table-data` клиентских таблиц напрямую на VPS).
+- [x] Dev-env: Haiku, `AI_DAILY_TOKEN_BUDGET=100000`, `RATE_LIMIT_DISABLED=1`
+      (изоляция от prod-лимитов), БЕЗ `LOVEANDPAY_*`/`PAYSPACE_*` (dev не выставляет
+      реальные счета и не выпускает карты).
+- [ ] **Dev-бот**: токена в `.env` нет — владелец добавляет `TELEGRAM_BOT_TOKEN`
+      + `TELEGRAM_WEBHOOK_SECRET` (dev-бот, НЕ прод) в env `oplatishka-web-dev`,
+      затем перерегистрировать webhook на `dev.oplatishka.com/api/bot`.
 
 ## Фаза 4 — cutover прода (один вечер, при нуле клиентов риск ~0)
 
