@@ -153,7 +153,54 @@
       осознанно НЕ используем — это security-through-obscurity (антипаттерн:
       поддомены палятся через Certificate-Transparency-логи); правильно — auth.
 
-## Фаза 4 — cutover прода (один вечер, при нуле клиентов риск ~0)
+## Откат (Rollback) — 5 уровней, подтверждено
+
+| Уровень | Механизм | Время |
+|---|---|---|
+| Dokploy-деплой | история деплоев + Rollback на пред. образ (`rollbackActive`) | секунды |
+| Git-код | revert-PR в main (история цела) | минуты |
+| DNS/webhook | вернуть записи на Vercel-цепочку (TTL 60с) | минуты |
+| Данные | Supabase НЕ удаляем + бэкап R2; sequences=0 (UUID) → нет id-конфликтов | — |
+| Snapshot VPS | откат всего сервера (id 312962, 24ч) | ~30 мин |
+
+**Главная страховка:** Vercel-прод жив и нетронут до шага 6 cutover. До переключения
+DNS всё откатывается без следа; после — обратимо по DNS, при 0 активных клиентов
+в окне без потери данных.
+
+## Репетиция переноса данных — СДЕЛАНО 2026-07-24 (прод НЕ тронут)
+
+- [x] Механизм отработан: `pg_dump` Supabase (session-порт 5432, `--schema=public
+      --schema=drizzle --no-owner --no-acl`, PGPASSWORD без светки в ps) →
+      очистка Dokploy-prod-БД → restore. Занимает секунды.
+- [x] Сверка 1:1 с эталоном Supabase (снят ДО): все 17 таблиц + денежные суммы
+      совпали (orders 133, payments 46, cards 7, users 75, Σamount_rub 27 597 300,
+      Σoriginal_amount 995 288). Журнал миграций (25), append-триггер, RLS на месте.
+- [x] `pg_sequences` = 0 (вся схема на UUID) → риск конфликта id при новых
+      заказах после cutover ОТСУТСТВУЕТ.
+- [x] Приложение (new.oplatishka.com) работает на реальных данных, health ok,
+      каталог грузится, ошибок БД в логах нет.
+- ⚠️ Данные в Dokploy-prod-БД = снимок на 2026-07-24; к моменту cutover устареют
+      (клиенты пишут в Supabase днём) → на cutover ПОВТОРИТЬ свежий дамп.
+
+## Фаза 4 — cutover прода (НОЧЬ, окно низкой активности; решение владельца 2026-07-24)
+
+**Runbook (по шагам, с точками отката):**
+1. Пауза Vercel-автодеплоя (merge в main не тронет Vercel-прод — он остаётся
+   страховкой). Откат: не требуется.
+2. merge `feat/dokploy-migration` → `main` (PR, зелёный CI). Откат: revert-PR.
+3. Dokploy prod-контур (`oplatishka-web`) → ветка `main` + ПРОД-env:
+   `ANTHROPIC_MODEL=claude-sonnet-4-6`, `PAYSPACE_*` (выпуск карт), прод-бот
+   `@oplatishkaa_bot` токен+webhook-secret, снять `RATE_LIMIT_DISABLED`. Откат:
+   Dokploy Rollback.
+4. Свежий `pg_dump` Supabase → Dokploy-prod-БД (повтор репетиции) + сверка. Откат:
+   ничего не переключено.
+   ── всё выше обратимо без следа ──
+5. DNS `www`+apex (CF) → A `177.7.34.106` (DNS-only). Откат: DNS назад на Timeweb.
+6. webhook `@oplatishkaa_bot` → `www.oplatishka.com/api/bot`; webhook L&P (кабинет
+   L&P) → `www.oplatishka.com/api/payments/loveandpay`. Откат: webhook'и назад.
+7. Боевой смоук: заказ → оплата (малый) → выпуск карты → реквизиты → completed.
+8. **Только теперь** — выключить Vercel (снять домены/paused). Supabase-прод НЕ
+   удалять ≥ месяц (страховка данных).
 
 - [ ] **4.1** Merge `feat/dokploy-migration` → `main` (PR, зелёный CI). Vercel-прод
       от merge не меняет поведения (всё за env-гейтами).
