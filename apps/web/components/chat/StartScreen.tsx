@@ -167,7 +167,15 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
     'flex items-center gap-2.5 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-3 py-2.5 text-left shadow-[var(--shadow-comic)] transition-[transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[var(--shadow-comic-lg)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60';
 
   return (
-    <div className="flex min-h-[55dvh] flex-col items-center justify-center gap-6 py-6 text-center">
+    <div
+      className={[
+        'flex min-h-[55dvh] flex-col items-center gap-6 py-6 text-center',
+        // Hero центрируем по вертикали; список сервисов и карточку выбранного
+        // сервиса — выравниваем по верху, иначе высокий контент (инструкции +
+        // тарифы) центрируется и нижние кнопки уходят за край экрана.
+        listOpen ? 'justify-start' : 'justify-center',
+      ].join(' ')}
+    >
       {!listOpen && (
         <div className="flex max-w-xl flex-col items-center gap-5">
           <Image
