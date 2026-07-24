@@ -84,7 +84,7 @@
       пока клиентов нет — допустимо) — wal-g/pgBackRest, WAL-архив, PITR.
       **Правило: бэкап без проверенного restore — не бэкап** — восстановление
       прогнать руками минимум один раз до cutover.
-- [ ] **2.3 Dokploy-app** из GitHub-репо, ветка `feat/dokploy-migration`, build по
+- [x] **2.3 Dokploy-app** (СДЕЛАНО 2026-07-24: задеплоен, контейнер healthy, главная отдаёт каталог из нового Postgres; билд на VPS ~5 мин — риск R6 снят; ЖДЁТ: A-запись DNS от владельца) из GitHub-репо, ветка `feat/dokploy-migration`, build по
       Dockerfile, домен `new.oplatishka.com` (владелец: A-запись в CF DNS →
       `177.7.34.106`, серое облако), TLS — Traefik/ACME (уже выпускает для
       mxpkn8ns.ru).
@@ -100,7 +100,7 @@
       `skipped_no_paypace` оставит тестовые заказы в `paid` — тест не выпускает
       реальные карты и не жжёт VCC-баланс.
 - [ ] **2.5 Crontab на VPS** из `infra/crontab` (пока на тестовый домен).
-- [ ] **2.6 Логи**: проверить, что stdout контейнера попадает в grafana-alloy → Loki
+- [x] **2.6 Логи** (alloy: discovery.docker "all" -> все контейнеры уже в Loki): проверить, что stdout контейнера попадает в grafana-alloy → Loki
       (label по имени сервиса); Sentry — отдельный `environment=dokploy-test`.
 
 ## Фаза 3 — обкатка тестового контура (критерии выхода)
