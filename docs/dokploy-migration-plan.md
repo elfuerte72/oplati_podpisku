@@ -143,9 +143,15 @@
 - [x] Dev-env: Haiku, `AI_DAILY_TOKEN_BUDGET=100000`, `RATE_LIMIT_DISABLED=1`
       (изоляция от prod-лимитов), БЕЗ `LOVEANDPAY_*`/`PAYSPACE_*` (dev не выставляет
       реальные счета и не выпускает карты).
-- [ ] **Dev-бот**: токена в `.env` нет — владелец добавляет `TELEGRAM_BOT_TOKEN`
-      + `TELEGRAM_WEBHOOK_SECRET` (dev-бот, НЕ прод) в env `oplatishka-web-dev`,
-      затем перерегистрировать webhook на `dev.oplatishka.com/api/bot`.
+- [x] **Dev-бот** (СДЕЛАНО 2026-07-24): `@dev_test_podpiska_bot`, webhook на
+      `dev.oplatishka.com/api/bot` (last_error None). Токен добавил владелец.
+- [x] **Basic Auth на dev** (СДЕЛАНО 2026-07-24): чтобы никто случайно не тыкал в
+      незарелиженное. Dokploy-нативный `security` (переживает редеплой), логин
+      `dev`. Prod остаётся публичным. Исключение `/api/bot` — persistent
+      Traefik-роутер `oplatishka-dev-webhook.yml` (публичный, но защищён
+      secret-token'ом; Telegram basic-auth не умеет). Секретность имени поддомена
+      осознанно НЕ используем — это security-through-obscurity (антипаттерн:
+      поддомены палятся через Certificate-Transparency-логи); правильно — auth.
 
 ## Фаза 4 — cutover прода (один вечер, при нуле клиентов риск ~0)
 
