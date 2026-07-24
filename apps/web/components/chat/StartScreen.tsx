@@ -61,7 +61,9 @@ function formatTierPeriod(period: 'month' | 'quarter' | 'year'): string {
 
 type StartScreenProps = {
   onOrderCreated: (card: OrderCard) => void;
-  onOwnVariant: () => void;
+  /** «Свой вариант» → свободный ввод. Опционально: используется только за
+      ALLOW_OWN_VARIANT (сейчас выключено, поле ввода в чате убрано). */
+  onOwnVariant?: () => void;
   onError: (text: string) => void;
   onListOpen?: () => void;
 };

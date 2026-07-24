@@ -77,11 +77,7 @@ function nextId(): string {
 
 export function ChatClient() {
   const [items, setItems] = useState<ChatItem[]>(() => [{ kind: 'start', id: nextId() }]);
-  const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
-  // Поле ввода на стартовом экране скрыто — раскрывается «Своим вариантом»
-  // или само, как только начался диалог/появился заказ.
-  const [inputRevealed, setInputRevealed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -93,10 +89,8 @@ export function ChatClient() {
   const [profileOpen, setProfileOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const celebrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const historyLoadedRef = useRef(false);
 
@@ -162,7 +156,6 @@ export function ChatClient() {
     return () => {
       if (settleRef.current) clearTimeout(settleRef.current);
       if (celebrateTimerRef.current) clearTimeout(celebrateTimerRef.current);
-      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
       polls.forEach((iv) => clearInterval(iv));
       polls.clear();
     };
@@ -202,6 +195,9 @@ export function ChatClient() {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [items, sending]);
 
+  // AI-диалог: отправка текста в /api/chat. Форма ручного ввода убрана (веб-чат
+  // за флагом WEB_AI_ENABLED, ввод суммы — за ALLOW_OWN_VARIANT, оба выключены),
+  // поэтому единственный живой вызов — выбор каталог-карточки (dormant AI-путь).
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -213,7 +209,6 @@ export function ChatClient() {
         ...prev.filter((it) => it.kind !== 'start'),
         { kind: 'msg', id: nextId(), from: 'user', text: trimmed },
       ]);
-      setInput('');
       setSending(true);
       setPoseSettling('thinking');
 
@@ -324,7 +319,6 @@ export function ChatClient() {
         pollsRef.current.forEach((iv) => clearInterval(iv));
         pollsRef.current.clear();
         setItems([{ kind: 'start', id: nextId() }]);
-        setInputRevealed(false);
         setConfirmed([]);
         setPaidOrders([]);
         setCelebrating(false);
@@ -358,52 +352,15 @@ export function ChatClient() {
         ...prev.filter((it) => it.kind !== 'start'),
         { kind: 'cards', id: nextId(), cards: [card] },
       ]);
-      setInputRevealed(true);
       setPoseSettling('presenting', 2800);
     },
     [setPoseSettling],
   );
 
-  // «Свой вариант»: раскрыть поле ввода и поставить фокус (textarea
-  // монтируется этим же рендером — фокус после коммита).
-  const revealInput = useCallback(() => {
-    setInputRevealed(true);
-    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
-    focusTimerRef.current = setTimeout(() => taRef.current?.focus(), 50);
-  }, []);
-
-  // Ошибки кнопочного флоу зовут «написать в чат» — раскрываем ввод сразу.
+  // Ошибки кнопочного флоу — показываем в нижней плашке (поле ввода убрано).
   const handleStartError = useCallback((text: string) => {
     setError(text);
-    setInputRevealed(true);
   }, []);
-
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    void send(input);
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void send(input);
-    }
-  };
-
-  const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setInput(value);
-    // Пока пользователь набирает текст — Оплатишка внимательно «читает».
-    // Не вмешиваемся, если идёт генерация ответа (там поза thinking).
-    if (!sending) {
-      setPoseSettling(value.trim().length > 0 ? 'attentive' : 'idle');
-    }
-    const ta = taRef.current;
-    if (ta) {
-      ta.style.height = 'auto';
-      ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
-    }
-  };
 
   const renderCard = (card: ChatCard, key: string) => {
     switch (card.type) {
@@ -561,7 +518,6 @@ export function ChatClient() {
                   <StartScreen
                     key={item.id}
                     onOrderCreated={handleOrderCreated}
-                    onOwnVariant={revealInput}
                     onError={handleStartError}
                     onListOpen={() => setPoseSettling('presenting', 2800)}
                   />
@@ -595,43 +551,19 @@ export function ChatClient() {
           </div>
         </div>
 
-        {/* Низ: ошибка, ввод. На стартовом экране скрыт до «Своего варианта»
-            или первого заказа/сообщения. */}
-        {(inputRevealed || items.some((it) => it.kind !== 'start')) && (
-        <div className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
-          <div className="mx-auto w-full max-w-3xl px-4 py-3">
-            {error && (
+        {/* Поле ручного ввода убрано (весь флоу кнопочный). Осталась только
+            плашка ошибок кнопочных действий (создание счёта, привязка). */}
+        {error && (
+          <div className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
+            <div className="mx-auto w-full max-w-3xl px-4 py-3">
               <p
                 role="alert"
-                className="mb-3 rounded-[12px] border-2 border-[var(--color-stamp)] bg-[var(--surface-2)] px-3 py-2 font-body text-sm text-[var(--text)]"
+                className="rounded-[12px] border-2 border-[var(--color-stamp)] bg-[var(--surface-2)] px-3 py-2 font-body text-sm text-[var(--text)]"
               >
                 {error}
               </p>
-            )}
-
-            <form onSubmit={onSubmit} className="flex items-end gap-2">
-              <textarea
-                ref={taRef}
-                value={input}
-                onChange={onInput}
-                onKeyDown={onKeyDown}
-                rows={1}
-                maxLength={4000}
-                aria-label="Сообщение Оплатишке"
-                placeholder="Напишите сообщение…"
-                className="comic-scroll max-h-40 min-h-[48px] flex-1 resize-none rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-3 font-body text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none"
-              />
-              <ComicButton
-                type="submit"
-                disabled={sending || input.trim().length === 0}
-                aria-label="Отправить"
-                className="h-[48px] px-4"
-              >
-                →
-              </ComicButton>
-            </form>
+            </div>
           </div>
-        </div>
         )}
       </section>
 
