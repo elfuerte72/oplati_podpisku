@@ -208,3 +208,24 @@ export function IconCopy({ className, size = 20 }: IconProps) {
     </svg>
   );
 }
+
+/** Лист документа с загнутым углом и строками — юридические документы. */
+export function IconDoc({ className, size = 20 }: IconProps) {
+  return (
+    <svg {...BASE_SVG_PROPS} className={className} width={size} height={size}>
+      <path d="M6 2.8h8l4 4V19a2.2 2.2 0 0 1-2.2 2.2H6A2.2 2.2 0 0 1 3.8 19V5A2.2 2.2 0 0 1 6 2.8Z" />
+      <path d="M14 3v4h4" />
+      <path d="M7.5 12h9M7.5 16h6" />
+    </svg>
+  );
+}
+
+/** Конверт — электронная почта. */
+export function IconMail({ className, size = 20 }: IconProps) {
+  return (
+    <svg {...BASE_SVG_PROPS} className={className} width={size} height={size}>
+      <rect x="2.8" y="5" width="18.4" height="14" rx="2.4" />
+      <path d="m3.5 7 8.5 6 8.5-6" />
+    </svg>
+  );
+}

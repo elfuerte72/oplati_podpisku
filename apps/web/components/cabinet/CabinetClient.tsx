@@ -12,6 +12,7 @@ import {
   IconSend,
   IconUsers,
 } from '@/components/comic/icons';
+import { SITE_ORIGIN } from '@/components/info/constants';
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 import { telegramShareLink } from '@/lib/telegram/links';
 
@@ -545,6 +546,31 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       {/* Списка заказов (истории покупок) в кабинете осознанно НЕТ — решение
           владельца 2026-07-02: только действие «оплатить» + карта + партнёрка.
           К свежесозданному заказу ведёт flow каталога (view 'detail'). */}
+
+      {/* Документы и контакты — те же публичные страницы сайта (требование
+          платёжного провайдера). Абсолютные ссылки: кабинет живёт на другом
+          хосте; открываем внешним браузером через tg.openLink. */}
+      <nav
+        aria-label="Документы и контакты"
+        className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 pb-2 pt-1 font-body text-xs text-[var(--text-muted)]"
+      >
+        {[
+          { href: `${SITE_ORIGIN}/about`, label: 'О сервисе' },
+          { href: `${SITE_ORIGIN}/terms`, label: 'Условия' },
+          { href: `${SITE_ORIGIN}/privacy`, label: 'Конфиденциальность' },
+        ].map((doc, i) => (
+          <span key={doc.href} className="inline-flex items-center gap-x-3">
+            {i > 0 && <span aria-hidden>·</span>}
+            <button
+              type="button"
+              onClick={() => openExternalLink(doc.href)}
+              className="underline transition-colors active:text-[var(--text)]"
+            >
+              {doc.label}
+            </button>
+          </span>
+        ))}
+      </nav>
     </main>
     {showIntro && <CabinetIntro onClose={closeIntro} haptic={introHaptic} />}
     </>
