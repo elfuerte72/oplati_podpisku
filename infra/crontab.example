@@ -1,0 +1,43 @@
+# Cron-джобы Оплатишки для self-host (Dokploy/VPS) — замена Vercel Cron.
+# Источник расписаний: apps/web/vercel.json (держать в синхроне!).
+#
+# Установка (Фаза 2.5 docs/dokploy-migration-plan.md):
+#   1. Скопировать на VPS:  scp infra/crontab.example root@VPS:/etc/cron.d/oplatishka
+#   2. Заменить плейсхолдеры (значения — из env Dokploy-приложения):
+#        sed -i 's|__BASE_URL__|https://new.oplatishka.com|; s|__CRON_SECRET__|<секрет>|' /etc/cron.d/oplatishka
+#   3. chmod 644 /etc/cron.d/oplatishka && chown root:root /etc/cron.d/oplatishka
+#      (файл содержит секрет — на VPS доступ и так только у root; при желании
+#      строже: обёртка-скрипт с секретом в отдельном 600-файле.)
+#   4. Проверка: grep CRON /var/log/syslog  +  ручной вызов с X-Cron-Token.
+#
+# Авторизация: cron-роуты принимают `Authorization: Bearer <CRON_SECRET>`
+# (тот же контракт, что у Vercel Cron) — код роутов не менялся.
+# -m (таймаут curl) < maxDuration=300 роутов; -fsS: тихо при успехе, ошибка в stderr
+# (cron шлёт её в syslog). || true не ставим: сбой должен быть виден в логах.
+#
+# `keepalive` из vercel.json НЕ переносим: он анти-автопауза Supabase free tier,
+# у self-host Postgres автопаузы нет (см. план, Фаза 1.7).
+
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Подстраховка webhook'ов L&P + recovery зависших paid + healthcheck (каждые 5 мин)
+*/5 * * * *  root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/poll-payment >/dev/null
+
+# Похороны просроченных заказов: pending_payment + протухшие черновики (каждые 15 мин)
+*/15 * * * * root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/expire-payments >/dev/null
+
+# Напоминание о продлении подписки (ежедневно 07:00 UTC)
+0 7 * * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/renewal-reminder >/dev/null
+
+# Recycle карт: active→idle→release + алёрт низкого VCC-баланса (ежедневно 03:30 UTC)
+30 3 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/recycle-cards >/dev/null
+
+# Retention: чистка messages >90д, raw_payload >180д (ежедневно 04:15 UTC)
+15 4 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/retention >/dev/null
+
+# Добор пропущенных реферальных начислений (каждый час, :15)
+15 * * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-recovery >/dev/null
+
+# Месячная прогрессия партнёрских статусов (1-е число, 02:00 UTC)
+0 2 1 * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-rollup >/dev/null

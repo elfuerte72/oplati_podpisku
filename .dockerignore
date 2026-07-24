@@ -1,0 +1,21 @@
+# Контекст docker-билда (Dockerfile в корне). ВАЖНО: node_modules и .next
+# исключены, чтобы COPY . . в build-стадии не затирал install/предыдущие
+# артефакты и контекст оставался лёгким.
+node_modules
+**/node_modules
+.next
+**/.next
+.turbo
+**/.turbo
+.git
+.github
+.vercel
+.claude
+docs
+coverage
+**/coverage
+*.log
+
+# Секреты НИКОГДА не попадают в образ
+.env
+.env.*

@@ -13,6 +13,7 @@
     "db:migrate": "node --env-file=../../.env node_modules/drizzle-kit/bin.cjs migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx --env-file=../../.env scripts/seed-catalog.ts",
+    "db:init-roles": "tsx --env-file=../../.env scripts/init-roles.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

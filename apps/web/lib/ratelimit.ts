@@ -83,6 +83,16 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
  * совпадении секрета (домен `*.vercel.app` принимает трафик МИМО прокси, где оба
  * заголовка подделает любой клиент — та же CWE-348). Секрет
  * (`PROXY_SHARED_SECRET`) не задан → ветка мертва, поведение прежнее.
+ *
+ * Self-host за Dokploy-Traefik (`CLIENT_IP_MODE=traefik`,
+ * docs/dokploy-migration-plan.md): `x-real-ip` там НЕ доверенный — Traefik
+ * пропускает клиентский заголовок насквозь, не затирая (в отличие от Vercel),
+ * и подделка обнуляла бы per-IP лимит (та же CWE-348). Доверенный источник —
+ * ПРАВЫЙ элемент `x-forwarded-for`: Traefik с дефолтным `forwardedHeaders`
+ * (без trustedIPs) срезает входящие X-Forwarded-* и пишет реальный адрес
+ * соединения; даже если конфиг append'ит — правый элемент добавлен самим
+ * Traefik. Режим включать ТОЛЬКО после живой проверки контракта на тестовом
+ * контуре (Фаза 3.4: curl с поддельными заголовками НЕ должен менять identity).
  */
 export function getClientIp(req: Request): string {
   const proxySecret = serverEnv.PROXY_SHARED_SECRET;
@@ -94,19 +104,26 @@ export function getClientIp(req: Request): string {
     }
   }
 
+  if (serverEnv.CLIENT_IP_MODE === 'traefik') {
+    // За Traefik клиентскому `x-real-ip` верить нельзя — только правый XFF.
+    return rightmostForwardedFor(req) ?? 'unknown';
+  }
+
   const realIp = req.headers.get('x-real-ip')?.trim();
   if (realIp) return realIp;
 
+  return rightmostForwardedFor(req) ?? 'unknown';
+}
+
+/** Правый (добавленный ближайшим доверенным прокси) элемент X-Forwarded-For. */
+function rightmostForwardedFor(req: Request): string | null {
   const xff = req.headers.get('x-forwarded-for');
-  if (xff) {
-    const parts = xff
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    const last = parts[parts.length - 1];
-    if (last) return last;
-  }
-  return 'unknown';
+  if (!xff) return null;
+  const parts = xff
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return parts[parts.length - 1] ?? null;
 }
 
 let cachedRedis: Redis | null = null;

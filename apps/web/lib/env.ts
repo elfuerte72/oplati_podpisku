@@ -52,10 +52,14 @@ const serverEnvSchema = z.object({
   // РФ БЕЗ VPN. Не задан → fallback на APP_URL (кабинет через прокси, как было).
   MINIAPP_BASE_URL: optionalUrl(),
 
-  // Supabase
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_ANON_KEY: z.string().min(1),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  // Supabase — legacy-обвязка managed-хостинга: в рантайме НЕ используется
+  // (SDK @supabase/supabase-js в коде нет, весь доступ к БД — postgres-js по
+  // DATABASE_URL; единственное упоминание — redact-лист логгера). Переведены в
+  // optional при переезде на self-host Postgres (docs/dokploy-migration-plan.md):
+  // Vercel-прод их по-прежнему задаёт (безвредно), Dokploy-контур — нет.
+  SUPABASE_URL: optionalUrl(),
+  SUPABASE_ANON_KEY: optionalEnvString(),
+  SUPABASE_SERVICE_ROLE_KEY: optionalEnvString(),
   DATABASE_URL: optionalUrl(),
   DATABASE_URL_DIRECT: optionalUrl(),
 
@@ -217,6 +221,12 @@ const serverEnvSchema = z.object({
   // Внутренний токен для self-call'ов из tool-handler в /api/payments/create
   INTERNAL_API_TOKEN: optionalEnvString(),
 
+  // База self-call'а confirm_order → /api/payments/create (self-host/Dokploy):
+  // в контейнере задаётся `http://127.0.0.1:3000` — денежный вызов идёт внутрь
+  // собственного процесса, не выходя в интернет и не завися от Traefik/DNS.
+  // Не задан → прежняя цепочка VERCEL_URL → APP_URL (Vercel не затронут).
+  SELF_BASE_URL: optionalUrl(),
+
   // Секрет cron-endpoint'ов. Vercel Cron шлёт его как `Authorization: Bearer`.
   // Без него `authorizeCron` пускает только NODE_ENV=development (fail-closed
   // на preview/production). На проде задавать ОБЯЗАТЕЛЬНО.
@@ -256,6 +266,17 @@ const serverEnvSchema = z.object({
   // трафик мимо прокси, где заголовок подделает любой клиент — CWE-348).
   // Не задан → ветка выключена, поведение как раньше (прямой Vercel).
   PROXY_SHARED_SECRET: optionalEnvString(),
+  // Источник клиентского IP в getClientIp (lib/ratelimit.ts). 'vercel' (дефолт) —
+  // доверяем `x-real-ip` (Vercel проставляет его сам из адреса соединения).
+  // 'traefik' — self-host за Dokploy-Traefik: `x-real-ip` там НЕ доверенный
+  // (Traefik пропускает клиентский заголовок насквозь — подделка обнуляла бы
+  // per-IP лимит, CWE-348), доверенный источник — ПРАВЫЙ элемент
+  // `x-forwarded-for`. Включать ТОЛЬКО после живой проверки контракта Traefik
+  // на тестовом контуре (Фаза 3.4 docs/dokploy-migration-plan.md).
+  CLIENT_IP_MODE: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.enum(['vercel', 'traefik']).default('vercel'),
+  ),
   RATE_LIMIT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
