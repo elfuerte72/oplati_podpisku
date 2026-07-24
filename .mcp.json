@@ -36,6 +36,17 @@
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp?project_ref=nyxijwpuvctmvemaemqn"
+    },
+    "dokploy": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@dokploy/mcp"
+      ],
+      "env": {
+        "DOKPLOY_URL": "https://dokploy.mxpkn8ns.ru",
+        "DOKPLOY_API_KEY": "${DOKPLOY_API_KEY}"
+      }
     }
   }
 }

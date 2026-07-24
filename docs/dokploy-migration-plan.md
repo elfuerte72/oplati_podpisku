@@ -74,9 +74,11 @@
 
 ## Фаза 2 — инфраструктура VPS/Dokploy (через Dokploy MCP + SSH)
 
-- [ ] **2.1 Postgres**: Dokploy-сервис `postgres:17`, volume, порт 5432 ТОЛЬКО во
-      внутренней docker-сети (наружу не публиковать). Прогнать `db:init-roles` →
-      миграции (`db:migrate` локально через SSH-туннель) → `db:seed` каталога.
+- [x] **2.1 Postgres**: СДЕЛАНО 2026-07-24: сервис `oplatishka-db` (postgres:17,
+      host в docker-сети `oplatishka-db-ry3smb`), внешний порт открывался только
+      на время миграций и снят. Прогнано: db:init-roles -> db:migrate (17 таблиц,
+      append-only триггер, RLS) -> db:seed (13 активных сервисов). Секреты
+      контура — в `.env.dokploy-test.local` (gitignored).
 - [ ] **2.2 Бэкапы с ПЕРВОГО дня** (учебная цель владельца): этап 1 — ежесуточный
       `pg_dump` → **off-site** (Cloudflare R2/B2, НЕ на сам VPS); этап 2 (до Фазы 4,
       пока клиентов нет — допустимо) — wal-g/pgBackRest, WAL-архив, PITR.
@@ -86,7 +88,7 @@
       Dockerfile, домен `new.oplatishka.com` (владелец: A-запись в CF DNS →
       `177.7.34.106`, серое облако), TLS — Traefik/ACME (уже выпускает для
       mxpkn8ns.ru).
-- [ ] **2.4 Env тестового контура** (канон списка — `apps/web/lib/env.ts`; значения —
+- [x] **2.4 Env тестового контура** (СДЕЛАНО, кроме TELEGRAM_* — dev-токен добавит владелец) (канон списка — `apps/web/lib/env.ts`; значения —
       из локального `.env`/владельца, в Dokploy Secrets): dev-бот
       (`TELEGRAM_BOT_TOKEN`/`WEBHOOK_SECRET` dev-значения), `ANTHROPIC_MODEL` =
       Haiku, `APP_URL=https://new.oplatishka.com`, `SELF_BASE_URL=http://127.0.0.1:3000`,
