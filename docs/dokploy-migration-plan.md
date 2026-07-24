@@ -99,7 +99,7 @@
       Vercel-прода до cutover). **`PAYSPACE_*` НЕ задавать**: гейт
       `skipped_no_paypace` оставит тестовые заказы в `paid` — тест не выпускает
       реальные карты и не жжёт VCC-баланс.
-- [ ] **2.5 Crontab на VPS** из `infra/crontab` (пока на тестовый домен).
+- [x] **2.5 Crontab на VPS** (установлен /etc/cron.d/oplatishka, 7 джобов, ручной вызов подтверждён) из `infra/crontab` (пока на тестовый домен).
 - [x] **2.6 Логи** (alloy: discovery.docker "all" -> все контейнеры уже в Loki): проверить, что stdout контейнера попадает в grafana-alloy → Loki
       (label по имени сервиса); Sentry — отдельный `environment=dokploy-test`.
 
@@ -115,7 +115,7 @@
       идемпотентный skip, это штатно) — тестовый контур добирает оплату через
       cron `poll-payment` ≤5 мин. Оплатить малый реальный счёт → заказ `paid` →
       `skipped_no_paypace`.
-- [ ] **3.4** Подделка `x-real-ip`/`x-forwarded-for` НЕ обходит rate-limit
+- [x] **3.4** (✅ 2026-07-24: 8×400→4×429, ротация поддельных x-real-ip/XFF НЕ обходит лимит; Traefik пишет реальный IP правым элементом XFF; self-host Redis подтверждён) Подделка `x-real-ip`/`x-forwarded-for` НЕ обходит rate-limit
       (фиксация контракта Traefik из 1.4); rate-limit различает два разных IP.
 - [ ] **3.5** Все 7 кронов отработали по расписанию (журнал + Loki), ручной вызов
       с `X-Cron-Token` работает.
@@ -156,6 +156,18 @@
 
 ## Фаза 5 — после стабилизации
 
+- [x] **5.0 Self-host Redis вместо Upstash** (СДЕЛАНО 2026-07-24, досрочно —
+      Upstash-креды через `vercel env pull` недоступны, Sensitive → маска 11
+      символов). В Dokploy: `oplatishka-redis` (redis:7) + `oplatishka-srh`
+      (`hiett/serverless-redis-http` — Upstash-совместимый REST-прокси). Приложение
+      → `UPSTASH_REDIS_REST_URL=http://oplatishka-srh-hv8tmh:80` +
+      `UPSTASH_REDIS_REST_TOKEN=<srh_token>`. Код НЕ менялся (@upstash/redis клиент
+      говорит с SRH). Проверено: SET/GET через SRH→Redis; rate-limit боевой.
+      ⚠️ **Урок Dokploy API:** `application.one` возвращает sensitive-значения как
+      литерал `[SENSITIVE]`. НЕЛЬЗЯ читать этот env и писать обратно целиком —
+      затрёшь секреты. При `saveEnvironment` Dokploy трактует `[SENSITIVE]` как
+      «не менять» (секреты уцелели), но полагаться нельзя: менять ТОЛЬКО нужные
+      строки, не трогая sensitive.
 - [ ] **5.1** `MINIAPP_BASE_URL` убрать: кабинет с VPS доступен из РФ без VPN —
       отдельный vercel.app-домен больше не нужен. Владелец: Direct Link Web App URL
       в @BotFather → `https://www.oplatishka.com/cabinet`.
