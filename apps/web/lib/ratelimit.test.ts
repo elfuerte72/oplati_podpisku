@@ -234,3 +234,63 @@ describe('getClientIp за реверс-прокси (X-Client-IP за секр�
     expect(getClientIp(req)).toBe('203.0.113.5');
   });
 });
+
+describe('getClientIp за Dokploy-Traefik (CLIENT_IP_MODE=traefik)', () => {
+  // Self-host (docs/dokploy-migration-plan.md): Traefik пропускает клиентский
+  // `x-real-ip` насквозь, не затирая, — доверять ему нельзя (CWE-348, обход
+  // per-IP лимита ротацией заголовка). Доверенный источник — ПРАВЫЙ элемент
+  // `x-forwarded-for` (его пишет сам Traefik из адреса соединения).
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request('https://example.com/api', { headers });
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.CLIENT_IP_MODE = 'traefik';
+  });
+
+  afterEach(() => {
+    delete process.env.CLIENT_IP_MODE;
+    vi.resetModules();
+  });
+
+  it('подделанный x-real-ip игнорируется — берётся правый элемент XFF', async () => {
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-real-ip': '6.6.6.6', // клиентская подделка — Traefik её НЕ затирает
+      'x-forwarded-for': '203.0.113.9', // а это пишет сам Traefik
+    });
+    expect(getClientIp(req)).toBe('203.0.113.9');
+  });
+
+  it('ротация левых элементов XFF не сбрасывает per-IP ключ', async () => {
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'x-forwarded-for': 'spoof-1, 203.0.113.9' }));
+    const b = getClientIp(reqWith({ 'x-forwarded-for': 'spoof-2, 203.0.113.9' }));
+    expect(a).toBe('203.0.113.9');
+    expect(b).toBe('203.0.113.9');
+  });
+
+  it('ротация x-real-ip не сбрасывает per-IP ключ', async () => {
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'x-real-ip': 'spoof-1', 'x-forwarded-for': '203.0.113.9' }));
+    const b = getClientIp(reqWith({ 'x-real-ip': 'spoof-2', 'x-forwarded-for': '203.0.113.9' }));
+    expect(a).toBe('203.0.113.9');
+    expect(b).toBe('203.0.113.9');
+  });
+
+  it('нет XFF → "unknown" (не падаем и не берём x-real-ip)', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-real-ip': '6.6.6.6' }))).toBe('unknown');
+  });
+
+  it('CLIENT_IP_MODE не задан → прежняя Vercel-логика (x-real-ip в приоритете)', async () => {
+    delete process.env.CLIENT_IP_MODE;
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-real-ip': '203.0.113.5',
+      'x-forwarded-for': '6.6.6.6, 10.0.0.1',
+    });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+});
