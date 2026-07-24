@@ -1,7 +1,6 @@
 'use client';
 
 import Image from 'next/image';
-import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
 
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
@@ -220,26 +219,6 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
           <p className="font-body text-xs text-[var(--text-muted)]">
             Итоговую сумму увидишь до оплаты.
           </p>
-
-          {/* Футер-ссылки на документы и контакты (требование платёжного
-              провайдера): единственная точка входа на мобильном, где LeftNav
-              скрыт. */}
-          <nav
-            aria-label="Документы и контакты"
-            className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 font-body text-xs text-[var(--text-muted)]"
-          >
-            <Link href="/about" className="underline transition-colors hover:text-[var(--text)]">
-              О сервисе
-            </Link>
-            <span aria-hidden>·</span>
-            <Link href="/terms" className="underline transition-colors hover:text-[var(--text)]">
-              Пользовательское соглашение
-            </Link>
-            <span aria-hidden>·</span>
-            <Link href="/privacy" className="underline transition-colors hover:text-[var(--text)]">
-              Политика конфиденциальности
-            </Link>
-          </nav>
         </div>
       )}
 

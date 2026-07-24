@@ -99,6 +99,19 @@ export function LeftNav() {
           </svg>
         }
       />
+      {/* «О сервисе» — документы (соглашение, конфиденциальность) + контакты
+          поддержки; требование платёжного провайдера. */}
+      <NavItem
+        label="О сервисе"
+        href="/about"
+        icon={
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2.2} aria-hidden>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 10.5V17" strokeLinecap="round" />
+            <path d="M12 7.2v.1" strokeLinecap="round" />
+          </svg>
+        }
+      />
 
       <p className="mt-auto px-2 font-body text-xs text-[var(--text-muted)]">
         Курсы по подпискам и сервисам появятся позже.
