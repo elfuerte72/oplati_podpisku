@@ -30,12 +30,15 @@
 1. **Вернуть домены в Vercel-проект.** Сейчас сняты: Vercel отдаёт
    `404 DEPLOYMENT_NOT_FOUND` на `Host: www.oplatishka.com`.
    `vercel domains add oplatishka.com` + привязать к проекту `oplati-podpisku-web`.
-2. **Снять WAF-правило, гасящее кроны:**
+2. **Снять ОБА WAF-правила, гасящие старый контур:**
    ```bash
    vercel firewall rules remove block-cron-after-dokploy-migration
+   vercel firewall rules remove block-payments-after-dokploy-migration
    vercel firewall publish --yes
    ```
-   Без этого Vercel Cron продолжит получать `deny` на `/api/cron/*`.
+   Первое держит `deny` на `/api/cron/*`, второе — на `/api/payments/*`
+   (webhook Love&Pay и создание счёта). **Без второго откат выглядит рабочим, но
+   ни одна оплата не проведётся**: L&P получит `403` на вебхук.
 3. **Вернуть Git-связь**, если нужен автодеплой: `vercel git connect`.
    Не обязательно для обслуживания — текущий прод-деплой Vercel готов и жив.
 3a. ⚠️ **Поднять обратно squid-прокси к Love&Pay** — иначе платежи не заработают:
