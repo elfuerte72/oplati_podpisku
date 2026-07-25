@@ -1,0 +1,112 @@
+name: Deploy
+
+# Единственный триггер деплоя на Dokploy — этот workflow.
+#
+# Почему не встроенный GitHub App Dokploy (`autoDeploy`), который был раньше:
+#   1. Он деплоит СРАЗУ на push, не дожидаясь CI. Красный main уезжал бы на
+#      боевой контур, где живые платежи, — гейта не было вообще.
+#   2. Его доставки не видны из репозитория: когда мерж PR #102 не вызвал сборку
+#      (2026-07-25) и когда та же история случилась с вебхуком Vercel
+#      (2026-07-18), понять «GitHub не отправил» или «Dokploy отверг подпись»
+#      было нельзя — журнал доставок лежит в настройках самого App.
+#      Здесь каждый деплой — обычный run в Actions с логом и кодом ответа.
+#   3. Он молчал при отказе. Прод сутки жил на ручных сборках, и это заметили
+#      только по расхождению коммита.
+#
+# Контракт per-app вебхука Dokploy (снят живой проверкой 2026-07-25):
+#   POST /api/deploy/<refreshToken> → 200; неизвестный токен → 404
+#   {"message":"Application Not Found"}. Токен узкий: триггерит сборку РОВНО
+#   одного приложения, в отличие от админского DOKPLOY_API_KEY, которым можно
+#   всё. Ротация — кнопка refresh token в Dokploy + обновить секрет здесь.
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+# Деплои одной ветки не должны наезжать друг на друга; и НЕ отменяем начатый
+# (cancel-in-progress: false) — прерванная на середине сборка оставила бы
+# контур в неопределённом состоянии.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate (typecheck + tests + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Гейт держим здесь, а не в `workflow_run` от Tests/Type Check/Lint:
+      # цепочка из трёх workflow требует проверять, что успешны ВСЕ три, и
+      # молча пропускает деплой, если один не запустился. Прогон дублирует ~1
+      # минуту CI и взамен даёт атомарное «зелено → деплой». Побочная польза:
+      # у ветки `dev` до этого не было CI вообще (остальные workflow слушают
+      # только main и pull_request).
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm -r --if-present test
+
+      - name: Lint
+        run: pnpm lint
+
+  deploy:
+    name: Trigger Dokploy
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "app=oplatishka-web (prod)" >> "$GITHUB_OUTPUT"
+            echo "token_name=DOKPLOY_DEPLOY_TOKEN_PROD" >> "$GITHUB_OUTPUT"
+          else
+            echo "app=oplatishka-web-dev (dev)" >> "$GITHUB_OUTPUT"
+            echo "token_name=DOKPLOY_DEPLOY_TOKEN_DEV" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy
+        env:
+          TOKEN: ${{ github.ref_name == 'main' && secrets.DOKPLOY_DEPLOY_TOKEN_PROD || secrets.DOKPLOY_DEPLOY_TOKEN_DEV }}
+          PANEL: ${{ vars.DOKPLOY_PANEL_URL || 'https://dokploy.mxpkn8ns.ru' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::Секрет ${{ steps.target.outputs.token_name }} не задан — деплой не запущен."
+            exit 1
+          fi
+          echo "Триггерю сборку: ${{ steps.target.outputs.app }}"
+          # -sS: тихо при успехе, ошибка транспорта в stderr; тело печатаем для лога.
+          code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --max-time 60 \
+            -X POST "$PANEL/api/deploy/$TOKEN")
+          echo "HTTP $code"
+          # Тело безопасно логировать: токен в него не попадает.
+          cat /tmp/resp.txt || true
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Dokploy не принял триггер (HTTP $code). Прод НЕ пересобран."
+            exit 1
+          fi
+          echo "Сборка запущена. Прогресс — в панели Dokploy."
