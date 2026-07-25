@@ -3,7 +3,8 @@
  * (self-host/Dokploy, docs/dokploy-migration-plan.md Фаза 2.1).
  *
  * Запуск: `pnpm --filter @oplati/db db:init-roles` (грузит `.env` из корня;
- * для целевой БД переопределить `DATABASE_URL` в shell — как у db:migrate).
+ * для целевой БД переопределить `DATABASE_URL_DIRECT` в shell — тот же
+ * приоритет, что у drizzle.config.ts, чтобы роли и миграции попали в ОДНУ БД).
  *
  * Зачем: миграции писались под Supabase, где роли `anon`/`authenticated`/
  * `service_role` существуют из коробки. Миграция `0010` делает
@@ -28,12 +29,20 @@ import pino from 'pino';
 const logger = pino({ name: 'init-roles' });
 
 async function main(): Promise<void> {
-  const url = process.env.DATABASE_URL ?? process.env.DATABASE_URL_DIRECT;
+  // Приоритет ОБЯЗАН совпадать с drizzle.config.ts (`DATABASE_URL_DIRECT ??
+  // DATABASE_URL`): роли должны появиться в той же БД, куда пойдёт db:migrate.
+  // Обратный порядок ронял сценарий из CLAUDE.md, где в shell переопределяют
+  // только DATABASE_URL_DIRECT: роли создавались в БД из корневого .env
+  // (вплоть до прод-Supabase, где DO-блок молча скипает и печатает
+  // «roles ready»), а миграция 0010 падала на «role does not exist».
+  const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
   if (!url) {
-    throw new Error('DATABASE_URL or DATABASE_URL_DIRECT must be set (see .env in repo root)');
+    throw new Error('DATABASE_URL_DIRECT or DATABASE_URL must be set (see .env in repo root)');
   }
 
-  const sql = postgres(url, { max: 1, prepare: false });
+  // connect_timeout: без него недоступная БД вешает скрипт бесконечно, а он
+  // стоит первым шагом деплоя на новый контур.
+  const sql = postgres(url, { max: 1, prepare: false, connect_timeout: 10 });
   try {
     await sql.unsafe(`
       DO $$
