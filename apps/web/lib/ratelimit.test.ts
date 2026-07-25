@@ -293,4 +293,97 @@ describe('getClientIp за Dokploy-Traefik (CLIENT_IP_MODE=traefik)', () => {
     });
     expect(getClientIp(req)).toBe('203.0.113.5');
   });
+
+  it('CLIENT_IP_MODE="" → дефолт vercel (пустая строка не ломает env-схему)', async () => {
+    process.env.CLIENT_IP_MODE = '';
+    const { getClientIp } = await loadModule();
+    const req = reqWith({ 'x-real-ip': '203.0.113.5', 'x-forwarded-for': '6.6.6.6' });
+    expect(getClientIp(req)).toBe('203.0.113.5');
+  });
+});
+
+describe('getClientIp: нормализация значения в IP', () => {
+  // Без нормализации `host:port` от прокси давал бы НОВУЮ identity на каждом
+  // соединении (эфемерный порт), полностью обходя per-IP лимит — cost-DoS на
+  // строки БД и дневной AI-бюджет.
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request('https://example.com/api', { headers });
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    delete process.env.PROXY_SHARED_SECRET;
+    process.env.CLIENT_IP_MODE = 'traefik';
+  });
+
+  afterEach(() => {
+    delete process.env.CLIENT_IP_MODE;
+    vi.resetModules();
+  });
+
+  it('IPv4 с портом → identity без порта, ротация порта НЕ создаёт новый ключ', async () => {
+    const { getClientIp } = await loadModule();
+    const a = getClientIp(reqWith({ 'x-forwarded-for': '203.0.113.9:56789' }));
+    const b = getClientIp(reqWith({ 'x-forwarded-for': '203.0.113.9:41022' }));
+    expect(a).toBe('203.0.113.9');
+    expect(b).toBe('203.0.113.9');
+  });
+
+  it('IPv6 в скобках с портом → чистый адрес', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '[2001:db8::1]:443' }))).toBe('2001:db8::1');
+  });
+
+  it('IPv6 без скобок проходит как есть (в нижнем регистре)', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '2001:DB8::AB' }))).toBe('2001:db8::ab');
+  });
+
+  it('правый элемент — мусор → "unknown", БЕЗ добора левее (левое подконтрольно клиенту)', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '203.0.113.9, _hidden' }))).toBe('unknown');
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '203.0.113.9, unknown' }))).toBe('unknown');
+  });
+
+  it('пустой и мусорный XFF → "unknown"', async () => {
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '' }))).toBe('unknown');
+    expect(getClientIp(reqWith({ 'x-forwarded-for': ' , , ' }))).toBe('unknown');
+    expect(getClientIp(reqWith({ 'x-forwarded-for': '999.1.1.1' }))).toBe('unknown');
+  });
+
+  it('vercel-режим: x-real-ip с портом тоже нормализуется', async () => {
+    process.env.CLIENT_IP_MODE = 'vercel';
+    const { getClientIp } = await loadModule();
+    expect(getClientIp(reqWith({ 'x-real-ip': '203.0.113.5:1234' }))).toBe('203.0.113.5');
+  });
+
+  it('vercel-режим: невалидный x-real-ip не становится ключом → падаем в XFF', async () => {
+    process.env.CLIENT_IP_MODE = 'vercel';
+    const { getClientIp } = await loadModule();
+    const req = reqWith({ 'x-real-ip': 'spoof-1', 'x-forwarded-for': '198.51.100.7' });
+    expect(getClientIp(req)).toBe('198.51.100.7');
+  });
+
+  it('секрет прокси совпал, но X-Client-IP — мусор → не берём его ключом', async () => {
+    process.env.PROXY_SHARED_SECRET = 'shared';
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-client-ip': 'not-an-ip',
+      'x-proxy-secret': 'shared',
+      'x-forwarded-for': '198.51.100.7',
+    });
+    expect(getClientIp(req)).toBe('198.51.100.7');
+  });
+
+  it('прокси-секрет + traefik: валидный X-Client-IP приоритетнее XFF прокси', async () => {
+    process.env.PROXY_SHARED_SECRET = 'shared';
+    const { getClientIp } = await loadModule();
+    const req = reqWith({
+      'x-client-ip': '198.51.100.7', // реальный посетитель от Caddy
+      'x-proxy-secret': 'shared',
+      'x-forwarded-for': '104.171.133.70', // IP прокси, который видит Traefik
+    });
+    expect(getClientIp(req)).toBe('198.51.100.7');
+  });
 });

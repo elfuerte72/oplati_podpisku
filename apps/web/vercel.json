@@ -1,14 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["fra1"],
-  "crons": [
-    { "path": "/api/cron/poll-payment", "schedule": "*/5 * * * *" },
-    { "path": "/api/cron/expire-payments", "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/renewal-reminder", "schedule": "0 7 * * *" },
-    { "path": "/api/cron/recycle-cards", "schedule": "30 3 * * *" },
-    { "path": "/api/cron/keepalive", "schedule": "0 */6 * * *" },
-    { "path": "/api/cron/retention", "schedule": "15 4 * * *" },
-    { "path": "/api/cron/referral-recovery", "schedule": "15 * * * *" },
-    { "path": "/api/cron/referral-rollup", "schedule": "0 2 1 * *" }
-  ]
+  "regions": ["fra1"]
 }

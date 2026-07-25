@@ -35,7 +35,13 @@ import {
   createReferralPayout,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
-import { idleAgedActiveCards, syncCardBalance, updateBalance } from './repositories/cards.ts';
+import {
+  findCardByIdForUser,
+  findCardsByUserIdForCabinet,
+  findCardsToRecycle,
+  syncCardBalance,
+  updateBalance,
+} from './repositories/cards.ts';
 import {
   findVpnSubscriptionByUserId,
   upsertVpnSubscription,
@@ -744,52 +750,90 @@ describe('createDraftOrder — снапшот надбавки за карту �
   });
 });
 
-describe('idleAgedActiveCards (M5)', () => {
-  it('идлит active-карту с last_used_at=NULL по created_at (>90д), свежую не трогает', async () => {
+describe('срок жизни карты 180 дней (S-9)', () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  async function makeCard(opts: {
+    userId: string;
+    status: 'active' | 'idle' | 'recycled';
+    ageDays: number;
+    lastUsedAgeDays?: number;
+    recycledAt?: Date;
+  }) {
+    return firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: opts.userId,
+          providerCardId: `pc-life-${++seq}`,
+          panMasked: '400000******0009',
+          status: opts.status,
+          createdAt: new Date(Date.now() - opts.ageDays * dayMs),
+          ...(opts.lastUsedAgeDays !== undefined
+            ? { lastUsedAt: new Date(Date.now() - opts.lastUsedAgeDays * dayMs) }
+            : {}),
+          ...(opts.recycledAt ? { recycledAt: opts.recycledAt } : {}),
+        })
+        .returning(),
+      'card',
+    );
+  }
+
+  it('РЕГРЕСС: закрывает ACTIVE-карту старше 180д — регулярно доливаемая не идлилась и не закрывалась НИКОГДА', async () => {
     const user = await makeUser();
-    const dayMs = 24 * 60 * 60 * 1000;
+    // Клиент доливал карту неделю назад → last_used_at свежий → idle-порог (90д)
+    // не сработает никогда, а раньше release требовал status='idle'.
+    const card = await makeCard({
+      userId: user.id,
+      status: 'active',
+      ageDays: 200,
+      lastUsedAgeDays: 7,
+    });
 
-    const old = firstOf(
-      await db
-        .insert(schema.cards)
-        .values({
-          userId: user.id,
-          providerCardId: `pc-old-${++seq}`,
-          panMasked: '400000******0001',
-          status: 'active',
-          createdAt: new Date(Date.now() - 91 * dayMs),
-          // lastUsedAt НЕ задаём → NULL, как у реальных выпущенных карт
-        })
-        .returning(),
-      'old card',
-    );
-    const fresh = firstOf(
-      await db
-        .insert(schema.cards)
-        .values({
-          userId: user.id,
-          providerCardId: `pc-fresh-${++seq}`,
-          panMasked: '400000******0002',
-          status: 'active',
-          createdAt: new Date(Date.now() - 10 * dayMs),
-        })
-        .returning(),
-      'fresh card',
-    );
+    const toRecycle = await findCardsToRecycle(db);
+    expect(toRecycle.map((c) => c.id)).toContain(card.id);
+  });
 
-    const idled = await idleAgedActiveCards(db);
-    expect(idled).toBe(1);
+  it('закрывает idle-карту старше 180д и НЕ трогает моложе 180д', async () => {
+    const user = await makeUser();
+    const old = await makeCard({ userId: user.id, status: 'idle', ageDays: 181 });
+    const young = await makeCard({ userId: user.id, status: 'idle', ageDays: 179 });
 
-    const oldRow = firstOf(
-      await db.select().from(schema.cards).where(eq(schema.cards.id, old.id)),
-      'old refetch',
-    );
-    const freshRow = firstOf(
-      await db.select().from(schema.cards).where(eq(schema.cards.id, fresh.id)),
-      'fresh refetch',
-    );
-    expect(oldRow.status).toBe('idle'); // раньше NULL last_used_at не матчился — баг M5
-    expect(freshRow.status).toBe('active');
+    const ids = (await findCardsToRecycle(db)).map((c) => c.id);
+    expect(ids).toContain(old.id);
+    expect(ids).not.toContain(young.id);
+  });
+
+  it('уже закрытую карту не берёт повторно (recycled_at IS NULL)', async () => {
+    const user = await makeUser();
+    const done = await makeCard({
+      userId: user.id,
+      status: 'recycled',
+      ageDays: 300,
+      recycledAt: new Date(),
+    });
+
+    const ids = (await findCardsToRecycle(db)).map((c) => c.id);
+    expect(ids).not.toContain(done.id);
+  });
+
+  it('кабинет скрывает просроченную карту, даже пока cron до неё не дошёл', async () => {
+    const user = await makeUser();
+    const expired = await makeCard({ userId: user.id, status: 'active', ageDays: 181 });
+    const alive = await makeCard({ userId: user.id, status: 'active', ageDays: 30 });
+
+    const ids = (await findCardsByUserIdForCabinet(db, user.id)).map((c) => c.id);
+    expect(ids).toContain(alive.id);
+    expect(ids).not.toContain(expired.id);
+  });
+
+  it('реквизиты просроченной карты не отдаются по card-details', async () => {
+    const user = await makeUser();
+    const expired = await makeCard({ userId: user.id, status: 'idle', ageDays: 181 });
+    const alive = await makeCard({ userId: user.id, status: 'active', ageDays: 30 });
+
+    expect(await findCardByIdForUser(db, expired.id, user.id)).toBeNull();
+    expect(await findCardByIdForUser(db, alive.id, user.id)).not.toBeNull();
   });
 });
 

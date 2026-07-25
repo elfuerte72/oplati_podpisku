@@ -1,43 +1,75 @@
 # Cron-джобы Оплатишки для self-host (Dokploy/VPS) — замена Vercel Cron.
-# Источник расписаний: apps/web/vercel.json (держать в синхроне!).
+# ЕДИНСТВЕННЫЙ источник расписаний: блок `crons` снят из apps/web/vercel.json
+# 2026-07-24 (два парка кронов на разных БД = двойной фулфилмент, см.
+# docs/dokploy-cutover-report.md, S-1/B-1).
 #
 # Установка (Фаза 2.5 docs/dokploy-migration-plan.md):
 #   1. Скопировать на VPS:  scp infra/crontab.example root@VPS:/etc/cron.d/oplatishka
 #   2. Заменить плейсхолдеры (значения — из env Dokploy-приложения):
 #        sed -i 's|__BASE_URL__|https://new.oplatishka.com|; s|__CRON_SECRET__|<секрет>|' /etc/cron.d/oplatishka
-#   3. chmod 644 /etc/cron.d/oplatishka && chown root:root /etc/cron.d/oplatishka
-#      (файл содержит секрет — на VPS доступ и так только у root; при желании
-#      строже: обёртка-скрипт с секретом в отдельном 600-файле.)
-#   4. Проверка: grep CRON /var/log/syslog  +  ручной вызов с X-Cron-Token.
+#   3. chown root:root /etc/cron.d/oplatishka && chmod 600 /etc/cron.d/oplatishka
+#      ⚠️ ФАЙЛ СОДЕРЖИТ СЕКРЕТ. Режим строго 600: при 644 его читает ЛЮБОЙ
+#      локальный пользователь и любой контейнер с `pid: host`, а секрет даёт
+#      `retention` (удаление messages) и `recycle-cards` (реальный release
+#      карт = деньги). Остаётся вторая утечка: cron пишет всю командную строку
+#      вместе с `Bearer <секрет>` в /var/log/syslog при каждом запуске, и секрет
+#      виден в ps/`/proc/<pid>/cmdline`. Полный фикс (находка S-3) — вынести
+#      секрет в отдельный 600-файл и звать `curl --config /etc/oplatishka/cron.conf`;
+#      здесь не сделано, чтобы не разъезжаться с текущим состоянием VPS.
+#   4. Проверка: `grep oplatishka-cron /var/log/syslog` + ручной вызов
+#      `curl -H "Authorization: Bearer <секрет>" __BASE_URL__/api/cron/poll-payment`.
 #
 # Авторизация: cron-роуты принимают `Authorization: Bearer <CRON_SECRET>`
 # (тот же контракт, что у Vercel Cron) — код роутов не менялся.
-# -m (таймаут curl) < maxDuration=300 роутов; -fsS: тихо при успехе, ошибка в stderr
-# (cron шлёт её в syslog). || true не ставим: сбой должен быть виден в логах.
 #
-# `keepalive` из vercel.json НЕ переносим: он анти-автопауза Supabase free tier,
-# у self-host Postgres автопаузы нет (см. план, Фаза 1.7).
+# `-m 290` (таймаут curl) < maxDuration=300 роутов.
+# `2>&1 >/dev/null | logger` — ИМЕННО в этом порядке: сначала stderr дублируется
+# в пайп, потом stdout уходит в /dev/null. Иначе (`>/dev/null 2>&1`) stderr
+# утёк бы в /dev/null. Нужно потому, что cron отдаёт stderr не в syslog, а в MTA,
+# которого на VPS нет (проверено: ни sendmail, ни postfix, ни exim4) и MAILTO не
+# задан — без этой обвязки отвал джоба (401 после ротации секрета, протухший
+# сертификат, лежит Traefik) был бы ПОЛНОСТЬЮ невидим, а `poll-payment` —
+# единственный backstop потерянных webhook'ов L&P (находки B-3/E-1).
+# На успехе curl молчит → logger не пишет ничего, лог не пухнет.
+# Внешний heartbeat (Better Stack) на факт прогона — отдельная задача, см. BACKLOG.
+#
+# `flock -n` на poll-payment: интервал 300 с при таймауте 290 с почти смыкается,
+# а перекрытие запусков нежелательно (побочки защищены атомарными claim'ами,
+# так что это подстраховка, а не единственная защита).
+#
+# `keepalive` из старого vercel.json НЕ переносим: он анти-автопауза Supabase
+# free tier, у self-host Postgres автопаузы нет (см. план, Фаза 1.7).
 
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ТРЕБОВАНИЕ К ХОСТУ: TZ = UTC. Расписания ниже перенесены из Vercel Cron,
+# который всегда UTC, а cron исполняет их в TZ ХОСТА. `CRON_TZ` здесь НЕ
+# ставим — Ubuntu/Debian cron 3.0pl1 его не поддерживает (проверено:
+# `strings /usr/sbin/cron | grep -x CRON_TZ` пусто), директива была бы
+# молчаливой пустышкой. Держать UTC на уровне системы:
+#   timedatectl                      # ожидаем "Time zone: Etc/UTC"
+#   timedatectl set-timezone UTC     # если уехало
+# Иначе `referral-rollup` (0 2 1 * *) уедет в прошлый месяц, где
+# PK-идемпотентность превратит промах в тихий skip и месяц прогрессии
+# не начислится вообще (находка A-4). Сейчас на VPS Etc/UTC — проверено.
 
 # Подстраховка webhook'ов L&P + recovery зависших paid + healthcheck (каждые 5 мин)
-*/5 * * * *  root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/poll-payment >/dev/null
+*/5 * * * *  root  flock -n /var/lock/oplatishka-poll-payment.lock curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/poll-payment 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Похороны просроченных заказов: pending_payment + протухшие черновики (каждые 15 мин)
-*/15 * * * * root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/expire-payments >/dev/null
+*/15 * * * * root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/expire-payments 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Напоминание о продлении подписки (ежедневно 07:00 UTC)
-0 7 * * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/renewal-reminder >/dev/null
+0 7 * * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/renewal-reminder 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Recycle карт: active→idle→release + алёрт низкого VCC-баланса (ежедневно 03:30 UTC)
-30 3 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/recycle-cards >/dev/null
+30 3 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/recycle-cards 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Retention: чистка messages >90д, raw_payload >180д (ежедневно 04:15 UTC)
-15 4 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/retention >/dev/null
+15 4 * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/retention 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Добор пропущенных реферальных начислений (каждый час, :15)
-15 * * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-recovery >/dev/null
+15 * * * *   root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-recovery 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Месячная прогрессия партнёрских статусов (1-е число, 02:00 UTC)
-0 2 1 * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-rollup >/dev/null
+0 2 1 * *    root  curl -fsS -m 290 -H "Authorization: Bearer __CRON_SECRET__" __BASE_URL__/api/cron/referral-rollup 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
