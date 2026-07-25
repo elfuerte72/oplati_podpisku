@@ -19,7 +19,10 @@ function buildCspReportOnly(): string | null {
     // ужесточение (nonce) — после анализа отчётов.
     "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    // cdn.freekassa.net — баннер провайдера в футере (components/info/FreekassaBadge.tsx).
+    // Без этого домена перевод CSP в enforce молча убил бы картинку, а для Freekassa
+    // отсутствие баннера на главной = нарушение условий подтверждения ресурса.
+    "img-src 'self' data: blob: https://cdn.freekassa.net",
     "font-src 'self' data:",
     "connect-src 'self' https://*.sentry.io https://vitals.vercel-insights.com",
     "frame-ancestors 'none'",

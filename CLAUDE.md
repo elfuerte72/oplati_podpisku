@@ -243,7 +243,14 @@ Vercel `fra1`. Два окружения с **раздельными Telegram-б
 
 ## MCP-серверы
 
-`.mcp.json`: `github`, `filesystem`, `chromeDevtools`, `playwright`, `dokploy` (панель контура — приложения, БД, бэкапы, деплой; ключ через `${DOKPLOY_API_KEY}` из gitignored `settings.local.json`), `supabase` (HTTP MCP, `project_ref=nyxijwpuvctmvemaemqn`). ⚠️ **Supabase MCP смотрит на ХОЛОДНЫЙ РЕЗЕРВ, а не на прод**: с 2026-07-24 боевая БД — self-hosted Postgres на VPS, и туда MCP не ходит. Запрос к прод-БД — через `ssh root@177.7.34.106 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) psql -U oplatishka -d oplatishka -c "..."'`. Миграции — только через Drizzle, ни через MCP, ни руками.
+`.mcp.json`: `github`, `filesystem`, `chromeDevtools`, `playwright`, `dokploy` (панель контура — приложения, БД, бэкапы, запуск деплоя; ключ через `${DOKPLOY_API_KEY}` из gitignored `settings.local.json`).
+
+**Supabase MCP убран 2026-07-25:** боевая БД — self-hosted Postgres на VPS, и MCP туда не ходил; оставленный, он выглядел как доступ к проду, а отдавал данные холодного резерва. Запрос к боевой БД — через ssh:
+```bash
+ssh root@177.7.34.106 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
+  psql -U oplatishka -d oplatishka -c "select count(*) from orders"'
+```
+Резерв Supabase (`nyxijwpuvctmvemaemqn`, данные на момент cutover) при необходимости смотреть через его дашборд — см. [`docs/runbooks/rollback.md`](docs/runbooks/rollback.md). Миграции — только через Drizzle, ни через MCP, ни руками.
 
 ## Что запрещено
 

@@ -18,6 +18,7 @@ import {
   formatRub,
 } from '@/components/comic';
 import { DocsFooter } from '@/components/info/DocsFooter';
+import { FreekassaBadge } from '@/components/info/FreekassaBadge';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
@@ -568,10 +569,13 @@ export function ChatClient() {
         )}
 
         {/* Постоянный футер с документами — виден на любом экране (в т.ч. при
-            выбранном сервисе), требование платёжного провайдера. */}
+            выбранном сервисе), требование платёжного провайдера. Баннер Freekassa
+            рядом, а не внутри DocsFooter: тот — `<nav>`, а бейдж провайдера
+            навигацией не является. */}
         <footer className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
-          <div className="mx-auto w-full max-w-3xl px-4 py-2.5">
+          <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 px-4 py-2.5">
             <DocsFooter />
+            <FreekassaBadge />
           </div>
         </footer>
       </section>
