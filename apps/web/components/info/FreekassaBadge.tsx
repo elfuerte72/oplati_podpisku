@@ -26,14 +26,13 @@ export function FreekassaBadge({ className = '' }: { className?: string }) {
       href="https://freekassa.net"
       target="_blank"
       rel="noopener noreferrer"
-      title="Прием платежей"
       className={`inline-block opacity-70 transition-opacity hover:opacity-100 ${className}`}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- см. докстринг:
           next/image переписывает src, а провайдер проверяет свой литеральный URL. */}
       <img
         src="https://cdn.freekassa.net/banners/medium_1.png"
-        title="Прием платежей"
+        title="Прием платежей на сайте для физических лиц и т.д."
         alt="Freekassa — приём платежей"
         loading="lazy"
         decoding="async"
