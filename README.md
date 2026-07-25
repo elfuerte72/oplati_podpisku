@@ -9,7 +9,7 @@ Telegram-бот + веб-чат, через которые русскоязыч�
 > **Контекст для Claude Code и разработчиков.** Источник правды по поведению, инвариантам
 > и конвенциям — [`CLAUDE.md`](./CLAUDE.md). Этот README даёт карту репозитория и общую
 > картину; при расхождении деталей верь коду и `CLAUDE.md`. Дополнительно: справочная
-> документация в [`docs/`](./docs/), план фазы 2 — [`PLAN.md`](./PLAN.md).
+> документация в [`docs/`](./docs/), план фазы 2 — [`PLAN.md`](./docs/history/plan-2026-06-referral-program.md).
 
 ---
 
@@ -225,5 +225,5 @@ Supabase Postgres, Drizzle ORM, RLS включён. 16 таблиц (схема 
 `orders`, `order_events`, `payments`, `cards`, `attachments`, `ai_usage_daily`,
 `referral_partners`, `referral_accruals`, `referral_payouts`, `referral_monthly_stats`.
 
-Как устроена БД — [`docs/database.html`](./docs/database.html). Миграции — только forward-only
+Как устроена БД — [`docs/database.html`](./docs/reference/database.html). Миграции — только forward-only
 через Drizzle (см. `CLAUDE.md` → Миграции БД).
