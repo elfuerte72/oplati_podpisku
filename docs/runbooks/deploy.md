@@ -28,8 +28,18 @@ push в main / dev
 | `dev` | `oplatishka-web-dev` | `DOKPLOY_DEPLOY_TOKEN_DEV` |
 
 `main` защищён ruleset'ом: прямой push запрещён, только PR с зелёными
-`Tests`/`Type Check`/`Lint`. Гейт внутри workflow — подстраховка на случай
-`workflow_dispatch` и пушей в `dev`, у которого своего CI нет.
+`Tests`/`Type Check`/`Lint`/`Build`/`Secret Scan`. Гейт внутри workflow —
+подстраховка на случай `workflow_dispatch` и пушей в `dev`, у которого своего
+CI нет.
+
+⚠️ **Ruleset'ов на `main` два** — `protectionOplatishka` и `protect-main`, с почти
+одинаковым набором правил. Меняете обязательные проверки — меняйте в ОБОИХ:
+```bash
+gh api repos/elfuerte72/oplati_podpisku/rulesets --jq '.[] | "\(.id)\t\(.name)"'
+```
+Новый чек делать обязательным можно только после того, как он несколько раз
+прошёл зелёным: обязательный чек, который падает по своей же ошибке, блокирует
+разом все merge. Так и вводили `Build`/`Secret Scan` 2026-07-25.
 
 Ручной перезапуск без коммита: `gh workflow run deploy.yml --ref main`.
 
