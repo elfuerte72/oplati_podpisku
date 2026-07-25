@@ -195,8 +195,13 @@ refresh token в Dokploy + обновить секрет.
 (shell-env имеет приоритет над `--env-file`; тот же приоритет теперь и у `db:init-roles`).
 Локальная разработка (`pnpm dev`) ходит в dev-БД, не в прод.
 
-**Пайплайн:** feature-ветка → push → PR → CI (`Tests`/`Type Check`/`Lint`) → squash в `main` →
-workflow `Deploy` пересобирает прод. **Main защищён ruleset'ом `protectionOplatishka`:** прямой push
+**Пайплайн:** feature-ветка → push → PR → CI (`Tests`/`Type Check`/`Lint`/`Build`/`Secret Scan`) →
+squash в `main` → workflow `Deploy` пересобирает прод. `Build` отдельно от `Type Check`, потому что
+`tsc --noEmit` не видит ошибок пререндера и конфигурации route-сегментов — такой коммит раньше
+падал уже при docker build на VPS. `Secret Scan` (gitleaks) — репозиторий публичный, а `.gitignore`
+ловит только известные имена файлов; ⚠️ глубина скана зависит от события: на `pull_request` он
+читает только коммиты PR, всю историю — лишь `schedule`/`workflow_dispatch`, и в `.gitleaksignore`
+нельзя цитировать найденную строку (файл сканируется наравне с остальными). **Main защищён ruleset'ом `protectionOplatishka`:** прямой push
 запрещён, только PR с зелёными required-чеками (approvals 0 — solo, сам себе аппрув GitHub не даёт);
 force-push и удаление ветки заблокированы. Для dev-стенда — push в `dev` (до 2026-07-25 у этой ветки
 не было CI вообще; теперь она под тем же гейтом внутри `deploy.yml`).
