@@ -2,14 +2,17 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import { cards } from '../schema.ts';
 import type { DB } from '../index.ts';
-import type { CardStatus } from '@oplati/types';
+import { CARD_IDLE_AFTER_DAYS, CARD_LIFETIME_DAYS, type CardStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
  * Репозиторий виртуальных USD-карт (app.pay.space). Карты создаются `issue-card`
- * job-ом после успешной оплаты, переиспользуются между заказами одного пользователя,
- * переводятся в `idle` после 90 дней простоя и далее в `recycled` через 180 дней —
- * откуда могут быть выданы другому пользователю (см. план Task 6.6).
+ * job-ом после успешной оплаты, переиспользуются между заказами одного
+ * пользователя, после `CARD_IDLE_AFTER_DAYS` без наших топапов помечаются `idle`
+ * (метка в БД, карта продолжает работать) и через `CARD_LIFETIME_DAYS` от
+ * выпуска закрываются в провайдере → `recycled`. Сроки — из `@oplati/types`,
+ * тот же источник, что у витринного «Действует до» в кабинете.
+ * Cross-client reuse убран: `release` необратим, PAN между клиентами не делим.
  *
  * Все суммы — USD-центы (`balance_usd_cents integer`); никогда не numeric/float.
  */
@@ -89,15 +92,28 @@ export async function findActiveByUserId(db: DB, userId: string): Promise<Card |
 }
 
 /**
- * Карты пользователя для личного кабинета (Mini App): только `active` и `idle`.
+ * Карты пользователя для личного кабинета (Mini App): только `active` и `idle`,
+ * и только пока не истёк `CARD_LIFETIME_DAYS` от выпуска.
  * `recycled` скрываем — такая карта могла быть переназначена другому владельцу,
  * показывать её прежнему клиенту нельзя. Свежие первыми. Read-only.
+ *
+ * Отсечка по возрасту нужна отдельно от статуса: между 180-м днём и следующим
+ * прогоном cron (03:30) — или если `releaseCard` упал и добивается на следующем
+ * запуске — карта ещё `active`/`idle`, и без этого условия кабинет показывал бы
+ * её как рабочую с датой «Действует до» в прошлом. Условие держит витрину
+ * согласованной с обещанием срока независимо от расписания и сбоев провайдера.
  */
 export async function findCardsByUserIdForCabinet(db: DB, userId: string): Promise<Card[]> {
   const rows = await db
     .select()
     .from(cards)
-    .where(and(eq(cards.userId, userId), sql`${cards.status} IN ('active', 'idle')`))
+    .where(
+      and(
+        eq(cards.userId, userId),
+        sql`${cards.status} IN ('active', 'idle')`,
+        sql`${cards.createdAt} >= now() - make_interval(days => ${CARD_LIFETIME_DAYS})`,
+      ),
+    )
     .orderBy(sql`${cards.createdAt} DESC`);
   return rows.map(mapRowToCard);
 }
@@ -105,7 +121,11 @@ export async function findCardsByUserIdForCabinet(db: DB, userId: string): Promi
 /**
  * Карта по id с проверкой владельца (ownership) — для разового показа реквизитов
  * в кабинете. `recycled` исключаем (карта могла уйти другому клиенту — реквизиты
- * прежнему показывать нельзя). `null`, если карты нет, чужая или recycled.
+ * прежнему показывать нельзя), карты старше `CARD_LIFETIME_DAYS` — тоже: срок
+ * истёк, и отдавать по ней полный PAN/CVC нельзя даже в окне до прогона cron.
+ * Условие держим тем же, что в `findCardsByUserIdForCabinet`, иначе карта
+ * пропала бы из списка, но реквизиты по прямому `card-details` всё ещё отдавались.
+ * `null`, если карты нет, чужая, recycled или просрочена.
  * Read-only; полные реквизиты тянем отдельно из PaySpace по `providerCardId`.
  */
 export async function findCardByIdForUser(
@@ -121,6 +141,7 @@ export async function findCardByIdForUser(
         eq(cards.id, cardId),
         eq(cards.userId, userId),
         sql`${cards.status} IN ('active', 'idle')`,
+        sql`${cards.createdAt} >= now() - make_interval(days => ${CARD_LIFETIME_DAYS})`,
       ),
     )
     .limit(1);
@@ -249,7 +270,8 @@ export async function idleAgedActiveCards(
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE cards
     SET status = 'idle', last_used_at = COALESCE(last_used_at, now())
-    WHERE status = 'active' AND COALESCE(last_used_at, created_at) < now() - interval '90 days'
+    WHERE status = 'active'
+      AND COALESCE(last_used_at, created_at) < now() - make_interval(days => ${CARD_IDLE_AFTER_DAYS})
     RETURNING id
   `);
   const idled = rows.length;
@@ -258,11 +280,18 @@ export async function idleAgedActiveCards(
 }
 
 /**
- * Шаг 2 cron `recycle-cards`: idle-карты, отслужившие 180 дней и ещё НЕ
- * закрытые (`recycled_at IS NULL`). Возвращаем строки — джоба закроет каждую в
- * провайдере (`releaseCard`, необратимо) и только затем пометит `markRecycled`.
- * Поэтому это SELECT, а не bulk-UPDATE: at-least-once с пер-картной обработкой
- * ошибок провайдера (упавшую карту добьёт следующий запуск).
+ * Шаг 2 cron `recycle-cards`: карты, отслужившие `CARD_LIFETIME_DAYS` от
+ * ВЫПУСКА и ещё не закрытые (`recycled_at IS NULL`). Возвращаем строки — джоба
+ * закроет каждую в провайдере (`releaseCard`, необратимо) и только затем
+ * пометит `markRecycled`. Поэтому это SELECT, а не bulk-UPDATE: at-least-once с
+ * пер-картной обработкой ошибок провайдера (упавшую карту добьёт следующий запуск).
+ *
+ * Берём и `active`, и `idle`. Раньше условие было `status = 'idle'`, и карта,
+ * которую клиент регулярно доливал (каждый топап обновляет `last_used_at`),
+ * никогда не доживала до `idle` — а значит НЕ закрывалась ВООБЩЕ, ни на 180-й
+ * день, ни на 300-й. При этом кабинет всё это время показывал ей «Действует до»
+ * = `created_at + CARD_LIFETIME_DAYS`, то есть дату в прошлом. Срок жизни карты
+ * жёсткий и считается от выпуска, статус на него не влияет.
  */
 export async function findCardsToRecycle(db: DB): Promise<Card[]> {
   const rows = await db
@@ -270,9 +299,9 @@ export async function findCardsToRecycle(db: DB): Promise<Card[]> {
     .from(cards)
     .where(
       and(
-        eq(cards.status, 'idle'),
+        sql`${cards.status} IN ('active', 'idle')`,
         sql`${cards.recycledAt} IS NULL`,
-        sql`${cards.createdAt} < now() - interval '180 days'`,
+        sql`${cards.createdAt} < now() - make_interval(days => ${CARD_LIFETIME_DAYS})`,
       ),
     )
     .orderBy(sql`${cards.createdAt} ASC`);

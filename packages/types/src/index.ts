@@ -85,6 +85,10 @@ export {
   OrderTransitionError,
 } from './order-state-machine.ts';
 
+// ─── Жизненный цикл виртуальной карты ─────────────────────────────────────
+
+export { CARD_IDLE_AFTER_DAYS, CARD_LIFETIME_DAYS } from './card-lifecycle.ts';
+
 // ─── Referral (партнёрская программа) ──────────────────────────────────────
 
 export {
