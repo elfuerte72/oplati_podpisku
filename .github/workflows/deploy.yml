@@ -13,11 +13,21 @@ name: Deploy
 #   3. Он молчал при отказе. Прод сутки жил на ручных сборках, и это заметили
 #      только по расхождению коммита.
 #
-# Контракт per-app вебхука Dokploy (снят живой проверкой 2026-07-25):
-#   POST /api/deploy/<refreshToken> → 200; неизвестный токен → 404
-#   {"message":"Application Not Found"}. Токен узкий: триггерит сборку РОВНО
-#   одного приложения, в отличие от админского DOKPLOY_API_KEY, которым можно
-#   всё. Ротация — кнопка refresh token в Dokploy + обновить секрет здесь.
+# Контракт per-app вебхука Dokploy — снят живой проверкой 2026-07-25, в доках
+# его нет, поэтому фиксирую целиком:
+#   POST /api/deploy/<refreshToken>
+#     заголовок  X-GitHub-Event: push        ← БЕЗ него Dokploy не умеет достать
+#                                             ветку и отвечает 301
+#                                             {"message":"Branch Not Match"}
+#     тело       {"ref":"refs/heads/<ветка>"} ← ветка обязана совпасть с branch
+#                                              приложения, иначе тот же 301
+#   → 200 {"message":"Application deployed successfully"}
+#   неизвестный токен → 404 {"message":"Application Not Found"}
+#   Подпись HMAC этому роуту НЕ нужна (в отличие от /api/deploy/github, который
+#   требует X-Hub-Signature-256 от секрета GitHub App).
+# Токен узкий: триггерит сборку РОВНО одного приложения, в отличие от админского
+# DOKPLOY_API_KEY, которым можно всё. Ротация — кнопка refresh token в Dokploy
+# плюс обновить секрет здесь.
 
 on:
   push:
@@ -97,10 +107,14 @@ jobs:
             echo "::error::Секрет ${{ steps.target.outputs.token_name }} не задан — деплой не запущен."
             exit 1
           fi
-          echo "Триггерю сборку: ${{ steps.target.outputs.app }}"
+          echo "Триггерю сборку: ${{ steps.target.outputs.app }} (${{ github.ref }})"
           # -sS: тихо при успехе, ошибка транспорта в stderr; тело печатаем для лога.
+          # X-GitHub-Event и ref обязательны — см. контракт в шапке файла.
           code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --max-time 60 \
-            -X POST "$PANEL/api/deploy/$TOKEN")
+            -X POST "$PANEL/api/deploy/$TOKEN" \
+            -H 'X-GitHub-Event: push' \
+            -H 'Content-Type: application/json' \
+            -d "{\"ref\":\"${{ github.ref }}\"}")
           echo "HTTP $code"
           # Тело безопасно логировать: токен в него не попадает.
           cat /tmp/resp.txt || true
