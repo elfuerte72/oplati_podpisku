@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { ConfirmOrderResult } from '@oplati/agent';
 import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
+import { selfCallBaseUrl } from '../deployment-url.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -122,18 +123,10 @@ export async function confirmOrder(input: {
     throw new Error('confirm_order: INTERNAL_API_TOKEN не задан');
   }
 
-  // Self-call должен идти в ТОТ ЖЕ deployment. Приоритет — SELF_BASE_URL
-  // (self-host/Dokploy: `http://127.0.0.1:3000` — денежный вызов замыкается
-  // внутри контейнера, не выходя в интернет и не завися от Traefik/DNS).
-  // Дальше прежняя Vercel-цепочка: на preview APP_URL указывает на production
-  // (где нет L&P-ключей и INTERNAL_API_TOKEN), поэтому self-call на APP_URL
-  // ловит 401/недонастроенный L&P — берём собственный URL текущего deployment'а
-  // из VERCEL_URL; APP_URL остаётся fallback'ом (локальная разработка).
-  const ownHost = process.env.VERCEL_URL;
-  const baseUrl =
-    serverEnv.SELF_BASE_URL?.replace(/\/$/, '') ??
-    (ownHost ? `https://${ownHost}` : serverEnv.APP_URL.replace(/\/$/, ''));
-  const url = `${baseUrl}/api/payments/create`;
+  // Self-call должен идти в ТОТ ЖЕ deployment; приоритеты и почему они такие —
+  // в `selfCallBaseUrl()` (lib/deployment-url.ts, единый источник правды о
+  // «своём базовом URL»).
+  const url = `${selfCallBaseUrl()}/api/payments/create`;
 
   log.info({ event: 'tool.confirm_order.start', orderId: input.orderId });
 

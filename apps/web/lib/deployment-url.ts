@@ -35,6 +35,32 @@ function miniAppBaseUrl(): string {
   return deploymentBaseUrl();
 }
 
+/**
+ * База для ВНУТРЕННЕГО self-call'а (`/api/payments/create` из confirm_order).
+ *
+ * Живёт здесь, а не по месту вызова: этот модуль — единственный источник правды
+ * о «своём базовом URL», иначе self-host-ветка и Vercel-ветка разъезжаются
+ * (находка D-2). Отличается от `deploymentBaseUrl()` намеренно:
+ *   1. `SELF_BASE_URL` (self-host/Dokploy — `http://127.0.0.1:3000`): денежный
+ *      вызов замыкается внутри контейнера, не выходя в интернет и не завися от
+ *      Traefik/DNS/сертификата;
+ *   2. `VERCEL_URL` — собственный host деплоя. На preview `APP_URL` смотрит на
+ *      production (где нет L&P-ключей и своего INTERNAL_API_TOKEN), поэтому
+ *      self-call на `APP_URL` поймал бы 401;
+ *   3. `APP_URL` — fallback для локальной разработки.
+ * Разница с `deploymentBaseUrl()`: там на production принудительно `APP_URL`
+ * (публичная ссылка для пользователя), здесь — приоритет собственного хоста.
+ */
+export function selfCallBaseUrl(): string {
+  const selfBase = serverEnv.SELF_BASE_URL;
+  if (selfBase) return selfBase.replace(/\/$/, '');
+
+  const ownHost = process.env.VERCEL_URL;
+  if (ownHost) return `https://${ownHost}`;
+
+  return serverEnv.APP_URL.replace(/\/$/, '');
+}
+
 /** URL Mini App для web_app-кнопки стартового меню (открывает /cabinet). */
 export function miniAppUrl(): string {
   return `${miniAppBaseUrl()}/cabinet`;
