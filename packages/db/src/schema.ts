@@ -406,7 +406,9 @@ export const cards = pgTable(
   },
   (t) => ({
     userIdx: index('cards_user_id_idx').on(t.userId),
-    // Частичный индекс — ускоряет findRecyclableCard / recycle cron.
+    // Частичный индекс по idle. `idle` теперь ставится только при отклонённом
+    // доливе (не по возрасту), так что строк тут мало; индекс оставлен как есть —
+    // снос требовал бы миграции, а вреда от него нет.
     idleIdx: index('cards_idle_idx').on(t.status).where(sql`${t.status} = 'idle'`),
   }),
 ).enableRLS();

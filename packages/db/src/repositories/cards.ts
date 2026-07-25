@@ -2,16 +2,22 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import { cards } from '../schema.ts';
 import type { DB } from '../index.ts';
-import { CARD_IDLE_AFTER_DAYS, CARD_LIFETIME_DAYS, type CardStatus } from '@oplati/types';
+import { CARD_LIFETIME_DAYS, type CardStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
  * Репозиторий виртуальных USD-карт (app.pay.space). Карты создаются `issue-card`
- * job-ом после успешной оплаты, переиспользуются между заказами одного
- * пользователя, после `CARD_IDLE_AFTER_DAYS` без наших топапов помечаются `idle`
- * (метка в БД, карта продолжает работать) и через `CARD_LIFETIME_DAYS` от
- * выпуска закрываются в провайдере → `recycled`. Сроки — из `@oplati/types`,
- * тот же источник, что у витринного «Действует до» в кабинете.
+ * job-ом после успешной оплаты, доливаются под новые заказы того же пользователя
+ * весь свой срок и через `CARD_LIFETIME_DAYS` от выпуска закрываются в
+ * провайдере → `recycled`. Срок — из `@oplati/types`, тот же источник, что у
+ * витринного «Действует до» в кабинете.
+ *
+ * `idle` — НЕ возрастной статус: он ставится только когда PaySpace отклонил
+ * долив (карта протухла/заблокирована/из чужого аккаунта) и `issue-card`
+ * выводит карту из реюза, чтобы выпустить новую вместо падения оплаченного
+ * заказа. Возрастное идление после 90 дней убрано (решение владельца
+ * 2026-07-25): оно осталось от отменённого пула переиспользования между
+ * клиентами, а на практике лишь лишало клиента долива на 91-й день.
  * Cross-client reuse убран: `release` необратим, PAN между клиентами не делим.
  *
  * Все суммы — USD-центы (`balance_usd_cents integer`); никогда не numeric/float.
@@ -149,34 +155,6 @@ export async function findCardByIdForUser(
   return row ? mapRowToCard(row) : null;
 }
 
-/**
- * Recycled-карта для повторного использования: status='recycled' (см. `recycle-cards`
- * cron). Берём первую попавшуюся; в issue-card job переписываем userId на нового
- * владельца и переводим в active.
- */
-export async function findRecyclableCard(
-  db: DB,
-  log: RepoLogger = noopLogger,
-): Promise<Card | null> {
-  const rows = await db
-    .select()
-    .from(cards)
-    .where(eq(cards.status, 'recycled'))
-    .orderBy(sql`${cards.createdAt} ASC`)
-    .limit(1);
-
-  const row = rows[0];
-  if (!row) return null;
-
-  log.info({
-    event: 'db.cards.recyclable_found',
-    cardId: row.id,
-    panMasked: row.panMasked,
-  });
-
-  return mapRowToCard(row);
-}
-
 export async function markIdle(
   db: DB,
   cardId: string,
@@ -250,33 +228,6 @@ export async function syncCardBalance(
 
   log.info({ event: 'db.cards.balance_synced', cardId, balanceUsdCents, applied });
   return applied;
-}
-
-/**
- * Шаг 1 cron `recycle-cards`: active + простой > 90d → idle.
- * Чистое БД-изменение, без обращения к провайдеру. Возвращает число затронутых.
- *
- * Простой меряем от `COALESCE(last_used_at, created_at)`: у нормально живущих
- * карт `last_used_at` = NULL (createCard его не ставит, а `NULL < timestamp` в
- * Postgres даёт NULL, не TRUE), поэтому фильтр по одному `last_used_at` никогда
- * не матчил активные карты — они не идлились и не доходили до release, а буфер
- * VCC оставался заперт (M5). Fallback на `created_at` чинит это для карт, ещё
- * ни разу не использованных.
- */
-export async function idleAgedActiveCards(
-  db: DB,
-  log: RepoLogger = noopLogger,
-): Promise<number> {
-  const rows = await db.execute<{ id: string }>(sql`
-    UPDATE cards
-    SET status = 'idle', last_used_at = COALESCE(last_used_at, now())
-    WHERE status = 'active'
-      AND COALESCE(last_used_at, created_at) < now() - make_interval(days => ${CARD_IDLE_AFTER_DAYS})
-    RETURNING id
-  `);
-  const idled = rows.length;
-  log.info({ event: 'db.cards.idled_aged', idled });
-  return idled;
 }
 
 /**
