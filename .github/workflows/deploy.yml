@@ -114,6 +114,13 @@ jobs:
             echo "token_name=DOKPLOY_DEPLOY_TOKEN_DEV" >> "$GITHUB_OUTPUT"
           fi
 
+      # Отметка ДО триггера: всё, что стартовало раньше неё, — чужой/прошлый
+      # деплой. По ней шаг проверки отличает «прод пересобран нами» от «прод как
+      # был».
+      - name: Отметка времени до триггера
+        id: mark
+        run: echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Deploy
         env:
           TOKEN: ${{ github.ref_name == 'main' && secrets.DOKPLOY_DEPLOY_TOKEN_PROD || secrets.DOKPLOY_DEPLOY_TOKEN_DEV }}
@@ -125,22 +132,36 @@ jobs:
             exit 1
           fi
           echo "Триггерю сборку: ${{ steps.target.outputs.app }} (${{ github.ref }})"
-          # Ретраи нужны потому, что панель Dokploy живёт на ТОМ ЖЕ VPS, который в
-          # этот момент может собирать предыдущий релиз: под нагрузкой она не
-          # отвечает десятки секунд. Так уже падал деплой PR #110 — curl exit 28
-          # (timeout) при load average ~2. Двойной триггер при этом безопасен:
-          # повторная сборка того же коммита даёт тот же образ, Dokploy её
-          # сериализует, а результат идемпотентен.
+          # Ретраи нужны из-за КОРОТКИХ ЭПИЗОДОВ СЕТЕВОЙ НЕДОСТУПНОСТИ VPS со
+          # стороны раннеров GitHub: TCP-соединение к 443 не устанавливается
+          # вовсе (curl exit 28 «Couldn't connect to server»), при живых Traefik
+          # и панели. Так упали деплои PR #110 и #113 — оба пересобирали руками.
+          #
+          # ⚠️ Прежнее объяснение «панель не отвечает под нагрузкой собственной
+          # сборки» ОПРОВЕРГНУТО замерами 2026-07-25 — не возвращать его:
+          #   - лог сборки #109 закрыт в 08:31:52, падение #110 в 08:40–08:42;
+          #   - лог сборки #112 закрыт в 13:03:01, падение #113 в 13:08–13:16;
+          #   - sar в 13:10:31 (разгар падения): load average 1 мин = 0.25,
+          #     blocked = 0, то есть машина ПРОСТАИВАЛА.
+          # Проба из Actions в 15:00 того же дня: 5/5 на панель, 3/3 на прод-сайт,
+          # голый nc на 443/80/22 — всё проходит. Причина внешняя и
+          # невоспроизводимая по требованию, поэтому лечим её пережиданием.
+          #
+          # `--connect-timeout 10` критичен: без него неотвечающий SYN висит
+          # ~133 с (системный таймаут ядра), и три попытки съедали весь бюджет
+          # шага почти сплошным ожиданием — окно ретраев было фиктивным.
+          # Двойной триггер безопасен: повторная сборка того же коммита даёт тот
+          # же образ, Dokploy её сериализует, результат идемпотентен.
           # X-GitHub-Event и ref обязательны — см. контракт в шапке файла.
           attempt=0
-          max=3
+          max=10
           while :; do
             attempt=$((attempt + 1))
             rc=0
             # `|| rc=$?` обязателен: под `set -e` ненулевой выход curl оборвал бы
             # скрипт ДО разбора кода, и в лог попадала бы не причина, а текст самого
             # шага (ровно это и путало при разборе падения PR #110).
-            code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --max-time 180 \
+            code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --connect-timeout 10 --max-time 60 \
               -X POST "$PANEL/api/deploy/$TOKEN" \
               -H 'X-GitHub-Event: push' \
               -H 'Content-Type: application/json' \
@@ -165,10 +186,76 @@ jobs:
             fi
 
             if [ "$attempt" -ge "$max" ]; then
-              echo "::error::Не удалось дозвониться до Dokploy за $max попытки. Прод НЕ пересобран."
+              echo "::error::Не удалось дозвониться до Dokploy за $max попыток (~9 минут). Прод НЕ пересобран."
               exit 1
             fi
-            echo "Ждём 30 с и пробуем снова (VPS вероятно занят сборкой)."
-            sleep 30
+            echo "Ждём 45 с и пробуем снова."
+            sleep 45
           done
           echo "Сборка запущена. Прогресс — в панели Dokploy."
+
+      # Триггер, принятый панелью, НЕ означает выкаченный релиз: сборка может
+      # упасть, и раньше пайплайн этого не замечал — зелёный workflow при старом
+      # коде на проде. Ждём, пока прод не ответит временем старта ПОЗЖЕ отметки
+      # выше, то есть пока контейнер реально не пересоздан.
+      #
+      # Только для main: dev-стенд закрыт Basic Auth, /api/health оттуда не
+      # прочитать без ещё одного секрета, а ради dev это лишняя связанность.
+      - name: Проверить, что прод обновился
+        if: github.ref_name == 'main'
+        env:
+          SITE: ${{ vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health' }}
+          SINCE: ${{ steps.mark.outputs.epoch }}
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date -u +%s) + 900 ))   # 15 минут: обычная сборка ~2.5 мин
+          fresh=0
+          while [ "$(date -u +%s)" -lt "$deadline" ]; do
+            body=$(curl -sS --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null) || body=''
+            started=$(printf '%s' "$body" | jq -r '.startedAt // empty' 2>/dev/null || echo '')
+            if [ -n "$started" ]; then
+              started_epoch=$(date -u -d "$started" +%s 2>/dev/null || echo 0)
+              if [ "$started_epoch" -gt "$SINCE" ]; then
+                # Swarm во время обновления какое-то время держит и старый
+                # контейнер, поэтому одного свежего ответа мало — ждём три
+                # подряд, иначе можно объявить успех, поймав новый контейнер, к
+                # которому трафик ещё не переключился целиком.
+                fresh=$((fresh + 1))
+                echo "Свежий ответ $fresh/3 (startedAt=$started)"
+                if [ "$fresh" -ge 3 ]; then
+                  echo "Прод пересобран и отвечает."
+                  exit 0
+                fi
+              else
+                fresh=0
+                echo "Пока старый процесс (startedAt=$started), ждём…"
+              fi
+            else
+              fresh=0
+              echo "Health не ответил или без startedAt, ждём…"
+            fi
+            sleep 15
+          done
+          echo "::error::Прод не обновился за 15 минут после принятого триггера — сборка упала или зависла. Смотри логи в панели Dokploy."
+          exit 1
+
+      # Провал деплоя раньше был виден только тому, кто зайдёт в Actions: оба
+      # падения 2026-07-25 заметили постфактум, по расхождению кода на проде.
+      # Секреты не заданы → шаг молча пропускается (workflow всё равно красный).
+      - name: Сообщить о провале в Telegram
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.DEPLOY_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.DEPLOY_ALERT_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::Секреты DEPLOY_ALERT_BOT_TOKEN/DEPLOY_ALERT_CHAT_ID не заданы — алёрт не отправлен."
+            exit 0
+          fi
+          text="Деплой НЕ прошёл: ${{ steps.target.outputs.app }}, ветка ${{ github.ref_name }}, коммит ${{ github.sha }}. Прод остался на прежней версии. Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS --connect-timeout 10 --max-time 30 \
+            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${text}" \
+            -o /dev/null -w 'Telegram HTTP %{http_code}\n' || echo "::warning::Алёрт отправить не удалось."

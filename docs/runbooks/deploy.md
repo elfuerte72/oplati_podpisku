@@ -12,9 +12,15 @@
 ```
 push в main / dev
   → gate: pnpm typecheck + pnpm -r test + pnpm lint
-  → POST https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>
+  → POST https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>   (до 10 попыток)
   → Dokploy собирает образ и подменяет контейнер
+  → проверка: /api/health отдаёт startedAt позже момента триггера (только main)
+  → провал любого шага → сообщение в Telegram
 ```
+
+Шаг проверки нужен потому, что принятый триггер не равен выкаченному релизу:
+раньше пайплайн заканчивался на «сборка запущена», и упавшая сборка давала
+зелёный workflow при старом коде на проде.
 
 | Ветка | Приложение Dokploy | Секрет с токеном |
 |---|---|---|
@@ -64,6 +70,36 @@ curl -X POST "https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>" \
 **2. `gh secret set --body -` не читает stdin** — он пишет литерал `-`. Токен
 задавать через `gh secret set NAME < file` и проверять длину (21 байт, без
 перевода строки).
+
+---
+
+## Если деплой упал с `curl exit 28`
+
+Это не отказ Dokploy: TCP-соединение к 443 не устанавливается вовсе, до HTTP дело
+не доходит. Наблюдались короткие эпизоды сетевой недоступности VPS со стороны
+раннеров GitHub (маршрут Azure → Hostinger); панель, Traefik и ufw при этом
+исправны, машина простаивает. Подробности и замеры — в
+[`../incidents.md`](../incidents.md), запись 2026-07-25.
+
+**Не искать причину в нагрузке от собственной сборки** — это объяснение проверено
+и опровергнуто (`sar` в разгар падения: load average 0.25).
+
+Что делать:
+
+```bash
+# 1. Проверить, доступен ли VPS прямо сейчас
+curl -sS -o /dev/null -w '%{http_code}\n' --connect-timeout 10 https://dokploy.mxpkn8ns.ru/
+
+# 2. Если доступен — просто перезапустить workflow, окно уже закрылось
+gh workflow run deploy.yml --ref main
+
+# 3. Если недоступен и с локальной машины — это авария VPS, а не CI:
+#    проверить сайт и, если он тоже лежит, идти по runbooks/rollback.md
+curl -sS -o /dev/null -w '%{http_code}\n' https://www.oplatishka.com/api/health
+```
+
+Ручной триггер тем же вызовом (см. контракт выше) остаётся рабочим обходом, но
+после него **проверьте прод сами** — верификации из workflow в этом пути нет.
 
 ---
 
