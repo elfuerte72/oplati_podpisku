@@ -145,8 +145,8 @@ pnpm --filter @oplati/db db:studio      # Drizzle Studio
 | Sentry | `SENTRY_DSN` + `NEXT_PUBLIC_SENTRY_DSN` в **Build Args** | не задаём: проект в Sentry один, alert-rules общие — dev-шум сыпался бы теми же алёртами, что реальные проблемы прода |
 
 **Деплой — ТОЛЬКО через `.github/workflows/deploy.yml`** (push в `main`/`dev` → gate
-typecheck+тесты+lint → `POST /api/deploy/<refreshToken>`). `autoDeploy` встроенного GitHub App
-Dokploy **выключен осознанно**: он деплоил сразу на push, не дожидаясь CI (красный `main` уехал бы
+typecheck+тесты+lint → `POST /api/deploy/<refreshToken>`). GitHub App Dokploy как источник
+триггера больше не используется: он деплоил сразу на push, не дожидаясь CI (красный `main` уехал бы
 на боевой контур с живыми платежами), а его отказы не видны из репозитория — вебхук молча потерял
 мерж PR #102 и #103, прод пересобирали руками. Ровно та же история была с вебхуком Vercel
 (PR #83, 2026-07-18, см. [`docs/incidents.md`](docs/incidents.md)).
@@ -157,6 +157,10 @@ Dokploy **выключен осознанно**: он деплоил сразу 
 Без заголовка Dokploy не умеет достать ветку → `301 {"message":"Branch Not Match"}`; ветка обязана
 совпасть с `branch` приложения; неизвестный токен → `404 Application Not Found`. Подпись HMAC этому
 роуту не нужна (в отличие от `/api/deploy/github`, требующего `X-Hub-Signature-256`).
+⚠️ **Флаг `autoDeploy` у приложения обязан быть ВКЛЮЧЁН**, хотя триггер у нас свой: несмотря на
+название, это общий выключатель вебхук-деплоев, а не «слушать GitHub App». При выключенном Dokploy
+отвечает `400 {"message":"Automatic deployments are disabled for this application"}` и на наш
+собственный вызов (проверено на живом проде 2026-07-25).
 Токены — в секретах репозитория `DOKPLOY_DEPLOY_TOKEN_PROD`/`DOKPLOY_DEPLOY_TOKEN_DEV`; они узкие
 (триггерят сборку ровно одного приложения, не админский `DOKPLOY_API_KEY`), ротация — кнопка
 refresh token в Dokploy + обновить секрет.
