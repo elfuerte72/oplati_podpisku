@@ -73,12 +73,13 @@
       `main` включён и на Vercel, и на Dokploy). Vercel пишет в **Supabase**: строка `link_tokens`
       в 19:03:18.220 UTC совпала с логом `db.link_tokens.created` в 19:03:18.262 UTC.
       → **живой split-brain, см. раздел 10 (S-1).**
-- [ ] **3.4 Тест «пауза Vercel»** (по желанию, 100%-доказательство): в Vercel Settings → Domains
-      временно снять `www.oplatishka.com` + `oplatishka.com` (они уже не резолвятся на Vercel,
-      привязка косметическая) ИЛИ отключить Git-автодеплой (Settings → Git). Если сайт/бот/платежи
-      продолжают работать — всё на Dokploy. **Полностью деплой Vercel НЕ удалять** (резерв).
-      Примечание: у Vercel нет кнопки «pause project»; ближайшее — отключить автодеплой и/или
-      снять домены. Реальную остановку обслуживания даёт только удаление деплоя — НЕ делать сейчас.
+- [x] **3.4 Vercel отвязан — проверено событием 2026-07-25.** Владелец снял домены, я отключил
+      Git-автодеплой (`vercel git disconnect`) и снял домен с проекта (`vercel domains rm
+      oplatishka.com`). Доказательства, а не конфиг: (1) мерж PR #102 в `main` НЕ создал деплой на
+      Vercel — свежайший там 12-часовой; (2) Vercel отдаёт `404 DEPLOYMENT_NOT_FOUND` на
+      `Host: www.oplatishka.com` и `Host: oplatishka.com` — даже при переключении DNS обслуживать
+      не будет; (3) запуски Vercel Cron прекратились после WAF-правила. Прод при этом продолжает
+      работать (смоук ниже). Деплой Vercel НЕ удалён — резерв цел.
 - [x] **3.5 Данные синхронны** — ПОДТВЕРЖДЕНО прямым запросом в оба Postgres 2026-07-24 19:2x UTC:
       orders 133 / messages 826 / payments 46 / users 75 / order_events 342 / conversations 131 —
       **совпадает 1:1**. В журнале `drizzle` нового Postgres 25 миграций.
@@ -91,6 +92,24 @@
 ---
 
 ## 4. Smoke-тесты (полный клиентский путь на новом проде)
+
+> **Пересборка прода 2026-07-25 07:06–07:11 UTC.** PR #102 смёржен в `main`; автодеплой Dokploy
+> **не сработал** (GitHub-вебхук не доставил событие мержа — тот же класс проблемы, что был с
+> Vercel в инциденте 2026-07-18), сборка запущена вручную через API Dokploy. Старый контейнер
+> обслуживал до самого переключения — простоя не было.
+>
+> Автоматический смоук (19 проверок, всё зелёное): `/api/health`, главная, `/cabinet`, `/partner`,
+> `/about`, `/terms`, `/privacy`, `payment-instruction.html`, `/api/catalog`, apex без www, хост
+> бот-вебхука — все 200; каталог отдаёт 9 сервисов (13 активных в БД минус 4 в
+> `HIDDEN_CATALOG_SLUGS` — намеренно скрыты); `/api/bot` без secret-token → 401, cron-эндпоинты без
+> токена → 401, `payments/create` без `X-Internal-Token` → 401, `/api/cabinet` с мусорным
+> `initData` → 401 (пустое тело даёт 400 — Zod до авторизации, утечки нет); ни одного заголовка
+> `x-vercel-*`.
+>
+> Инвариант 6 проверен живьём: L&P-webhook на мусорное тело отвечает **200**, не 4xx.
+> Внешние контракты: PaySpace отвечает (`vcc_balance.ok` в каждом прогоне `poll-payment`).
+> **Что осталось за владельцем — money-path e2e (4.6) и всё телеграмное (4.2–4.5, 4.8):**
+> автоматически это не проверить, нужен реальный клиентский путь.
 
 Выполнять на боевом `@oplatishkaa_bot` + `www.oplatishka.com`. ⚠️ живой прод — тестовые
 заказы создают реальные инвойсы L&P; оплачивать минимальной суммой или отменять.
@@ -108,12 +127,19 @@
 - [ ] **4.7 Кабинет (Mini App)**: `www.oplatishka.com/cabinet` — каталог, экран карты (live-баланс
       PaySpace), реф-ссылка, партнёрка.
 - [ ] **4.8 Рефералка** (`REFERRAL_ENABLED=1`): реф-ссылка, захват реферера, начисление при оплате.
-- [ ] **4.9 Cron**: все 7 джобов отработали по расписанию — проверить в Grafana Loki (alloy
-      собирает логи контейнера) + `grep CRON /var/log/syslog` на VPS. Ручной вызов:
-      `curl -H "Authorization: Bearer $CRON_SECRET" https://www.oplatishka.com/api/cron/poll-payment`.
-- [ ] **4.10 Rate-limit**: ротация поддельных `x-real-ip`/`x-forwarded-for` НЕ обходит лимит
-      (self-host Redis + `CLIENT_IP_MODE=traefik`).
-- [ ] **4.11 Sentry**: ошибки долетают (`environment=production`, DSN через `NEXT_PUBLIC_SENTRY_DSN`).
+- [x] **4.9 Cron** — ПОДТВЕРЖДЕНО 2026-07-25 после пересборки: `poll-payment` / `expire-payments` /
+      `referral-recovery` с валидным `Authorization: Bearer` → 200 и полный цикл
+      `start`→`found`→`done` в логах контейнера; с неверным токеном → 401. Системный crontab на VPS
+      исполняется (`grep CRON /var/log/syslog`, 77+ записей). Логи контейнера собирает alloy → Loki.
+- [x] **4.10 Rate-limit** — ПОДТВЕРЖДЕНО живьём на новом деплое: 30 запросов к `/api/chat/clear`,
+      на КАЖДОМ свои поддельные `x-real-ip` и `x-forwarded-for` → 8 прошли, 22 получили 429.
+      Подделка заголовков лимит не обнуляет: identity берётся из правого элемента XFF, который
+      пишет сам Traefik (`CLIENT_IP_MODE=traefik` + self-host Redis). Инвариант 9 держится.
+- [x] **4.11 Sentry** — РАБОТАЕТ, проверено сквозным событием: смоук-запрос к L&P-webhook без
+      подписи в 07:16 UTC долетел в Sentry как «L&P webhook без X-Webhook-Signature». Плюс
+      `SENTRY_DSN` виден в рантайме контейнера, DSN **запечён в клиентский бандл**
+      (`.next/static/chunks` содержит `ingest.de.sentry.io`), а в CSP появился `report-uri` на
+      Sentry — до пересборки его там не было, это и доказывает, что build-arg сработал.
 - [ ] **4.12 Алёрты**: `@oplatishkaAlert_bot` (`ALERT_TELEGRAM_CHAT_ID=379336096`) — proxy-health/недоплаты.
 
 ---
@@ -154,9 +180,9 @@
 > решения окончательно уйти с Vercel. Каждую правку проверять `typecheck`+`test`, не ломать
 > Dokploy-путь. Пока Vercel = резерв, можно оставить как есть.
 
-- [ ] **6.1 `apps/web/vercel.json`** — Vercel Cron + `regions:[fra1]`. Cron теперь на VPS crontab.
+- [x] **6.1 `apps/web/vercel.json`** — Vercel Cron + `regions:[fra1]`. Cron теперь на VPS crontab.
       Удалить файл при полном уходе (или оставить — Vercel игнорируется, если проект удалён).
-- [ ] **6.2 `apps/web/lib/deployment-url.ts`** — логика `VERCEL_URL`/`VERCEL_ENV` (miniAppUrl,
+- [x] **6.2 `apps/web/lib/deployment-url.ts`** — логика `VERCEL_URL`/`VERCEL_ENV` (miniAppUrl,
       siteUrl, deploymentBaseUrl). На Dokploy `VERCEL_*` не заданы → fallback `APP_URL`. Ревью:
       упростить, убрав Vercel-ветки, ИЛИ оставить для отката. `MINIAPP_BASE_URL` (Vercel-специфичный,
       кабинет мимо прокси) — на Dokploy не нужен (кабинет через www). Проверить, что не задан.
@@ -170,7 +196,7 @@
 - [ ] **6.6 `preferredRegion = 'fra1'`** экспорты в route-файлах — инертны вне Vercel. Убрать при чистке.
 - [ ] **6.7 `.vercel/` директория** (linked project, в `.gitignore`) — можно оставить (для CLI-доступа
       к Vercel-резерву) или удалить после ухода. НЕ коммитить.
-- [ ] **6.8 `@vercel/*` пакеты** — проверено, в зависимостях НЕТ. Подтвердить: `grep -r "@vercel/" package.json`.
+- [x] **6.8 `@vercel/*` пакеты** — проверено, в зависимостях НЕТ. Подтвердить: `grep -r "@vercel/" package.json`.
 - [ ] **6.9 CLAUDE.md** — секция «Deployments» описывает Vercel. **Переписать** под Dokploy/VPS
       (домены, сервисы, cron на crontab, TLS lego, self-host Redis/Postgres, бэкапы R2).
       Обновить инвариант 9 (getClientIp: `CLIENT_IP_MODE=traefik` вместо Vercel `x-real-ip`).
