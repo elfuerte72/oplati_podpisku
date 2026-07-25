@@ -2,7 +2,7 @@
 
 Единая точка наблюдаемости — **Grafana Cloud** (стек `violetpasta1272`): логи всех
 узлов, внешний uptime и алёрты в Telegram. Плюс Sentry (ошибки приложения).
-Настроено 2026-07-23.
+Настроено 2026-07-23, приведено в соответствие с Dokploy-контуром 2026-07-25.
 
 ## TL;DR — что где смотреть
 
@@ -10,8 +10,7 @@
 |---|---|
 | «Сайт открывается?» | Grafana → алёрт «Сайт недоступен» прилетит в Telegram |
 | «Что за ошибка у клиента?» | Sentry |
-| «Что происходило на прокси сайта / платежей?» | Grafana → дашборд «Оплатишка — узлы» |
-| «Что делало приложение (API, cron)?» | Vercel Dashboard → Logs + Sentry |
+| «Что делало приложение (API, cron)?» | Grafana → `{node="hostinger-prod", container=~"oplatishka-web-wwrt50.*"}` |
 | «Прошла ли оплата, что с заказом?» | БД: `orders` / `order_events` / `payments` |
 
 Дашборд узлов: **[violetpasta1272.grafana.net/d/oplatishka-nodes](https://violetpasta1272.grafana.net/d/oplatishka-nodes)**
@@ -26,7 +25,14 @@ Grafana шлёт уведомления на chat id владельца (`379336
 | Алёрт | Когда срабатывает | Severity |
 |---|---|---|
 | **Сайт недоступен (внешний пинг)** | www.oplatishka.com не отвечает 200 из Frankfurt И London 2+ мин | critical |
-| **Прокси сайта: ошибки 5xx** | oplatishka-proxy отдаёт >10 ошибок 5xx за 5 мин | warning |
+| **Приложение: ошибки в логах** | >5 строк `level="error"` от `oplatishka-web` за 5 мин | warning |
+
+Второе правило до 2026-07-25 называлось «Прокси сайта: ошибки 5xx» и следило за
+`{node="timeweb-msk", container="oplatishka-proxy"}` — узлом, который после
+перевода DNS на Hostinger не в пути трафика. То есть алёрт был мёртв: данных по
+этому запросу не появилось бы никогда. Перенацелен на ошибки приложения; заодно
+это единственный на сегодня канал ошибок в Telegram (Sentry шлёт письма,
+webhook-действие в его правиле не создано — см. [`../BACKLOG.md`](../BACKLOG.md)).
 
 ## Слой 1 — Uptime (жив ли сайт снаружи)
 
@@ -50,38 +56,68 @@ Vercel, сеть). Better Stack НЕ используется — у него н
 ### VPS-прокси → Grafana Loki
 
 Агент **Alloy** (docker `grafana-alloy`, `--restart unless-stopped`, читает
-`docker.sock`) на обоих VPS шлёт логи в Loki. Конфиг: `/opt/alloy/config.alloy`.
-**Собираются ТОЛЬКО наши контейнеры** (keep-фильтр по имени — чужие сайты
-владельца на том же VPS не попадают): Timeweb — `oplatishka-proxy`,
-`dokploy-traefik`; Hostinger — `lnp-proxy`. Метка `node` различает серверы.
+`docker.sock`) шлёт логи в Loki. Конфиг: `/opt/alloy/config.alloy`.
+
+**Узел один — `hostinger-prod`** (`177.7.34.106`), на нём весь боевой контур.
+Агент на Timeweb остановлен 2026-07-25: тот VPS после перевода DNS не в пути
+трафика, и его логи только тратили квоту. Контейнер там не удалён — вернуть
+можно одной командой `docker start grafana-alloy`.
+
+**Что собирается** (keep-фильтр по имени; на VPS живут и чужие проекты владельца):
+`oplatishka-web-*` (prod и dev), `dokploy-traefik`, `lnp-proxy`.
+
+**Что НЕ собирается намеренно** — отдельным `drop`-правилом ПЕРЕД keep, хотя keep
+и так пропускает только перечисленное: цена ошибки в regex здесь не «лишние
+логи», а утечка.
+
+| Контейнер | Почему исключён |
+|---|---|
+| `dokploy.<n>.<id>` (панель) | печатает команду `rclone` **с ключами R2 открытым текстом** при каждом бэкапе — это доступ к дампам боевой БД |
+| `oplatishka-db*` | Postgres пишет текст запроса при ошибке, то есть потенциальные PII клиентов |
+| `remnawave*`, `vanyabot*`, `open-webui` | не наш контур |
+
+⚠️ **Грабля 2026-07-25:** конфиг писался 23 июля, за день до переезда с Vercel, и
+пропускал ровно один `lnp-proxy`. После переезда на этот VPS уехал весь прод, а в
+Loki продолжали течь только логи squid-прокси — то есть логов приложения не было
+вообще, при исправном канале (5163 строки за двое суток, 0 потерь). Проверять
+надо не «жив ли агент», а **что именно он собирает**.
 
 **Как смотреть:** дашборд (ссылка выше) или
 [explore](https://violetpasta1272.grafana.net/explore) → источник
 `grafanacloud-violetpasta1272-logs` (Loki) → режим **Code**:
 ```
-{node="timeweb-msk"}                                  # прокси сайта (Timeweb)
-{node="hostinger-lnp"}                                # прокси платежей (Hostinger)
-{node="timeweb-msk", container="oplatishka-proxy"}    # только Caddy-прокси сайта
-{node="timeweb-msk", container="dokploy-traefik"}     # Traefik (TLS, роутинг, ACME)
-{node="timeweb-msk"} |= "error"                       # только строки с error
-{node="timeweb-msk", container="oplatishka-proxy"} | json | status>=`500`  # 5xx
+{node="hostinger-prod"}                                            # весь узел
+{node="hostinger-prod", container=~"oplatishka-web-wwrt50.*"}      # прод-приложение
+{node="hostinger-prod", container=~"oplatishka-web-dev.*"}         # dev-стенд
+{node="hostinger-prod", container=~"oplatishka-web-wwrt50.*"} | json | level="error"   # только ошибки
+{node="hostinger-prod", container=~"oplatishka-web-wwrt50.*"} | json | module="cron.poll-payment"  # конкретный cron
+{node="hostinger-prod", container="dokploy-traefik"}               # Traefik (TLS, роутинг, ACME)
 ```
-Один фильтр `node` за раз (два `node=` разом → пусто). Caddy-прокси пишет
-access-log в JSON (каждый запрос: статус/метод/путь/реальный `client_ip`).
+Имя контейнера прод-приложения содержит суффикс Dokploy (`-wwrt50`) и номер
+задачи swarm, который **меняется при каждом деплое**, — поэтому в запросах
+всегда `container=~"...*"`, а не точное совпадение.
+
+Приложение пишет структурированный JSON (pino): полезные поля — `level`,
+`module`, `event`. Traefik по умолчанию access-log НЕ пишет, только ошибки, так
+что запросов клиентов в Loki нет — если понадобится считать 5xx на входе, его
+надо сначала включить.
 
 **Тариф:** логи (Loki) и Synthetic Monitoring — в бесплатном плане Grafana Cloud
 навсегда (50 ГБ логов/мес, лимит SM-проверок). Баннер «Trial» = платные
 надстройки; после триала логи и uptime продолжат работать.
 
-### Приложение (Vercel) → Vercel Dashboard + Sentry
+### Приложение → тот же Loki
 
-Осознанно НЕ тащим в Loki (Vercel шлёт логи в своём формате, нужен конвертер =
-лишний узел). Приложение видно: Vercel Dashboard → Logs (Pro-retention) + Sentry.
-Решение владельца 2026-07-23.
+С переездом на Dokploy приложение стало обычным контейнером на VPS, поэтому его
+логи собирает тот же агент — отдельный конвертер, из-за которого их раньше
+осознанно не тащили в Loki (решение 2026-07-23 в эпоху Vercel), больше не нужен.
+Vercel-дашборд как источник логов неактуален: контур там холодный резерв.
 
 ## Cron-джобы (следующий этап, опционально)
 
-8 cron-джобов (`vercel.json`), «тихая смерть» видна по последствиям.
+Расписание — `infra/crontab.example` → `/etc/cron.d/oplatishka` на VPS. Запуски и
+их результат видны в Loki (`module="cron.*"`), а вот «тихая смерть» — когда джоб
+перестал запускаться вовсе — по логам не видна: нет запуска, нет и строки.
 healthchecks.io (free): джоб в конце пингует URL, нет пинга → алёрт. Не сделано.
 
 ## Токены и доступ (в `.env`, gitignored)
