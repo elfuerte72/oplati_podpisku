@@ -117,19 +117,50 @@ jobs:
             exit 1
           fi
           echo "Триггерю сборку: ${{ steps.target.outputs.app }} (${{ github.ref }})"
-          # -sS: тихо при успехе, ошибка транспорта в stderr; тело печатаем для лога.
+          # Ретраи нужны потому, что панель Dokploy живёт на ТОМ ЖЕ VPS, который в
+          # этот момент может собирать предыдущий релиз: под нагрузкой она не
+          # отвечает десятки секунд. Так уже падал деплой PR #110 — curl exit 28
+          # (timeout) при load average ~2. Двойной триггер при этом безопасен:
+          # повторная сборка того же коммита даёт тот же образ, Dokploy её
+          # сериализует, а результат идемпотентен.
           # X-GitHub-Event и ref обязательны — см. контракт в шапке файла.
-          code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --max-time 60 \
-            -X POST "$PANEL/api/deploy/$TOKEN" \
-            -H 'X-GitHub-Event: push' \
-            -H 'Content-Type: application/json' \
-            -d "{\"ref\":\"${{ github.ref }}\"}")
-          echo "HTTP $code"
-          # Тело безопасно логировать: токен в него не попадает.
-          cat /tmp/resp.txt || true
-          echo
-          if [ "$code" != "200" ]; then
-            echo "::error::Dokploy не принял триггер (HTTP $code). Прод НЕ пересобран."
-            exit 1
-          fi
+          attempt=0
+          max=3
+          while :; do
+            attempt=$((attempt + 1))
+            rc=0
+            # `|| rc=$?` обязателен: под `set -e` ненулевой выход curl оборвал бы
+            # скрипт ДО разбора кода, и в лог попадала бы не причина, а текст самого
+            # шага (ровно это и путало при разборе падения PR #110).
+            code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --max-time 180 \
+              -X POST "$PANEL/api/deploy/$TOKEN" \
+              -H 'X-GitHub-Event: push' \
+              -H 'Content-Type: application/json' \
+              -d "{\"ref\":\"${{ github.ref }}\"}") || rc=$?
+
+            if [ "$rc" -ne 0 ]; then
+              echo "Попытка $attempt/$max: сбой транспорта (curl exit $rc)."
+            else
+              echo "Попытка $attempt/$max: HTTP $code"
+              # Тело безопасно логировать: токен в него не попадает.
+              cat /tmp/resp.txt || true
+              echo
+              [ "$code" = "200" ] && break
+              # 4xx — конфигурация, ретраить бессмысленно: неверный токен (404),
+              # выключенный autoDeploy (400), не та ветка (301).
+              case "$code" in
+                4*|3*)
+                  echo "::error::Dokploy отказал (HTTP $code) — это конфигурация, не транспорт. Смотри контракт в шапке workflow."
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::Не удалось дозвониться до Dokploy за $max попытки. Прод НЕ пересобран."
+              exit 1
+            fi
+            echo "Ждём 30 с и пробуем снова (VPS вероятно занят сборкой)."
+            sleep 30
+          done
           echo "Сборка запущена. Прогресс — в панели Dokploy."
