@@ -63,19 +63,17 @@ permissions:
 
 jobs:
   gate:
-    name: Gate (typecheck + tests + lint)
+    name: Gate (typecheck + tests + lint + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.12.0
-          run_install: false
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: pnpm
@@ -98,15 +96,29 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Сборка в гейте, хотя её же делает Dokploy: `tsc --noEmit` не ловит
+      # ошибок пререндера и конфигурации route-сегментов, и такой коммит
+      # обнаруживался только когда VPS уже тратил минуты на docker build.
+      # Здесь это стоит ~минуту на раннере GitHub и не грузит боевую машину.
+      - name: Build
+        run: pnpm build
+
   deploy:
     name: Trigger Dokploy
     needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
+      # Значения из github.* — ТОЛЬКО через env, без прямой подстановки ${{ }} в
+      # тело скрипта: `github.ref_name` приходит извне, и ветка с кавычками или
+      # подстановкой команд иначе выполнилась бы как код раннера (классическая
+      # script injection в Actions). Находка CodeRabbit на PR #115.
       - name: Resolve target
         id: target
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "$REF_NAME" = "main" ]; then
             echo "app=oplatishka-web (prod)" >> "$GITHUB_OUTPUT"
             echo "token_name=DOKPLOY_DEPLOY_TOKEN_PROD" >> "$GITHUB_OUTPUT"
           else
@@ -114,24 +126,43 @@ jobs:
             echo "token_name=DOKPLOY_DEPLOY_TOKEN_DEV" >> "$GITHUB_OUTPUT"
           fi
 
-      # Отметка ДО триггера: всё, что стартовало раньше неё, — чужой/прошлый
-      # деплой. По ней шаг проверки отличает «прод пересобран нами» от «прод как
-      # был».
-      - name: Отметка времени до триггера
+      # Снимаем ТЕКУЩЕЕ время старта прода до триггера, чтобы потом дождаться
+      # ДРУГОГО значения.
+      #
+      # Раньше здесь была отметка `date -u +%s` на раннере, и шаг проверки
+      # сравнивал её с `startedAt` от прода — то есть часы двух РАЗНЫХ машин.
+      # Расхождение хоть на минуту (дрейф NTP на VPS) давало бы либо ложное
+      # «прод не обновился» при успешном деплое, либо наоборот — засчитывало бы
+      # старый контейнер как новый. Сравнение значения с самим собой от этого
+      # не зависит вовсе. Находка CodeRabbit на PR #115.
+      - name: Снять текущее состояние прода
         id: mark
-        run: echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+        if: github.ref_name == 'main'
+        env:
+          SITE: ${{ vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health' }}
+        run: |
+          set -uo pipefail
+          before=$(curl -sS --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null | jq -r '.startedAt // empty' 2>/dev/null || echo '')
+          # Пустое значение — прод не ответил. Это не повод останавливаться:
+          # тогда подойдёт любой валидный ответ после деплоя.
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "Сейчас на проде startedAt=${before:-<нет ответа>}"
 
       - name: Deploy
         env:
           TOKEN: ${{ github.ref_name == 'main' && secrets.DOKPLOY_DEPLOY_TOKEN_PROD || secrets.DOKPLOY_DEPLOY_TOKEN_DEV }}
           PANEL: ${{ vars.DOKPLOY_PANEL_URL || 'https://dokploy.mxpkn8ns.ru' }}
+          # Через env, не подстановкой в тело скрипта — см. комментарий выше.
+          REF: ${{ github.ref }}
+          APP: ${{ steps.target.outputs.app }}
+          TOKEN_NAME: ${{ steps.target.outputs.token_name }}
         run: |
           set -euo pipefail
           if [ -z "${TOKEN:-}" ]; then
-            echo "::error::Секрет ${{ steps.target.outputs.token_name }} не задан — деплой не запущен."
+            echo "::error::Секрет $TOKEN_NAME не задан — деплой не запущен."
             exit 1
           fi
-          echo "Триггерю сборку: ${{ steps.target.outputs.app }} (${{ github.ref }})"
+          echo "Триггерю сборку: $APP ($REF)"
           # Ретраи нужны из-за КОРОТКИХ ЭПИЗОДОВ СЕТЕВОЙ НЕДОСТУПНОСТИ VPS со
           # стороны раннеров GitHub: TCP-соединение к 443 не устанавливается
           # вовсе (curl exit 28 «Couldn't connect to server»), при живых Traefik
@@ -165,7 +196,7 @@ jobs:
               -X POST "$PANEL/api/deploy/$TOKEN" \
               -H 'X-GitHub-Event: push' \
               -H 'Content-Type: application/json' \
-              -d "{\"ref\":\"${{ github.ref }}\"}") || rc=$?
+              -d "$(jq -nc --arg ref "$REF" '{ref: $ref}')") || rc=$?
 
             if [ "$rc" -ne 0 ]; then
               echo "Попытка $attempt/$max: сбой транспорта (curl exit $rc)."
@@ -196,8 +227,8 @@ jobs:
 
       # Триггер, принятый панелью, НЕ означает выкаченный релиз: сборка может
       # упасть, и раньше пайплайн этого не замечал — зелёный workflow при старом
-      # коде на проде. Ждём, пока прод не ответит временем старта ПОЗЖЕ отметки
-      # выше, то есть пока контейнер реально не пересоздан.
+      # коде на проде. Ждём, пока прод не отдаст время старта, ОТЛИЧНОЕ от
+      # снятого до триггера, то есть пока контейнер реально не пересоздан.
       #
       # Только для main: dev-стенд закрыт Basic Auth, /api/health оттуда не
       # прочитать без ещё одного секрета, а ради dev это лишняя связанность.
@@ -205,7 +236,7 @@ jobs:
         if: github.ref_name == 'main'
         env:
           SITE: ${{ vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health' }}
-          SINCE: ${{ steps.mark.outputs.epoch }}
+          BEFORE: ${{ steps.mark.outputs.before }}
         run: |
           set -uo pipefail
           deadline=$(( $(date -u +%s) + 900 ))   # 15 минут: обычная сборка ~2.5 мин
@@ -213,23 +244,20 @@ jobs:
           while [ "$(date -u +%s)" -lt "$deadline" ]; do
             body=$(curl -sS --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null) || body=''
             started=$(printf '%s' "$body" | jq -r '.startedAt // empty' 2>/dev/null || echo '')
-            if [ -n "$started" ]; then
-              started_epoch=$(date -u -d "$started" +%s 2>/dev/null || echo 0)
-              if [ "$started_epoch" -gt "$SINCE" ]; then
-                # Swarm во время обновления какое-то время держит и старый
-                # контейнер, поэтому одного свежего ответа мало — ждём три
-                # подряд, иначе можно объявить успех, поймав новый контейнер, к
-                # которому трафик ещё не переключился целиком.
-                fresh=$((fresh + 1))
-                echo "Свежий ответ $fresh/3 (startedAt=$started)"
-                if [ "$fresh" -ge 3 ]; then
-                  echo "Прод пересобран и отвечает."
-                  exit 0
-                fi
-              else
-                fresh=0
-                echo "Пока старый процесс (startedAt=$started), ждём…"
+            if [ -n "$started" ] && [ "$started" != "$BEFORE" ]; then
+              # Swarm во время обновления какое-то время держит и старый
+              # контейнер, поэтому одного свежего ответа мало — ждём три
+              # подряд, иначе можно объявить успех, поймав новый контейнер, к
+              # которому трафик ещё не переключился целиком.
+              fresh=$((fresh + 1))
+              echo "Свежий ответ $fresh/3 (startedAt=$started)"
+              if [ "$fresh" -ge 3 ]; then
+                echo "Прод пересобран и отвечает."
+                exit 0
               fi
+            elif [ -n "$started" ]; then
+              fresh=0
+              echo "Пока прежний процесс (startedAt=$started), ждём…"
             else
               fresh=0
               echo "Health не ответил или без startedAt, ждём…"
@@ -247,14 +275,24 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.DEPLOY_ALERT_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.DEPLOY_ALERT_CHAT_ID }}
+          # Всё, что приходит из контекста github.*, — через env: имя ветки
+          # подконтрольно тому, кто её создаёт, и в теле скрипта стало бы кодом.
+          APP: ${{ steps.target.outputs.app }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -uo pipefail
           if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
             echo "::warning::Секреты DEPLOY_ALERT_BOT_TOKEN/DEPLOY_ALERT_CHAT_ID не заданы — алёрт не отправлен."
             exit 0
           fi
-          text="Деплой НЕ прошёл: ${{ steps.target.outputs.app }}, ветка ${{ github.ref_name }}, коммит ${{ github.sha }}. Прод остался на прежней версии. Лог: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS --connect-timeout 10 --max-time 30 \
+          text="Деплой НЕ прошёл: $APP, ветка $REF_NAME, коммит $SHA. Прод остался на прежней версии. Лог: $RUN_URL"
+          # --fail-with-body обязателен: без него curl считает успехом и 401 от
+          # Bot API (протух токен, бот заблокирован), то есть молчащий алёрт
+          # выглядел бы как отправленный — ровно та слепота, от которой этот шаг
+          # и заведён. Находка CodeRabbit на PR #115.
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 30 \
             -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${CHAT_ID}" \
             --data-urlencode "text=${text}" \
