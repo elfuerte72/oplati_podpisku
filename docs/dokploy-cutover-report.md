@@ -127,12 +127,19 @@
 - [ ] **4.7 Кабинет (Mini App)**: `www.oplatishka.com/cabinet` — каталог, экран карты (live-баланс
       PaySpace), реф-ссылка, партнёрка.
 - [ ] **4.8 Рефералка** (`REFERRAL_ENABLED=1`): реф-ссылка, захват реферера, начисление при оплате.
-- [x] **4.9 Cron** — ПОДТВЕРЖДЕНО 2026-07-25 после пересборки:: все 7 джобов отработали по расписанию — проверить в Grafana Loki (alloy
-      собирает логи контейнера) + `grep CRON /var/log/syslog` на VPS. Ручной вызов:
-      `curl -H "Authorization: Bearer $CRON_SECRET" https://www.oplatishka.com/api/cron/poll-payment`.
-- [x] **4.10 Rate-limit** — ПОДТВЕРЖДЕНО живьём:: ротация поддельных `x-real-ip`/`x-forwarded-for` НЕ обходит лимит
-      (self-host Redis + `CLIENT_IP_MODE=traefik`).
-- [x] **4.11 Sentry** — РАБОТАЕТ:: ошибки долетают (`environment=production`, DSN через `NEXT_PUBLIC_SENTRY_DSN`).
+- [x] **4.9 Cron** — ПОДТВЕРЖДЕНО 2026-07-25 после пересборки: `poll-payment` / `expire-payments` /
+      `referral-recovery` с валидным `Authorization: Bearer` → 200 и полный цикл
+      `start`→`found`→`done` в логах контейнера; с неверным токеном → 401. Системный crontab на VPS
+      исполняется (`grep CRON /var/log/syslog`, 77+ записей). Логи контейнера собирает alloy → Loki.
+- [x] **4.10 Rate-limit** — ПОДТВЕРЖДЕНО живьём на новом деплое: 30 запросов к `/api/chat/clear`,
+      на КАЖДОМ свои поддельные `x-real-ip` и `x-forwarded-for` → 8 прошли, 22 получили 429.
+      Подделка заголовков лимит не обнуляет: identity берётся из правого элемента XFF, который
+      пишет сам Traefik (`CLIENT_IP_MODE=traefik` + self-host Redis). Инвариант 9 держится.
+- [x] **4.11 Sentry** — РАБОТАЕТ, проверено сквозным событием: смоук-запрос к L&P-webhook без
+      подписи в 07:16 UTC долетел в Sentry как «L&P webhook без X-Webhook-Signature». Плюс
+      `SENTRY_DSN` виден в рантайме контейнера, DSN **запечён в клиентский бандл**
+      (`.next/static/chunks` содержит `ingest.de.sentry.io`), а в CSP появился `report-uri` на
+      Sentry — до пересборки его там не было, это и доказывает, что build-arg сработал.
 - [ ] **4.12 Алёрты**: `@oplatishkaAlert_bot` (`ALERT_TELEGRAM_CHAT_ID=379336096`) — proxy-health/недоплаты.
 
 ---
