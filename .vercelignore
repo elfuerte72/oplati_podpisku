@@ -3,7 +3,12 @@ node_modules
 .next
 .turbo
 .vercel
+# С `**/`: без него матчится только корень, а секреты лежат во вложенных
+# пакетах (apps/web/.env.local, packages/db/.env) — при локальном
+# `vercel deploy` они уезжали бы в билд-контекст. Та же причина, что в
+# .dockerignore.
 .env*
+**/.env*
 content_site
 api-1.json
 audit-report-*.html
