@@ -573,9 +573,12 @@ export function ChatClient() {
             рядом, а не внутри DocsFooter: тот — `<nav>`, а бейдж провайдера
             навигацией не является. */}
         <footer className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
-          <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 px-4 py-2.5">
+          {/* Баннер — отдельной строкой и по левому краю (`self-start`), а не в один
+              ряд со ссылками: те при переносе занимают всю ширину, и абсолютно
+              позиционированный слева бейдж накрывал бы их на узких экранах. */}
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 py-2.5">
             <DocsFooter />
-            <FreekassaBadge />
+            <FreekassaBadge className="self-start" />
           </div>
         </footer>
       </section>
