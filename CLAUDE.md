@@ -126,6 +126,59 @@ pnpm --filter @oplati/db db:studio      # Drizzle Studio
 
 ## Deployments
 
+**С 2026-07-24 прод и dev живут на Dokploy/VPS `177.7.34.106`, не на Vercel.** Vercel — холодный
+резерв отката: автодеплой отключён (`vercel git disconnect`), домены с проекта снята
+(`Host: www.oplatishka.com` → `404 DEPLOYMENT_NOT_FOUND`), Vercel Cron погашен WAF-правилом
+`block-cron-after-dokploy-migration` (deny на `/api/cron`). Полная картина переезда, находки и
+чек-листы — [`docs/dokploy-cutover-report.md`](docs/dokploy-cutover-report.md).
+
+| | Production | Dev |
+|---|---|---|
+| Приложение Dokploy | `oplatishka-web` (`7tTmVkOFbpmtP0vriH0oE`) | `oplatishka-web-dev` (`yNIaENiQI2MX5adlDs2Yp`) |
+| Ветка | `main` | `dev` |
+| Домены | `www.oplatishka.com` + apex, `new.oplatishka.com` (на нём бот-webhook) | `dev.oplatishka.com` (за Basic Auth) |
+| БД | self-host Postgres 17 `oplatishka-db` | `oplatishka-db-dev` (структура = prod, без клиентских данных) |
+| Бот | `@oplatishkaa_bot` | `@dev_test_podpiska_bot` |
+| Модель | `claude-sonnet-4-6` | Haiku (дешевле) |
+| Rate-limit | self-host Redis + SRH | `RATE_LIMIT_DISABLED=1` |
+| L&P / PaySpace | боевые ключи | **ключей НЕТ намеренно** — иначе тестовый заказ выставил бы реальный счёт и выпустил карту за реальные деньги |
+| Sentry | `SENTRY_DSN` + `NEXT_PUBLIC_SENTRY_DSN` в **Build Args** | не задаём: проект в Sentry один, alert-rules общие — dev-шум сыпался бы теми же алёртами, что реальные проблемы прода |
+
+**Деплой — ТОЛЬКО через `.github/workflows/deploy.yml`** (push в `main`/`dev` → gate
+typecheck+тесты+lint → `POST /api/deploy/<refreshToken>`). `autoDeploy` встроенного GitHub App
+Dokploy **выключен осознанно**: он деплоил сразу на push, не дожидаясь CI (красный `main` уехал бы
+на боевой контур с живыми платежами), а его отказы не видны из репозитория — вебхук молча потерял
+мерж PR #102 и #103, прод пересобирали руками. Ровно та же история была с вебхуком Vercel
+(PR #83, 2026-07-18, см. [`docs/incidents.md`](docs/incidents.md)).
+
+**Контракт deploy-вебхука Dokploy (в доках его НЕТ, снят перебором 2026-07-25):**
+`POST /api/deploy/<refreshToken>` + заголовок **`X-GitHub-Event: push`** + тело
+**`{"ref":"refs/heads/<ветка>"}`** → `200 {"message":"Application deployed successfully"}`.
+Без заголовка Dokploy не умеет достать ветку → `301 {"message":"Branch Not Match"}`; ветка обязана
+совпасть с `branch` приложения; неизвестный токен → `404 Application Not Found`. Подпись HMAC этому
+роуту не нужна (в отличие от `/api/deploy/github`, требующего `X-Hub-Signature-256`).
+Токены — в секретах репозитория `DOKPLOY_DEPLOY_TOKEN_PROD`/`DOKPLOY_DEPLOY_TOKEN_DEV`; они узкие
+(триггерят сборку ровно одного приложения, не админский `DOKPLOY_API_KEY`), ротация — кнопка
+refresh token в Dokploy + обновить секрет.
+⚠️ `gh secret set --body -` НЕ читает stdin, а пишет литерал `-` — задавать через
+`gh secret set NAME < file`.
+
+**Миграции/seed** на dev-БД гоняются локально: в корневом `.env` — `DEV_DATABASE_URL`,
+`DEV_DATABASE_URL_DIRECT`, `DEV_CRON_SECRET`; запуск —
+`DATABASE_URL_DIRECT="$DEV_DATABASE_URL_DIRECT" pnpm --filter @oplati/db db:migrate`
+(shell-env имеет приоритет над `--env-file`; тот же приоритет теперь и у `db:init-roles`).
+Локальная разработка (`pnpm dev`) ходит в dev-БД, не в прод.
+
+**Пайплайн:** feature-ветка → push → PR → CI (`Tests`/`Type Check`/`Lint`) → squash в `main` →
+workflow `Deploy` пересобирает прод. **Main защищён ruleset'ом `protectionOplatishka`:** прямой push
+запрещён, только PR с зелёными required-чеками (approvals 0 — solo, сам себе аппрув GitHub не даёт);
+force-push и удаление ветки заблокированы. Для dev-стенда — push в `dev` (до 2026-07-25 у этой ветки
+не было CI вообще; теперь она под тем же гейтом внутри `deploy.yml`).
+
+---
+
+### История: как было на Vercel (оставлено для контекста отката)
+
 Vercel `fra1`. Два окружения с **раздельными Telegram-ботами** (webhook у бота один → шарить нельзя):
 
 - **Production** — `https://www.oplatishka.com` (custom-домен подключён 2026-07-03; env `APP_URL` указывает на него — от него резолвятся mini app `/cabinet`, кнопка «Сайт», презентация партнёрки, payment deep-link, self-call). Дефолтный `oplati-podpisku-web.vercel.app` тоже обслуживает (старые ссылки не ломаются). Бот `@oplatishkaa_bot` (переезд 2026-07-03 со старого `@test_prodipsa_bot` — смена токена в env; username везде резолвится через `getMe`, код не менялся; у старого бота вебхук снят, клиенты должны нажать Start у нового, иначе бот не может писать первым). Auto-deploy на merge в `main`.
