@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-07-26 — Ошибки Sentry теперь приходят в Telegram
+
+### Added
+
+- Internal Integration **«Telegram Alerts»** в Sentry (`telegram-alerts-d8df3a`) с
+  webhook URL на `/api/alerts/sentry` и включённым Alert Action; в правиле 644412
+  «Send a notification for high priority issues» добавлено второе действие рядом с
+  Email. Проверено живьём: тест от Sentry дошёл до прода и переслан в Telegram
+  (`alerts.sentry.forwarded`).
+
+Раньше эндпоинт `/api/alerts/sentry` и секрет `SENTRY_ALERT_WEBHOOK_SECRET` стояли
+без дела: в правиле было единственное действие — Email, а webhook-действия там не
+было вообще (последнее срабатывание 22 июля ушло письмом).
+
+### Грабли Sentry, снятые перебором
+
+- **Legacy Webhooks (Settings → Webhooks) для алертов не годятся.** URL там
+  сохраняется, но кнопка «Send Test Event» падает, причём на стороне Sentry: их
+  собственный API `test-fire-actions` отвечает `400`, до нашего сервера запрос не
+  доходит вовсе (в логах ноль записей, хотя эндпоинт пишет любой исход, включая
+  отказ по секрету). Плюс в новом UI правил такого действия просто нет в списке —
+  поиск по «web» даёт «No options».
+- **Рабочий путь — Internal Integration** (Settings → Custom Integrations): после
+  её создания с флагом Alert Action в списке действий правила появляется пункт
+  «Send a notification via an integration».
+- Секрет передаётся query-параметром `?s=…` прямо в webhook URL — Sentry его не
+  обрезает. Права интеграции: достаточно `Issue & Event: Read`; подписки на события
+  в разделе WEBHOOKS не нужны, они про другой поток.
+
 ## 2026-07-26 — Проверка безопасности VPS: закрыт публичный файловый сервер
 
 ### Removed

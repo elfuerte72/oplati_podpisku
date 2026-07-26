@@ -101,23 +101,6 @@ CSP с 2026-07-11 работает в `Report-Only`. Жалоб за перио�
   'traefik'`) либо fail-fast / Sentry-warn при
   `NODE_ENV=production && !VERCEL && CLIENT_IP_MODE==='vercel'`.
 
-### Sentry-алёрты в Telegram не подключены (S-11, отложено владельцем 2026-07-25)
-
-В правиле Sentry «Send a notification for high priority issues» есть только
-действие **Email**. Webhook-действия нет вообще, поэтому эндпоинт
-`/api/alerts/sentry` и заданный на проде `SENTRY_ALERT_WEBHOOK_SECRET` ни к чему
-не подключены — «подставить секрет» нечего, действие надо создать.
-
-- **Что это даёт:** пуш в `@oplatishkaAlert_bot` по **непредусмотренным** ошибкам.
-  Денежные случаи (недоплата, сбой выпуска карты, недоступность прокси) и так
-  долетают напрямую через `notifyOps`, минуя Sentry; ошибки в Sentry пишутся и
-  уходят письмом. То есть это расширение охвата, а не восстановление сломанного.
-- **Что делать (только UI, инструмента на изменение правил в Sentry MCP нет):**
-  Alerts → правило 644412 → добавить действие «Send a notification via a webhook»
-  с URL `https://www.oplatishka.com/api/alerts/sentry?s=<SENTRY_ALERT_WEBHOOK_SECRET>`.
-- **Если решено, что письма достаточно:** убрать `SENTRY_ALERT_WEBHOOK_SECRET` из
-  env прода, чтобы неподключённый секрет не выглядел недоделкой.
-
 ---
 
 ## Инфраструктура
