@@ -52,6 +52,12 @@ export {
   type FreekassaNotification,
   maskPayerAccount,
   toStorableNotification,
+  FREEKASSA_ORDER_STATUS,
+  freekassaOrderSchema,
+  type FreekassaOrder,
+  freekassaOrdersResponseSchema,
+  type FreekassaOrdersResponse,
+  freekassaTerminalReason,
 } from './freekassa.ts';
 
 export {

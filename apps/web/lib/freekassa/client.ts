@@ -2,8 +2,10 @@ import {
   freekassaCreateOrderParamsSchema,
   freekassaCreateOrderResponseSchema,
   freekassaErrorResponseSchema,
+  freekassaOrdersResponseSchema,
   kopecksToRubleAmount,
   type FreekassaCreateOrderResponse,
+  type FreekassaOrder,
 } from '@oplati/types';
 
 import type { Logger } from '../logger.ts';
@@ -101,6 +103,36 @@ export class FreekassaClient {
     return await this.requestJson('/orders/create', body, (raw) =>
       freekassaCreateOrderResponseSchema.parse(raw),
     );
+  }
+
+  /**
+   * `POST /orders` — статус заказа по НАШЕМУ `paymentId` (у провайдера это
+   * `MERCHANT_ORDER_ID`). Нужен добору потерянных уведомлений (cron
+   * `poll-payment`): если провайдер говорит «оплачен», а у нас платёж всё ещё
+   * `pending` — уведомление не дошло.
+   *
+   * Ищем по НАШЕМУ идентификатору, а не по `fk_order_id`: свой мы породили и в
+   * нём уверены, а равенство `intid`/`orderId` докой не гарантировано. Бонусом
+   * ответ содержит `fk_order_id` — по нему добор и покажет, совпадает ли он с
+   * тем, что мы сохранили при создании счёта.
+   *
+   * Возвращает `null`, если заказа у провайдера нет (пустой список).
+   */
+  async findOrderByPaymentId(paymentId: string): Promise<FreekassaOrder | null> {
+    const params = {
+      shopId: this.shopId,
+      nonce: await this.nonceProvider(),
+      paymentId,
+    };
+    const body = { ...params, signature: signApiRequest(params, this.apiKey) };
+
+    const resp = await this.requestJson('/orders', body, (raw) =>
+      freekassaOrdersResponseSchema.parse(raw),
+    );
+    // Фильтр по paymentId — на случай, если провайдер проигнорирует параметр и
+    // отдаст первую страницу всех заказов: обработать чужой платёж как свой
+    // было бы хуже, чем не обработать никакой.
+    return resp.orders.find((o) => o.merchant_order_id === paymentId) ?? null;
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────

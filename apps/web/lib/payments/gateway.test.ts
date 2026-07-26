@@ -11,9 +11,14 @@ const h = vi.hoisted(() => ({
     FREEKASSA_INVOICE_TTL_HOURS: 1,
   } as Record<string, unknown>,
   telegramId: '12345' as string | null,
+  freekassaConfigured: true,
+  loveAndPayConfigured: true,
   createOrderMock: vi.fn(),
   createInvoiceMock: vi.fn(),
 }));
+
+vi.mock('@/lib/alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 vi.mock('@/lib/env.server', () => ({
   serverEnv: new Proxy({} as Record<string, unknown>, {
@@ -28,6 +33,7 @@ vi.mock('@oplati/db', () => ({
 
 vi.mock('@/lib/freekassa/index.ts', () => ({
   getFreekassaClient: () => ({ createOrder: h.createOrderMock }),
+  isFreekassaConfigured: () => h.freekassaConfigured,
 }));
 
 vi.mock('@/lib/loveandpay/index.ts', () => {
@@ -43,14 +49,21 @@ vi.mock('@/lib/loveandpay/index.ts', () => {
   }
   return {
     LoveAndPayApiError,
+    isLoveAndPayConfigured: () => h.loveAndPayConfigured,
     getLoveAndPayClient: () => ({ createInvoice: h.createInvoiceMock }),
   };
 });
 
+import { notifyOps } from '@/lib/alerts/notify-ops.ts';
+// НАСТОЯЩИЙ класс ошибки: детектор недоступности проверяет его через
+// `instanceof`, и подделка из мока index.ts прошла бы мимо него — тест на
+// «4xx не даёт фоллбэка» стал бы тавтологией.
+import { LoveAndPayApiError } from '../loveandpay/errors.ts';
 import {
   createGatewayInvoice,
   minAmountRubFor,
   primaryPaymentGateway,
+  resetFallbackAlertDedupForTests,
 } from './gateway.ts';
 
 const ORDER = {
@@ -268,5 +281,129 @@ describe('createGatewayInvoice — Freekassa', () => {
       },
       provider: 'freekassa',
     });
+  });
+});
+
+describe('автофоллбэк на резервный шлюз', () => {
+  const transportFailure = () => Object.assign(new TypeError('fetch failed'), {});
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFallbackAlertDedupForTests();
+    h.env.PAYMENT_AUTO_FALLBACK = true;
+    h.telegramId = '12345';
+    h.createOrderMock.mockResolvedValue({
+      type: 'success',
+      orderId: '123',
+      orderHash: 'hash',
+      location: 'https://pay.freekassa.ru/form/123/hash',
+    });
+    h.createInvoiceMock.mockResolvedValue({
+      invoice: {
+        id: 'inv-1',
+        invoiceNumber: 'INV-0001',
+        paymentLink: 'https://pay.example/inv-1',
+        qrPayload: null,
+        expiresAt: '2026-07-26T12:00:00.000Z',
+      },
+    });
+  });
+
+  it('основной лёг по транспорту → счёт выставляет резервный, provider правдив', async () => {
+    h.createInvoiceMock.mockRejectedValueOnce(transportFailure());
+
+    const invoice = await createGatewayInvoice({
+      gateway: 'loveandpay',
+      order: ORDER,
+      amountKopecks: 249_050,
+    });
+
+    // provider пишется по ФАКТУ выставления — иначе история платежей начнёт
+    // врать, а вебхук будет искать платёж не того провайдера.
+    expect(invoice.provider).toBe('freekassa');
+    expect(h.createOrderMock).toHaveBeenCalledTimes(1);
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('5xx шлюза после ретраев тоже считается недоступностью', async () => {
+    h.createInvoiceMock.mockRejectedValueOnce(
+      new LoveAndPayApiError({ code: 'INTERNAL_ERROR', httpStatus: 502, message: 'bad gateway' }),
+    );
+
+    const invoice = await createGatewayInvoice({
+      gateway: 'loveandpay',
+      order: ORDER,
+      amountKopecks: 249_050,
+    });
+
+    expect(invoice.provider).toBe('freekassa');
+  });
+
+  it('работает в обе стороны', async () => {
+    h.createOrderMock.mockRejectedValueOnce(transportFailure());
+
+    const invoice = await createGatewayInvoice({
+      gateway: 'freekassa',
+      order: ORDER,
+      amountKopecks: 249_050,
+    });
+
+    expect(invoice.provider).toBe('loveandpay');
+  });
+
+  it('НЕ срабатывает на отказ шлюза (4xx): шлюз жив, причина повторится и у второго', async () => {
+    const rejected = new LoveAndPayApiError({
+      code: 'VALIDATION_ERROR',
+      httpStatus: 400,
+      message: 'amount too small',
+    });
+    h.createInvoiceMock.mockRejectedValueOnce(rejected);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 100 }),
+    ).rejects.toBe(rejected);
+    expect(h.createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it('выключен по умолчанию — ошибка основного уходит наверх как была', async () => {
+    h.env.PAYMENT_AUTO_FALLBACK = false;
+    const err = transportFailure();
+    h.createInvoiceMock.mockRejectedValueOnce(err);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 249_050 }),
+    ).rejects.toBe(err);
+    expect(h.createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it('резервный без ключей не пробуем — падаем с ошибкой основного', async () => {
+    h.freekassaConfigured = false;
+    const err = transportFailure();
+    h.createInvoiceMock.mockRejectedValueOnce(err);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 249_050 }),
+    ).rejects.toBe(err);
+    expect(h.createOrderMock).not.toHaveBeenCalled();
+    h.freekassaConfigured = true;
+  });
+
+  it('лёг и резервный — наверх уходит его ошибка, клиент увидит «технический сбой»', async () => {
+    h.createInvoiceMock.mockRejectedValueOnce(transportFailure());
+    const fallbackErr = transportFailure();
+    h.createOrderMock.mockRejectedValueOnce(fallbackErr);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 249_050 }),
+    ).rejects.toBe(fallbackErr);
+  });
+
+  it('DM владельцу дедуплицируется — пока шлюз лежит, личку не спамим', async () => {
+    h.createInvoiceMock.mockRejectedValue(transportFailure());
+
+    await createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 249_050 });
+    await createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 249_050 });
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
   });
 });

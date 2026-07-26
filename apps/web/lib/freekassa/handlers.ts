@@ -12,10 +12,9 @@ import {
   type PaymentRow,
 } from '@oplati/db';
 import {
+  FREEKASSA_ORDER_STATUS,
   OrderTransitionError,
   parseRubleAmountToKopecks,
-  toStorableNotification,
-  type FreekassaNotification,
 } from '@oplati/types';
 
 import { notifyOps } from '../alerts/notify-ops.ts';
@@ -45,9 +44,24 @@ import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 const log = childLogger('freekassa-handlers');
 
-export type NotificationPaidInput = {
-  notification: FreekassaNotification;
-  /** true — уведомление добрано cron'ом, а не пришло вебхуком (этап 4 ТЗ). */
+/**
+ * Нормализованный вход обработчика — НЕ сырое уведомление.
+ *
+ * Тот же факт «этот счёт оплачен» приходит двумя путями: вебхуком (form-data с
+ * подписью) и добором из cron `poll-payment` (ответ `POST /orders`, где нет ни
+ * `SIGN`, ни заголовков). Общая форма избавляет от подделки полей уведомления
+ * ради переиспользования кода и держит оба пути на одной логике.
+ */
+export type FreekassaPaidInput = {
+  /** Идентификатор операции/заказа у провайдера (`intid` / `fk_order_id`). */
+  intid: string;
+  /** Наш `paymentId` (`MERCHANT_ORDER_ID` уведомления). */
+  merchantOrderId: string;
+  /** Сумма СЫРОЙ строкой — в копейки переводим сами, точно. */
+  amountRaw: string;
+  /** Что сохранить в `payments.raw_payload` (уже без PAN и подписи). */
+  rawPayload: Record<string, unknown>;
+  /** true — факт оплаты добран cron'ом, а не пришёл вебхуком. */
   recoveredViaPolling?: boolean;
 };
 
@@ -70,21 +84,26 @@ export type FreekassaHandlerResult =
  * это ответ на открытый вопрос контракта, его нужно занести в
  * docs/reference/freekassa-api.md, а не оставлять «просто работающим».
  */
-async function findPaymentForNotification(
-  n: FreekassaNotification,
-): Promise<{ payment: PaymentRow; viaFallback: boolean } | null> {
+async function findPaymentForNotification(ref: {
+  intid: string;
+  merchantOrderId: string;
+}): Promise<PaymentRow | null> {
   const db = getDb();
 
-  const byRef = await findPaymentByProviderRef(db, 'freekassa', n.intid);
-  if (byRef) return { payment: byRef, viaFallback: false };
+  const byRef = await findPaymentByProviderRef(db, 'freekassa', ref.intid);
+  if (byRef) return byRef;
 
-  const byOurId = await findPaymentByProviderInvoiceNumber(db, 'freekassa', n.MERCHANT_ORDER_ID);
+  const byOurId = await findPaymentByProviderInvoiceNumber(
+    db,
+    'freekassa',
+    ref.merchantOrderId,
+  );
   if (!byOurId) return null;
 
   log.warn({
     event: 'freekassa.handlers.matched_by_merchant_order_id',
-    intid: n.intid,
-    merchantOrderId: n.MERCHANT_ORDER_ID,
+    intid: ref.intid,
+    merchantOrderId: ref.merchantOrderId,
     paymentId: byOurId.id,
     providerRef: byOurId.providerRef,
   });
@@ -92,56 +111,53 @@ async function findPaymentForNotification(
     level: 'warning',
     tags: { source: 'freekassa.handlers', alert: 'intid_mismatch' },
     extra: {
-      intid: n.intid,
-      merchantOrderId: n.MERCHANT_ORDER_ID,
+      intid: ref.intid,
+      merchantOrderId: ref.merchantOrderId,
       storedProviderRef: byOurId.providerRef,
     },
   });
-  return { payment: byOurId, viaFallback: true };
+  return byOurId;
 }
 
 export async function processFreekassaPaid(
-  input: NotificationPaidInput,
+  input: FreekassaPaidInput,
 ): Promise<FreekassaHandlerResult> {
-  const { notification: n, recoveredViaPolling = false } = input;
+  const { intid, merchantOrderId, amountRaw, rawPayload, recoveredViaPolling = false } = input;
   const db = getDb();
 
-  const found = await findPaymentForNotification(n);
-  if (!found) {
+  const payment = await findPaymentForNotification({ intid, merchantOrderId });
+  if (!payment) {
     log.warn({
       event: 'freekassa.handlers.payment_not_found',
-      intid: n.intid,
-      merchantOrderId: n.MERCHANT_ORDER_ID,
+      intid,
+      merchantOrderId,
     });
     Sentry.captureMessage('Freekassa: уведомление об оплате без нашего payment', {
       level: 'warning',
       tags: { source: 'freekassa.webhook' },
-      extra: { intid: n.intid, merchantOrderId: n.MERCHANT_ORDER_ID },
+      extra: { intid, merchantOrderId },
     });
-    return { kind: 'not_found', providerRef: n.intid };
+    return { kind: 'not_found', providerRef: intid };
   }
-  const { payment } = found;
 
   // Точный разбор рублёвой строки в копейки. Нечитаемая сумма — НЕ повод
   // фулфилить «на глазок»: без сверки мы выпустили бы карту на полную сумму,
   // не зная, сколько денег реально пришло. Останавливаемся и алертим.
-  const gotKopecks = parseRubleAmountToKopecks(n.AMOUNT);
+  const gotKopecks = parseRubleAmountToKopecks(amountRaw);
   if (gotKopecks === null) {
     log.error({
       event: 'freekassa.handlers.unparsable_amount',
       paymentId: payment.id,
       orderId: payment.orderId,
-      rawAmount: n.AMOUNT,
+      rawAmount: amountRaw,
     });
     Sentry.captureMessage('Freekassa: неразбираемая сумма в уведомлении — fulfillment остановлен', {
       level: 'error',
       tags: { source: 'freekassa.handlers', alert: 'unparsable_amount' },
-      extra: { paymentId: payment.id, orderId: payment.orderId, rawAmount: n.AMOUNT },
+      extra: { paymentId: payment.id, orderId: payment.orderId, rawAmount: amountRaw },
     });
-    return { kind: 'invalid_amount', providerRef: n.intid, rawAmount: n.AMOUNT };
+    return { kind: 'invalid_amount', providerRef: intid, rawAmount: amountRaw };
   }
-
-  const rawPayload = toStorableNotification(n);
 
   // Недоплата терминальна (тот же путь, что M-3 у L&P): платёж и заказ → failed
   // в одной транзакции + РОВНО один DM владельцу (дедуп атомарным
@@ -163,7 +179,7 @@ export async function processFreekassaPaid(
         orderId: payment.orderId,
         expectedKopecks: payment.amountRub,
         gotKopecks,
-        intid: n.intid,
+        intid: intid,
       },
     });
 
@@ -179,8 +195,8 @@ export async function processFreekassaPaid(
           payload: {
             paymentId: payment.id,
             provider: 'freekassa',
-            intid: n.intid,
-            merchantOrderId: n.MERCHANT_ORDER_ID,
+            intid: intid,
+            merchantOrderId: merchantOrderId,
             expectedKopecks: payment.amountRub,
             gotKopecks,
           },
@@ -198,7 +214,7 @@ export async function processFreekassaPaid(
         Sentry.captureException(err, {
           level: 'warning',
           tags: { source: 'freekassa.handlers', step: 'transition_mismatch' },
-          extra: { orderId: payment.orderId, intid: n.intid },
+          extra: { orderId: payment.orderId, intid: intid },
         });
       }
       return row;
@@ -207,7 +223,7 @@ export async function processFreekassaPaid(
     if (mismatchClaimed) {
       // Вне транзакции: DM не должен держать соединение и откатываться с ней.
       await notifyOps(
-        `Недоплата по заказу (Freekassa): выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (операция ${n.intid}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
+        `Недоплата по заказу (Freekassa): выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (операция ${intid}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
       );
     }
 
@@ -241,8 +257,8 @@ export async function processFreekassaPaid(
         payload: {
           paymentId: payment.id,
           provider: 'freekassa',
-          intid: n.intid,
-          merchantOrderId: n.MERCHANT_ORDER_ID,
+          intid: intid,
+          merchantOrderId: merchantOrderId,
           recoveredViaPolling,
         },
       });
@@ -256,7 +272,7 @@ export async function processFreekassaPaid(
       Sentry.captureException(err, {
         level: 'error',
         tags: { source: 'freekassa.handlers', step: 'transition_paid' },
-        extra: { orderId: payment.orderId, intid: n.intid },
+        extra: { orderId: payment.orderId, intid: intid },
       });
       return { claimed: true, paidOk: false };
     }
@@ -278,10 +294,10 @@ export async function processFreekassaPaid(
       Sentry.captureMessage('Freekassa: оплата по захороненному счёту — деньги приняты, нужен ручной возврат', {
         level: 'error',
         tags: { source: 'freekassa.handlers', alert: 'paid_after_terminal' },
-        extra: { paymentId: payment.id, orderId: payment.orderId, intid: n.intid },
+        extra: { paymentId: payment.id, orderId: payment.orderId, intid: intid },
       });
       await notifyOps(
-        `Оплата пришла по уже захороненному счёту (Freekassa, операция ${n.intid}): деньги приняты, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
+        `Оплата пришла по уже захороненному счёту (Freekassa, операция ${intid}): деньги приняты, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
       );
       return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'paid_after_terminal' };
     }
@@ -306,6 +322,111 @@ export async function processFreekassaPaid(
     paymentId: payment.id,
     orderId: payment.orderId,
     recoveredViaPolling,
+  });
+
+  return { kind: 'processed', paymentId: payment.id, orderId: payment.orderId };
+}
+
+export type FreekassaTerminalInput = {
+  intid: string;
+  merchantOrderId: string;
+  /** Куда хороним заказ: `cancelled` (отмена/возврат) или `failed` (ошибка). */
+  reason: 'cancelled' | 'failed';
+  /** Код статуса провайдера — для события и разбора постфактум. */
+  providerStatus: number;
+};
+
+/**
+ * Терминальный исход счёта (провайдер сказал «отменён / ошибка / возврат»).
+ *
+ * Приходит ТОЛЬКО из добора (`poll-payment`): уведомление Freekassa шлётся
+ * лишь об успешной оплате, о неуспехе нас никто не оповещает — без этого
+ * пути мёртвый счёт висел бы `pending`, пока его не похоронит cron по сроку.
+ *
+ * Симметрично `processInvoiceTerminal` у L&P: атомарный claim `pending→failed`
+ * и переход заказа — в ОДНОЙ транзакции. Условие `status='pending'` внутри
+ * claim (а не устаревшее чтение выше) — источник правды идемпотентности: если
+ * платёж успел стать `succeeded`, claim вернёт null и мы НЕ перезапишем его в
+ * `failed`.
+ */
+export async function processFreekassaTerminal(
+  input: FreekassaTerminalInput,
+): Promise<FreekassaHandlerResult> {
+  const { intid, merchantOrderId, reason, providerStatus } = input;
+  const db = getDb();
+
+  const payment = await findPaymentForNotification({ intid, merchantOrderId });
+  if (!payment) {
+    log.warn({ event: 'freekassa.handlers.terminal_payment_not_found', intid, merchantOrderId });
+    return { kind: 'not_found', providerRef: intid };
+  }
+
+  const claimed = await db.transaction(async (tx) => {
+    const row = await claimPaymentTerminal(tx, payment.id, log);
+    if (!row) return null;
+    try {
+      await transitionOrder(tx, {
+        orderId: payment.orderId,
+        toStatus: reason,
+        actorType: 'payment_provider',
+        eventType: `payment_${reason}`,
+        payload: {
+          paymentId: payment.id,
+          provider: 'freekassa',
+          intid,
+          merchantOrderId,
+          providerStatus,
+        },
+      });
+    } catch (err) {
+      // Транзиентный сбой — re-throw откатывает транзакцию вместе с claim'ом.
+      if (!(err instanceof OrderTransitionError)) throw err;
+      log.warn({
+        event: 'freekassa.handlers.terminal_transition_skip',
+        orderId: payment.orderId,
+        reason,
+        err,
+      });
+      Sentry.captureException(err, {
+        level: 'warning',
+        tags: { source: 'freekassa.handlers', step: 'transition_terminal' },
+        extra: { orderId: payment.orderId, intid, reason },
+      });
+    }
+    return row;
+  });
+
+  if (!claimed) {
+    log.info({
+      event: 'freekassa.handlers.idempotent_skip',
+      paymentId: payment.id,
+      reason: 'not_pending',
+    });
+    return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'not_pending' };
+  }
+
+  // Возврат (статус 6) по счёту, который у нас НЕ был отмечен оплаченным —
+  // денежная аномалия: деньги приняли и вернули, а мы этого не видели.
+  // Хороним как cancelled, но требуем ручной сверки.
+  if (providerStatus === FREEKASSA_ORDER_STATUS.REFUND) {
+    log.error({
+      event: 'freekassa.handlers.refund_on_pending',
+      paymentId: payment.id,
+      orderId: payment.orderId,
+    });
+    Sentry.captureMessage('Freekassa: возврат по счёту, который у нас не был оплачен — нужна ручная сверка', {
+      level: 'error',
+      tags: { source: 'freekassa.handlers', alert: 'refund_on_pending' },
+      extra: { paymentId: payment.id, orderId: payment.orderId, intid },
+    });
+  }
+
+  log.info({
+    event: 'freekassa.handlers.terminal_processed',
+    paymentId: payment.id,
+    orderId: payment.orderId,
+    reason,
+    providerStatus,
   });
 
   return { kind: 'processed', paymentId: payment.id, orderId: payment.orderId };

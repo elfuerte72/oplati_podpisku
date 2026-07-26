@@ -149,6 +149,70 @@ export const freekassaErrorResponseSchema = z
   .passthrough();
 export type FreekassaErrorResponse = z.infer<typeof freekassaErrorResponseSchema>;
 
+// ─── Список заказов: POST /orders (добор потерянных уведомлений) ──────────
+
+/**
+ * Статусы заказа у провайдера (по доке): `0` новый, `1` оплачен, `6` возврат,
+ * `8` ошибка, `9` отмена. Приходят числом; принимаем и строку — типы в ответах
+ * платёжных API дрейфуют (урок PaySpace).
+ */
+export const FREEKASSA_ORDER_STATUS = {
+  NEW: 0,
+  PAID: 1,
+  REFUND: 6,
+  ERROR: 8,
+  CANCELLED: 9,
+} as const;
+
+const freekassaNumeric = z
+  .union([z.number(), z.string().min(1)])
+  .transform((v) => String(v));
+
+/**
+ * Заказ в ответе `/orders`.
+ *
+ * ⚠️ Поле `account` (номер счёта/карты плательщика — в примере доки это ПОЛНЫЙ
+ * PAN) НАМЕРЕННО не объявлено: `z.object` по умолчанию отбрасывает
+ * неизвестные ключи, поэтому PAN физически не может попасть ни в наш объект,
+ * ни в `payments.raw_payload`, ни в логи. Не добавлять сюда без threat-model.
+ */
+export const freekassaOrderSchema = z.object({
+  /** Наш `paymentId`, он же `MERCHANT_ORDER_ID` уведомления. */
+  merchant_order_id: z.string().min(1),
+  /** Идентификатор заказа на стороне провайдера. */
+  fk_order_id: freekassaNumeric,
+  /** Сумма; в копейки переводит `parseRubleAmountToKopecks`. */
+  amount: freekassaNumeric,
+  currency: z.string().optional(),
+  date: z.string().optional(),
+  status: z.coerce.number().int(),
+});
+export type FreekassaOrder = z.infer<typeof freekassaOrderSchema>;
+
+export const freekassaOrdersResponseSchema = z.object({
+  type: z.literal('success'),
+  pages: z.number().int().optional(),
+  orders: z.array(freekassaOrderSchema),
+});
+export type FreekassaOrdersResponse = z.infer<typeof freekassaOrdersResponseSchema>;
+
+/**
+ * Статус провайдера → наш терминальный статус заказа.
+ *
+ * `null` — не терминальный (новый / неизвестный код): такой заказ оставляем
+ * ждать, добор попробует снова через 5 минут.
+ *
+ * `6` (возврат) по pending-платежу — аномалия: деньги были приняты и возвращены,
+ * а мы этого не видели. Хороним как `cancelled` и алертим: восстанавливать
+ * такой заказ автоматически нельзя.
+ */
+export function freekassaTerminalReason(status: number): 'cancelled' | 'failed' | null {
+  if (status === FREEKASSA_ORDER_STATUS.ERROR) return 'failed';
+  if (status === FREEKASSA_ORDER_STATUS.CANCELLED) return 'cancelled';
+  if (status === FREEKASSA_ORDER_STATUS.REFUND) return 'cancelled';
+  return null;
+}
+
 // ─── Уведомление об оплате (webhook) ──────────────────────────────────────
 
 /**

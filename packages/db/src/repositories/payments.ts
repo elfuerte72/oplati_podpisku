@@ -243,6 +243,53 @@ export async function findPendingPaymentsForPoll(db: DB): Promise<PaymentRow[]> 
     .limit(POLL_BATCH_LIMIT);
 }
 
+export type InvoiceConversion = { invoiced: number; paid: number };
+
+/**
+ * Конверсия «счёт выставлен → оплачен» за окно.
+ *
+ * Зачем: о том, что Love&Pay перестал проводить платежи, узнали от клиентов, а
+ * не от системы — детектор недоступности ловит только транспорт, а «шлюз
+ * отвечает 200, ссылку выдаёт, оплаты не проходят» для кода выглядит успехом.
+ * Единственный сигнал такого отказа — падение конверсии.
+ *
+ * Окно со СДВИГОМ: считаем счета, выставленные в
+ * `[now - windowMinutes, now - graceMinutes]`. Свежие счета исключены намеренно —
+ * заказ, выставленный минуту назад, ещё не мог быть оплачен, и без отсрочки
+ * метрика вечно показывала бы недоплаченные.
+ *
+ * `DISTINCT order_id` обязателен: повторный confirm пишет ещё одно событие
+ * `payment_invoice_created` по тому же заказу (`duplicate: true`), и без
+ * дедупликации один заказ считался бы дважды.
+ */
+export async function countInvoiceConversion(
+  db: DB,
+  params: { windowMinutes: number; graceMinutes: number },
+): Promise<InvoiceConversion> {
+  const rows = await db.execute<{ invoiced: string | number; paid: string | number }>(sql`
+    WITH invoiced AS (
+      SELECT DISTINCT order_id
+      FROM order_events
+      WHERE event_type = 'payment_invoice_created'
+        AND created_at >= now() - make_interval(mins => ${params.windowMinutes}::int)
+        AND created_at <= now() - make_interval(mins => ${params.graceMinutes}::int)
+    )
+    SELECT
+      (SELECT count(*) FROM invoiced) AS invoiced,
+      (SELECT count(*) FROM invoiced i
+        WHERE EXISTS (
+          SELECT 1 FROM order_events e
+          WHERE e.order_id = i.order_id AND e.event_type = 'payment_succeeded'
+        )) AS paid
+  `);
+
+  const row = rows[0];
+  return {
+    invoiced: Number(row?.invoiced ?? 0),
+    paid: Number(row?.paid ?? 0),
+  };
+}
+
 export async function findPaymentByProviderRef(
   db: DB,
   provider: PaymentProvider,

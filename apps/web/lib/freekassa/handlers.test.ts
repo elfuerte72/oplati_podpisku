@@ -70,13 +70,17 @@ vi.mock('@sentry/nextjs', () => ({
   captureMessage: vi.fn(),
 }));
 
-import { freekassaNotificationSchema, OrderTransitionError } from '@oplati/types';
+import {
+  freekassaNotificationSchema,
+  OrderTransitionError,
+  toStorableNotification,
+} from '@oplati/types';
 
 import * as db from '@oplati/db';
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
-import { processFreekassaPaid } from './handlers.ts';
+import { processFreekassaPaid, processFreekassaTerminal } from './handlers.ts';
 
 type MockedDb = typeof db & {
   __setPayment: (p: Pay | null, opts?: { onlyByInvoiceNumber?: boolean }) => void;
@@ -93,8 +97,13 @@ const PAYMENT: Pay = {
   amountRub: 249_050,
 };
 
-function notification(overrides: Record<string, string> = {}) {
-  return freekassaNotificationSchema.parse({
+/**
+ * Вход обработчика собирается ровно так же, как это делает роут вебхука:
+ * из разобранного уведомления через `toStorableNotification` — чтобы тест
+ * ловил и регресс «в raw_payload утёк PAN или подпись».
+ */
+function paidInput(overrides: Record<string, string> = {}) {
+  const n = freekassaNotificationSchema.parse({
     MERCHANT_ID: '777',
     AMOUNT: '2490.50',
     intid: '999',
@@ -102,6 +111,12 @@ function notification(overrides: Record<string, string> = {}) {
     SIGN: 'deadbeef',
     ...overrides,
   });
+  return {
+    intid: n.intid,
+    merchantOrderId: n.MERCHANT_ORDER_ID,
+    amountRaw: n.AMOUNT,
+    rawPayload: toStorableNotification(n),
+  };
 }
 
 describe('processFreekassaPaid', () => {
@@ -112,7 +127,7 @@ describe('processFreekassaPaid', () => {
   it('первое уведомление: claim + переход в paid + issue-card + реферал', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
 
-    const res = await processFreekassaPaid({ notification: notification() });
+    const res = await processFreekassaPaid(paidInput());
 
     expect(res.kind).toBe('processed');
     expect(db.claimPaymentSucceeded).toHaveBeenCalledTimes(1);
@@ -129,7 +144,7 @@ describe('processFreekassaPaid', () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
     (db as unknown as MockedDb).__forceClaimNull();
 
-    const res = await processFreekassaPaid({ notification: notification() });
+    const res = await processFreekassaPaid(paidInput());
 
     expect(res).toMatchObject({ kind: 'idempotent_skip', reason: 'already_processed' });
     expect(dispatchIssueCard).not.toHaveBeenCalled();
@@ -139,9 +154,9 @@ describe('processFreekassaPaid', () => {
   it('в raw_payload платежа не уходят ни полный счёт плательщика, ни подпись', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
 
-    await processFreekassaPaid({
-      notification: notification({ payer_account: '4444444444444444', SIGN: 'deadbeef' }),
-    });
+    await processFreekassaPaid(
+      paidInput({ payer_account: '4444444444444444', SIGN: 'deadbeef' }),
+    );
 
     const call = vi.mocked(db.claimPaymentSucceeded).mock.calls[0];
     const payload = JSON.stringify(call?.[1].rawPayload);
@@ -153,7 +168,7 @@ describe('processFreekassaPaid', () => {
   it('недоплата терминальна: заказ в failed, DM владельцу, карта НЕ выпускается', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
 
-    const res = await processFreekassaPaid({ notification: notification({ AMOUNT: '1000.00' }) });
+    const res = await processFreekassaPaid(paidInput({ AMOUNT: '1000.00' }));
 
     expect(res).toMatchObject({
       kind: 'amount_mismatch',
@@ -172,21 +187,21 @@ describe('processFreekassaPaid', () => {
   it('повтор недоплаты не шлёт второй DM (дедуп атомарным claim)', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT, status: 'failed' });
 
-    await processFreekassaPaid({ notification: notification({ AMOUNT: '1000.00' }) });
+    await processFreekassaPaid(paidInput({ AMOUNT: '1000.00' }));
 
     expect(notifyOps).not.toHaveBeenCalled();
   });
 
   it('переплата и копеечное округление вниз проходят как оплата', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
-    expect((await processFreekassaPaid({ notification: notification({ AMOUNT: '2500.00' }) })).kind).toBe(
+    expect((await processFreekassaPaid(paidInput({ AMOUNT: '2500.00' }))).kind).toBe(
       'processed',
     );
 
     vi.clearAllMocks();
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
     // 2490.49 ₽ при выставленных 2490.50 ₽ — допуск 1 копейка на округление.
-    expect((await processFreekassaPaid({ notification: notification({ AMOUNT: '2490.49' }) })).kind).toBe(
+    expect((await processFreekassaPaid(paidInput({ AMOUNT: '2490.49' }))).kind).toBe(
       'processed',
     );
   });
@@ -194,7 +209,7 @@ describe('processFreekassaPaid', () => {
   it('неразбираемая сумма останавливает fulfillment, а не «фулфилит на глазок»', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
 
-    const res = await processFreekassaPaid({ notification: notification({ AMOUNT: '2490.505' }) });
+    const res = await processFreekassaPaid(paidInput({ AMOUNT: '2490.505' }));
 
     expect(res.kind).toBe('invalid_amount');
     expect(db.claimPaymentSucceeded).not.toHaveBeenCalled();
@@ -204,7 +219,7 @@ describe('processFreekassaPaid', () => {
   it('платёж не найден ни по intid, ни по MERCHANT_ORDER_ID → not_found', async () => {
     (db as unknown as MockedDb).__setPayment(null);
 
-    const res = await processFreekassaPaid({ notification: notification() });
+    const res = await processFreekassaPaid(paidInput());
 
     expect(res).toMatchObject({ kind: 'not_found', providerRef: '999' });
     expect(dispatchIssueCard).not.toHaveBeenCalled();
@@ -218,7 +233,7 @@ describe('processFreekassaPaid', () => {
       { onlyByInvoiceNumber: true },
     );
 
-    const res = await processFreekassaPaid({ notification: notification({ intid: '555' }) });
+    const res = await processFreekassaPaid(paidInput({ intid: '555' }));
 
     expect(res).toMatchObject({ kind: 'processed', paymentId: 'pay-1' });
     expect(db.findPaymentByProviderInvoiceNumber).toHaveBeenCalledWith(
@@ -234,7 +249,7 @@ describe('processFreekassaPaid', () => {
       new OrderTransitionError('order-1', 'cancelled', 'paid'),
     );
 
-    const res = await processFreekassaPaid({ notification: notification() });
+    const res = await processFreekassaPaid(paidInput());
 
     expect(res.kind).toBe('processed');
     expect(dispatchPaymentConfirmed).not.toHaveBeenCalled();
@@ -246,7 +261,7 @@ describe('processFreekassaPaid', () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
     vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('connection reset'));
 
-    await expect(processFreekassaPaid({ notification: notification() })).rejects.toThrow(
+    await expect(processFreekassaPaid(paidInput())).rejects.toThrow(
       'connection reset',
     );
     expect(dispatchIssueCard).not.toHaveBeenCalled();
@@ -255,10 +270,70 @@ describe('processFreekassaPaid', () => {
   it('оплата уже захороненного счёта: алёрт и DM о ручном возврате', async () => {
     (db as unknown as MockedDb).__setPayment({ ...PAYMENT, status: 'failed' });
 
-    const res = await processFreekassaPaid({ notification: notification() });
+    const res = await processFreekassaPaid(paidInput());
 
     expect(res).toMatchObject({ kind: 'idempotent_skip', reason: 'paid_after_terminal' });
     expect(notifyOps).toHaveBeenCalledTimes(1);
     expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+});
+
+describe('processFreekassaTerminal (добор: провайдер сказал «не оплачен»)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const terminalInput = (over: Partial<{ reason: 'cancelled' | 'failed'; providerStatus: number }> = {}) => ({
+    intid: '999',
+    merchantOrderId: 'ORD-S3MGS-a1b2c3',
+    reason: over.reason ?? ('cancelled' as const),
+    providerStatus: over.providerStatus ?? 9,
+  });
+
+  it('хоронит pending-платёж и переводит заказ в терминальный статус', async () => {
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+
+    const res = await processFreekassaTerminal(terminalInput());
+
+    expect(res.kind).toBe('processed');
+    expect(db.claimPaymentTerminal).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(db.transitionOrder).mock.calls[0]?.[1]).toMatchObject({
+      toStatus: 'cancelled',
+      eventType: 'payment_cancelled',
+    });
+  });
+
+  it('НЕ перезаписывает уже успешный платёж (claim вернул null)', async () => {
+    // Гонка «оплата пришла вебхуком, а добор ещё видит старый статус»:
+    // condition status='pending' внутри claim — источник правды, а не наше чтение.
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT, status: 'succeeded' });
+
+    const res = await processFreekassaTerminal(terminalInput());
+
+    expect(res).toMatchObject({ kind: 'idempotent_skip', reason: 'not_pending' });
+    expect(db.transitionOrder).not.toHaveBeenCalled();
+  });
+
+  it('заказ уже ушёл иным путём (OrderTransitionError): claim фиксируется, не падаем', async () => {
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(
+      new OrderTransitionError('order-1', 'paid', 'cancelled'),
+    );
+
+    expect((await processFreekassaTerminal(terminalInput())).kind).toBe('processed');
+  });
+
+  it('транзиентный сбой БД пробрасывается — транзакция откатит claim', async () => {
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(processFreekassaTerminal(terminalInput())).rejects.toThrow('connection reset');
+  });
+
+  it('платежа нет — not_found без побочных эффектов', async () => {
+    (db as unknown as MockedDb).__setPayment(null);
+
+    expect((await processFreekassaTerminal(terminalInput())).kind).toBe('not_found');
+    expect(db.claimPaymentTerminal).not.toHaveBeenCalled();
   });
 });

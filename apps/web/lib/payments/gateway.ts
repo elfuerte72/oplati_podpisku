@@ -9,10 +9,14 @@ import {
   type PaymentGateway,
 } from '@oplati/types';
 
+import * as Sentry from '@sentry/nextjs';
+
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { serverEnv } from '../env.server.ts';
-import { getFreekassaClient } from '../freekassa/index.ts';
-import { getLoveAndPayClient, LoveAndPayApiError } from '../loveandpay/index.ts';
+import { getFreekassaClient, isFreekassaConfigured } from '../freekassa/index.ts';
+import { getLoveAndPayClient, isLoveAndPayConfigured, LoveAndPayApiError } from '../loveandpay/index.ts';
 import { childLogger } from '../logger.ts';
+import { isPaymentGatewayUnavailable } from './availability.ts';
 
 /**
  * Слой «создать счёт у текущего шлюза» — единственное место, зависящее от
@@ -77,10 +81,89 @@ export type CreateInvoiceInput = {
   paymentMethod?: 'sbp' | 'card' | undefined;
 };
 
+/**
+ * Создать счёт у указанного шлюза; при его недоступности — у резервного.
+ *
+ * Фоллбэк срабатывает ТОЛЬКО когда:
+ *  1. включён `PAYMENT_AUTO_FALLBACK`;
+ *  2. ошибка — транспортная (таймаут / сеть / 5xx), а не отказ шлюза: 4xx
+ *     означает «шлюз жив и отверг наш запрос», и повтор у другого провайдера
+ *     скорее всего упрётся в ту же причину (например, сумма ниже минимума);
+ *  3. у резервного шлюза заданы ключи.
+ *
+ * `payments.provider` пишется по ФАКТУ выставления счёта (`invoice.provider`),
+ * поэтому после фоллбэка история платежей остаётся правдивой, а вебхук нужного
+ * провайдера примет деньги — он работает независимо от переключателя.
+ */
 export async function createGatewayInvoice(input: CreateInvoiceInput): Promise<GatewayInvoice> {
-  return input.gateway === 'freekassa'
-    ? await createFreekassaInvoice(input)
-    : await createLoveAndPayInvoice(input);
+  try {
+    return await createAtGateway(input.gateway, input);
+  } catch (err) {
+    const fallback = fallbackGatewayFor(input.gateway);
+    if (!fallback || !isPaymentGatewayUnavailable(err)) throw err;
+
+    log.error({
+      event: 'payments.gateway.primary_unavailable',
+      primary: input.gateway,
+      fallback,
+      orderId: input.order.id,
+      err,
+    });
+    Sentry.captureMessage('Основной платёжный шлюз недоступен — счёт выставляется резервным', {
+      level: 'warning',
+      tags: { source: 'payments.gateway', alert: 'gateway_fallback' },
+      extra: { primary: input.gateway, fallback, orderId: input.order.id },
+    });
+
+    // Резервный тоже может лечь — тогда наверх уходит ЕГО ошибка, и клиент
+    // получит честное «технический сбой» (оба классификатора это покроют).
+    const invoice = await createAtGateway(fallback, input);
+    await notifyFallbackUsed(input.gateway, fallback);
+    return invoice;
+  }
+}
+
+function createAtGateway(
+  gateway: PaymentGateway,
+  input: CreateInvoiceInput,
+): Promise<GatewayInvoice> {
+  return gateway === 'freekassa' ? createFreekassaInvoice(input) : createLoveAndPayInvoice(input);
+}
+
+/** Резервный шлюз: другой из двух, если автофоллбэк включён и ключи заданы. */
+function fallbackGatewayFor(primary: PaymentGateway): PaymentGateway | null {
+  if (!serverEnv.PAYMENT_AUTO_FALLBACK) return null;
+  const other: PaymentGateway = primary === 'freekassa' ? 'loveandpay' : 'freekassa';
+  const configured = other === 'freekassa' ? isFreekassaConfigured() : isLoveAndPayConfigured();
+  if (!configured) {
+    log.warn({ event: 'payments.gateway.fallback_not_configured', primary, fallback: other });
+    return null;
+  }
+  return other;
+}
+
+// Дедуп DM владельцу: пока основной шлюз лежит, фоллбэк срабатывает на КАЖДОМ
+// заказе — личку заспамили бы. Best-effort на warm-инстансе, как в proxy-health.
+const FALLBACK_DM_DEDUP_MS = 60 * 60 * 1000;
+let lastFallbackDmAt = 0;
+
+/** Только для unit-тестов — сбрасывает окно дедупа DM. */
+export function resetFallbackAlertDedupForTests(): void {
+  lastFallbackDmAt = 0;
+}
+
+async function notifyFallbackUsed(primary: PaymentGateway, fallback: PaymentGateway): Promise<void> {
+  const now = Date.now();
+  if (now - lastFallbackDmAt < FALLBACK_DM_DEDUP_MS) return;
+  lastFallbackDmAt = now;
+  try {
+    await notifyOps(
+      `Основной шлюз (${primary}) не отвечает — счета выставляются через ${fallback}. Деньги принимаются, но причину надо разобрать: автофоллбэк ловит только транспорт, а не «шлюз отвечает, платежи не проходят».`,
+    );
+  } catch (err) {
+    // Сбой доставки DM не должен уронить создание счёта: Sentry-алёрт уже ушёл.
+    log.error({ event: 'payments.gateway.fallback_notify_failed', err });
+  }
 }
 
 // ─── Love & Pay ───────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import {
 import { DocsFooter } from '@/components/info/DocsFooter';
 import { FreekassaBadge } from '@/components/info/FreekassaBadge';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
+import { ErrorNotice } from './ErrorNotice';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
 import { MobileTelegramBanner } from './MobileTelegramBanner';
@@ -558,12 +559,9 @@ export function ChatClient() {
         {error && (
           <div className="shrink-0 border-t-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)]">
             <div className="mx-auto w-full max-w-3xl px-4 py-3">
-              <p
-                role="alert"
-                className="rounded-[12px] border-2 border-[var(--color-stamp)] bg-[var(--surface-2)] px-3 py-2 font-body text-sm text-[var(--text)]"
-              >
-                {error}
-              </p>
+              {/* Со ссылкой на поддержку: при лежащем платёжном шлюзе «попробуй
+                  позже» — тупик, из которого клиент уходит насовсем. */}
+              <ErrorNotice text={error} />
             </div>
           </div>
         )}

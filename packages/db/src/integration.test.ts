@@ -25,6 +25,7 @@ import {
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import { nextFreekassaNonce } from './repositories/freekassa.ts';
+import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
 import { getOrCreateUserByTelegramId } from './repositories/users.ts';
@@ -1030,5 +1031,98 @@ describe('nextFreekassaNonce (последовательность Postgres, м�
     const value = await nextFreekassaNonce(db);
     expect(value).toBeGreaterThan(2_000_000_000);
     expect(Number.isSafeInteger(value)).toBe(true);
+  });
+});
+
+describe('countInvoiceConversion (метрика «счёт выставлен → оплачен»)', () => {
+  const WINDOW = { windowMinutes: 70, graceMinutes: 10 };
+
+  /**
+   * События вставляем НАПРЯМУЮ с явным `created_at`: окно метрики сдвинуто в
+   * прошлое, а `order_events` append-only (триггер 0018 запрещает UPDATE) —
+   * задним числом подвинуть время у обычного перехода нельзя.
+   */
+  async function addEvent(orderId: string, eventType: string, minutesAgo: number) {
+    await db.execute(sql`
+      INSERT INTO order_events (order_id, actor_type, event_type, created_at)
+      VALUES (${orderId}, 'system', ${eventType}, now() - make_interval(mins => ${minutesAgo}::int))
+    `);
+  }
+
+  async function makeOrder(userId: string) {
+    return await createDraftOrder(db, {
+      userId,
+      status: 'pending_payment',
+      customServiceDescription: 'conversion-test order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+  }
+
+  /**
+   * База PGlite общая на весь сьют, поэтому меряем ДЕЛЬТУ, а не абсолютные
+   * числа: иначе тесты зависели бы от порядка исполнения соседей.
+   */
+  async function delta(fn: () => Promise<void>) {
+    const before = await countInvoiceConversion(db, WINDOW);
+    await fn();
+    const after = await countInvoiceConversion(db, WINDOW);
+    return { invoiced: after.invoiced - before.invoiced, paid: after.paid - before.paid };
+  }
+
+  it('считает выставленные и оплаченные в окне', async () => {
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const paidOrder = await makeOrder(user.id);
+      const unpaidOrder = await makeOrder(user.id);
+      await addEvent(paidOrder.id, 'payment_invoice_created', 30);
+      await addEvent(paidOrder.id, 'payment_succeeded', 25);
+      await addEvent(unpaidOrder.id, 'payment_invoice_created', 30);
+    });
+
+    expect(res).toEqual({ invoiced: 2, paid: 1 });
+  });
+
+  it('один заказ считается ОДИН раз, даже если счёт выставлялся повторно', async () => {
+    // Повторный confirm пишет второе `payment_invoice_created` (duplicate:true) —
+    // без DISTINCT заказ удваивал бы знаменатель и занижал конверсию.
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const order = await makeOrder(user.id);
+      await addEvent(order.id, 'payment_invoice_created', 30);
+      await addEvent(order.id, 'payment_invoice_created', 29);
+    });
+
+    expect(res.invoiced).toBe(1);
+  });
+
+  it('свежие счета исключены отсрочкой, старые — окном', async () => {
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const tooFresh = await makeOrder(user.id);
+      const tooOld = await makeOrder(user.id);
+      await addEvent(tooFresh.id, 'payment_invoice_created', 2);
+      await addEvent(tooOld.id, 'payment_invoice_created', 500);
+    });
+
+    expect(res.invoiced).toBe(0);
+  });
+
+  it('оплата ПОЗЖЕ окна всё равно засчитывается заказу', async () => {
+    // Считаем судьбу счёта, а не события в окне: иначе оплата на 71-й минуте
+    // выглядела бы как неоплаченный счёт и давала ложный алёрт.
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const order = await makeOrder(user.id);
+      await addEvent(order.id, 'payment_invoice_created', 60);
+      await addEvent(order.id, 'payment_succeeded', 1);
+    });
+
+    expect(res).toEqual({ invoiced: 1, paid: 1 });
   });
 });

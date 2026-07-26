@@ -1,6 +1,10 @@
 import * as Sentry from '@sentry/nextjs';
 
-import { FREEKASSA_NOTIFICATION_IPS, freekassaNotificationSchema } from '@oplati/types';
+import {
+  FREEKASSA_NOTIFICATION_IPS,
+  freekassaNotificationSchema,
+  toStorableNotification,
+} from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { verifyNotificationSignature } from '@/lib/freekassa';
@@ -147,7 +151,13 @@ export async function POST(req: Request): Promise<Response> {
   });
 
   try {
-    const result = await processFreekassaPaid({ notification });
+    const result = await processFreekassaPaid({
+      intid: notification.intid,
+      merchantOrderId: notification.MERCHANT_ORDER_ID,
+      amountRaw: notification.AMOUNT,
+      // Подпись и полный счёт плательщика в хранилище не попадают.
+      rawPayload: toStorableNotification(notification),
+    });
     // Платёж ещё не записан у нас (гонка с созданием счёта) или сумма
     // неразбираема — просим повторить: во втором случае повтор бессмысленен,
     // но заказ уже заалерчен, а «YES» на непонятную сумму скрыл бы проблему.

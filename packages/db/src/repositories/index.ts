@@ -154,6 +154,8 @@ export {
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
   findPaymentByProviderInvoiceNumber,
+  countInvoiceConversion,
+  type InvoiceConversion,
   findPendingPaymentByOrderId,
   stripOldPaymentPayloads,
   findPaymentsByOrderId,

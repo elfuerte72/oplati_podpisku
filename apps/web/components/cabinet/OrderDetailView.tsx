@@ -34,6 +34,12 @@ type Props = {
   onOpenExternalLink: (url: string) => void;
   onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
+  /**
+   * Уйти в поддержку из плашки ошибки. Нужен, когда счёт не выставился
+   * (лежит платёжный шлюз): «попробуй позже» без выхода — тупик, из которого
+   * клиент уходит насовсем. Не задан → кнопки нет, поведение прежнее.
+   */
+  onContactSupport?: (() => void) | undefined;
 };
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -445,6 +451,7 @@ export function OrderDetailView({
   onOpenExternalLink,
   onReportIssue,
   onSubscriptionPaid,
+  onContactSupport,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -513,16 +520,32 @@ export function OrderDetailView({
         )}
 
         {message && (
-          <p
+          <div
             className={[
-              'mt-4 rounded-[12px] border-2 px-3 py-2 font-body text-sm',
+              'mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[12px] border-2 px-3 py-2',
               message.tone === 'ok'
-                ? 'border-[var(--color-teal-deep)] text-[var(--text)]'
-                : 'border-[var(--color-stamp)] text-[var(--color-stamp)]',
+                ? 'border-[var(--color-teal-deep)]'
+                : 'border-[var(--color-stamp)]',
             ].join(' ')}
           >
-            {message.text}
-          </p>
+            <p
+              className={[
+                'font-body text-sm',
+                message.tone === 'ok' ? 'text-[var(--text)]' : 'text-[var(--color-stamp)]',
+              ].join(' ')}
+            >
+              {message.text}
+            </p>
+            {message.tone === 'err' && onContactSupport && (
+              <button
+                type="button"
+                onClick={onContactSupport}
+                className="shrink-0 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-2.5 py-1 font-display text-xs text-[var(--text)]"
+              >
+                Написать в поддержку
+              </button>
+            )}
+          </div>
         )}
       </div>
 

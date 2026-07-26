@@ -158,3 +158,70 @@ describe('FreekassaClient.createOrder', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('FreekassaClient.findOrderByPaymentId (добор потерянных уведомлений)', () => {
+  const ORDERS_BODY = {
+    type: 'success',
+    pages: 1,
+    orders: [
+      {
+        merchant_order_id: 'ORD-S3MGS-a1b2c3',
+        fk_order_id: 652367,
+        amount: 100.12,
+        currency: 'RUB',
+        email: 'user@example.com',
+        // ПОЛНЫЙ номер карты плательщика — ровно так его показывает дока.
+        account: '5555555555554444',
+        date: '2021-03-29 12:28:24',
+        status: 1,
+      },
+    ],
+  };
+
+  it('ищет по нашему paymentId и подписывает запрос', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(ORDERS_BODY));
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const order = await client.findOrderByPaymentId('ORD-S3MGS-a1b2c3');
+
+    expect(order).toMatchObject({ fk_order_id: '652367', amount: '100.12', status: 1 });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.fk.life/v1/orders');
+    const { signature, ...params } = JSON.parse(String(init.body)) as Record<string, string | number>;
+    expect(params).toMatchObject({ shopId: 777, paymentId: 'ORD-S3MGS-a1b2c3' });
+    expect(signature).toBe(signApiRequest(params, API_KEY));
+  });
+
+  it('номер карты плательщика НЕ попадает в разобранный заказ', async () => {
+    // `account` не объявлен в схеме, а z.object отбрасывает неизвестные ключи —
+    // PAN физически не может доехать ни до логов, ни до payments.raw_payload.
+    const fetchMock = vi.fn(async () => jsonResponse(ORDERS_BODY));
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const order = await client.findOrderByPaymentId('ORD-S3MGS-a1b2c3');
+
+    expect(JSON.stringify(order)).not.toContain('5555555555554444');
+  });
+
+  it('чужие заказы в ответе игнорируются', async () => {
+    // Если провайдер проигнорирует фильтр и отдаст первую страницу всех заказов,
+    // обработать чужой платёж как свой было бы хуже, чем не обработать никакой.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        type: 'success',
+        orders: [{ ...ORDERS_BODY.orders[0], merchant_order_id: 'ORD-OTHER-999' }],
+      }),
+    );
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    expect(await client.findOrderByPaymentId('ORD-S3MGS-a1b2c3')).toBeNull();
+  });
+
+  it('пустой список — заказа у провайдера нет', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ type: 'success', pages: 0, orders: [] }));
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    expect(await client.findOrderByPaymentId('ORD-S3MGS-a1b2c3')).toBeNull();
+  });
+});

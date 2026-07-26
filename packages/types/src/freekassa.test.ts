@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FREEKASSA_ORDER_STATUS,
   freekassaCreateOrderResponseSchema,
+  freekassaOrdersResponseSchema,
+  freekassaTerminalReason,
   freekassaNotificationSchema,
   kopecksToRubleAmount,
   maskPayerAccount,
@@ -151,5 +154,58 @@ describe('маскирование счёта плательщика', () => {
     expect(storable.payer_account_masked).toBe('****4444');
     expect(storable.payer_account).toBeUndefined();
     expect(storable.SIGN).toBeUndefined();
+  });
+});
+
+describe('freekassaOrdersResponseSchema (добор потерянных уведомлений)', () => {
+  const ORDER = {
+    merchant_order_id: 'ORD-S3MGS-a1b2c3',
+    fk_order_id: 652367,
+    amount: 100.12,
+    currency: 'RUB',
+    email: 'user@example.com',
+    account: '5555555555554444',
+    date: '2021-03-29 12:28:24',
+    status: 1,
+  };
+
+  it('нормализует id и сумму в строки, статус — в число', () => {
+    const parsed = freekassaOrdersResponseSchema.parse({ type: 'success', pages: 1, orders: [ORDER] });
+    expect(parsed.orders[0]).toMatchObject({
+      fk_order_id: '652367',
+      amount: '100.12',
+      status: 1,
+    });
+  });
+
+  it('номер карты плательщика отбрасывается схемой', () => {
+    // `account` не объявлен, а z.object отбрасывает неизвестные ключи — PAN
+    // физически не может попасть ни в логи, ни в payments.raw_payload.
+    const parsed = freekassaOrdersResponseSchema.parse({ type: 'success', orders: [ORDER] });
+    expect(JSON.stringify(parsed)).not.toContain('5555555555554444');
+  });
+
+  it('принимает суммы и идентификаторы строками (дрейф типов у провайдеров)', () => {
+    const parsed = freekassaOrdersResponseSchema.parse({
+      type: 'success',
+      orders: [{ ...ORDER, fk_order_id: '652367', amount: '100.12', status: '1' }],
+    });
+    expect(parsed.orders[0]).toMatchObject({ fk_order_id: '652367', amount: '100.12', status: 1 });
+  });
+});
+
+describe('freekassaTerminalReason', () => {
+  it('ошибка → failed, отмена и возврат → cancelled', () => {
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.ERROR)).toBe('failed');
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.CANCELLED)).toBe('cancelled');
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.REFUND)).toBe('cancelled');
+  });
+
+  it('новый и неизвестный статус НЕ терминальны — счёт ждёт дальше', () => {
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.NEW)).toBeNull();
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.PAID)).toBeNull();
+    // Провайдер добавил код, о котором мы не знаем: хоронить заказ по догадке
+    // нельзя — деньги могли быть приняты.
+    expect(freekassaTerminalReason(42)).toBeNull();
   });
 });
