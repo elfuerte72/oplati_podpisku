@@ -257,6 +257,38 @@ export async function findPaymentByProviderRef(
 }
 
 /**
+ * Платёж по НАШЕМУ идентификатору, который был отправлен провайдеру при создании
+ * счёта (`payments.provider_invoice_number`).
+ *
+ * Нужен уведомлению Freekassa как ЗАПАСНОЙ путь поиска. Основной ключ —
+ * `providerRef` (в уведомлении это `intid`), но равенство `intid` тому
+ * `orderId`, который провайдер вернул при создании заказа, докой не
+ * гарантировано и живым вызовом ещё не подтверждено. Если `intid` окажется
+ * другим идентификатором, поиск по `MERCHANT_ORDER_ID` (= наш `paymentId`)
+ * спасает оплату от статуса «платёж не найден» вместо потери заказа.
+ *
+ * Однозначность обеспечивает вызывающий код: `paymentId` генерируется
+ * уникальным на попытку (`<shortId>-<hex>`), поэтому берём первую строку.
+ */
+export async function findPaymentByProviderInvoiceNumber(
+  db: DB,
+  provider: PaymentProvider,
+  providerInvoiceNumber: string,
+): Promise<PaymentRow | null> {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(
+      and(
+        eq(payments.provider, provider),
+        eq(payments.providerInvoiceNumber, providerInvoiceNumber),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * Действующий (pending) платёж заказа. Частичный unique
  * `payments_one_pending_per_order_idx` гарантирует не больше одного. Используется
  * в `payments/create` для идемпотентного ответа проигравшему гонку конкурентному

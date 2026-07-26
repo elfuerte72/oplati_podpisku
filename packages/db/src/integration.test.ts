@@ -24,6 +24,7 @@ import {
   setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
+import { nextFreekassaNonce } from './repositories/freekassa.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
 import { getOrCreateUserByTelegramId } from './repositories/users.ts';
@@ -1004,5 +1005,30 @@ describe('upsertVpnSubscription (снимок VPN-ссылки Remnawave, оди
   it('у пользователя без подписки find возвращает null', async () => {
     const user = await makeUser();
     expect(await findVpnSubscriptionByUserId(db, user.id)).toBeNull();
+  });
+});
+
+describe('nextFreekassaNonce (последовательность Postgres, миграция 0026)', () => {
+  it('монотонно возрастает при ПАРАЛЛЕЛЬНЫХ вызовах', async () => {
+    // Ровно то, чего не даёт Date.now(): два конкурентных confirm_order в одну
+    // миллисекунду получили бы одинаковый nonce, и провайдер отверг бы второй
+    // запрос («должен всегда быть больше предыдущего»).
+    const values = await Promise.all(
+      Array.from({ length: 25 }, () => nextFreekassaNonce(db)),
+    );
+
+    expect(new Set(values).size).toBe(values.length);
+    const sorted = [...values].sort((a, b) => a - b);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i]).toBeGreaterThan(sorted[i - 1] as number);
+    }
+  });
+
+  it('стартует выше unix-времени в секундах — не конфликтует с прежними nonce = time()', async () => {
+    // Если по магазину уже слались запросы с nonce = time(), счётчик с единицы
+    // был бы МЕНЬШЕ использованного и провайдер отвергал бы всё подряд.
+    const value = await nextFreekassaNonce(db);
+    expect(value).toBeGreaterThan(2_000_000_000);
+    expect(Number.isSafeInteger(value)).toBe(true);
   });
 });

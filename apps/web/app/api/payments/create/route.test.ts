@@ -194,6 +194,41 @@ describe('POST /api/payments/create — идемпотентность повт�
     expect(h.upsertMock).not.toHaveBeenCalled();
   });
 
+  it('repeat_confirm по счёту Freekassa: общий конверт rawPayload читается тем же кодом', async () => {
+    // Конверт `{ invoice: {...} }` у обоих шлюзов одинаковый (lib/payments/gateway.ts),
+    // поэтому повторный confirm отдаёт ссылку, не зная, кто выставил счёт. Если
+    // конверт Freekassa разъедется — клиент после переключения провайдера
+    // получил бы 409 «оформи заново» вместо рабочей ссылки.
+    h.state.order = {
+      id: ORDER_ID,
+      shortId: 'AB12',
+      status: 'pending_payment',
+      amountRub: 100_000,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    };
+    h.state.pendingPayment = {
+      id: 'pay-fk',
+      rawPayload: {
+        invoice: {
+          id: '123',
+          invoiceNumber: 'AB12-a1b2c3',
+          paymentLink: 'https://pay.freekassa.ru/form/123/hash',
+          qrPayload: null,
+          expiresAt: '2026-07-26T12:00:00.000Z',
+        },
+        provider: 'freekassa',
+        orderHash: 'hash',
+      },
+    };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { ok: boolean; paymentUrl: string };
+
+    expect(resp.status).toBe(200);
+    expect(json.paymentUrl).toBe('https://pay.freekassa.ru/form/123/hash');
+    expect(h.upsertMock).not.toHaveBeenCalled();
+  });
+
   it('repeat_confirm без живого инвойса (или с битым rawPayload) → 409 invalid_status', async () => {
     h.state.order = {
       id: ORDER_ID,

@@ -128,6 +128,68 @@ const serverEnvSchema = z.object({
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
   LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(500).default(500),
 
+  // ─── Freekassa — второй шлюз приёма рублей ───────────────────────────────
+  // Интеграция строго через API (не SCI-форма), решение владельца 2026-07-26.
+  // ⚠️ `FREEKASSA_SECRET_WORD_1` намеренно ОТСУТСТВУЕТ в схеме: оно подписывает
+  // только SCI-форму, которую мы не используем. В env прода оно лежит про запас
+  // (переход на SCI не потребовал бы беготни по кабинету), но кодом не читается —
+  // объявление его здесь создавало бы ложное впечатление, что читается.
+  FREEKASSA_API_KEY: optionalEnvString(),
+  // Секретное слово 2 — проверка подписи ВХОДЯЩЕГО уведомления (MD5).
+  FREEKASSA_SECRET_WORD_2: optionalEnvString(),
+  // ID магазина; обязателен в каждом запросе к API. Приходит числом.
+  FREEKASSA_SHOP_ID: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().int().positive().optional(),
+  ),
+  FREEKASSA_BASE_URL: z.string().url().default('https://api.fk.life/v1'),
+  // Способ оплаты по умолчанию (`i`): 44 — СБП, 36 — карты РФ. Выбор способа
+  // клиентом означал бы новый элемент UI сразу в трёх местах (веб, Mini App,
+  // бот) — пока шлём один и тот же (открытый вопрос §7 ТЗ).
+  FREEKASSA_METHOD_ID: z.coerce.number().int().positive().default(44),
+  // IP плательщика, когда реальный неизвестен (заказ из Mini App / бота):
+  // `127.0.0.1` провайдер блокирует, поэтому шлём публичный IP нашего VPS.
+  FREEKASSA_FALLBACK_IP: optionalEnvString(z.string().ip()).pipe(
+    z.string().default('177.7.34.106'),
+  ),
+  // Сколько живёт счёт Freekassa. Провайдер срок жизни заказа НЕ отдаёт (в
+  // ответе `/orders/create` его нет) — это НАШ срок ожидания оплаты, по нему
+  // выравнивается `orders.expires_at`. Умышленно отдельная переменная, а не
+  // переиспользование `INVOICE_TTL_HOURS` L&P: у провайдеров срок разный, и
+  // копирование вслепую даёт либо преждевременное захоронение оплаченного
+  // заказа, либо протухший курс. Уточнить у провайдера при смоуке.
+  FREEKASSA_INVOICE_TTL_HOURS: z.coerce.number().int().min(1).max(72).default(1),
+  // Минимальная сумма счёта в рублях. 0 = гейта нет: провайдер минимум нигде
+  // не публиковал, а выдумывать чужой контракт запрещено. Выставить после
+  // первого живого отказа/смоука (аналог LOVEANDPAY_MIN_AMOUNT_RUB=500).
+  // ⚠️ Пол ВИТРИНЫ (какие тарифы показываем в каталоге и что пропускает
+  // propose_order) намеренно остаётся привязан к LOVEANDPAY_MIN_AMOUNT_RUB и НЕ
+  // следует за переключателем: иначе смена провайдера меняла бы состав каталога
+  // как побочный эффект. Если тут окажется значение выше 500 ₽, пол витрины
+  // придётся поднимать отдельно — иначе клиент оформит заказ, который
+  // payments/create отвергнет как below_min_amount.
+  FREEKASSA_MIN_AMOUNT_RUB: z.coerce.number().int().nonnegative().default(0),
+  // Allowlist отправителей уведомления, через запятую. НЕ задан → используем
+  // список из доки, но несовпадение только алёртим (подпись MD5 остаётся
+  // единственным жёстким гейтом). Задан → несовпадение отвергает уведомление.
+  // Разделение сделано намеренно: провайдер может сменить адреса молча, и
+  // жёсткий allowlist по умолчанию положил бы приём денег без единого симптома,
+  // кроме тишины.
+  FREEKASSA_ALLOWED_IPS: optionalEnvString(),
+
+  // Кто принимает рубли ПРЯМО СЕЙЧАС. Меняется значением env + перезапуском
+  // контейнера, без правок кода и релиза. Влияет ТОЛЬКО на создание нового
+  // счёта (`/api/payments/create`); вебхуки ОБОИХ провайдеров работают всегда —
+  // в момент переключения у части клиентов уже выставлены счета прежнего
+  // шлюза, и закрытый вебхук означал бы «деньги списаны, заказ не оплачен».
+  // Дефолт `loveandpay` намеренно: он проверен живыми деньгами, Freekassa —
+  // ещё ни одним платежом. Потеря env возвращает контур в известное рабочее
+  // состояние, а не в неопробованное.
+  PAYMENT_PRIMARY_PROVIDER: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.enum(['loveandpay', 'freekassa']).default('loveandpay'),
+  ),
+
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
   // HMAC-секрет подписи исходящих запросов (X-Signature). Задан в кабинете → подпись
@@ -297,7 +359,35 @@ const serverEnvSchema = z.object({
   // Vercel runtime (приходит автоматически)
   VERCEL_ENV: z.enum(['development', 'preview', 'production']).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).optional(),
-});
+})
+  // Гейт «выбран провайдер — обязаны быть его ключи». Без него неизбежен
+  // сценарий «переключили флаг, забыли ключ», и узнаём мы о нём от первого
+  // клиента, а не от валидации: контейнер поднялся бы, кнопка «Оплатить»
+  // отвечала бы 500.
+  //
+  // ⚠️ Гейт ОДНОСТОРОННИЙ — проверяются только ключи Freekassa. Симметричная
+  // проверка ключей L&P сломала бы dev-стенд: там платёжных ключей нет
+  // НАМЕРЕННО (иначе тестовый заказ выставит реальный счёт), а
+  // `PAYMENT_PRIMARY_PROVIDER` там не задан и берёт дефолт `loveandpay` —
+  // приложение просто перестало бы стартовать. Значение `freekassa`, наоборот,
+  // задаётся руками и только на проде: раз задали — ключи обязаны быть.
+  .superRefine((env, ctx) => {
+    if (env.PAYMENT_PRIMARY_PROVIDER !== 'freekassa') return;
+    const required = [
+      ['FREEKASSA_API_KEY', env.FREEKASSA_API_KEY],
+      ['FREEKASSA_SHOP_ID', env.FREEKASSA_SHOP_ID],
+      ['FREEKASSA_SECRET_WORD_2', env.FREEKASSA_SECRET_WORD_2],
+    ] as const;
+    for (const [name, value] of required) {
+      if (value === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `обязателен при PAYMENT_PRIMARY_PROVIDER=freekassa`,
+        });
+      }
+    }
+  });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 

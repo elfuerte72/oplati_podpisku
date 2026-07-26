@@ -36,6 +36,25 @@ export {
 } from './loveandpay.ts';
 
 export {
+  FREEKASSA_API_BASE_URL,
+  FREEKASSA_METHOD_SBP,
+  FREEKASSA_METHOD_CARD_RUB,
+  FREEKASSA_NOTIFICATION_IPS,
+  parseRubleAmountToKopecks,
+  kopecksToRubleAmount,
+  freekassaCreateOrderParamsSchema,
+  type FreekassaCreateOrderParams,
+  freekassaCreateOrderResponseSchema,
+  type FreekassaCreateOrderResponse,
+  freekassaErrorResponseSchema,
+  type FreekassaErrorResponse,
+  freekassaNotificationSchema,
+  type FreekassaNotification,
+  maskPayerAccount,
+  toStorableNotification,
+} from './freekassa.ts';
+
+export {
   rapiraMarketRateSchema,
   type RapiraMarketRate,
   rapiraMarketRatesResponseSchema,
@@ -259,8 +278,22 @@ export const paymentProvider = z.enum([
   'manual',
   'loveandpay',
   'paypace',
+  'freekassa',
 ]);
 export type PaymentProvider = z.infer<typeof paymentProvider>;
+
+/**
+ * Шлюзы приёма рублей, между которыми переключается `PAYMENT_PRIMARY_PROVIDER`.
+ * Подмножество `paymentProvider`: `paypace` выпускает карты (не принимает
+ * деньги), `manual`/`sbp`/`yookassa`/`cryptobot` — исторические значения.
+ *
+ * Строковый enum, а НЕ булев флаг вида `FREEKASSA_ACTIVE`: опечатка в значении
+ * роняет валидацию env при старте, тогда как `FREEKASSA_ACTIVE=True` наивная
+ * проверка `=== 'true'` прочитала бы как «выключено» и деньги молча пошли бы
+ * через другой шлюз (разбор в ТЗ, «Этап 3»).
+ */
+export const paymentGateway = z.enum(['loveandpay', 'freekassa']);
+export type PaymentGateway = z.infer<typeof paymentGateway>;
 
 export const cardStatus = z.enum(['active', 'idle', 'recycled']);
 export type CardStatus = z.infer<typeof cardStatus>;

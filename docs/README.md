@@ -34,6 +34,7 @@
 |---|---|
 | [`reference/remnawave-api.md`](reference/remnawave-api.md) | API панели VPN, контракт подтверждён живыми вызовами |
 | [`reference/loveandpay-api-access.md`](reference/loveandpay-api-access.md) | доступ к API L&P: подтверждение домена, allowlist IP |
+| [`reference/freekassa-api.md`](reference/freekassa-api.md) | контракт Freekassa (второй шлюз рублей). ⚠️ взят из доки, живым вызовом ещё не подтверждён |
 | [`reference/ai-cost-protection.md`](reference/ai-cost-protection.md) | слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов |
 | [`reference/database.html`](reference/database.html) | как работает БД. ⚠️ написано в эпоху Supabase (2026-06), общая часть верна, инфраструктурная — нет |
 
