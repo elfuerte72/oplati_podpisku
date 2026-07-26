@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
     APP_URL: 'https://www.oplatishka.com',
     PAYMENT_PRIMARY_PROVIDER: 'loveandpay',
     LOVEANDPAY_MIN_AMOUNT_RUB: 500,
-    FREEKASSA_MIN_AMOUNT_RUB: 0,
+    FREEKASSA_MIN_AMOUNT_RUB: 500,
     FREEKASSA_METHOD_ID: 44,
     FREEKASSA_FALLBACK_IP: '177.7.34.106',
     FREEKASSA_INVOICE_TTL_HOURS: 1,
@@ -102,9 +102,14 @@ describe('переключатель провайдера', () => {
   });
 
   it('минимальная сумма берётся у выбранного шлюза', () => {
+    // Порог одинаков (500 ₽, решение владельца): переключение шлюза не меняет,
+    // какие заказы вообще можно оформить, и совпадает с полом витрины.
     expect(minAmountRubFor('loveandpay')).toBe(500);
-    // У Freekassa минимум не объявлен — гейта нет по умолчанию.
+    expect(minAmountRubFor('freekassa')).toBe(500);
+
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 0;
     expect(minAmountRubFor('freekassa')).toBe(0);
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 500;
   });
 
   it('шлёт счёт ровно в один шлюз — второй не трогается', async () => {

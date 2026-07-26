@@ -107,8 +107,9 @@ describe('дефолты Freekassa', () => {
     expect(env.FREEKASSA_FALLBACK_IP).toBe('177.7.34.106');
     expect(env.FREEKASSA_METHOD_ID).toBe(44);
     expect(env.FREEKASSA_INVOICE_TTL_HOURS).toBe(1);
-    // Минимума провайдер не публиковал — гейта по умолчанию нет.
-    expect(env.FREEKASSA_MIN_AMOUNT_RUB).toBe(0);
+    // Тот же порог, что у L&P (решение владельца): переключение шлюза не
+    // меняет, какие заказы можно оформить.
+    expect(env.FREEKASSA_MIN_AMOUNT_RUB).toBe(500);
   });
 
   it('невалидный fallback-IP не проходит валидацию', async () => {
