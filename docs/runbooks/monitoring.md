@@ -17,7 +17,7 @@
 — сверху выпадающие списки **Узел** / **Контейнер** / **Поиск** (кнопками, без
 ручного LogQL).
 
-## Алёрты (в Telegram через dev-бота @dev_test_podpiska_bot)
+## Алёрты (в Telegram через бота Гилфойла @hermesbymxpk_bot)
 
 Grafana шлёт уведомления на chat id владельца (`379336096`). Настроенные правила
 (папка «Оплатишка — алёрты»):
@@ -31,8 +31,9 @@ Grafana шлёт уведомления на chat id владельца (`379336
 `{node="timeweb-msk", container="oplatishka-proxy"}` — узлом, который после
 перевода DNS на Hostinger не в пути трафика. То есть алёрт был мёртв: данных по
 этому запросу не появилось бы никогда. Перенацелен на ошибки приложения; заодно
-это единственный на сегодня канал ошибок в Telegram (Sentry шлёт письма,
-webhook-действие в его правиле не создано — см. [`../BACKLOG.md`](../BACKLOG.md)).
+это второй канал ошибок в Telegram: Sentry с 2026-07-26 тоже шлёт их туда через
+интеграцию «Telegram Alerts», но по другому поводу — Grafana реагирует на всплеск
+(>5 за 5 минут), Sentry на первую же новую проблему.
 
 ## Слой 1 — Uptime (жив ли сайт снаружи)
 
@@ -48,8 +49,15 @@ Vercel, сеть). Better Stack НЕ используется — у него н
 
 ## Слой 2 — Ошибки (что сломалось)
 
-**Sentry** — настроен ранее (PII-скраббер, алёрты в Telegram через
-`/api/alerts/sentry`). Ловит исключения со всех каналов: веб, бот, cron, платежи.
+**Sentry** — PII-скраббер, алёрты в Telegram через `/api/alerts/sentry`. Ловит
+исключения со всех каналов: веб, бот, cron, платежи.
+
+Доставка в Telegram включена 2026-07-26 через **Internal Integration «Telegram
+Alerts»** (`telegram-alerts-d8df3a`), добавленную действием в правило 644412 рядом
+с Email. ⚠️ Legacy Webhooks (Settings → Webhooks) для этого **не годятся**: URL
+сохраняется, но действия в правиле не появляется, а кнопка «Send Test Event» падает
+на стороне Sentry (их API `test-fire-actions` отвечает `400`, до нас запрос не
+доходит вовсе).
 
 ## Слой 3 — Логи (почему сломалось)
 
@@ -127,7 +135,7 @@ healthchecks.io (free): джоб в конце пингует URL, нет пин
 | `GRAFANA_LOKI_TOKEN` | read Loki — Claude читает логи узлов из сессии для анализа |
 | `GRAFANA_LOKI_WRITE_TOKEN` | write Loki — агенты Alloy (в конфиге на VPS) |
 | `GRAFANA_SA_TOKEN` | service account admin — Claude настраивает дашборды/алёрты |
-| `ALERT_BOT_TOKEN` | dev-бот @dev_test_podpiska_bot — канал алёртов Grafana |
+| `ALERT_BOT_TOKEN` | бот Гилфойла `@hermesbymxpk_bot` — канал алёртов приложения (`notifyOps`, Sentry) |
 | `ALERT_CHAT_ID` | `379336096` — куда шлём алёрты |
 
 SM access token и Prometheus push — служебные, получаются из Grafana API.
