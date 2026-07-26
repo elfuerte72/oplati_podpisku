@@ -102,6 +102,22 @@ export async function createGatewayInvoice(input: CreateInvoiceInput): Promise<G
     const fallback = fallbackGatewayFor(input.gateway);
     if (!fallback || !isPaymentGatewayUnavailable(err)) throw err;
 
+    // Минимум у шлюзов разный (L&P — 500 ₽, Freekassa — не объявлен). Порог
+    // проверяется в payments/create ДЛЯ ОСНОВНОГО шлюза, поэтому перед
+    // фоллбэком сверяем ещё раз: иначе заказ, проходящий по порогу основного,
+    // упёрся бы в отказ резервного — и клиент получил бы невнятную ошибку
+    // вместо честного «технический сбой».
+    const fallbackMinRub = minAmountRubFor(fallback);
+    if (fallbackMinRub > 0 && input.amountKopecks < fallbackMinRub * 100) {
+      log.warn({
+        event: 'payments.gateway.fallback_below_min',
+        fallback,
+        amountKopecks: input.amountKopecks,
+        fallbackMinRub,
+      });
+      throw err;
+    }
+
     log.error({
       event: 'payments.gateway.primary_unavailable',
       primary: input.gateway,

@@ -27,6 +27,7 @@
 | [`runbooks/backup-restore.md`](runbooks/backup-restore.md) | бэкапы в R2, учение по восстановлению, реальное восстановление прода |
 | [`runbooks/rollback.md`](runbooks/rollback.md) | откат (код / полный на Vercel+Supabase) и порядок гашения резерва |
 | [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki, Sentry, Better Stack |
+| [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 
 ## Справочники — внешние контракты и подсистемы
 

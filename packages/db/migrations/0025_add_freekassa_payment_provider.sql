@@ -4,4 +4,7 @@
 -- значение enum в той же транзакции, где оно добавлено, а мигратор оборачивает
 -- каждый файл в транзакцию (CLAUDE.md → «Enum-расширения — отдельной миграцией»).
 -- Любая строка `... = 'freekassa'` здесь уронила бы db:migrate на проде.
-ALTER TYPE "public"."payment_provider" ADD VALUE 'freekassa';
+-- IF NOT EXISTS: повторное применение (рассинхрон журнала миграций, ручной
+-- прогон при разборе инцидента) не должно падать — иначе один упавший ALTER
+-- заблокирует всю очередь миграций на проде.
+ALTER TYPE "public"."payment_provider" ADD VALUE IF NOT EXISTS 'freekassa';

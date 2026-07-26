@@ -398,6 +398,19 @@ describe('автофоллбэк на резервный шлюз', () => {
     ).rejects.toBe(fallbackErr);
   });
 
+  it('не уводим на резервный заказ ниже ЕГО минимума', async () => {
+    // Порог проверяется в payments/create для ОСНОВНОГО шлюза; у резервного он
+    // может быть выше (Freekassa 0 → L&P 500 ₽). Без этой проверки клиент
+    // получил бы невнятный отказ провайдера вместо «технический сбой».
+    const err = transportFailure();
+    h.createOrderMock.mockRejectedValueOnce(err);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 30_000 }),
+    ).rejects.toBe(err);
+    expect(h.createInvoiceMock).not.toHaveBeenCalled();
+  });
+
   it('DM владельцу дедуплицируется — пока шлюз лежит, личку не спамим', async () => {
     h.createInvoiceMock.mockRejectedValue(transportFailure());
 
