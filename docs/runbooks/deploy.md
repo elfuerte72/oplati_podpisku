@@ -27,9 +27,33 @@ push в main / dev
 | `main` | `oplatishka-web` (прод) | `DOKPLOY_DEPLOY_TOKEN_PROD` |
 | `dev` | `oplatishka-web-dev` | `DOKPLOY_DEPLOY_TOKEN_DEV` |
 
-`main` защищён ruleset'ом: прямой push запрещён, только PR с зелёными
-`Tests`/`Type Check`/`Lint`. Гейт внутри workflow — подстраховка на случай
+`main` защищён одним ruleset'ом `protectionOplatishka`: прямой push запрещён,
+только PR с зелёными `Tests`/`Type Check`/`Lint`/`Build`/`Secret Scan`/
+`Dependency Review`, merge-метод только squash, force-push и удаление ветки
+заблокированы. Гейт внутри workflow — подстраховка на случай
 `workflow_dispatch` и пушей в `dev`, у которого своего CI нет.
+
+```bash
+# посмотреть текущие правила
+gh api repos/elfuerte72/oplati_podpisku/rulesets --jq '.[] | "\(.id)\t\(.name)"'
+gh api repos/elfuerte72/oplati_podpisku/rulesets/19137923 \
+  --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+```
+
+Два правила, выведенные из собственных грабель 2026-07-25:
+
+1. **Держать РОВНО ОДИН ruleset на ветку.** Их было два (`protect-main` +
+   `protectionOplatishka`) с разными наборами: первый разрешал merge и rebase,
+   второй — только squash. GitHub применяет самое строгое из каждого, поэтому
+   разница не была видна, а удаление «лишнего» молча вернуло бы rebase-мерж.
+   Дубль удалён, бэкап снят перед удалением.
+2. **Новый чек делать обязательным только после нескольких зелёных прогонов.**
+   Required-чек, падающий по собственной ошибке, блокирует разом все merge. Так
+   вводили `Build`/`Secret Scan`.
+
+`Dependency Audit` в обязательные не входит осознанно: внутри у него
+`continue-on-error` (у pnpm сломан audit-эндпоинт), то есть упасть он не может и
+как гейт бесполезен. Уязвимости гейтит `Dependency Review`.
 
 Ручной перезапуск без коммита: `gh workflow run deploy.yml --ref main`.
 
