@@ -53,11 +53,24 @@ Vercel, сеть). Better Stack НЕ используется — у него н
 исключения со всех каналов: веб, бот, cron, платежи.
 
 Доставка в Telegram включена 2026-07-26 через **Internal Integration «Telegram
-Alerts»** (`telegram-alerts-d8df3a`), добавленную действием в правило 644412 рядом
-с Email. ⚠️ Legacy Webhooks (Settings → Webhooks) для этого **не годятся**: URL
-сохраняется, но действия в правиле не появляется, а кнопка «Send Test Event» падает
-на стороне Sentry (их API `test-fire-actions` отвечает `400`, до нас запрос не
-доходит вовсе).
+Alerts»** (`telegram-alerts-d8df3a`), добавленную действием в правило `669372`
+(проект `sentry-byzantium-battery`, орг `oplatishka`) **рядом с Email** — письма
+никуда не делись, канала теперь два. ⚠️ Legacy Webhooks (Settings → Webhooks) для
+этого **не годятся**: URL сохраняется, но действия в правиле не появляется, а
+кнопка «Send Test Event» падает на стороне Sentry (их API `test-fire-actions`
+отвечает `400`, до нас запрос не доходит вовсе).
+
+**Что именно долетает в Telegram.** Условие правила — «Sentry пометил проблему как
+high priority» (новую или существующую), а НЕ «любая новая ошибка»: события уровня
+`warning`/`info` в Telegram не приходят (например, `L&P webhook без
+X-Webhook-Signature`) — их видно только запросом в Sentry, в т.ч. из сводки
+агента. Расширять до «любой новой проблемы» осознанно не стали: в проекте лежит
+шумный CSP-issue (`Blocked 'script' from 'telegram.org'`, десятки срабатываний),
+который забил бы канал.
+
+Релей на проде: `ALERT_BOT_TOKEN` (бот Гилфойла), `ALERT_TELEGRAM_CHAT_ID`,
+`SENTRY_ALERT_WEBHOOK_SECRET` — все три заданы, иначе endpoint отвечает
+`200 {skipped:'not_configured'}` и молчит.
 
 ## Слой 3 — Логи (почему сломалось)
 
