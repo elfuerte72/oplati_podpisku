@@ -1,0 +1,50 @@
+# Traefik: публичное исключение для Telegram Mini App на dev-стенде.
+#
+# Установка (dev-VPS):
+#   scp infra/traefik/oplatishka-dev-miniapp.yml.example \
+#       root@VPS:/etc/dokploy/traefik/dynamic/oplatishka-dev-miniapp.yml
+#   docker service ls | grep oplatishka-web-dev
+#   sed -i 's|__WEB_DEV_SERVICE__|oplatishka-web-dev-XXXXXX|' \
+#     /etc/dokploy/traefik/dynamic/oplatishka-dev-miniapp.yml
+#
+# `/cabinet` и его зависимости доступны БЕЗ basic-auth. Причина та же, что у
+# `/api/bot`: WebView Telegram basic-auth не умеет — кабинет открывался белым
+# экраном «401 Unauthorized».
+#
+# Безопасность не ослаблена: `/api/cabinet` проверяет подпись initData Telegram на
+# КАЖДОМ запросе (lib/cabinet/auth.ts), без валидной подписи страница показывает
+# «открой из бота» и данных не отдаёт. Сам сайт (`/`) остаётся под basic-auth.
+#
+# ⚠️ Список путей исчерпывающий по факту, а не по замыслу: пропущенный
+# `/api/catalog` давал открывшийся кабинет с пустым экраном «Каталог не открылся».
+# При добавлении экранов в Mini App сверять:
+#   grep -rhoE "'/api/[a-z/_-]*'" apps/web/components/cabinet
+#
+# Что открыто и зачем:
+#   /cabinet        — страница Mini App
+#   /api/cabinet    — её бэкенд (+ /api/cabinet/referral), auth по initData
+#   /api/catalog    — витрина сервисов: read-only и публичная (на основном сайте
+#                     отдаётся всем), кабинет берёт список карточек оттуда же
+#   /_next          — JS/CSS бандл: без него страница не отрисуется вовсе
+#   /service-icons, /mascot, /intro — картинки витрины и маскота
+#   /vpn            — скриншоты Happ: их скачивает по ссылке сервер Telegram
+#                     для sendMediaGroup, basic-auth он тоже не умеет
+#
+# Отдельный файл — Dokploy его не перегенерирует (не per-app) и он переживает
+# редеплои. Откат: удалить файл, Traefik подхватит за секунды.
+http:
+  routers:
+    oplatishka-dev-miniapp:
+      rule: "Host(`dev.oplatishka.com`) && (PathPrefix(`/cabinet`) || PathPrefix(`/api/cabinet`) || PathPrefix(`/api/catalog`) || PathPrefix(`/_next`) || PathPrefix(`/service-icons`) || PathPrefix(`/mascot`) || PathPrefix(`/intro`) || PathPrefix(`/vpn`))"
+      service: oplatishka-dev-miniapp-svc
+      entryPoints:
+        - websecure
+      priority: 900000
+      tls:
+        certResolver: letsencrypt
+  services:
+    oplatishka-dev-miniapp-svc:
+      loadBalancer:
+        servers:
+          - url: http://__WEB_DEV_SERVICE__:3000
+        passHostHeader: true

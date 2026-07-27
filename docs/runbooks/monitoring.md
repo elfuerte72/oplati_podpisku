@@ -79,7 +79,7 @@ X-Webhook-Signature`) — их видно только запросом в Sentr
 Агент **Alloy** (docker `grafana-alloy`, `--restart unless-stopped`, читает
 `docker.sock`) шлёт логи в Loki. Конфиг: `/opt/alloy/config.alloy`.
 
-**Узел один — `hostinger-prod`** (`177.7.34.106`), на нём весь боевой контур.
+**Узел один — `hostinger-prod`** (`187.124.172.104`), на нём весь боевой контур.
 Агент на Timeweb остановлен 2026-07-25: тот VPS после перевода DNS не в пути
 трафика, и его логи только тратили квоту. Контейнер там не удалён — вернуть
 можно одной командой `docker start grafana-alloy`.
@@ -158,7 +158,7 @@ SM access token и Prometheus push — служебные, получаются 
 ## Сводка одной командой (для Hermes-агента и для человека)
 
 ```bash
-ssh root@177.7.34.106 'bash /root/.hermes/profiles/oplatishka/bin/oplatishka-status.sh'
+ssh root@187.124.172.104 'bash /root/.hermes/profiles/oplatishka/bin/oplatishka-status.sh'
 ```
 
 Показывает за один прогон: доступность сайта снаружи и время старта приложения,
