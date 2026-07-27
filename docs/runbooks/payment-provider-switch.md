@@ -140,3 +140,4 @@ FREEKASSA_ALLOWED_IPS=
 
 Контракт провайдера и открытые вопросы —
 [`../reference/freekassa-api.md`](../reference/freekassa-api.md).
+Все переменные окружения — [`../reference/env-vars.md`](../reference/env-vars.md).
