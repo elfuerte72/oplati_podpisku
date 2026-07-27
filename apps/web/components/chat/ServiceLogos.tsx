@@ -36,6 +36,9 @@ const IMAGE_LOGOS: Record<string, string> = {
   'gemini-advanced': '/service-icons/gemini.png',
   'grok-pro': '/service-icons/grok.png',
   higgsfield: '/service-icons/higgsfield.png',
+  // WebP вместо PNG: меньше вес при той же прозрачности, поддержка везде,
+  // где работает сайт. Путь хранится целиком, формат значения не имеет.
+  heygen: '/service-icons/heygen.webp',
   'linkedin-premium': '/service-icons/linkedin.png',
   'perplexity-pro': '/service-icons/perplexity.png',
 };

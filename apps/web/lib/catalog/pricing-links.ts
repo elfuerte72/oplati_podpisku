@@ -17,6 +17,7 @@ const SERVICE_PRICING_URLS: Readonly<Record<string, string>> = {
   'perplexity-pro': 'https://www.perplexity.ai/pro',
   suno: 'https://suno.com/pricing',
   higgsfield: 'https://higgsfield.ai/pricing',
+  heygen: 'https://www.heygen.com/pricing',
   'apple-music': 'https://www.apple.com/apple-music/',
   'apple-app-store': 'https://support.apple.com/en-us/118297',
   'icloud-plus-200gb': 'https://support.apple.com/en-us/108047',
