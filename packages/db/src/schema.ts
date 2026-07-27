@@ -64,6 +64,9 @@ export const paymentProviderEnum = pgEnum('payment_provider', [
   'manual',
   'loveandpay',
   'paypace',
+  // Второй шлюз приёма рублей (миграция 0025). Порядок значений в enum обязан
+  // совпадать с порядком ADD VALUE в БД, поэтому новое — строго в конец.
+  'freekassa',
 ]);
 
 export const cardStatusEnum = pgEnum('card_status', ['active', 'idle', 'recycled']);

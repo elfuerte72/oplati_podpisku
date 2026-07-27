@@ -243,6 +243,53 @@ export async function findPendingPaymentsForPoll(db: DB): Promise<PaymentRow[]> 
     .limit(POLL_BATCH_LIMIT);
 }
 
+export type InvoiceConversion = { invoiced: number; paid: number };
+
+/**
+ * Конверсия «счёт выставлен → оплачен» за окно.
+ *
+ * Зачем: о том, что Love&Pay перестал проводить платежи, узнали от клиентов, а
+ * не от системы — детектор недоступности ловит только транспорт, а «шлюз
+ * отвечает 200, ссылку выдаёт, оплаты не проходят» для кода выглядит успехом.
+ * Единственный сигнал такого отказа — падение конверсии.
+ *
+ * Окно со СДВИГОМ: считаем счета, выставленные в
+ * `[now - windowMinutes, now - graceMinutes]`. Свежие счета исключены намеренно —
+ * заказ, выставленный минуту назад, ещё не мог быть оплачен, и без отсрочки
+ * метрика вечно показывала бы недоплаченные.
+ *
+ * `DISTINCT order_id` обязателен: повторный confirm пишет ещё одно событие
+ * `payment_invoice_created` по тому же заказу (`duplicate: true`), и без
+ * дедупликации один заказ считался бы дважды.
+ */
+export async function countInvoiceConversion(
+  db: DB,
+  params: { windowMinutes: number; graceMinutes: number },
+): Promise<InvoiceConversion> {
+  const rows = await db.execute<{ invoiced: string | number; paid: string | number }>(sql`
+    WITH invoiced AS (
+      SELECT DISTINCT order_id
+      FROM order_events
+      WHERE event_type = 'payment_invoice_created'
+        AND created_at >= now() - make_interval(mins => ${params.windowMinutes}::int)
+        AND created_at <= now() - make_interval(mins => ${params.graceMinutes}::int)
+    )
+    SELECT
+      (SELECT count(*) FROM invoiced) AS invoiced,
+      (SELECT count(*) FROM invoiced i
+        WHERE EXISTS (
+          SELECT 1 FROM order_events e
+          WHERE e.order_id = i.order_id AND e.event_type = 'payment_succeeded'
+        )) AS paid
+  `);
+
+  const row = rows[0];
+  return {
+    invoiced: Number(row?.invoiced ?? 0),
+    paid: Number(row?.paid ?? 0),
+  };
+}
+
 export async function findPaymentByProviderRef(
   db: DB,
   provider: PaymentProvider,
@@ -252,6 +299,38 @@ export async function findPaymentByProviderRef(
     .select()
     .from(payments)
     .where(and(eq(payments.provider, provider), eq(payments.providerRef, providerRef)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Платёж по НАШЕМУ идентификатору, который был отправлен провайдеру при создании
+ * счёта (`payments.provider_invoice_number`).
+ *
+ * Нужен уведомлению Freekassa как ЗАПАСНОЙ путь поиска. Основной ключ —
+ * `providerRef` (в уведомлении это `intid`), но равенство `intid` тому
+ * `orderId`, который провайдер вернул при создании заказа, докой не
+ * гарантировано и живым вызовом ещё не подтверждено. Если `intid` окажется
+ * другим идентификатором, поиск по `MERCHANT_ORDER_ID` (= наш `paymentId`)
+ * спасает оплату от статуса «платёж не найден» вместо потери заказа.
+ *
+ * Однозначность обеспечивает вызывающий код: `paymentId` генерируется
+ * уникальным на попытку (`<shortId>-<hex>`), поэтому берём первую строку.
+ */
+export async function findPaymentByProviderInvoiceNumber(
+  db: DB,
+  provider: PaymentProvider,
+  providerInvoiceNumber: string,
+): Promise<PaymentRow | null> {
+  const rows = await db
+    .select()
+    .from(payments)
+    .where(
+      and(
+        eq(payments.provider, provider),
+        eq(payments.providerInvoiceNumber, providerInvoiceNumber),
+      ),
+    )
     .limit(1);
   return rows[0] ?? null;
 }

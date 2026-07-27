@@ -55,6 +55,8 @@ export {
 
 export { pingDb } from './health.ts';
 
+export { nextFreekassaNonce } from './freekassa.ts';
+
 export {
   generateReferralCode,
   resolveReferralCode,
@@ -151,6 +153,9 @@ export {
   claimPaymentTerminal,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
+  findPaymentByProviderInvoiceNumber,
+  countInvoiceConversion,
+  type InvoiceConversion,
   findPendingPaymentByOrderId,
   stripOldPaymentPayloads,
   findPaymentsByOrderId,

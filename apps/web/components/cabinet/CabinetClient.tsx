@@ -139,6 +139,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // initData в state (а не только в ref) — нужно при рендере секции «Партнёрам»
   // (PartnerCabinet получает initData как проп; ref читать в рендере нельзя).
   const [initData, setInitData] = useState('');
+  // Умеет ли клиент Telegram закрывать Mini App. В state, а не через
+  // `tgRef.current` в рендере: ref читать при рендере нельзя (и он всё равно
+  // пуст на первом проходе — кнопка не появилась бы после загрузки SDK).
+  const [canCloseApp, setCanCloseApp] = useState(false);
 
   // ─── Инициализация: SDK Telegram → snapshot ──────────────────────────────
   useEffect(() => {
@@ -154,6 +158,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       tgRef.current = tg;
       initDataRef.current = tg.initData;
       setInitData(tg.initData);
+      setCanCloseApp(typeof tg.close === 'function');
       try {
         tg.ready();
         tg.expand();
@@ -290,6 +295,13 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     }
   }, [detail, refreshDetail, reloadSnapshot]);
 
+  // Выход в поддержку из плашки ошибки: закрываем Mini App — пользователь
+  // оказывается в чате бота, где работает /support. Своего канала связи у
+  // кабинета нет, а оставлять клиента с «попробуй позже» без выхода нельзя.
+  const contactSupport = useCallback(() => {
+    tgRef.current?.close?.();
+  }, []);
+
   // Тактильный отклик онбординга (необязателен — только в новых клиентах TG).
   const introHaptic = useCallback((kind: 'tick' | 'success') => {
     const h = tgRef.current?.HapticFeedback;
@@ -365,6 +377,11 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           onOpenExternalLink={openExternalLink}
           onReportIssue={reportIssue}
           onSubscriptionPaid={confirmSubscriptionPaid}
+          // Закрываем Mini App — пользователь оказывается в чате бота, где
+          // работает /support. Своего канала связи у кабинета нет, а оставлять
+          // клиента с «попробуй позже» и без выхода нельзя. Старый клиент
+          // Telegram без close() → кнопку не показываем.
+          onContactSupport={canCloseApp ? contactSupport : undefined}
         />
       </main>
     );

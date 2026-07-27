@@ -25,19 +25,32 @@ import {
 /**
  * Логотипы сервисов витрины. Для брендов, где важна точная форма/цвет,
  * используем подготовленные bitmap assets из public/service-icons.
+ *
+ * Формат — WebP, lossless, 256×256 (на витрине рисуется 26px, запас на retina
+ * и на карточки покрупнее). Перевод с PNG 2026-07-27 срезал вес пачки вдвое,
+ * 235 КБ → 136 КБ; lossless выбран потому, что у логотипов резкие края и
+ * артефакты на них заметнее, чем экономия ещё пары килобайт.
+ *
+ * ⚠️ В WebP переводятся ТОЛЬКО браузерные картинки. НЕ трогать:
+ *   - `public/vpn/happ-step-*.jpg` — их скачивает по ссылке Telegram для
+ *     sendMediaGroup, а Bot API принимает фото в JPEG; WebP он либо отвергнет,
+ *     либо примет как стикер, и инструкция по VPN перестанет доходить;
+ *   - `app/apple-icon.png`, `app/icon.png`, `favicon.ico` — apple-touch-icon и
+ *     favicon в WebP не поддерживает Safari.
  */
 type ServiceIcon = SimpleIcon | { path: string; hex: string };
 
 const IMAGE_LOGOS: Record<string, string> = {
-  'chatgpt-plus': '/service-icons/openai.png',
-  'midjourney-basic': '/service-icons/midjourney.png',
-  'adobe-creative-cloud': '/service-icons/adobe-creative-cloud.png',
-  'figma-professional': '/service-icons/figma.png',
-  'gemini-advanced': '/service-icons/gemini.png',
-  'grok-pro': '/service-icons/grok.png',
-  higgsfield: '/service-icons/higgsfield.png',
-  'linkedin-premium': '/service-icons/linkedin.png',
-  'perplexity-pro': '/service-icons/perplexity.png',
+  'chatgpt-plus': '/service-icons/openai.webp',
+  'midjourney-basic': '/service-icons/midjourney.webp',
+  'adobe-creative-cloud': '/service-icons/adobe-creative-cloud.webp',
+  'figma-professional': '/service-icons/figma.webp',
+  'gemini-advanced': '/service-icons/gemini.webp',
+  'grok-pro': '/service-icons/grok.webp',
+  higgsfield: '/service-icons/higgsfield.webp',
+  heygen: '/service-icons/heygen.webp',
+  'linkedin-premium': '/service-icons/linkedin.webp',
+  'perplexity-pro': '/service-icons/perplexity.webp',
 };
 
 const xboxGlyph: ServiceIcon = {

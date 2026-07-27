@@ -27,6 +27,7 @@
 | [`runbooks/backup-restore.md`](runbooks/backup-restore.md) | бэкапы в R2, учение по восстановлению, реальное восстановление прода |
 | [`runbooks/rollback.md`](runbooks/rollback.md) | откат (код / полный на Vercel+Supabase) и порядок гашения резерва |
 | [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki, Sentry, Better Stack |
+| [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 
 ## Справочники — внешние контракты и подсистемы
 
@@ -34,6 +35,8 @@
 |---|---|
 | [`reference/remnawave-api.md`](reference/remnawave-api.md) | API панели VPN, контракт подтверждён живыми вызовами |
 | [`reference/loveandpay-api-access.md`](reference/loveandpay-api-access.md) | доступ к API L&P: подтверждение домена, allowlist IP |
+| [`reference/freekassa-api.md`](reference/freekassa-api.md) | контракт Freekassa (второй шлюз рублей). ⚠️ взят из доки, живым вызовом ещё не подтверждён |
+| [`reference/env-vars.md`](reference/env-vars.md) | **все переменные окружения**: что делает каждая, обязательна ли, что будет если не задать |
 | [`reference/ai-cost-protection.md`](reference/ai-cost-protection.md) | слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов |
 | [`reference/database.html`](reference/database.html) | как работает БД. ⚠️ написано в эпоху Supabase (2026-06), общая часть верна, инфраструктурная — нет |
 

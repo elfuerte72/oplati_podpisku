@@ -53,6 +53,11 @@ const redactPaths: string[] = [
   '*.initData',
   '*.init_data',
   '*.signature',
+  // Freekassa: `payer_account` — счёт/карта плательщика в уведомлении. Код его
+  // не логирует (в `payments.raw_payload` уходит только маска, см.
+  // `toStorableNotification`), это страховочный слой на будущий рефакторинг.
+  '*.payer_account',
+  '*.SIGN',
   'body.content',
   'body.text',
   'body.message',
