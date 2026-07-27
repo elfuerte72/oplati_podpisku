@@ -192,10 +192,33 @@ refresh token в Dokploy + обновить секрет.
 ⚠️ `gh secret set --body -` НЕ читает stdin, а пишет литерал `-` — задавать через
 `gh secret set NAME < file`.
 
-**Миграции/seed** на dev-БД гоняются локально: в корневом `.env` — `DEV_DATABASE_URL`,
-`DEV_DATABASE_URL_DIRECT`, `DEV_CRON_SECRET`; запуск —
-`DATABASE_URL_DIRECT="$DEV_DATABASE_URL_DIRECT" pnpm --filter @oplati/db db:migrate`
-(shell-env имеет приоритет над `--env-file`; тот же приоритет теперь и у `db:init-roles`).
+**Миграции/seed на dev-БД — ТОЛЬКО с VPS, снаружи она недоступна** (найдено
+2026-07-27). ⚠️ `DEV_DATABASE_URL`/`DEV_DATABASE_URL_DIRECT` в корневом `.env`
+указывают на **мёртвую dev-Supabase эпохи Vercel** — seed по ним отрабатывает
+«успешно» и уходит в никуда, приложение изменений не видит. Настоящая dev-БД —
+контейнер `oplatishka-db-dev-*` в overlay-сети swarm: порт наружу не
+опубликован, ssh-туннель на IP контейнера (`10.0.1.x`) не проходит. Рабочий
+путь — прогнать SQL через `docker exec` на VPS:
+```bash
+base64 -i my.sql | ssh root@177.7.34.106 "base64 -d > /tmp/q.sql && \
+  docker exec -i \$(docker ps --filter name=oplatishka-db-dev -q) \
+  psql -U oplatishka -d oplatishka < /tmp/q.sql; rm -f /tmp/q.sql"
+```
+Строка подключения (с паролем) лежит в env dev-приложения Dokploy. Прод-БД —
+так же, контейнер `oplatishka-db-ry3smb`. Shell-env имеет приоритет над
+`--env-file` (тот же приоритет у `db:init-roles`) — это по-прежнему верно.
+
+⚠️ **Каталог сервисов живёт в БД, а не в коде.** Мерж в `main` НЕ добавит новый
+сервис в витрину: после деплоя нужно отдельно применить seed к прод-БД. Витрина
+кэшируется в памяти инстанса 5 минут (`lib/catalog/load.ts`).
+
+⚠️ **dev-домен под Basic Auth, а Telegram его не умеет.** WebView Mini App и
+серверы Telegram (скачивают картинки для `sendMediaGroup`) получают `401`.
+Исключения вынесены отдельными файлами Traefik на VPS, Dokploy их не
+перегенерирует: `oplatishka-dev-webhook.yml` (`/api/bot`) и
+`oplatishka-dev-miniapp.yml` (`/cabinet`, `/api/cabinet`, `/_next`, картинки).
+Данные не открыты: `/api/cabinet` проверяет подпись `initData` на каждом
+запросе, сам сайт `/` остаётся под Basic Auth.
 Локальная разработка (`pnpm dev`) ходит в dev-БД, не в прод.
 
 **Пайплайн:** feature-ветка → push → PR → CI (`Tests`/`Type Check`/`Lint`/`Build`/`Secret Scan`) →

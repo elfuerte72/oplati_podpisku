@@ -35,7 +35,11 @@ describe('IMAGE_LOGOS', () => {
     expect(existsSync(join(PUBLIC_DIR, path))).toBe(true);
   });
 
-  it('HeyGen отдаётся в webp', () => {
-    expect(Object.fromEntries(entries).heygen).toBe('/service-icons/heygen.webp');
+  it('все иконки — webp: браузерные картинки держим в одном оптимизированном формате', () => {
+    // JPEG для Telegram (public/vpn) и PNG для favicon сюда не попадают —
+    // они не проходят через эту карту.
+    for (const [slug, path] of entries) {
+      expect(path, `${slug} должен быть .webp`).toMatch(/\.webp$/);
+    }
   });
 });
