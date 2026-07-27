@@ -216,7 +216,10 @@ base64 -i my.sql | ssh root@177.7.34.106 "base64 -d > /tmp/q.sql && \
 серверы Telegram (скачивают картинки для `sendMediaGroup`) получают `401`.
 Исключения вынесены отдельными файлами Traefik на VPS, Dokploy их не
 перегенерирует: `oplatishka-dev-webhook.yml` (`/api/bot`) и
-`oplatishka-dev-miniapp.yml` (`/cabinet`, `/api/cabinet`, `/_next`, картинки).
+`oplatishka-dev-miniapp.yml` (`/cabinet`, `/api/cabinet`, `/api/catalog`, `/_next`, картинки).
+⚠️ Список путей — исчерпывающий по факту: пропущенный `/api/catalog` давал
+открывшийся кабинет с пустым экраном «Каталог не открылся». При добавлении
+экранов в Mini App сверять `grep -rhoE "'/api/[a-z/_-]*'" components/cabinet`.
 Данные не открыты: `/api/cabinet` проверяет подпись `initData` на каждом
 запросе, сам сайт `/` остаётся под Basic Auth.
 Локальная разработка (`pnpm dev`) ходит в dev-БД, не в прод.
