@@ -9,7 +9,10 @@ import {
 } from './sign.ts';
 
 const API_KEY = 'test-api-key';
-const SECRET_2 = 'secret-word-2';
+// Значение намеренно БЕЗ слова «secret» внутри: строка формулы ниже
+// содержит его целиком, и сканер секретов принимает её за утечку
+// (ложное срабатывание generic-api-key, уронило CI 2026-07-27).
+const SECRET_2 = 'w2-fixture';
 
 describe('подпись запроса к API (HMAC-SHA256)', () => {
   const params = {
@@ -74,7 +77,7 @@ describe('подпись уведомления (MD5)', () => {
   };
 
   const validSign = createHash('md5')
-    .update('777:2490.50:secret-word-2:ORD-S3MGS-a1b2c3')
+    .update('777:2490.50:w2-fixture:ORD-S3MGS-a1b2c3')
     .digest('hex');
 
   it('считается по формуле MERCHANT_ID:AMOUNT:секрет2:MERCHANT_ORDER_ID', () => {
