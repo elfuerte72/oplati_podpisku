@@ -212,6 +212,33 @@ python3 -c "import yaml; yaml.safe_load(open('/tmp/new.yml'))" \
 
 ---
 
+## ⚠️ Деплой НЕ применяет миграции БД
+
+Пайплайн собирает образ и перезапускает сервис — и только. Если в мерже была
+новая миграция, её надо применить отдельно, иначе получится «зелёный деплой при
+живом `/api/health` и сломанной фиче»: ровно так 2026-07-28 Freekassa не смогла
+выставить ни одного счёта (`freekassa_nonce` не существовал), см.
+[`incidents.md`](../incidents.md).
+
+Прод-БД снаружи недоступна, поэтому применение — с VPS:
+
+```bash
+# что уже применено на проде (последние записи журнала Drizzle)
+ssh root@187.124.172.104 "docker exec \$(docker ps --filter name=oplatishka-db-ry3smb -q) \
+  psql -U oplatishka -d oplatishka -t -A -c \
+  'select id, hash from drizzle.__drizzle_migrations order by id desc limit 3'"
+
+# hash в журнале = sha256 файла миграции — так и сверяют, чего не хватает
+shasum -a 256 packages/db/migrations/00XX_*.sql
+
+# применение: SQL через docker exec (см. CLAUDE.md), затем дописать журнал
+# INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+#   VALUES ('<sha256 файла>', <when из meta/_journal.json>);
+```
+
+Запись в журнал обязательна: без неё следующий `db:migrate` попробует применить
+миграцию повторно.
+
 ## Проверка после деплоя
 
 ```bash
