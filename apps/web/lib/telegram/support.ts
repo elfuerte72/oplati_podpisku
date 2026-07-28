@@ -52,10 +52,30 @@ export async function sendToSupportOperator(
     if (err instanceof GrammyError && err.error_code === 403) {
       // Оператор не запускал бота (или заблокировал) — DM невозможен. Критично.
       log.error({ event: 'telegram.support.operator_unreachable', target, ...logCtx });
+    } else if (err instanceof GrammyError) {
+      // Тело запроса (`err.payload.text`) — это ТЕКСТ ОБРАЩЕНИЯ клиента вместе
+      // с контекстом заказа. grammY кладёт его в перечисляемое поле, и
+      // `log.error({ err })` печатал бы всё это в stdout → Loki (аудит
+      // 2026-07-28, тот же механизм, что утечка PAN в issue-card).
+      log.error({
+        event: 'telegram.support.notify_failed',
+        errorCode: err.error_code,
+        description: err.description,
+        ...logCtx,
+      });
     } else {
-      log.error({ event: 'telegram.support.notify_failed', err, ...logCtx });
+      log.error({
+        event: 'telegram.support.notify_failed',
+        message: err instanceof Error ? err.message : String(err),
+        ...logCtx,
+      });
     }
-    Sentry.captureException(err, { tags: { source: 'telegram.support' } });
+    Sentry.captureException(
+      err instanceof GrammyError
+        ? new Error(`GrammyError ${err.error_code}: ${err.description}`)
+        : err,
+      { tags: { source: 'telegram.support' } },
+    );
     return false;
   }
 }

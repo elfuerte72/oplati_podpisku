@@ -43,7 +43,7 @@ export type RateLimitResult = {
   remaining: number;
 };
 
-export type RateLimitName = 'web-chat' | 'telegram' | 'web-order' | 'web-link';
+export type RateLimitName = 'web-chat' | 'telegram' | 'web-order' | 'web-order-status' | 'web-link';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
@@ -58,6 +58,15 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   'web-chat': { limit: 12, windowSeconds: 60 },
   telegram: { limit: 20, windowSeconds: 60 },
   'web-order': { limit: 8, windowSeconds: 60 },
+  // Отдельный бакет для ЧТЕНИЯ статуса (аудит 2026-07-28). После оплаты клиент
+  // опрашивает `/api/orders/status` каждые 4 с до 5 минут — это ~15 запросов в
+  // минуту против лимита 8 у общего с ним `web-order`. Итог был двойной: штамп
+  // «ОПЛАЧЕНО» приходил поздно, а исчерпанный бакет блокировал СОЗДАНИЕ
+  // следующего заказа с того же IP на пять минут. За CGNAT мобильных операторов
+  // (основная аудитория) в один IP схлопывается несколько живых клиентов,
+  // поэтому запас взят кратный: 60 = 4 клиента, опрашивающих одновременно.
+  // Разделять безопасно: это read-only роут, он не создаёт ни сессий, ни строк.
+  'web-order-status': { limit: 60, windowSeconds: 60 },
   // web-link: токен привязки выпускается ЗАРАНЕЕ при рендере кнопки (прямая
   // <a>-ссылка вместо window.open, фикс мобильной привязки 2026-07-03), а не
   // по клику — базовый расход выше, лимит поднят 5 → 10.

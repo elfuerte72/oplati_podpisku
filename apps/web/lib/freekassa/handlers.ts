@@ -315,6 +315,15 @@ export async function processFreekassaPaid(
     dispatchIssueCard(payment.orderId);
     // Реферальные начисления — inline await (дёшево и гарантированно до 200 OK).
     await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
+  } else {
+    // Платёж succeeded, а заказ в paid не перешёл (запрещённый переход из
+    // expired/cancelled). Деньги приняты, fulfillment не запустится, и ни один
+    // recovery такое не подхватит: `findStuckPaidOrders` ищет `paid`,
+    // `findPendingPaymentsForPoll` — `pending`. До аудита 2026-07-28 это
+    // уходило только в Sentry — то есть могло остаться незамеченным.
+    await notifyOps(
+      `Оплата принята (Freekassa, операция ${intid}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
+    );
   }
 
   log.info({

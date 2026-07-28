@@ -10,6 +10,7 @@ import { formatRub, formatUsd } from '@/components/comic/format';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { buyerFeeNote } from '@/lib/payments/buyer-fee';
+import { parseCustomAmountUsd } from '@/lib/telegram/amount';
 
 import { HowItWorksOverlay } from './HowItWorksOverlay';
 import { ServiceLogo } from './ServiceLogos';
@@ -153,14 +154,18 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
   const submitAmount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selected) return;
-    const usd = Number(amount.replace(',', '.'));
+    // ОБЩИЙ парсер (аудит 2026-07-28): `Number(amount.replace(',', '.'))`
+    // превращал «5,000» в $5 — клиент вводил пять тысяч, получал заказ на пять
+    // долларов. Фикс разделителя тысяч был сделан только для бота (M-5), в UI
+    // его не перенесли; теперь оба канала разбирают сумму одинаково.
+    const parsed = parseCustomAmountUsd(amount, selected.slug);
     const maxUsd = maxAmountUsdFor(selected.slug);
-    if (!Number.isFinite(usd) || usd < MIN_AMOUNT_USD || usd > maxUsd) {
+    if (parsed.kind !== 'ok') {
       setAmountError(`Сумма — от $${MIN_AMOUNT_USD} до $${maxUsd}. Больше? Напишите в чат, оформим через оператора.`);
       return;
     }
     setAmountError(null);
-    void propose(selected.slug, { amountUsdCents: Math.round(usd * 100) });
+    void propose(selected.slug, { amountUsdCents: parsed.usdCents });
   };
 
   const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);

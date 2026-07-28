@@ -37,6 +37,33 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
 
   for (const order of expired) {
     try {
+      // ПОРЯДОК ВАЖЕН (аудит 2026-07-28): сначала клеймим платёж, потом хороним
+      // заказ. Раньше было наоборот, и вебхук, пришедший между двумя запросами,
+      // давал неисправимое состояние: `claimPaymentSucceeded` побеждал (платёж
+      // ещё pending), а следом `transitionOrder(paid)` из уже `expired` был
+      // запрещён — деньги приняты, заказ мёртв, recovery не видит его ни как
+      // `paid`, ни как `pending`.
+      //
+      // Claim работает замком: он атомарно переводит pending → failed. Не
+      // получилось (null) — значит платёж уже забрал кто-то другой (вебхук или
+      // poll), оплата в процессе, и хоронить заказ НЕЛЬЗЯ: победитель сам
+      // переведёт его в `paid`. Пропускаем — следующий прогон разберётся.
+      const pendingPayment = await findPendingPaymentByOrderId(db, order.id);
+      if (pendingPayment) {
+        const claimed = await claimPaymentTerminal(db, pendingPayment.id, log);
+        if (!claimed) {
+          log.info({
+            event: 'cron.expire_payments.payment_claimed_elsewhere',
+            orderId: order.id,
+            paymentId: pendingPayment.id,
+          });
+          continue;
+        }
+      }
+
+      // Платёж заклеймён (или его не было — протухший черновик). Теперь заказ
+      // можно хоронить: поздняя оплата по failed-платежу пойдёт по ветке
+      // `paid_after_terminal` с алёртом и DM владельцу.
       await transitionOrder(db, {
         orderId: order.id,
         toStatus: 'expired',
@@ -44,19 +71,6 @@ export async function expirePayments(): Promise<{ expired: number; errors: numbe
         eventType: 'order_expired',
         payload: { shortId: order.shortId },
       });
-
-      // L-4 аудита: висящий pending-платёж захороненного заказа клеймим тем же
-      // проходом (pending → failed атомарным условным UPDATE) — иначе он вечно
-      // числится «живым» и попадает в окно poll-payment. Гонку с оплатой
-      // разруливает сам claim: уже succeeded платёж он не тронет. Транзиентный
-      // сбой claim'а после перехода самолечится: платёж остаётся pending →
-      // poll-payment добьёт его через processInvoiceTerminal. Поздний
-      // invoice.paid по уже failed-платежу алертится в processInvoicePaid
-      // (paid_after_terminal — деньги приняты, нужен ручной возврат).
-      const pendingPayment = await findPendingPaymentByOrderId(db, order.id);
-      if (pendingPayment) {
-        await claimPaymentTerminal(db, pendingPayment.id, log);
-      }
 
       const telegramId = await getUserTelegramId(db, order.userId);
       if (telegramId) {
