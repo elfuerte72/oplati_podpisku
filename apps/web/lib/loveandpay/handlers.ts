@@ -248,8 +248,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
 
   // Побочные эффекты — только когда заказ реально перешёл в paid (находка
   // аудита I4: раньше «Оплата получена, обрабатываем заказ» уходило и клиенту,
-  // оплатившему мёртвый счёт, хотя обработка не начиналась). Аномальный кейс
-  // (paidOk=false) уже заалерчен выше — им занимается оператор.
+  // оплатившему мёртвый счёт, хотя обработка не начиналась).
   if (outcome.paidOk) {
     // Уведомляем пользователя в Telegram, что оплата получена — срабатывает всегда
     // при переходе в `paid` (даже если PaySpace не настроен и карта не выпускается).
@@ -264,6 +263,16 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     // await (а не dispatch): дёшево, и гарантированно отрабатывает до 200 OK
     // (setImmediate Vercel может заморозить).
     await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
+  } else {
+    // Платёж succeeded, а заказ в paid не перешёл (запрещённый переход из
+    // терминального статуса). Деньги приняты, fulfillment не запустится, и
+    // recovery такое не подхватывает: `findStuckPaidOrders` ищет `paid`,
+    // `findPendingPaymentsForPoll` — `pending`. До аудита 2026-07-28 здесь был
+    // только Sentry (и комментарий, будто DM уже ушёл выше — он уходит в другой
+    // ветке, `paid_after_terminal`).
+    await notifyOps(
+      `Оплата принята (Love&Pay, инвойс ${data.invoiceNumber ?? data.id}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
+    );
   }
 
   log.info({

@@ -14,7 +14,11 @@ import pino, { type Logger, type LoggerOptions } from 'pino';
 const isDev = process.env.NODE_ENV !== 'production';
 const defaultLevel = process.env.LOG_LEVEL ?? (isDev ? 'debug' : 'info');
 
-const redactPaths: string[] = [
+/**
+ * Экспортируется ради canary-теста: список путей — это защита от утечки PII,
+ * и его сужение должно ронять тест, а не выясняться в проде по логам.
+ */
+export const redactPaths: string[] = [
   // headers
   'req.headers.authorization',
   'req.headers.cookie',
@@ -45,6 +49,14 @@ const redactPaths: string[] = [
   // код никогда их не логирует (card-secrets.ts, non-enumerable rawBody); это
   // страховочный слой на случай будущего рефакторинга. pan_masked НЕ редактируем
   // (маскированный PAN — легитимный идентификатор в логах).
+  // Тело запроса grammY: `GrammyError.payload` — ПЕРЕЧИСЛЯЕМОЕ поле, и pino
+  // сериализует его вместе с ошибкой. В сообщении о выпуске карты там лежат
+  // полный PAN и CVC, а путь `*.text` до `err.payload.text` не достаёт: у него
+  // глубина 2. Первичная защита — не логировать такие ошибки целиком
+  // (`jobs/issue-card.ts` → `logSendFailure`), это страховка на будущий код.
+  '*.payload.text',
+  '*.payload.caption',
+  'err.payload',
   '*.pan',
   '*.cvc',
   '*.cvv',

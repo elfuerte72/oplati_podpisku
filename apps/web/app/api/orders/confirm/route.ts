@@ -9,6 +9,8 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   confirmOrder,
+  aboveMaxAmountText,
+  OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
   TELEGRAM_LINK_REQUIRED,
@@ -115,6 +117,15 @@ export async function POST(req: Request): Promise<NextResponse> {
           text: 'Срок фиксации цены истёк — оформи заказ заново, сумма пересчитается по свежему курсу.',
         },
         { status: 409 },
+      );
+    }
+    // Сумма выше лимита операции у шлюза: повтор не поможет, поэтому не
+    // «технический сбой», а честная причина с конкретной цифрой.
+    if (err instanceof OrderAboveMaxAmountError) {
+      log.info({ event: 'web-chat.confirm.above_max_amount', orderId });
+      return NextResponse.json(
+        { ok: false, error: 'above_max_amount', text: aboveMaxAmountText(err.maxAmountRub) },
+        { status: 422 },
       );
     }
     // Тех. сбой транспорта до L&P (лежит прокси / таймаут / 5xx провайдера):

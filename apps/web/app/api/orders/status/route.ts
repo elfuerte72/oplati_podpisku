@@ -40,7 +40,7 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   // Rate-limit по IP ДО резолва сессии и обращения к БД: без cookie каждый запрос
   // иначе получал бы обработку заново — раньше это плодило строки users (cost-DoS).
-  const rl = await checkRateLimit('web-order', getClientIp(req));
+  const rl = await checkRateLimit('web-order-status', getClientIp(req));
   if (!rl.allowed) {
     return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429 });
   }

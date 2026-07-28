@@ -10,6 +10,7 @@ import { ServicePricingButton } from '@/components/catalog/ServicePricingButton'
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { buyerFeeNote } from '@/lib/payments/buyer-fee';
+import { parseCustomAmountUsd } from '@/lib/telegram/amount';
 import { ServiceLogo } from '@/components/chat/ServiceLogos';
 
 import { doPropose } from './cabinet-api';
@@ -137,13 +138,14 @@ export function CatalogView({
   const submitAmount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selected) return;
-    const usd = Number(amount.replace(',', '.'));
+    // Тот же общий парсер, что в боте и на сайте: «5,000» — это $5000, а не $5.
+    const parsed = parseCustomAmountUsd(amount, selected.slug);
     const maxUsd = maxAmountUsdFor(selected.slug);
-    if (!Number.isFinite(usd) || usd < MIN_AMOUNT_USD || usd > maxUsd) {
+    if (parsed.kind !== 'ok') {
       setNotice(`Сумма — от $${MIN_AMOUNT_USD} до $${maxUsd}. Больше? Напиши боту в чат, оформим через оператора.`);
       return;
     }
-    void propose(selected.slug, { amountUsdCents: Math.round(usd * 100) });
+    void propose(selected.slug, { amountUsdCents: parsed.usdCents });
   };
 
   const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);

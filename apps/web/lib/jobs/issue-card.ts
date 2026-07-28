@@ -1,7 +1,7 @@
 import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
-import { InlineKeyboard } from 'grammy';
+import { GrammyError, InlineKeyboard } from 'grammy';
 
 import {
   createCard,
@@ -445,8 +445,13 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
       panMasked: args.panMasked,
     });
   } catch (err) {
-    log.error({ event: 'job.issue_card.send_credentials.failed', shortId: args.serviceShortId, err });
-    Sentry.captureException(err, {
+    // ⚠️ НИКОГДА не логировать `err` целиком: это сообщение содержит полный PAN и
+    // CVC, а grammY кладёт тело запроса в перечисляемое `err.payload`, откуда
+    // pino вытащит `payload.text` со всеми реквизитами (redact-пути logger.ts
+    // работают на глубине 2 и такой вложенности не видят). Логируем только код
+    // и описание — тот же приём, что в `lib/telegram/send.ts`.
+    logSendFailure('job.issue_card.send_credentials.failed', args.serviceShortId, err);
+    Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'send_credentials' },
     });
   }
@@ -487,11 +492,39 @@ async function sendTopupNotice(args: {
     });
     log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
   } catch (err) {
-    log.error({ event: 'job.issue_card.topup_notice.failed', shortId: args.serviceShortId, err });
-    Sentry.captureException(err, {
+    // Реквизитов в этом сообщении нет, но текст всё равно клиентский —
+    // логируем так же узко, как и в ветке с реквизитами.
+    logSendFailure('job.issue_card.topup_notice.failed', args.serviceShortId, err);
+    Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'topup_notice' },
     });
   }
+}
+
+/**
+ * Безопасный лог сбоя отправки: из `GrammyError` берём ТОЛЬКО код и описание.
+ * Само тело запроса (`err.payload.text`) несёт PAN и CVC — оно не должно попасть
+ * ни в stdout, ни в docker json-file, ни в Loki.
+ */
+function logSendFailure(event: string, shortId: string, err: unknown): void {
+  if (err instanceof GrammyError) {
+    log.error({ event, shortId, errorCode: err.error_code, description: err.description });
+    return;
+  }
+  log.error({ event, shortId, message: err instanceof Error ? err.message : String(err) });
+}
+
+/**
+ * То же для Sentry: отдаём плоскую ошибку без `payload`. Дефолтный Node-SDK
+ * нестандартные поля не сериализует, но полагаться на это в коде, который держит
+ * в руках реквизиты карты, нельзя — включённый кем-то `extraErrorDataIntegration`
+ * молча превратил бы отчёт в утечку.
+ */
+function sanitizeSendError(err: unknown): Error {
+  if (err instanceof GrammyError) {
+    return new Error(`GrammyError ${err.error_code}: ${err.description}`);
+  }
+  return err instanceof Error ? new Error(err.message) : new Error(String(err));
 }
 
 function buildCardActionKeyboard(pricingUrl: string | null): InlineKeyboard {

@@ -281,6 +281,24 @@ async function handleCallbackQuery(
     return;
   }
 
+  // Rate-limit на КНОПКИ (аудит 2026-07-28). Раньше лимит стоял только на
+  // текстовом пути, а callback'и уходили мимо — при том, что за ними живут
+  // внешние вызовы: `vpn`/`vpn:refresh` создают и отзывают юзеров в панели
+  // Remnawave, `confirm:<orderId>` выставляет счёт у платёжного шлюза, а
+  // резолв контекста делает INSERT в `users`. Зажатая кнопка = сотни обращений
+  // в минуту. Бакет общий с текстом: это один и тот же пользователь.
+  const cbIdentity = String(cb.from?.id ?? chatId);
+  const cbRl = await checkRateLimit('telegram', cbIdentity);
+  if (!cbRl.allowed) {
+    log.warn({ event: 'telegram.callback.rate_limited', updateId, chatId, action });
+    await sendSafely(
+      chatId,
+      'Слишком много нажатий подряд. Подожди минутку и попробуй снова.',
+      updateId,
+    );
+    return;
+  }
+
   // Кнопочный каталог в чате — за флагом BOT_AI_ENABLED. Выключен (по умолчанию,
   // 2026-07-03) → каталожные кнопки (в т.ч. старые в истории чата) не реагируют
   // (callback уже подтверждён выше — кнопка не крутится). support / vpn / channel /
