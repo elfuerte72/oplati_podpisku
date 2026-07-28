@@ -133,6 +133,19 @@ describe('getClientIp (M3: анти-спуфинг)', () => {
     return new Request('https://example.com/api', { headers });
   }
 
+  // Режим задаём ЯВНО: с 2026-07-28 дефолт — `traefik` (прод за Dokploy), а этот
+  // блок проверяет семантику Vercel, где `x-real-ip` проставляет сама платформа.
+  beforeEach(() => {
+    // resetModules обязателен: serverEnv кэширует разбор env при первом
+    // обращении, без сброса модуль останется с режимом от предыдущего блока.
+    vi.resetModules();
+    process.env.CLIENT_IP_MODE = 'vercel';
+  });
+  afterEach(() => {
+    delete process.env.CLIENT_IP_MODE;
+    vi.resetModules();
+  });
+
   it('приоритет доверенного x-real-ip над подделанным x-forwarded-for', async () => {
     const { getClientIp } = await loadModule();
     const req = reqWith({
@@ -176,10 +189,14 @@ describe('getClientIp за реверс-прокси (X-Client-IP за секр�
   beforeEach(() => {
     vi.resetModules();
     delete process.env.PROXY_SHARED_SECRET;
+    // Схема с X-Client-IP — эпоха Vercel (там платформа затирала x-real-ip),
+    // поэтому режим задаём явно: дефолтом с 2026-07-28 стал `traefik`.
+    process.env.CLIENT_IP_MODE = 'vercel';
   });
 
   afterEach(() => {
     delete process.env.PROXY_SHARED_SECRET;
+    delete process.env.CLIENT_IP_MODE;
     vi.resetModules();
   });
 
@@ -284,20 +301,23 @@ describe('getClientIp за Dokploy-Traefik (CLIENT_IP_MODE=traefik)', () => {
     expect(getClientIp(reqWith({ 'x-real-ip': '6.6.6.6' }))).toBe('unknown');
   });
 
-  it('CLIENT_IP_MODE не задан → прежняя Vercel-логика (x-real-ip в приоритете)', async () => {
+  // Дефолт сменён на `traefik` (аудит 2026-07-28): потеря переменной не должна
+  // молча включать доверие к клиентскому `x-real-ip` — за Traefik он
+  // подделывается, и per-IP лимит обходился бы полностью (CWE-348).
+  it('CLIENT_IP_MODE не задан → traefik-логика (правый x-forwarded-for), а НЕ x-real-ip', async () => {
     delete process.env.CLIENT_IP_MODE;
     const { getClientIp } = await loadModule();
     const req = reqWith({
-      'x-real-ip': '203.0.113.5',
-      'x-forwarded-for': '6.6.6.6, 10.0.0.1',
+      'x-real-ip': '6.6.6.6', // подделка клиента — игнорируется
+      'x-forwarded-for': '6.6.6.6, 203.0.113.5', // правый элемент пишет сам Traefik
     });
     expect(getClientIp(req)).toBe('203.0.113.5');
   });
 
-  it('CLIENT_IP_MODE="" → дефолт vercel (пустая строка не ломает env-схему)', async () => {
+  it('CLIENT_IP_MODE="" → тот же безопасный дефолт (пустая строка не ломает env-схему)', async () => {
     process.env.CLIENT_IP_MODE = '';
     const { getClientIp } = await loadModule();
-    const req = reqWith({ 'x-real-ip': '203.0.113.5', 'x-forwarded-for': '6.6.6.6' });
+    const req = reqWith({ 'x-real-ip': '6.6.6.6', 'x-forwarded-for': '6.6.6.6, 203.0.113.5' });
     expect(getClientIp(req)).toBe('203.0.113.5');
   });
 });

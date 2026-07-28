@@ -456,3 +456,20 @@ describe('автофоллбэк на резервный шлюз', () => {
     expect(notifyOps).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('422 above_max_amount разбирается как типизированный отказ (аудит 2026-07-28)', () => {
+  it('текст для клиента называет лимит и не обещает оператора-заглушку', async () => {
+    const { aboveMaxAmountText } = await import('@/lib/tool-handlers/confirm-order.ts');
+
+    const withLimit = aboveMaxAmountText(140_000);
+    // Клиент должен увидеть причину и цифру, а не «технический сбой у провайдера»:
+    // повтор такого заказа не пройдёт никогда, сколько ни ждать.
+    // \s — ru-RU-локаль ставит неразрывный пробел между разрядами.
+    expect(withLimit).toMatch(/140\s?000\s?₽/);
+    expect(withLimit).toContain('поддержку');
+    expect(withLimit).not.toContain('технич');
+
+    // Лимит не пришёл в теле — текст всё равно осмысленный.
+    expect(aboveMaxAmountText(null)).toContain('лимит платёжной системы');
+  });
+});

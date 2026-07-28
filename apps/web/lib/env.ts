@@ -373,9 +373,16 @@ const serverEnvSchema = z.object({
   // per-IP лимит, CWE-348), доверенный источник — ПРАВЫЙ элемент
   // `x-forwarded-for`. Включать ТОЛЬКО после живой проверки контракта Traefik
   // на тестовом контуре (Фаза 3.4 docs/dokploy-migration-plan.md).
+  // ДЕФОЛТ `traefik` (сменён с `vercel` 2026-07-28): прод и dev живут за
+  // Dokploy-Traefik, Vercel остался только дальним резервом отката. Прежний
+  // дефолт был небезопасным — потеря переменной (а правка env через API Dokploy
+  // перезаписывает его ЦЕЛИКОМ) молча включала доверие к `x-real-ip`, который
+  // за Traefik подделывается клиентом, и per-IP лимит обходился полностью
+  // (CWE-348, инвариант 9). Ошибиться в сторону строгого режима безопаснее:
+  // на Vercel неверный режим даёт слишком строгий лимит, а не дырявый.
   CLIENT_IP_MODE: z.preprocess(
     (v) => (v === '' ? undefined : v),
-    z.enum(['vercel', 'traefik']).default('vercel'),
+    z.enum(['vercel', 'traefik']).default('traefik'),
   ),
   RATE_LIMIT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())

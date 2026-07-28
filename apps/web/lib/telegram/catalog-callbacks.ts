@@ -16,7 +16,11 @@ import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import { currentBuyerFeePercent } from '@/lib/payments/gateway';
-import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
+import {
+  aboveMaxAmountText,
+  confirmOrder,
+  OrderAboveMaxAmountError,
+} from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
 import { getBot } from './bot';
@@ -365,6 +369,12 @@ export async function handleOrderActionCallback(
         tags: { source: 'telegram.callback', step: 'confirm' },
         extra: { orderId },
       });
+      // Лимит операции шлюза — не сбой провайдера: ретрай не поможет, и
+      // оператора эта ветка не зовёт (звала бы неправду).
+      if (err instanceof OrderAboveMaxAmountError) {
+        await sendSafely(chatId, aboveMaxAmountText(err.maxAmountRub), updateId);
+        return;
+      }
       await sendSafely(
         chatId,
         'Не получилось создать счёт прямо сейчас — техническая проблема на стороне платёжного провайдера. Я уже подключил оператора, он напишет в ближайшее время.',

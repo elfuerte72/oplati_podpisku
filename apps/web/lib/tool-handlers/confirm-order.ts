@@ -71,8 +71,50 @@ export class OrderExpiredError extends Error {
   }
 }
 
+/**
+ * `/api/payments/create` ответил 422 `above_max_amount` — сумма выше лимита
+ * операции у шлюза (у Freekassa 150 000 ₽, гейт `FREEKASSA_MAX_AMOUNT_RUB`).
+ * Повторять бессмысленно: столько этот шлюз не примет ни сейчас, ни через час.
+ * Без отдельного типа ошибка падала в generic `Error`, и клиент получал
+ * «технический сбой у провайдера» — неправда, которая ещё и обещала оператора.
+ */
+export class OrderAboveMaxAmountError extends Error {
+  readonly maxAmountRub: number | null;
+  constructor(maxAmountRub: number | null) {
+    super(
+      `above_max_amount: сумма заказа выше лимита платёжной системы${
+        maxAmountRub ? ` (${maxAmountRub} ₽)` : ''
+      }. Счёт не создан. Скажи пользователю оформить заказ на меньшую сумму или написать в поддержку — крупный заказ проведёт оператор.`,
+    );
+    this.name = 'OrderAboveMaxAmountError';
+    this.maxAmountRub = maxAmountRub;
+  }
+}
+
+/**
+ * Текст отказа для КЛИЕНТСКИХ каналов (веб, Mini App, бот) — один на все три,
+ * чтобы формулировки про деньги не разъезжались. Сообщение самой ошибки выше
+ * адресовано AI-агенту и звучит иначе.
+ */
+export function aboveMaxAmountText(maxAmountRub: number | null): string {
+  const limit = maxAmountRub
+    ? `${maxAmountRub.toLocaleString('ru-RU')} ₽`
+    : 'лимит платёжной системы';
+  return `Сумма заказа выше лимита платёжной системы (${limit}). Оформи заказ на меньшую сумму или напиши в поддержку — крупный заказ проведёт оператор.`;
+}
+
 /** Тело ошибки /api/payments/create (инвариант «Zod на границах»). */
-const errorBodySchema = z.object({ error: z.string() });
+const errorBodySchema = z.object({ error: z.string(), maxAmountRub: z.number().optional() });
+
+/** Лимит из тела 422 — чтобы назвать клиенту конкретную цифру, а не «слишком много». */
+function parseMaxAmountRub(respText: string): number | null {
+  try {
+    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
+    return parsed.success ? (parsed.data.maxAmountRub ?? null) : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseErrorCode(respText: string): string | null {
   try {
@@ -163,6 +205,9 @@ export async function confirmOrder(input: {
       }
       if (resp.status === 409 && errorCode === 'order_expired') {
         throw new OrderExpiredError();
+      }
+      if (resp.status === 422 && errorCode === 'above_max_amount') {
+        throw new OrderAboveMaxAmountError(parseMaxAmountRub(respText));
       }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }
