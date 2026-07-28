@@ -170,6 +170,71 @@ App за ту же секунду есть, и оно красное.
 
 ---
 
+## API Dokploy: env, redeploy, состояние приложения
+
+Панель закрыта basic-auth поверх собственного логина Dokploy, а порт 3000 наружу
+закрыт firewall'ом. Отсюда два рабочих пути — оба **не требуют** открывать `/api`
+наружу:
+
+| Путь | Как | Когда |
+|---|---|---|
+| С самого VPS | `http://127.0.0.1:3000` + `x-api-key` | ssh уже открыт, basic-auth не участвует |
+| Снаружи | `https://dokploypanel.oplatishka.com` + `x-api-key` **и** `Authorization: Basic` | из MCP или локальных скриптов |
+
+⚠️ Только `x-api-key` снаружи не проходит: Traefik отвечает
+`401 www-authenticate: Basic realm="Oplatishka panel"` ещё до Dokploy.
+
+**MCP `@dokploy/mcp` подключён (2026-07-28)** в **local scope** — конфигурация
+лежит в `~/.claude.json`, а НЕ в `.mcp.json` репозитория (он публичный).
+Basic-auth проходится через `DOKPLOY_CUSTOM_HEADERS` с заголовком
+`Authorization: Basic …`; именно это снимает возражение, из-за которого MCP убрали
+27.07 — открывать `/api` наружу больше не нужно, оба барьера на месте.
+Значения (`DOKPLOY_API_KEY`, пароль basic-auth) в репозиторий не попадают.
+
+### id приложений
+
+| Приложение | applicationId | Ветка |
+|---|---|---|
+| `oplatishka-web` (prod) | `7tTmVkOFbpmtP0vriH0oE` | `main` |
+| `oplatishka-web-dev` | `yNIaENiQI2MX5adlDs2Yp` | `dev` |
+
+### Правка env — порядок, проверенный на бою
+
+```bash
+# 1. прочитать приложение (API отдаёт env РАСШИФРОВАННЫМ)
+curl -s -H "x-api-key: $DK_KEY" \
+  'http://127.0.0.1:3000/api/application.one?applicationId=7tTmVkOFbpmtP0vriH0oE' -o app.json
+
+# 2. БЭКАП env перед любой записью (у прода ~190 строк секретов)
+python3 -c "import json;open('/root/env-backup.txt','w').write(json.load(open('app.json'))['env'])"
+chmod 600 /root/env-backup.txt
+
+# 3. изменить нужные строки, СОХРАНИВ остальные, и сохранить
+curl -s -X POST -H "x-api-key: $DK_KEY" -H 'Content-Type: application/json' \
+  --data @payload.json http://127.0.0.1:3000/api/application.saveEnvironment
+
+# 4. применить (перезапуск с новым env)
+curl -s -X POST -H "x-api-key: $DK_KEY" -H 'Content-Type: application/json' \
+  -d '{"applicationId":"7tTmVkOFbpmtP0vriH0oE"}' http://127.0.0.1:3000/api/application.redeploy
+
+# 5. проверить: startedAt обновился + значение реально доехало в контейнер
+curl -s https://www.oplatishka.com/api/health
+docker exec $(docker ps --filter name=oplatishka-web --format '{{.Names}}' | grep -v dev | head -1) \
+  printenv | grep -E '^(PAYMENT_|FREEKASSA_)'
+```
+
+**Грабли, стоившие времени 2026-07-28:**
+
+1. **`saveEnvironment` требует ещё `buildArgs`, `buildSecrets`, `createEnvFile`** —
+   без них `400 Input validation failed`. Значения брать из `application.one`, а не
+   выдумывать: в `buildArgs` у прода лежит Sentry DSN, и пустая строка убила бы
+   клиентский Sentry на следующей сборке.
+2. **В БД панели env хранится зашифрованным** (`enc:v1:…`) — «поправить SQL-запросом
+   в обход API» не выйдет, даже имея доступ к `dokploy-postgres`.
+3. **Payload перезаписывает env ЦЕЛИКОМ.** После записи обязательно сверить
+   построчно: то же число ключей, ни один не пропал, изменились ровно те, что
+   собирались (`diff` списков ключей + список изменённых строк).
+
 ## Ручные конфиги Traefik (вне Dokploy)
 
 Часть маршрутизации живёт не в панели, а отдельными файлами в
