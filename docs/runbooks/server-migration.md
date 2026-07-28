@@ -18,6 +18,7 @@
 | Ручные конфиги Traefik | руками из [`infra/traefik/`](../../infra/traefik/) | не переносит ничего, см. [`deploy.md`](deploy.md) |
 | Системный crontab | руками из [`infra/crontab.example`](../../infra/crontab.example) | адрес переписать, см. §4 |
 | Сертификат www/apex + lego | `tar` каталога `/opt/lego-oplatishka` + `certs/` | вместе с ACME-аккаунтом, иначе обновление перестанет работать |
+| **Агенты наблюдаемости** | руками: Alloy (`/opt/alloy`) + скрипт сводки Hermes | см. §8 — забыть легко, заметить трудно |
 
 Перенос БД панели даёт приятный побочный эффект: **прежний `DOKPLOY_API_KEY`
 продолжает работать** на новом инстансе, и все ID сервисов (`oplatishka-web-wwrt50`
@@ -150,7 +151,40 @@ gh variable set DOKPLOY_PANEL_URL --body "https://dokploypanel.oplatishka.com"
 (`infra/traefik/dokploy-deploy-hook.yml.example`), иначе CI получит 401.
 Проверка контракта — в [`deploy.md`](deploy.md).
 
-### 8. Комментарии в env Dokploy понимает
+### 8. Мониторинг молча остаётся на старом сервере
+
+Agent Alloy и скрипт сводки Hermes живут вне Dokploy, поэтому не переезжают ни с
+чем. Коварство в том, что снаружи это незаметно: дашборд продолжает показывать
+данные (старые, от контейнеров прежнего узла) и выглядит живым, а логов прода в
+нём нет вовсе. Алёрт на ошибки при этом тоже мёртв — его запрос возвращает
+пустоту, а пустой результат срабатыванием не считается.
+
+Что перенести и проверить:
+
+```bash
+# логи
+scp /opt/alloy/config.alloy NEW:/opt/alloy/config.alloy      # креды внутри, chmod 600
+docker run -d --name grafana-alloy --restart unless-stopped \
+  -v /opt/alloy/config.alloy:/etc/alloy/config.alloy:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  grafana/alloy:latest run --storage.path=/tmp/alloy /etc/alloy/config.alloy
+
+# сводка агента (ей нужен свой .env с read-токенами Loki и Sentry)
+scp -r /root/.hermes/profiles/oplatishka NEW:/root/.hermes/profiles/
+```
+
+На старом сервере **переименовать узел** в конфиге (`node = "...-legacy"`),
+иначе его логи смешаются с продовыми под одной меткой. Метку нового узла,
+наоборот, сохранить прежней — на неё завязаны алёрты и дашборды.
+
+⚠️ Переносить `.env` профиля Hermes целиком не надо: там сотни ключей от всего
+подряд (биржа, GitHub, LLM-провайдеры), а скрипту нужны шесть — токены чтения
+Loki и Sentry. Лишняя копия секретов на боевом сервере это чистый риск.
+
+Проверка, что канал ожил: `bash oplatishka-status.sh` на новом сервере покажет
+непустую строку «История логов в Grafana Loki».
+
+### 9. Комментарии в env Dokploy понимает
 
 Проверено на dev: строки, начинающиеся с `#`, отбрасываются, число переменных не
 меняется. Поэтому env можно держать читаемым — секциями и с пояснениями. Но

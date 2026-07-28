@@ -1,0 +1,119 @@
+// Grafana Alloy — единственный агент наблюдаемости на узле: логи контейнеров в
+// Loki и метрики хоста/контейнеров в Prometheus (оба — Grafana Cloud).
+//
+// Установка:
+//   1. scp infra/alloy/config.alloy.example root@VPS:/opt/alloy/config.alloy
+//   2. подставить креды (см. плейсхолдеры ниже), chmod 600
+//   3. docker run -d --name grafana-alloy --restart unless-stopped \
+//        -v /opt/alloy/config.alloy:/etc/alloy/config.alloy:ro \
+//        -v /var/run/docker.sock:/var/run/docker.sock \
+//        -v /:/rootfs:ro -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro \
+//        grafana/alloy:latest run --storage.path=/tmp/alloy /etc/alloy/config.alloy
+//      Три последних монтирования нужны только экспортерам метрик; для одних
+//      логов достаточно docker.sock.
+//
+// Плейсхолдеры:
+//   __NODE__            — имя узла в дашбордах и алёртах (прод: hostinger-prod).
+//                         Менять осторожно: на это имя завязаны правила алёртов.
+//   __LOKI_USER__ / __LOKI_TOKEN__     — Loki push (scope logs:write)
+//   __PROM_USER__ / __PROM_TOKEN__     — Prometheus push (scope metrics:write)
+//                         PROM_USER для стека violetpasta1272 = 1733305.
+
+// ─────────────────────────── ЛОГИ ───────────────────────────
+
+discovery.docker "all" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "ours" {
+  targets = []
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  // СНАЧАЛА явный запрет. Дублирует keep ниже намеренно: keep и так пропускает
+  // только перечисленное, но цена ошибки в regex тут — утечка, а не лишние логи.
+  //   dokploy.<n>.<id> (панель) печатает команду rclone с ключами R2 открытым
+  //     текстом при каждом бэкапе — это доступ к дампам боевой БД;
+  //   oplatishka-db* — Postgres пишет текст запроса при ошибке, то есть PII.
+  // Точка в "dokploy\\." важна: она отделяет панель от dokploy-traefik.
+  rule {
+    source_labels = ["container"]
+    regex         = "dokploy\\..*|oplatishka-db.*"
+    action        = "drop"
+  }
+  // затем оставляем только нужное: приложение (prod+dev) и роутер
+  rule {
+    source_labels = ["container"]
+    regex         = "oplatishka-web.*|dokploy-traefik"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "docker" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.all.targets
+  labels        = {node = "__NODE__"}
+  relabel_rules = discovery.relabel.ours.rules
+  forward_to    = [loki.write.grafana.receiver]
+}
+
+loki.write "grafana" {
+  endpoint {
+    url = "https://logs-prod-012.grafana.net/loki/api/v1/push"
+    basic_auth {
+      username = "__LOKI_USER__"
+      password = "__LOKI_TOKEN__"
+    }
+  }
+}
+
+// ────────────────────────── МЕТРИКИ ──────────────────────────
+// Зачем вообще: до 2026-07-27 метрик узла не было, и деградацию из-за CPU steal
+// (гипервизор отбирал до 50% процессорного времени) заметили только по жалобе на
+// скорость — неделю спустя. Логи такого не показывают в принципе.
+
+prometheus.exporter.unix "node" {
+  // Полный набор коллекторов на 2 ядрах избыточен и шумит в лимит series
+  // бесплатного тарифа. Оставляем то, на чём построены алёрты.
+  set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "stat", "vmstat"]
+
+  filesystem {
+    fs_types_exclude = "^(autofs|binfmt_misc|cgroup.*|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+    mount_points_exclude = "^/(dev|proc|sys|var/lib/docker/.+|run/docker/.+)($|/)"
+  }
+}
+
+// Метрики контейнеров: рестарты, OOM, потребление. Нужны для алёрта
+// «контейнер упал или перезапускается» — сейчас такое видно, только когда сайт
+// уже лёг.
+prometheus.exporter.cadvisor "containers" {
+  docker_host = "unix:///var/run/docker.sock"
+  storage_duration = "5m"
+}
+
+prometheus.scrape "node" {
+  targets         = prometheus.exporter.unix.node.targets
+  forward_to      = [prometheus.remote_write.grafana.receiver]
+  scrape_interval = "60s"
+}
+
+prometheus.scrape "containers" {
+  targets         = prometheus.exporter.cadvisor.containers.targets
+  forward_to      = [prometheus.remote_write.grafana.receiver]
+  scrape_interval = "60s"
+}
+
+prometheus.remote_write "grafana" {
+  external_labels = {
+    node = "__NODE__",
+  }
+  endpoint {
+    url = "https://prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom/push"
+    basic_auth {
+      username = "__PROM_USER__"
+      password = "__PROM_TOKEN__"
+    }
+  }
+}
