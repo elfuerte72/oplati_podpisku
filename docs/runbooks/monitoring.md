@@ -217,10 +217,29 @@ ssh root@187.124.172.104 'bash /root/.hermes/profiles/oplatishka/bin/oplatishka-
 
 ### Что с этим может агент
 
-Hermes-агент владельца (зовут **Гилфойл**, профиль `oplatishka`, тот же VPS) знает
-про скрипт и имеет два **read-токена** — Loki и Sentry (`hermes-readonly-2`,
-scopes `event:read/org:read/project:read`). То есть на вопрос «как дела с
-инфраструктурой» отвечает по фактам, а не по памяти.
+Hermes-агент владельца (зовут **Гилфойл**, профиль `oplatishka`, живёт на прежнем
+бостонском VPS) знает про скрипт и имеет два **read-токена** — Loki и Sentry
+(`hermes-readonly-2`, scopes `event:read/org:read/project:read`). То есть на вопрос
+«как дела с инфраструктурой» отвечает по фактам, а не по памяти.
+
+⚠️ **Скилл агента не должен дублировать факты об инфраструктуре.** Первая версия
+(`skills/oplatishka-project/SKILL.md`, июль) переписывала в себя стек и адреса из
+CLAUDE.md — и после двух переездов агент уверенно рассказывал про Vercel, Supabase
+и squid-прокси, которых уже не было. Копия фактов устаревает молча: никто не
+замечает, пока агент не ответит вслух.
+
+Действующая версия — [`infra/hermes/SKILL.md`](../../infra/hermes/SKILL.md) (в
+репозитории, чтобы пережить следующий переезд): роль, границы, инструменты и
+**ссылки на первоисточник** вместо самих фактов. Репозиторий публичный, поэтому
+агент читает актуальное напрямую:
+
+```
+https://raw.githubusercontent.com/elfuerte72/oplati_podpisku/main/CLAUDE.md
+https://raw.githubusercontent.com/elfuerte72/oplati_podpisku/main/docs/runbooks/monitoring.md
+```
+
+Обновляя скилл, ту же копию класть на сервер агента:
+`/root/.hermes/profiles/oplatishka/skills/oplatishka-project/SKILL.md`.
 
 Полного доступа к Grafana (алёрты, uptime, дашборды) у него нет: для этого нужен
 отдельный Viewer-токен, а наш `GRAFANA_SA_TOKEN` административный — им сегодня
