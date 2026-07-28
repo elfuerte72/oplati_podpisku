@@ -9,6 +9,7 @@ import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ServicePricingButton } from '@/components/catalog/ServicePricingButton';
 import { fetchWithTimeout } from '@/lib/http';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
+import { buyerFeeNote } from '@/lib/payments/buyer-fee';
 import { ServiceLogo } from '@/components/chat/ServiceLogos';
 
 import { doPropose } from './cabinet-api';
@@ -21,7 +22,7 @@ import { doPropose } from './cabinet-api';
  * где уже есть кнопка «Оплатить» (существующий flow оплаты).
  */
 
-type CatalogResponse = { ok: boolean; services?: CatalogService[] };
+type CatalogResponse = { ok: boolean; services?: CatalogService[]; buyerFeePercent?: number };
 
 const MIN_AMOUNT_USD = 1;
 const MAX_AMOUNT_USD = 500;
@@ -29,7 +30,7 @@ const MAX_AMOUNT_USD = 500;
 // Зеркалит серверный HIGH_VALUE_SERVICE_SLUGS из propose-order.ts (как в
 // StartScreen) — держать синхронно.
 const HIGH_VALUE_SLUGS = new Set(['airbnb', 'booking', 'steam', 'apple-app-store']);
-const HIGH_VALUE_MAX_AMOUNT_USD = 5000;
+const HIGH_VALUE_MAX_AMOUNT_USD = 1200;
 
 function maxAmountUsdFor(slug: string): number {
   return HIGH_VALUE_SLUGS.has(slug) ? HIGH_VALUE_MAX_AMOUNT_USD : MAX_AMOUNT_USD;
@@ -41,13 +42,18 @@ function formatTierPeriod(period: 'month' | 'quarter' | 'year'): string {
   return 'месяц';
 }
 
-/** Чистый fetch витрины: `null` — каталог недоступен (сеть/сервер/пустой список). */
-async function fetchCatalogOnce(): Promise<CatalogService[] | null> {
+/**
+ * Чистый fetch витрины: `null` — каталог недоступен (сеть/сервер/пустой список).
+ * Вместе с сервисами приходит надбавка шлюза на плательщика (0 = её нет).
+ */
+type CatalogSnapshot = { services: CatalogService[]; buyerFeePercent: number };
+
+async function fetchCatalogOnce(): Promise<CatalogSnapshot | null> {
   try {
     const res = await fetchWithTimeout('/api/catalog');
     const data = (await res.json()) as CatalogResponse;
     if (data.ok && data.services && data.services.length > 0) {
-      return data.services;
+      return { services: data.services, buyerFeePercent: data.buyerFeePercent ?? 0 };
     }
     return null;
   } catch {
@@ -69,6 +75,7 @@ export function CatalogView({
   onOpenExternalLink,
 }: CatalogViewProps) {
   const [catalog, setCatalog] = useState<CatalogService[] | null>(null);
+  const [buyerFeePercent, setBuyerFeePercent] = useState(0);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [selected, setSelected] = useState<CatalogService | null>(null);
@@ -81,10 +88,11 @@ export function CatalogView({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const services = await fetchCatalogOnce();
+      const snapshot = await fetchCatalogOnce();
       if (cancelled) return;
-      setCatalog(services);
-      setFailed(services === null);
+      setCatalog(snapshot?.services ?? null);
+      setBuyerFeePercent(snapshot?.buyerFeePercent ?? 0);
+      setFailed(snapshot === null);
       setLoading(false);
     })();
     return () => {
@@ -95,9 +103,10 @@ export function CatalogView({
   const retry = useCallback(() => {
     setLoading(true);
     setFailed(false);
-    void fetchCatalogOnce().then((services) => {
-      setCatalog(services);
-      setFailed(services === null);
+    void fetchCatalogOnce().then((snapshot) => {
+      setCatalog(snapshot?.services ?? null);
+      setBuyerFeePercent(snapshot?.buyerFeePercent ?? 0);
+      setFailed(snapshot === null);
       setLoading(false);
     });
   }, []);
@@ -281,8 +290,10 @@ export function CatalogView({
               ))}
               <p className="font-body text-xs text-[var(--text-muted)]">
                 <b>$</b> — цена подписки в США (столько вводишь на сайте сервиса). <b>≈ ₽</b> —
-                сколько спишем с тебя, с комиссией по текущему курсу; финальная сумма
-                зафиксируется в заказе.
+                подписка с нашей комиссией по текущему курсу; финальная сумма
+                зафиксируется в заказе. Если виртуальной карты ещё нет, к первому заказу
+                разово добавится её выпуск.
+                {buyerFeeNote(buyerFeePercent) !== null && ` ${buyerFeeNote(buyerFeePercent)}`}
               </p>
             </div>
           )}

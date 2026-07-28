@@ -104,7 +104,7 @@ describe('дефолты Freekassa', () => {
   it('fallback-IP, способ оплаты и TTL счёта имеют рабочие значения без env', async () => {
     const env = await loadEnv({});
     // 127.0.0.1 провайдер блокирует — дефолт обязан быть публичным IP узла.
-    expect(env.FREEKASSA_FALLBACK_IP).toBe('177.7.34.106');
+    expect(env.FREEKASSA_FALLBACK_IP).toBe('187.124.172.104');
     expect(env.FREEKASSA_METHOD_ID).toBe(44);
     expect(env.FREEKASSA_INVOICE_TTL_HOURS).toBe(1);
     // Тот же порог, что у L&P (решение владельца): переключение шлюза не

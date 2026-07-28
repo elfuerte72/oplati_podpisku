@@ -24,7 +24,7 @@ function okFetch(status = 403): typeof fetch {
 
 function downFetch(): typeof fetch {
   return vi.fn(async () => {
-    throw new Error('connect ECONNREFUSED 177.7.34.106:24128');
+    throw new Error('connect ECONNREFUSED 187.124.172.104:24128');
   }) as unknown as typeof fetch;
 }
 
@@ -41,7 +41,7 @@ describe('alertOnLoveAndPayProxyDown (H-3: SPOF-мониторинг squid-пр�
   beforeEach(() => {
     vi.clearAllMocks();
     resetProxyAlertDedupForTests();
-    h.env.LOVEANDPAY_PROXY_URL = 'http://user:secret@177.7.34.106:24128';
+    h.env.LOVEANDPAY_PROXY_URL = 'http://user:secret@187.124.172.104:24128';
   });
 
   it('LOVEANDPAY_PROXY_URL не задан → no-op (dev/тесты ходят напрямую)', async () => {

@@ -21,7 +21,7 @@ describe('подпись запроса к API (HMAC-SHA256)', () => {
     paymentId: 'ORD-S3MGS-a1b2c3',
     i: 44,
     email: '12345@telegram.org',
-    ip: '177.7.34.106',
+    ip: '187.124.172.104',
     amount: 2490.5,
     currency: 'RUB',
   };
@@ -29,7 +29,7 @@ describe('подпись запроса к API (HMAC-SHA256)', () => {
   it('склеивает значения в алфавитном порядке КЛЮЧЕЙ через |', () => {
     // Порядок ключей: amount, currency, email, i, ip, nonce, paymentId, shopId.
     expect(buildSignaturePayload(params)).toBe(
-      '2490.5|RUB|12345@telegram.org|44|177.7.34.106|2000000001|ORD-S3MGS-a1b2c3|777',
+      '2490.5|RUB|12345@telegram.org|44|187.124.172.104|2000000001|ORD-S3MGS-a1b2c3|777',
     );
   });
 
@@ -49,7 +49,7 @@ describe('подпись запроса к API (HMAC-SHA256)', () => {
 
   it('совпадает с PHP-эталоном ksort + implode + hash_hmac', () => {
     const expected = createHmac('sha256', API_KEY)
-      .update('2490.5|RUB|12345@telegram.org|44|177.7.34.106|2000000001|ORD-S3MGS-a1b2c3|777')
+      .update('2490.5|RUB|12345@telegram.org|44|187.124.172.104|2000000001|ORD-S3MGS-a1b2c3|777')
       .digest('hex');
     expect(signApiRequest(params, API_KEY)).toBe(expected);
   });

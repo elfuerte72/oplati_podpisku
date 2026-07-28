@@ -3,6 +3,7 @@ import 'server-only';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
 import { PAYMENT_ISSUE_LABELS, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 
 import { MIN_AMOUNT_USD, maxAmountUsdFor } from './amount';
 import { telegramBotLink } from './links';
@@ -193,6 +194,22 @@ export const CATALOG_BACK_BUTTON = '<< Назад к списку';
 /** Подсказка под кнопкой «Свой вариант». */
 export const CATALOG_OWN_VARIANT_TEXT =
   'Напиши, что нужно оплатить — название сервиса и тариф. Найду цену и оформлю заказ.';
+
+/**
+ * Предупреждение о комиссии платёжной системы в сообщении со ссылкой на оплату.
+ * `null` — текущий шлюз надбавку не берёт (тогда строки в сообщении нет).
+ * Формулировка совпадает с веб-экранами (`lib/payments/buyer-fee.ts`).
+ */
+export function buildBuyerFeeLine(feePercent: number, totalKopecks?: number): string | null {
+  // Сумма известна не везде: на кнопочном пути под рукой только результат
+  // confirm_order (ссылка + срок), и тянуть заказ из БД ради строки текста
+  // не стоит — тогда показываем процент без итоговой цифры.
+  const note =
+    totalKopecks === undefined
+      ? buyerFeeNote(feePercent)
+      : buyerFeeAmountNote(totalKopecks, feePercent, formatRub);
+  return note === null ? null : `Важно: ${note}`;
+}
 
 /** Каталог не открылся (БД/курс недоступны). */
 export const CATALOG_UNAVAILABLE_TEXT =

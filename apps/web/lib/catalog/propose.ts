@@ -7,6 +7,7 @@ import { pricingPolicy } from '@oplati/types';
 
 import { formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
+import { currentBuyerFeePercent } from '@/lib/payments/gateway';
 import {
   OrderAmountOutOfBoundsError,
   OrderBelowMinimumError,
@@ -52,6 +53,12 @@ export type ProposeOrderCard = {
   totalKopecks: number;
   expiresAt: string;
   isCustom: boolean;
+  /**
+   * Надбавка платёжной системы на плательщика в процентах (0 — её нет).
+   * Считается на сервере по текущему шлюзу и едет вместе с картой заказа:
+   * предупреждение о ней должно быть на том же экране, где кнопка «Оплатить».
+   */
+  buyerFeePercent: number;
 };
 
 export type ProposeFromCatalogError =
@@ -207,6 +214,7 @@ export async function proposeFromCatalog(
         totalKopecks: result.totalRubKopecks,
         expiresAt: result.expiresAt,
         isCustom: false,
+        buyerFeePercent: currentBuyerFeePercent(),
       },
     };
   } catch (err) {

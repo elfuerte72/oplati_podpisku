@@ -30,6 +30,10 @@ const h = vi.hoisted(() => ({
   state: {
     order: null as OrderLike | null,
     pendingPayment: null as PendingPaymentLike | null,
+    // null → настоящий потолок шлюза (у L&P его нет). Число подменяет его для
+    // проверки гейта, не заставляя весь файл переключаться на Freekassa: там
+    // потребовались бы ещё и её ключи в env.
+    maxAmountRubOverride: null as number | null,
   },
 }));
 
@@ -75,6 +79,15 @@ vi.mock('@/lib/jobs/proxy-health', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+vi.mock('@/lib/payments/gateway', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/payments/gateway')>();
+  return {
+    ...actual,
+    maxAmountRubFor: (gateway: 'loveandpay' | 'freekassa') =>
+      h.state.maxAmountRubOverride ?? actual.maxAmountRubFor(gateway),
+  };
+});
+
 import { POST } from './route.ts';
 
 function makeRequest(body: unknown): Request {
@@ -91,6 +104,7 @@ function makeRequest(body: unknown): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   h.state.pendingPayment = null;
+  h.state.maxAmountRubOverride = null;
   h.state.order = {
     id: ORDER_ID,
     shortId: 'AB12',
@@ -263,5 +277,44 @@ describe('POST /api/payments/create — идемпотентность повт�
     expect(resp.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.paymentUrl).toBe('https://pay.example/inv-winner');
+  });
+});
+
+describe('POST /api/payments/create — потолок суммы шлюза (лимит операции Freekassa)', () => {
+  it('сумма выше потолка → 422 above_max_amount, счёт у провайдера НЕ создаётся', async () => {
+    // Лимит операции Freekassa — 150 000 ₽; при потолке 140 000 ₽ заказ на
+    // 150 000 ₽ обязан отбиться У НАС, иначе клиент получит непрозрачный текст
+    // ошибки провайдера уже после нажатия «Оплатить».
+    h.state.maxAmountRubOverride = 140_000;
+    h.state.order = { ...h.state.order!, amountRub: 15_000_000 };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { ok: boolean; error: string; maxAmountRub: number };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('above_max_amount');
+    expect(json.maxAmountRub).toBe(140_000);
+    expect(h.upsertMock).not.toHaveBeenCalled();
+  });
+
+  it('ровно потолок → счёт выставляется (граница включительно)', async () => {
+    h.state.maxAmountRubOverride = 140_000;
+    h.state.order = { ...h.state.order!, amountRub: 14_000_000 };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.upsertMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('у шлюза без потолка (L&P, 0) крупная сумма проходит', async () => {
+    // Регресс на «случайно применили лимит Freekassa к обоим шлюзам»: у L&P
+    // потолок не объявлен, и придумывать его нельзя.
+    h.state.order = { ...h.state.order!, amountRub: 50_000_000 };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.upsertMock).toHaveBeenCalledTimes(1);
   });
 });

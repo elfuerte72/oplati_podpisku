@@ -398,6 +398,7 @@ export function ChatClient() {
             ]}
             amountKopecks={card.totalKopecks}
             amountUsdCents={card.usdCents}
+            buyerFeePercent={card.buyerFeePercent}
             stamp={isPaid ? <PaidStamp /> : undefined}
             confirm={
               <ComicButton
