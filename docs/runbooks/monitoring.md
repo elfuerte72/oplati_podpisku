@@ -27,6 +27,10 @@ Grafana шлёт уведомления на chat id владельца (`379336
 | **Сайт недоступен (внешний пинг)** | www.oplatishka.com не отвечает 200 из Frankfurt И London 2+ мин | critical |
 | **Приложение: ошибки в логах** | >5 строк `level="error"` от `oplatishka-web` за 5 мин | warning |
 | **Cron: poll-payment не отработал** | нет записей `module="cron.poll-payment"` за 30 мин (+10 мин выдержки) | critical |
+| **Прод-контейнер пропал** | `oplatishka-web-wwrt50` не виден в метриках 10 мин | critical |
+| **Узел: заканчивается диск** | свободно < 15% на `/rootfs` | critical |
+| **Узел: CPU отбирает гипервизор** | `steal` > 20% за 10 мин | warning |
+| **Узел: заканчивается память** | доступно < 10% | warning |
 
 Про cron-алёрт (добавлен 2026-07-28): «тихая смерть» расписания по логам не видна
 — нет запуска, нет и строки, поэтому правило ловит именно **отсутствие**
@@ -164,29 +168,48 @@ Vercel-дашборд как источник логов неактуален: �
 
 ## Метрики узла (CPU, память, диск, контейнеры)
 
-⚠️ **Этап не завершён — нужен токен.** До 2026-07-27 метрик узла не собиралось
-вообще, и деградацию из-за CPU `steal` (гипервизор отбирал до половины
-процессорного времени) заметили только по жалобе на скорость, неделю спустя. По
-логам такое не видно в принципе.
+Собирает тот же Alloy: экспортеры `unix` (хост) и `cadvisor` (контейнеры) шлют в
+Prometheus Grafana Cloud. Конфиг — [`infra/alloy/config.alloy.example`](../../infra/alloy/config.alloy.example);
+запускать с монтированиями `/rootfs`, `/sys`, `/var/lib/docker` — без них
+экспортеру нечего читать.
 
-Решение — тот же Alloy: экспортеры `unix` и `cadvisor` пишут в Prometheus
-Grafana Cloud. Готовый конфиг с обоими слоями — [`infra/alloy/config.alloy.example`](../../infra/alloy/config.alloy.example).
+Появились 2026-07-28. До этого метрик не было вообще, и деградацию из-за CPU
+`steal` (гипервизор отбирал до половины процессорного времени) нашли только по
+жалобе на скорость, неделю спустя, — по логам такое не видно в принципе.
 
-Чего не хватает: **Access Policy token со scope `metrics:write`**. Имеющиеся
-токены дают только логи — Prometheus на них отвечает
-`401 authentication error: invalid scope requested`. Показательно, что при
-неверном пользователе ответ другой (`invalid authentication credentials`), то
-есть ID уже подтверждён: **`1733305`** (он же StackID стека `violetpasta1272`),
-push-URL — `https://prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom/push`.
+**Два ID, которые легко перепутать.** В Grafana Cloud у каждого сигнала свой
+numeric пользователь, и они не совпадают ни между собой, ни со StackID:
 
-Как выпустить: grafana.com → Administration → Access Policies → создать политику
-со scopes `metrics:write` (и `metrics:read` для проверки) → сгенерировать токен.
-Дальше подставить в конфиг вместо `__PROM_TOKEN__` и перезапустить Alloy с
-дополнительными монтированиями (`/rootfs`, `/sys`, `/var/lib/docker`).
+| Сигнал | Пользователь | Endpoint |
+|---|---|---|
+| Loki (логи) | `1691092` | `logs-prod-012.grafana.net/loki/api/v1/push` |
+| Prometheus (метрики) | **`3390834`** | `prometheus-prod-65-prod-eu-west-2.grafana.net/api/prom/push` |
 
-Алёрты, которые появятся после этого: CPU `steal` > 20% или load выше числа ядер
-10 мин; диск > 85%; память > 90% либо растущий swap; контейнер не `running` или
-перезапускается в цикле.
+Токен один на оба — политика `oplatishka-logs-write`, ей выданы `logs:write` и
+`metrics:write`. Отдельный токен для метрик не нужен: права наследуются от
+политики, поэтому расширение scope включает уже выпущенный токен.
+
+⚠️ Ошибки различимы и подсказывают, где искать: `invalid scope requested` —
+пользователь верный, не хватает права; `invalid authentication credentials` —
+не тот пользователь. Мы прошли через обе.
+
+⚠️ Диск в запросах — `mountpoint="/rootfs"`, а не `/`: агент видит корень хоста
+через монтирование, и `/` внутри контейнера это его собственная файловая система.
+
+**Проверить, что метрики идут:**
+
+```bash
+curl -s -H "Authorization: Bearer $GRAFANA_SA_TOKEN" \
+  --get "https://violetpasta1272.grafana.net/api/datasources/proxy/uid/grafanacloud-prom/api/v1/query" \
+  --data-urlencode 'query=up{node="hostinger-prod"}'
+```
+
+Ожидаемо две серии (`integrations/unix`, `integrations/cadvisor`) со значением 1.
+
+**Почему нет алёрта на load average.** На 2 ядрах он законно уходит выше числа
+ядер во время `docker build` при каждом деплое — правило давало бы ложные
+срабатывания несколько раз в неделю. Деградацию узла ловит `steal`, который в
+норме близок к нулю и растёт только по внешней причине.
 
 ## Токены и доступ (в `.env`, gitignored)
 

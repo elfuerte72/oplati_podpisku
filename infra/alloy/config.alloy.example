@@ -17,7 +17,8 @@
 //                         Менять осторожно: на это имя завязаны правила алёртов.
 //   __LOKI_USER__ / __LOKI_TOKEN__     — Loki push (scope logs:write)
 //   __PROM_USER__ / __PROM_TOKEN__     — Prometheus push (scope metrics:write)
-//                         PROM_USER для стека violetpasta1272 = 1733305.
+//                         PROM_USER для стека violetpasta1272 = 3390834 — это ОТДЕЛЬНЫЙ id
+//                         пользователя Prometheus, он не равен ни StackID, ни id Loki.
 
 // ─────────────────────────── ЛОГИ ───────────────────────────
 
