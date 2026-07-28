@@ -135,18 +135,20 @@ jobs:
       # «прод не обновился» при успешном деплое, либо наоборот — засчитывало бы
       # старый контейнер как новый. Сравнение значения с самим собой от этого
       # не зависит вовсе. Находка CodeRabbit на PR #115.
-      - name: Снять текущее состояние прода
+      - name: Снять текущее состояние стенда
         id: mark
-        if: github.ref_name == 'main'
         env:
-          SITE: ${{ vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health' }}
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          # dev закрыт Basic Auth, прод — нет. Пустая строка = ходим без -u.
+          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
         run: |
           set -uo pipefail
-          before=$(curl -sS --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null | jq -r '.startedAt // empty' 2>/dev/null || echo '')
-          # Пустое значение — прод не ответил. Это не повод останавливаться:
+          # shellcheck disable=SC2086
+          before=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null | jq -r '.startedAt // empty' 2>/dev/null || echo '')
+          # Пустое значение — стенд не ответил. Это не повод останавливаться:
           # тогда подойдёт любой валидный ответ после деплоя.
           echo "before=$before" >> "$GITHUB_OUTPUT"
-          echo "Сейчас на проде startedAt=${before:-<нет ответа>}"
+          echo "Сейчас на стенде startedAt=${before:-<нет ответа>}"
 
       - name: Deploy
         env:
@@ -227,22 +229,34 @@ jobs:
 
       # Триггер, принятый панелью, НЕ означает выкаченный релиз: сборка может
       # упасть, и раньше пайплайн этого не замечал — зелёный workflow при старом
-      # коде на проде. Ждём, пока прод не отдаст время старта, ОТЛИЧНОЕ от
+      # коде на стенде. Ждём, пока стенд не отдаст время старта, ОТЛИЧНОЕ от
       # снятого до триггера, то есть пока контейнер реально не пересоздан.
       #
-      # Только для main: dev-стенд закрыт Basic Auth, /api/health оттуда не
-      # прочитать без ещё одного секрета, а ради dev это лишняя связанность.
-      - name: Проверить, что прод обновился
-        if: github.ref_name == 'main'
+      # С 2026-07-28 проверка идёт и для dev. Раньше её там не было («ради dev
+      # лишняя связанность»), и это оказалось дороже секрета: при переводе
+      # стенда на текущий main workflow был ЗЕЛЁНЫМ, пока dev ещё крутил
+      # позавчерашнюю сборку. Стенд, на котором тестируют перед PR, обязан
+      # доказывать свою версию так же, как прод, — иначе тест проверяет не тот
+      # код. Секрет DEV_HEALTH_AUTH — пара `логин:пароль` от Basic Auth стенда
+      # (Dokploy → приложение → Security). Не задан → проверка пропускается с
+      # предупреждением, деплой не валится: dev не должен блокировать работу.
+      - name: Проверить, что стенд обновился
         env:
-          SITE: ${{ vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health' }}
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          IS_PROD: ${{ github.ref_name == 'main' }}
           BEFORE: ${{ steps.mark.outputs.before }}
         run: |
           set -uo pipefail
+          if [ "$IS_PROD" != "true" ] && [ -z "${HEALTH_AUTH:-}" ]; then
+            echo "::warning::Секрет DEV_HEALTH_AUTH не задан — не могу подтвердить, что dev-стенд обновился. Он мог остаться на прежней сборке."
+            exit 0
+          fi
           deadline=$(( $(date -u +%s) + 900 ))   # 15 минут: обычная сборка ~2.5 мин
           fresh=0
           while [ "$(date -u +%s)" -lt "$deadline" ]; do
-            body=$(curl -sS --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null) || body=''
+            # shellcheck disable=SC2086
+            body=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null) || body=''
             started=$(printf '%s' "$body" | jq -r '.startedAt // empty' 2>/dev/null || echo '')
             if [ -n "$started" ] && [ "$started" != "$BEFORE" ]; then
               # Swarm во время обновления какое-то время держит и старый
@@ -252,7 +266,7 @@ jobs:
               fresh=$((fresh + 1))
               echo "Свежий ответ $fresh/3 (startedAt=$started)"
               if [ "$fresh" -ge 3 ]; then
-                echo "Прод пересобран и отвечает."
+                echo "Стенд пересобран и отвечает."
                 exit 0
               fi
             elif [ -n "$started" ]; then
@@ -264,7 +278,7 @@ jobs:
             fi
             sleep 15
           done
-          echo "::error::Прод не обновился за 15 минут после принятого триггера — сборка упала или зависла. Смотри логи в панели Dokploy."
+          echo "::error::Стенд не обновился за 15 минут после принятого триггера — сборка упала или зависла. Смотри логи в панели Dokploy."
           exit 1
 
       # Провал деплоя раньше был виден только тому, кто зайдёт в Actions: оба
@@ -287,7 +301,7 @@ jobs:
             echo "::warning::Секреты DEPLOY_ALERT_BOT_TOKEN/DEPLOY_ALERT_CHAT_ID не заданы — алёрт не отправлен."
             exit 0
           fi
-          text="Деплой НЕ прошёл: $APP, ветка $REF_NAME, коммит $SHA. Прод остался на прежней версии. Лог: $RUN_URL"
+          text="Деплой НЕ прошёл: $APP, ветка $REF_NAME, коммит $SHA. Стенд остался на прежней версии. Лог: $RUN_URL"
           # --fail-with-body обязателен: без него curl считает успехом и 401 от
           # Bot API (протух токен, бот заблокирован), то есть молчащий алёрт
           # выглядел бы как отправленный — ровно та слепота, от которой этот шаг
