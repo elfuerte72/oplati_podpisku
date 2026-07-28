@@ -323,7 +323,19 @@ Vercel `fra1`. Два окружения с **раздельными Telegram-б
 
 ## MCP-серверы
 
-`.mcp.json`: `github`, `filesystem`, `chromeDevtools`, `playwright`, `dokploy` (панель контура — приложения, БД, бэкапы, запуск деплоя; ключ через `${DOKPLOY_API_KEY}` из gitignored `settings.local.json`).
+`.mcp.json`: `github`, `filesystem`, `chromeDevtools`, `playwright`.
+
+**Dokploy MCP убран 2026-07-27** — по той же причине, что и Supabase MCP годом раньше:
+он указывал на прежнюю панель (`dokploy.mxpkn8ns.ru` на бостонском VPS), где после
+переезда не осталось ни приложений Оплатишки, ни API-ключа — то есть выглядел как
+доступ к проду, а вёл в резерв. Перенаправить его на новую панель нельзя без потери
+защиты: `dokploypanel.oplatishka.com` закрыт basic-auth, а `@dokploy/mcp` умеет только
+заголовок `x-api-key`; открыть ради него `/api` наружу означало бы снять с панели
+второй барьер. Управление контуром — через ssh и API с самого VPS:
+```bash
+ssh root@187.124.172.104 'curl -s -H "x-api-key: <ключ>" http://127.0.0.1:3000/api/project.all'
+```
+На `127.0.0.1:3000` запрос идёт мимо Traefik, поэтому basic-auth не участвует.
 
 **Supabase MCP убран 2026-07-25:** боевая БД — self-hosted Postgres на VPS, и MCP туда не ходил; оставленный, он выглядел как доступ к проду, а отдавал данные холодного резерва. Запрос к боевой БД — через ssh:
 ```bash
