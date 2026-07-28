@@ -46,7 +46,7 @@ const INPUT = {
   paymentId: 'ORD-S3MGS-a1b2c3',
   amountKopecks: 249_050,
   email: '12345@telegram.org',
-  ip: '177.7.34.106',
+  ip: '187.124.172.104',
   methodId: 44,
 };
 
@@ -71,7 +71,7 @@ describe('FreekassaClient.createOrder', () => {
       paymentId: 'ORD-S3MGS-a1b2c3',
       i: 44,
       email: '12345@telegram.org',
-      ip: '177.7.34.106',
+      ip: '187.124.172.104',
       amount: 2490.5,
       currency: 'RUB',
     });

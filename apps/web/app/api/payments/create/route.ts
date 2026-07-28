@@ -21,6 +21,7 @@ import { isPaymentGatewayUnavailable } from '@/lib/payments/availability';
 import { isPriceLockExpired } from '@/lib/payments/expiry';
 import {
   createGatewayInvoice,
+  maxAmountRubFor,
   minAmountRubFor,
   primaryPaymentGateway,
 } from '@/lib/payments/gateway';
@@ -179,6 +180,30 @@ export async function POST(req: Request): Promise<NextResponse> {
           error: 'below_min_amount',
           minAmountRub,
           message: `Минимальная сумма оплаты — ${minAmountRub} ₽`,
+        },
+        { status: 422 },
+      );
+    }
+
+    // Потолок шлюза (у Freekassa лимит операции 150 000 ₽). Витрина держит
+    // верхний кап в долларах (`HIGH_VALUE_MAX_AMOUNT_USD`), но курс плавает —
+    // страховкой служит именно этот гейт: здесь сумма уже в рублях и известна
+    // точно. Ловим ДО вызова провайдера, иначе клиент получит его текст ошибки.
+    const maxAmountRub = maxAmountRubFor(gateway);
+    if (maxAmountRub > 0 && order.amountRub > maxAmountRub * 100) {
+      log.warn({
+        event: 'payments.create.above_max',
+        orderId,
+        gateway,
+        amountRubKopecks: order.amountRub,
+        maxAmountRubKopecks: maxAmountRub * 100,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'above_max_amount',
+          maxAmountRub,
+          message: `Максимальная сумма оплаты — ${maxAmountRub} ₽. Напиши в поддержку, оформим заказ частями.`,
         },
         { status: 422 },
       );

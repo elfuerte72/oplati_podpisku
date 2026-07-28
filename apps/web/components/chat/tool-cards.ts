@@ -19,6 +19,12 @@ export type ChatCard =
       usdCents: number | null;
       expiresAt: string;
       isCustom: boolean;
+      /**
+       * Надбавка платёжной системы на плательщика, % (0 — её нет). Приходит с
+       * сервера в кнопочном пути (`/api/orders/propose`); в AI-пути tool не
+       * возвращает её вовсе — тогда 0 и предупреждение не рендерится.
+       */
+      buyerFeePercent: number;
     }
   | { type: 'payment'; paymentUrl: string; qrPayload: string | null; expiresAt: string }
   | { type: 'operator'; slaHours: number }
@@ -92,6 +98,7 @@ export function parseToolCards(toolCalls: unknown): ChatCard[] {
           usdCents: asNum(output.originalAmountUsdCents) ?? null,
           expiresAt,
           isCustom: output.isCustom === true,
+          buyerFeePercent: asNum(output.buyerFeePercent) ?? 0,
         });
       }
       continue;

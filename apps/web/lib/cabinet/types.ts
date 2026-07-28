@@ -149,6 +149,13 @@ export type OrderDetail = OrderSummary & {
    * нему разбивку «Подписка / Выпуск карты / Итого».
    */
   cardIssueFeeKopecks: number | null;
+  /**
+   * Надбавка платёжной системы на плательщика, % (0 — её нет). НЕ входит в
+   * `amountKopecks`: её начисляет провайдер на своей странице, нам приходит
+   * ровно сумма счёта. Нужна экрану заказа, чтобы предупредить о ней ДО
+   * перехода на оплату.
+   */
+  buyerFeePercent: number;
   paidAt: string | null;
   fulfilledAt: string | null;
   events: OrderEventView[];

@@ -5,7 +5,7 @@
  * логику gate'а можно было покрыть юнит-тестами в изоляции.
  *
  * Границы те же, что на сайте (StartScreen) и в `proposeOrder`: $1–$500 для
- * обычных сервисов, до $5000 для сервисов-пополнений (Airbnb/Booking/Steam).
+ * обычных сервисов, до $1200 для сервисов-пополнений (Airbnb/Booking/Steam).
  */
 
 export const MIN_AMOUNT_USD = 1;
@@ -21,7 +21,9 @@ export const HIGH_VALUE_SLUGS: ReadonlySet<string> = new Set([
   'steam',
   'apple-app-store',
 ]);
-export const HIGH_VALUE_MAX_AMOUNT_USD = 5000;
+// $1200 — потолок под лимит операции Freekassa (150 000 ₽); подробнее в
+// `lib/tool-handlers/propose-order.ts`.
+export const HIGH_VALUE_MAX_AMOUNT_USD = 1200;
 
 export function maxAmountUsdFor(slug: string): number {
   return HIGH_VALUE_SLUGS.has(slug) ? HIGH_VALUE_MAX_AMOUNT_USD : MAX_AMOUNT_USD;

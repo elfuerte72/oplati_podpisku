@@ -73,6 +73,35 @@ export function minAmountRubFor(gateway: PaymentGateway): number {
     : serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB;
 }
 
+/**
+ * Максимальная принимаемая сумма шлюза в рублях (0 = потолка нет).
+ * У Freekassa лимит операции 150 000 ₽ по обоим API-методам (СБП и карты РФ),
+ * у L&P потолок не объявлен — выдумывать его нельзя.
+ */
+export function maxAmountRubFor(gateway: PaymentGateway): number {
+  return gateway === 'freekassa' ? serverEnv.FREEKASSA_MAX_AMOUNT_RUB : 0;
+}
+
+/**
+ * Комиссия, которую шлюз добавит ПЛАТЕЛЬЩИКУ поверх суммы нашего счёта
+ * (0 = не добавит). У L&P комиссию эквайринга несём мы из своей наценки, у
+ * Freekassa она переложена на покупателя настройкой кабинета.
+ *
+ * Нужна только для ТЕКСТОВ: мы эту надбавку не считаем и не получаем, но обязаны
+ * предупредить о ней до нажатия «Оплатить» — иначе на странице провайдера
+ * клиента ждёт другая сумма. Привязка к шлюзу намеренная: при
+ * `PAYMENT_PRIMARY_PROVIDER=loveandpay` тексты о комиссии не показываются, а при
+ * переключении включаются сами, без правки UI.
+ */
+export function buyerFeePercentFor(gateway: PaymentGateway): number {
+  return gateway === 'freekassa' ? serverEnv.FREEKASSA_BUYER_FEE_PERCENT : 0;
+}
+
+/** Комиссия текущего шлюза — то, что уходит в UI и тексты бота. */
+export function currentBuyerFeePercent(): number {
+  return buyerFeePercentFor(primaryPaymentGateway());
+}
+
 export type CreateInvoiceInput = {
   gateway: PaymentGateway;
   order: OrderRow;
@@ -114,6 +143,21 @@ export async function createGatewayInvoice(input: CreateInvoiceInput): Promise<G
         fallback,
         amountKopecks: input.amountKopecks,
         fallbackMinRub,
+      });
+      throw err;
+    }
+
+    // Симметрично потолку: у Freekassa лимит операции 150 000 ₽, у L&P потолка
+    // нет. Заказ, который основной шлюз принял бы, резервный отверг бы своим
+    // лимитом — честнее отдать «технический сбой», чем непрозрачный отказ
+    // провайдера уже после того, как клиент нажал «Оплатить».
+    const fallbackMaxRub = maxAmountRubFor(fallback);
+    if (fallbackMaxRub > 0 && input.amountKopecks > fallbackMaxRub * 100) {
+      log.warn({
+        event: 'payments.gateway.fallback_above_max',
+        fallback,
+        amountKopecks: input.amountKopecks,
+        fallbackMaxRub,
       });
       throw err;
     }

@@ -6,8 +6,9 @@ const h = vi.hoisted(() => ({
     PAYMENT_PRIMARY_PROVIDER: 'loveandpay',
     LOVEANDPAY_MIN_AMOUNT_RUB: 500,
     FREEKASSA_MIN_AMOUNT_RUB: 500,
+    FREEKASSA_MAX_AMOUNT_RUB: 140_000,
     FREEKASSA_METHOD_ID: 44,
-    FREEKASSA_FALLBACK_IP: '177.7.34.106',
+    FREEKASSA_FALLBACK_IP: '187.124.172.104',
     FREEKASSA_INVOICE_TTL_HOURS: 1,
   } as Record<string, unknown>,
   telegramId: '12345' as string | null,
@@ -61,6 +62,8 @@ import { notifyOps } from '@/lib/alerts/notify-ops.ts';
 import { LoveAndPayApiError } from '../loveandpay/errors.ts';
 import {
   createGatewayInvoice,
+  buyerFeePercentFor,
+  maxAmountRubFor,
   minAmountRubFor,
   primaryPaymentGateway,
   resetFallbackAlertDedupForTests,
@@ -110,6 +113,21 @@ describe('переключатель провайдера', () => {
     h.env.FREEKASSA_MIN_AMOUNT_RUB = 0;
     expect(minAmountRubFor('freekassa')).toBe(0);
     h.env.FREEKASSA_MIN_AMOUNT_RUB = 500;
+  });
+
+  it('надбавка на плательщика есть только у Freekassa', () => {
+    // У L&P комиссию эквайринга несём мы из наценки — клиент платит ровно счёт,
+    // поэтому предупреждения в UI при нём не показываются.
+    h.env.FREEKASSA_BUYER_FEE_PERCENT = 6;
+    expect(buyerFeePercentFor('freekassa')).toBe(6);
+    expect(buyerFeePercentFor('loveandpay')).toBe(0);
+  });
+
+  it('потолок суммы есть только у Freekassa (лимит операции 150 000 ₽)', () => {
+    // У L&P потолок не объявлен — 0 означает «гейта нет», и выдумывать чужой
+    // контракт нельзя. Асимметрия намеренная, поэтому зафиксирована тестом.
+    expect(maxAmountRubFor('freekassa')).toBe(140_000);
+    expect(maxAmountRubFor('loveandpay')).toBe(0);
   });
 
   it('шлёт счёт ровно в один шлюз — второй не трогается', async () => {
@@ -215,7 +233,7 @@ describe('createGatewayInvoice — Freekassa', () => {
     expect(h.createOrderMock.mock.calls[0]?.[0]).toMatchObject({
       email: '12345@telegram.org',
       // 127.0.0.1 провайдер блокирует — шлём публичный IP узла.
-      ip: '177.7.34.106',
+      ip: '187.124.172.104',
     });
   });
 
@@ -367,6 +385,19 @@ describe('автофоллбэк на резервный шлюз', () => {
     await expect(
       createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 100 }),
     ).rejects.toBe(rejected);
+    expect(h.createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it('сумма выше потолка резервного шлюза → фоллбэка нет, ошибка основного наверх', async () => {
+    // L&P потолка не имеет, Freekassa — 140 000 ₽. Заказ на 200 000 ₽ основной
+    // принял бы, а резервный отверг бы своим лимитом уже после нажатия
+    // «Оплатить»: честнее показать «технический сбой», чем текст провайдера.
+    const err = transportFailure();
+    h.createInvoiceMock.mockRejectedValueOnce(err);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'loveandpay', order: ORDER, amountKopecks: 20_000_000 }),
+    ).rejects.toBe(err);
     expect(h.createOrderMock).not.toHaveBeenCalled();
   });
 

@@ -83,6 +83,10 @@ const orderDetailSchema = orderSummarySchema.extend({
   usdtRubRateKopecks: z.number().int().positive().nullable(),
   instructions: instructionsSchema,
   cardIssueFeeKopecks: z.number().nullable(),
+  // Надбавка платёжной системы на плательщика, % (0 — её нет). Поле обязательное:
+  // снапшот собирает сервер того же деплоя, что и этот бандл. Старый WebView-бандл
+  // о поле просто не знает и отбросит его — рассинхрон в эту сторону безопасен.
+  buyerFeePercent: z.number().min(0),
   paidAt: z.string().nullable(),
   fulfilledAt: z.string().nullable(),
   events: z.array(eventViewSchema),

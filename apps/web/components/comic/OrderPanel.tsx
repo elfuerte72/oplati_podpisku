@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { buyerFeeAmountNote } from '@/lib/payments/buyer-fee';
 import { formatRub, formatUsd } from './format';
 
 type OrderRow = { label: string; value: string };
@@ -10,6 +11,12 @@ type OrderPanelProps = {
   amountKopecks: number;
   /** Оригинальная цена подписки в USD-центах; показываем «$ на сайте + ₽ у нас». */
   amountUsdCents?: number | null;
+  /**
+   * Надбавка платёжной системы на плательщика, % (0 — её нет). При ненулевой
+   * рядом с суммой показываем, сколько клиент реально увидит на странице шлюза:
+   * узнать об этом на самой странице оплаты — худший момент.
+   */
+  buyerFeePercent?: number;
   confirm?: ReactNode;
   secondary?: ReactNode;
   stamp?: ReactNode;
@@ -22,6 +29,7 @@ export function OrderPanel({
   rows = [],
   amountKopecks,
   amountUsdCents,
+  buyerFeePercent = 0,
   confirm,
   secondary,
   stamp,
@@ -75,6 +83,12 @@ export function OrderPanel({
         </p>
       )}
 
+      {buyerFeeAmountNote(amountKopecks, buyerFeePercent, formatRub) !== null && (
+        <p className="mt-2 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+          {buyerFeeAmountNote(amountKopecks, buyerFeePercent, formatRub)}
+        </p>
+      )}
+
       {/* «Как рассчитана сумма» (ТЗ §3) — раскрывающийся блок без сюрпризов. */}
       <details className="group mt-2 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2">
         <summary className="cursor-pointer list-none font-display text-xs font-bold text-[var(--text)]">
@@ -84,8 +98,11 @@ export function OrderPanel({
         <p className="mt-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
           Итог = цена подписки в долларах × курс на момент заказа + комиссия сервиса
           (рассчитывается системой). Если это твой первый заказ и виртуальной карты ещё
-          нет, разово добавляется её выпуск — $4. После создания заказа сумма не меняется:
-          платишь ровно столько, сколько на кнопке.
+          нет, разово добавляется её выпуск — $4 (столько стоит выпуск карты, дальше
+          заказы идут на неё же без этой надбавки).{' '}
+          {buyerFeePercent > 0
+            ? 'Наша сумма после создания заказа не меняется, комиссия платёжной системы добавляется при оплате — она указана выше.'
+            : 'После создания заказа сумма не меняется: платишь ровно столько, сколько на кнопке.'}
         </p>
       </details>
 

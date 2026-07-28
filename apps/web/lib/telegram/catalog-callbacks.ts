@@ -15,6 +15,7 @@ import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
+import { currentBuyerFeePercent } from '@/lib/payments/gateway';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
@@ -30,6 +31,7 @@ import {
   catalogCustomAmountPrompt,
   catalogTierButtonLabel,
   catalogTierPrompt,
+  buildBuyerFeeLine,
   orderCardText,
 } from './templates';
 
@@ -375,6 +377,10 @@ export async function handleOrderActionCallback(
     if (confirmResult.qrPayload) {
       replyParts.push('Или отсканируй QR-код в приложении банка по СБП.');
     }
+    // Надбавку платёжной системы клиент увидит на её странице — предупреждаем
+    // здесь, вместе со ссылкой, а не постфактум.
+    const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());
+    if (feeLine) replyParts.push(feeLine);
     replyParts.push(`Счёт действует до ${formatExpires(confirmResult.expiresAt)}.`);
     const reply = replyParts.join('\n\n');
 
