@@ -29,6 +29,7 @@
 | [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki, Sentry, Better Stack |
 | [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 | [`runbooks/server-migration.md`](runbooks/server-migration.md) | переезд контура на другой VPS (Dokploy → Dokploy): что чем переносится, порядок окна, грабли |
+| [`runbooks/metabase.md`](runbooks/metabase.md) | Metabase на VPS: вход по ssh-туннелю, read-only роль `metabase_ro`, как выдать доступ к новой таблице |
 
 ## Справочники — внешние контракты и подсистемы
 
