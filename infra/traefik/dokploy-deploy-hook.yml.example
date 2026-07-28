@@ -1,0 +1,28 @@
+# Исключение deploy-вебхука панели из basic-auth.
+#
+# Установка: скопировать в /etc/dokploy/traefik/dynamic/dokploy-deploy-hook.yml,
+# подставив домен панели. Проверка — POST с заведомо неверным токеном должен
+# вернуть `404 {"message":"Application Not Found"}`, а не `401`:
+#   curl -X POST -H 'X-GitHub-Event: push' -H 'content-type: application/json' \
+#        -d '{"ref":"refs/heads/main"}' https://__PANEL_HOST__/api/deploy/whatever
+#
+# Зачем: .github/workflows/deploy.yml дёргает POST /api/deploy/<refreshToken>.
+# Если панель целиком закрыта basic-auth, CI получает 401 вместо запуска сборки —
+# деплой ломается, а причина неочевидна (workflow сообщает лишь про не-200).
+#
+# Безопасность: роут защищён самим refreshToken. Он узкий — триггерит сборку
+# ровно одного приложения и, в отличие от DOKPLOY_API_KEY, не даёт доступа к
+# панели. Ротация — кнопка refresh token в Dokploy + обновление секрета репозитория.
+#
+# Приоритет задан явно: правило с PathPrefix специфичнее, но Traefik сортирует
+# правила по длине, а не по «специфичности».
+http:
+  routers:
+    dokploy-deploy-hook:
+      rule: "Host(`__PANEL_HOST__`) && PathPrefix(`/api/deploy`)"
+      service: dokploy-panel-svc
+      entryPoints:
+        - websecure
+      priority: 1000000
+      tls:
+        certResolver: letsencrypt

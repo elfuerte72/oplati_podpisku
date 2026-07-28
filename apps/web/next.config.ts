@@ -7,6 +7,14 @@ import { withSentryConfig } from '@sentry/nextjs';
  * План: собрать реальные нарушения с прода → ужесточить → перевести в enforce
  * (`Content-Security-Policy`). НЕ переводить в enforce без анализа отчётов:
  * у комикс-UI инлайн-стили Next, у Mini App — Telegram WebView.
+ *
+ * ⚠️ Разбирая отчёты, отделять свои нарушения от чужих. Большая часть шума —
+ * `fonts.googleapis.com` / `fonts.gstatic.com` (сотни срабатываний) — приходит от
+ * браузерных расширений посетителей, а НЕ от нас: шрифты self-hosted через
+ * `next/font/google`, который скачивает их на сборке и раздаёт с `/_next/static/media`,
+ * внешних ссылок в HTML нет. Добавлять такие домены в политику нельзя — это
+ * ослабление ради чужих плагинов; они фильтруются на стороне Sentry
+ * (Project Settings → Security Headers → ignored sources).
  */
 function buildCspReportOnly(): string | null {
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
@@ -17,7 +25,11 @@ function buildCspReportOnly(): string | null {
     "default-src 'self'",
     // 'unsafe-inline'/'unsafe-eval' — стартовая точка под инлайны Next;
     // ужесточение (nonce) — после анализа отчётов.
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+    // telegram.org — SDK Mini App (`telegram-web-app.js`), см.
+    // components/cabinet/telegram.ts: он подгружается динамически из JS, поэтому
+    // в HTML его не видно и при беглом взгляде нарушение выглядит чужим. Оно
+    // наше: без этого домена перевод CSP в enforce убил бы кабинет в Telegram.
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://telegram.org",
     "style-src 'self' 'unsafe-inline'",
     // cdn.freekassa.net — баннер провайдера в футере (components/info/FreekassaBadge.tsx).
     // Без этого домена перевод CSP в enforce молча убил бы картинку, а для Freekassa

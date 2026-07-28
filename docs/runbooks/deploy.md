@@ -1,6 +1,6 @@
 # Рунбук: деплой prod и dev
 
-Контур — Dokploy на VPS `177.7.34.106`. Полная карта окружений (домены, БД, боты,
+Контур — Dokploy на VPS `187.124.172.104`. Полная карта окружений (домены, БД, боты,
 модели, какие ключи где) — в [`CLAUDE.md`](../../CLAUDE.md), раздел «Deployments».
 
 ---
@@ -12,7 +12,7 @@
 ```
 push в main / dev
   → gate: pnpm typecheck + pnpm -r test + pnpm lint
-  → POST https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>   (до 10 попыток)
+  → POST https://dokploypanel.oplatishka.com/api/deploy/<refreshToken>   (до 10 попыток)
   → Dokploy собирает образ и подменяет контейнер
   → проверка: /api/health отдаёт startedAt позже момента триггера (только main)
   → провал любого шага → сообщение в Telegram
@@ -65,7 +65,7 @@ gh api repos/elfuerte72/oplati_podpisku/rulesets/19137923 \
 Записан здесь, чтобы не выяснять второй раз.
 
 ```bash
-curl -X POST "https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>" \
+curl -X POST "https://dokploypanel.oplatishka.com/api/deploy/<refreshToken>" \
   -H 'X-GitHub-Event: push' \
   -H 'Content-Type: application/json' \
   -d '{"ref":"refs/heads/main"}'
@@ -112,7 +112,7 @@ curl -X POST "https://dokploy.mxpkn8ns.ru/api/deploy/<refreshToken>" \
 
 ```bash
 # 1. Проверить, доступен ли VPS прямо сейчас
-curl -sS -o /dev/null -w '%{http_code}\n' --connect-timeout 10 https://dokploy.mxpkn8ns.ru/
+curl -sS -o /dev/null -w '%{http_code}\n' --connect-timeout 10 https://dokploypanel.oplatishka.com/
 
 # 2. Если доступен — просто перезапустить workflow, окно уже закрылось
 gh workflow run deploy.yml --ref main
@@ -140,7 +140,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://www.oplatishka.com/api/health
   событие `push` и `pull_request` помечено ошибкой. То есть GitHub события шлёт —
   отвергает их Dokploy.
 - **Дело не в доступе:** Repository access у установки — `All repositories`.
-- **Дело не в сети:** `POST https://dokploy.mxpkn8ns.ru/api/deploy/github` отвечает
+- **Дело не в сети:** `POST https://dokploypanel.oplatishka.com/api/deploy/github` отвечает
   извне `401 {"message":"Missing signature header"}` без подписи и
   `400 {"message":"Github Installation not found"}` с фиктивной.
 - **У Dokploy всё на месте:** в его БД `githubWebhookSecret` длиной 40 символов,
@@ -170,14 +170,56 @@ App за ту же секунду есть, и оно красное.
 
 ---
 
+## Ручные конфиги Traefik (вне Dokploy)
+
+Часть маршрутизации живёт не в панели, а отдельными файлами в
+`/etc/dokploy/traefik/dynamic/`. Dokploy генерирует свои per-app файлы
+(`oplatishka-web-<suffix>.yml`) и перезаписывает их при каждом редеплое — поэтому
+всё, что обязано пережить редеплой, вынесено в persistent-файлы, которых панель
+не касается.
+
+Исходники — в [`infra/traefik/`](../../infra/traefik/): шаблоны с плейсхолдером
+имени swarm-сервиса, порядок установки описан в шапке каждого файла.
+
+| Файл | Домен | Зачем |
+|---|---|---|
+| `oplatishka-www.yml` | www + apex | роутеры прод-домена, cert от внешнего lego (DNS-01), middleware `oplatishka-strip-altsvc` |
+| `oplatishka-dev-webhook.yml` | dev | `/api/bot` без basic-auth (Telegram его не умеет) |
+| `oplatishka-dev-miniapp.yml` | dev | `/cabinet` и зависимости без basic-auth (WebView его не умеет) |
+
+⚠️ **При переезде на другой VPS они не переносятся ничем** — ни деплоем, ни
+system backup Dokploy: тот несёт проекты, домены и env-переменные, но не
+содержимое `dynamic/`. Ровно так при cutover 2026-07-24 потерялось снятие
+`Alt-Svc`: Traefik снова стал рекламировать HTTP/3, браузеры на повторном заходе
+пробовали QUIC, а ТСПУ режет его у мобильных операторов РФ — клиент ждал таймаута
+на каждом заходе. Замечено по жалобе на скорость и восстановлено 2026-07-27.
+**Раскладка этих файлов — обязательный пункт чек-листа переезда.**
+
+Проверка после раскладки:
+
+```bash
+curl -sD - -o /dev/null https://www.oplatishka.com/ | grep -i alt-svc   # → alt-svc: clear
+```
+
+Правка применяется без рестарта Traefik (`providers.file.watch: true`), но битый
+YAML он молча не применит — роутер исчезнет вместе с доменом. Поэтому
+валидировать до подмены, а не после:
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('/tmp/new.yml'))" \
+  && mv /tmp/new.yml /etc/dokploy/traefik/dynamic/oplatishka-www.yml
+```
+
+---
+
 ## Проверка после деплоя
 
 ```bash
 # контейнер поднялся
-ssh root@177.7.34.106 'docker ps --filter name=oplatishka-web-wwrt50 --format "{{.Status}}"'
+ssh root@187.124.172.104 'docker ps --filter name=oplatishka-web-wwrt50 --format "{{.Status}}"'
 
 # лог сборки
-ssh root@177.7.34.106 'tail -5 "$(ls -t /etc/dokploy/logs/oplatishka-web-wwrt50/*.log | head -1)"'
+ssh root@187.124.172.104 'tail -5 "$(ls -t /etc/dokploy/logs/oplatishka-web-wwrt50/*.log | head -1)"'
 
 # смоук
 for u in / /api/health /cabinet /partner; do

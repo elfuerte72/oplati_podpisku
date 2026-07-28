@@ -1,7 +1,7 @@
 # Рунбук: бэкапы и восстановление БД
 
 Прод-БД — self-hosted Postgres 17 `oplatishka-db` (контейнер
-`oplatishka-db-ry3smb`) на VPS `177.7.34.106`. Наружу порт не опубликован
+`oplatishka-db-ry3smb`) на VPS `187.124.172.104`. Наружу порт не опубликован
 (`externalPort: null`) — только внутренняя сеть Docker и `docker exec`.
 
 ---
@@ -31,13 +31,13 @@
 ```bash
 curl -X POST -H "x-api-key: $DOKPLOY_API_KEY" -H 'content-type: application/json' \
   -d '{"backupId":"gdM60msSyECSo0BZp9bQn"}' \
-  https://dokploy.mxpkn8ns.ru/api/backup.manualBackupPostgres
+  https://dokploypanel.oplatishka.com/api/backup.manualBackupPostgres
 ```
 
 Проверить, что залилось (лог пишет `✅ Upload to S3 completed successfully`):
 
 ```bash
-ssh root@177.7.34.106 'tail -8 "$(ls -t /etc/dokploy/logs/backup-navigate-open-source-program-u4xwur/*.log | head -1)"'
+ssh root@187.124.172.104 'tail -8 "$(ls -t /etc/dokploy/logs/backup-navigate-open-source-program-u4xwur/*.log | head -1)"'
 ```
 
 ---
@@ -52,7 +52,7 @@ ssh root@177.7.34.106 'tail -8 "$(ls -t /etc/dokploy/logs/backup-navigate-open-s
 `postgresql_backup`.
 
 ```bash
-ssh root@177.7.34.106
+ssh root@187.124.172.104
 C=$(docker ps --format '{{.Names}}' | grep -i '^dokploy\.' | head -1)
 RC="docker exec -e RCLONE_CONFIG_R2_TYPE=s3 -e RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
   -e RCLONE_CONFIG_R2_ACCESS_KEY_ID=<key> -e RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=<secret> \

@@ -1,0 +1,50 @@
+# Панель Dokploy на собственном домене + basic-auth.
+#
+# Установка на VPS:
+#   1. Поднять A-запись поддомена на IP сервера (DNS only, без прокси CF —
+#      иначе ACME HTTP-01 валидируется через чужой IP).
+#   2. Сгенерировать пароль и хеш:
+#        PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 20)
+#        HASH=$(openssl passwd -apr1 "$PASS"); echo "$PASS"
+#   3. Скопировать этот файл в /etc/dokploy/traefik/dynamic/dokploy-panel.yml,
+#      подставить домен и `<USER>:<HASH>`.
+#   4. Проверить: без пароля 401, с паролем 307/200.
+#
+# Зачем: установщик Dokploy публикует порт 3000 на 0.0.0.0. Внешний firewall
+# хостера его закрывает, и тогда единственный вход — 443 через Traefik, где
+# стоит basic-auth поверх собственного логина панели. Два независимых барьера:
+# без basic-auth снаружи не видно даже формы входа, то есть нельзя определить
+# версию панели и подобрать к ней эксплойт.
+#
+# removeHeader: true — заголовок Authorization не уходит дальше в приложение.
+http:
+  middlewares:
+    dokploy-panel-auth:
+      basicAuth:
+        removeHeader: true
+        realm: "Oplatishka panel"
+        users:
+          - "<USER>:<APR1_HASH>"
+  routers:
+    dokploy-panel-secure:
+      rule: "Host(`__PANEL_HOST__`)"
+      service: dokploy-panel-svc
+      entryPoints:
+        - websecure
+      middlewares:
+        - dokploy-panel-auth
+      tls:
+        certResolver: letsencrypt
+    dokploy-panel-web:
+      rule: "Host(`__PANEL_HOST__`)"
+      service: dokploy-panel-svc
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+  services:
+    dokploy-panel-svc:
+      loadBalancer:
+        servers:
+          - url: "http://dokploy:3000"
+        passHostHeader: true
