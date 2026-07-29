@@ -346,18 +346,8 @@ rate-limit на кнопки бота, бэкап панели Dokploy, мони
 
 
 
-- **T-5** — тесты `splitForTelegram`/`tokenizeForSplit` (разбивка сообщений по
-  4096 с code-блоками) и link-handoff.
 - **tool-cards.ts → Zod** (CodeRabbit 2026-07-19): самописная валидация
   tool-call payload'ов в веб-чате → схемы из `@oplati/types`.
-- **C-5** — `init-roles.ts` создаёт локальный `pino` в обход `lib/logger.ts` с его
-  redact-листом: `logger.error({ err })` сериализует ошибку `postgres`-клиента
-  без скраба (детали соединения → stdout → Loki).
-- **E-9** — роли задаются дважды и расходятся: `service_role … BYPASSRLS` в
-  `init-roles.ts`, без него в PGlite-тестах → тест проверяет не тот контур, что
-  едет в прод.
-- **Redact-лист логгера** — ключи `env.YOOKASSA_SECRET_KEY` / `env.CRYPTOBOT_TOKEN`
-  остались от удалённых провайдеров; безвредно, убрать при следующей правке.
 
 ---
 

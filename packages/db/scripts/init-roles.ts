@@ -24,9 +24,22 @@
  */
 
 import postgres from 'postgres';
-import pino from 'pino';
 
-const logger = pino({ name: 'init-roles' });
+import { bootstrapRolesSql, BOOTSTRAP_ROLES } from '../src/bootstrap-roles.ts';
+
+/**
+ * Свой pino здесь был бы pino БЕЗ redact-листа приложения: `logger.error({ err })`
+ * сериализует ошибку клиента `postgres` целиком, а в ней — строка подключения с
+ * паролем (C-5). Скрипт разовый и консольный, полноценный логгер ему не нужен,
+ * поэтому печатаем только то, что сами сформировали: имя ошибки и сообщение,
+ * без объекта и без стека драйвера.
+ */
+function fail(err: unknown): never {
+  const name = err instanceof Error ? err.name : 'Error';
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`init-roles failed: ${name}: ${message}\n`);
+  process.exit(1);
+}
 
 async function main(): Promise<void> {
   // Приоритет ОБЯЗАН совпадать с drizzle.config.ts (`DATABASE_URL_DIRECT ??
@@ -44,33 +57,17 @@ async function main(): Promise<void> {
   // стоит первым шагом деплоя на новый контур.
   const sql = postgres(url, { max: 1, prepare: false, connect_timeout: 10 });
   try {
-    await sql.unsafe(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
-          CREATE ROLE anon NOLOGIN;
-        END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
-          CREATE ROLE authenticated NOLOGIN;
-        END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
-          CREATE ROLE service_role NOLOGIN BYPASSRLS;
-        END IF;
-      END
-      $$;
-    `);
+    await sql.unsafe(bootstrapRolesSql());
+    const expected = BOOTSTRAP_ROLES.map((r) => r.name);
     const roles = await sql<{ rolname: string }[]>`
       SELECT rolname FROM pg_roles
-      WHERE rolname IN ('anon', 'authenticated', 'service_role')
+      WHERE rolname = ANY(${expected})
       ORDER BY rolname
     `;
-    logger.info({ roles: roles.map((r) => r.rolname) }, 'roles ready');
+    process.stdout.write(`roles ready: ${roles.map((r) => r.rolname).join(', ')}\n`);
   } finally {
     await sql.end();
   }
 }
 
-main().catch((err: unknown) => {
-  logger.error({ err }, 'init-roles failed');
-  process.exit(1);
-});
+main().catch(fail);

@@ -35,8 +35,6 @@ export const redactPaths: string[] = [
   'env.SUPABASE_SERVICE_ROLE_KEY',
   'env.ANTHROPIC_API_KEY',
   'env.TELEGRAM_BOT_TOKEN',
-  'env.YOOKASSA_SECRET_KEY',
-  'env.CRYPTOBOT_TOKEN',
   'env.SENTRY_AUTH_TOKEN',
   'env.UPSTASH_REDIS_REST_TOKEN',
   // PII denylist из docs/observability.md (на границах request body)

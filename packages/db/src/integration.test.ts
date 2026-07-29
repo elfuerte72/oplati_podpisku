@@ -8,6 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 
 import { OrderTransitionError } from '@oplati/types';
 
+import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import {
@@ -153,9 +154,10 @@ beforeAll(async () => {
   // и т.п.) мультистейтментные без `--> statement-breakpoint` — редактировать
   // применённые миграции нельзя. exec исполняет файл как есть.
   // Supabase-роли, на которые ссылаются RLS-политики/GRANT'ы миграций.
-  await client.exec(
-    'CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;',
-  );
+  // ТОТ ЖЕ DDL, что гоняет `db:init-roles` на боевом контуре (E-9): раньше здесь
+  // роли создавались без BYPASSRLS у service_role, и тесты проверяли не тот
+  // контур, что едет в прод.
+  await client.exec(bootstrapRolesSql());
   const dir = join(import.meta.dirname, '..', 'migrations');
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
