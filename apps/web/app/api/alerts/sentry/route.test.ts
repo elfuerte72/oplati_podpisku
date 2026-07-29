@@ -80,4 +80,21 @@ describe('POST /api/alerts/sentry', () => {
     expect(res.status).toBe(200);
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
   });
+  it('успешные алёрты НЕ лимитируются — в шторм они нужнее всего', async () => {
+    // Молча отброшенное уведомление хуже отсутствующего: шторм алёртов
+    // случается ровно тогда, когда всё горит.
+    for (let i = 0; i < 25; i++) {
+      const res = await POST(makeReq('?s=top-secret', SAMPLE));
+      expect(res.status).toBe(200);
+    }
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(25);
+  });
+
+  it('неудачные попытки уходят под rate-limit (подбор секрета из access-логов)', async () => {
+    // Без Upstash в тестах лимитер fail-open, поэтому проверяем контракт ответа,
+    // а не сам счётчик: отказ остаётся 401 и не превращается в 200.
+    const res = await POST(makeReq('?s=wrong', SAMPLE));
+    expect([401, 429]).toContain(res.status);
+    expect(h.sendMessageMock).not.toHaveBeenCalled();
+  });
 });

@@ -238,4 +238,45 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(h.getInvoiceMock).not.toHaveBeenCalled();
     expect(h.findOrderMock).not.toHaveBeenCalled();
   });
+  it('опрашивает пачку ПАРАЛЛЕЛЬНО, но не более POLL_CONCURRENCY разом', async () => {
+    // Последовательный цикл упирался в сумму задержек шлюза: при таймауте 30 с
+    // выборка не влезала в шаг крона, и часть платежей не опрашивалась вовсе.
+    // Залп «все разом» тоже нельзя — он и есть тот отказ, от которого страхуем.
+    h.pending = Array.from({ length: 12 }, (_, i) => ({
+      id: `pay-${i}`,
+      provider: 'freekassa' as const,
+      providerRef: String(i),
+      providerInvoiceNumber: `ORD-${i}`,
+    }));
+
+    let inFlight = 0;
+    let peak = 0;
+    h.findOrderMock.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return null;
+    });
+
+    await pollPayments();
+
+    expect(h.findOrderMock).toHaveBeenCalledTimes(12);
+    // Больше одного — значит параллельно; не больше четырёх — значит пул держит.
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it('падение одного платежа не уносит остальную пачку', async () => {
+    h.pending = [FK_PAYMENT, { ...FK_PAYMENT, id: 'pay-fk-2', providerRef: '124' }];
+    h.findOrderMock
+      .mockRejectedValueOnce(new Error('провайдер отвалился'))
+      .mockResolvedValueOnce(fkOrder(1));
+
+    const res = await pollPayments();
+
+    expect(res.errors).toBe(1);
+    // Второй платёж всё равно обработан — воркер пула не умер вместе с первым.
+    expect(h.findOrderMock).toHaveBeenCalledTimes(2);
+  });
 });

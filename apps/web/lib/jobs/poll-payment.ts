@@ -158,6 +158,78 @@ async function pollFreekassaPayment(payment: PaymentRow): Promise<boolean> {
   return false;
 }
 
+/**
+ * Сколько платежей опрашиваем одновременно.
+ *
+ * Ограничение осознанное, а не «побольше»: каждый опрос — сетевой вызов к шлюзу
+ * плюс запись в БД, а пул подключений `postgres` держит 10 соединений. Четыре
+ * параллельных потока дают четырёхкратное ускорение худшего случая и оставляют
+ * запас и провайдеру (у обоих шлюзов есть свои лимиты), и остальным запросам
+ * приложения, которые ходят в ту же БД.
+ */
+const POLL_CONCURRENCY = 4;
+
+type PollOutcome = 'recovered' | 'skipped' | 'error';
+
+/**
+ * Опрос одного платежа. НЕ бросает: ошибка изолируется здесь, иначе она убила
+ * бы воркер пула вместе с остальными платежами его очереди.
+ *
+ * Цикл провайдер-агностичен (этап 4 ТЗ Freekassa): раньше здесь стоял
+ * `if (payment.provider !== 'loveandpay') continue`, и платежи второго шлюза
+ * молча оставались без страховки — потерянное уведомление никто не дожимал.
+ */
+async function pollOne(payment: PaymentRow): Promise<PollOutcome> {
+  try {
+    if (payment.provider === 'loveandpay') {
+      return (await pollLoveAndPayPayment(payment)) ? 'recovered' : 'skipped';
+    }
+    if (payment.provider === 'freekassa') {
+      // Ключей нет (dev-стенд) — опрашивать нечем; это не ошибка.
+      if (!isFreekassaConfigured()) return 'skipped';
+      return (await pollFreekassaPayment(payment)) ? 'recovered' : 'skipped';
+    }
+    // Прочие провайдеры (manual и исторические) добора не имеют.
+    return 'skipped';
+  } catch (err) {
+    log.error({
+      event: 'cron.poll_payment.error',
+      paymentId: payment.id,
+      provider: payment.provider,
+      err,
+    });
+    Sentry.captureException(err, {
+      tags: { source: 'cron.poll-payment', provider: payment.provider },
+      extra: { paymentId: payment.id, providerRef: payment.providerRef },
+    });
+    return 'error';
+  }
+}
+
+/**
+ * Пул фиксированного размера: `limit` воркеров разбирают общую очередь, пока
+ * она не кончится. Не `Promise.all` по всей выборке — залп из сотни запросов
+ * к шлюзу и БД и есть тот отказ, от которого страхует этот крон.
+ */
+async function runWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      const item = items[index];
+      if (item === undefined) return;
+      results[index] = await fn(item);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export async function pollPayments(): Promise<{
   processed: number;
   recovered: number;
@@ -171,38 +243,16 @@ export async function pollPayments(): Promise<{
 
   log.info({ event: 'cron.poll_payment.found', count: pending.length });
 
-  let recovered = 0;
-  let errors = 0;
-
-  // Цикл провайдер-агностичен (этап 4 ТЗ Freekassa): раньше здесь стоял
-  // `if (payment.provider !== 'loveandpay') continue`, и платежи второго шлюза
-  // молча оставались без страховки — потерянное уведомление никто не дожимал.
-  // Клиенты Обоих шлюзов создаются лениво: разбираем платежи по провайдеру и
-  // трогаем только те клиенты, чьи платежи реально есть в выборке.
-  for (const payment of pending) {
-    try {
-      if (payment.provider === 'loveandpay') {
-        if (await pollLoveAndPayPayment(payment)) recovered++;
-      } else if (payment.provider === 'freekassa') {
-        // Ключей нет (dev-стенд) — опрашивать нечем; это не ошибка.
-        if (!isFreekassaConfigured()) continue;
-        if (await pollFreekassaPayment(payment)) recovered++;
-      }
-      // Прочие провайдеры (manual и исторические) добора не имеют.
-    } catch (err) {
-      errors++;
-      log.error({
-        event: 'cron.poll_payment.error',
-        paymentId: payment.id,
-        provider: payment.provider,
-        err,
-      });
-      Sentry.captureException(err, {
-        tags: { source: 'cron.poll-payment', provider: payment.provider },
-        extra: { paymentId: payment.id, providerRef: payment.providerRef },
-      });
-    }
-  }
+  // Платежи опрашиваются ПАРАЛЛЕЛЬНО, пулом. Последовательный цикл упирался в
+  // сумму задержек провайдера: при тормозящем шлюзе (таймаут клиента — 30 с)
+  // выборка не влезала в шаг крона, и часть платежей просто не опрашивалась —
+  // а это единственная страховка потерянных вебхуков.
+  //
+  // Порядок не важен, платежи независимы. `pollOne` не бросает: ошибка одного
+  // не должна убивать воркер и остальную пачку.
+  const outcomes = await runWithConcurrency(pending, POLL_CONCURRENCY, pollOne);
+  const recovered = outcomes.filter((o) => o === 'recovered').length;
+  let errors = outcomes.filter((o) => o === 'error').length;
 
   // Recovery потерянного issue-card: заказы, зависшие в `paid`. Идемпотентно —
   // issueCard claim'ит paid → in_fulfillment атомарно, повторный прогон не

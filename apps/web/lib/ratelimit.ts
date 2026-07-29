@@ -43,7 +43,13 @@ export type RateLimitResult = {
   remaining: number;
 };
 
-export type RateLimitName = 'web-chat' | 'telegram' | 'web-order' | 'web-order-status' | 'web-link';
+export type RateLimitName =
+  | 'web-chat'
+  | 'telegram'
+  | 'web-order'
+  | 'web-order-status'
+  | 'web-link'
+  | 'alert-webhook-auth';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
@@ -71,6 +77,15 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   // <a>-ссылка вместо window.open, фикс мобильной привязки 2026-07-03), а не
   // по клику — базовый расход выше, лимит поднят 5 → 10.
   'web-link': { limit: 10, windowSeconds: 60 },
+  // Только НЕУДАЧНЫЕ попытки авторизации на `/api/alerts/sentry`. Секрет ездит
+  // в query (экшен «webhook» в Sentry не умеет кастомные заголовки), а значит
+  // виден в access-логах Traefik — подбор и переигрывание надо ограничивать.
+  //
+  // ⚠️ Считаются ИМЕННО отказы. Лимитировать успешные алёрты нельзя: шторм
+  // алёртов случается ровно тогда, когда всё горит, и молча отброшенное
+  // уведомление хуже отсутствующего. Порог низкий: у настоящего Sentry секрет
+  // верный с первого раза, промахиваться некому.
+  'alert-webhook-auth': { limit: 10, windowSeconds: 300 },
 };
 
 /**
