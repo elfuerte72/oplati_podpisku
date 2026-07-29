@@ -469,6 +469,31 @@ export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> 
 }
 
 /**
+ * Атомарно «занять» право отправить напоминание о продлении.
+ *
+ * Возвращает `true` только тому, кто вставил событие первым; конкурент получает
+ * `false` и молча пропускает заказ. Держится на частичном уникальном индексе
+ * `order_events_renewal_reminder_once_idx` (миграция 0027) — прежняя схема
+ * «выбрать через NOT EXISTS → отправить → записать» атомарной не была, и два
+ * одновременных прогона джоба слали клиенту одно и то же дважды (B-2).
+ *
+ * ⚠️ Порядок намеренный: занимаем ДО отправки, то есть семантика at-most-once.
+ * Обратный порядок (отправить → записать) дал бы at-least-once, но именно он и
+ * порождал дубли, а `order_events` append-only — «отменить» занятую попытку
+ * нечем. Сбой отправки после claim'а означает пропущенное напоминание; он не
+ * тихий (лог + Sentry в джобе), а большинство отказов Telegram здесь всё равно
+ * постоянные («бот заблокирован пользователем»), где повтор бесполезен.
+ */
+export async function claimRenewalReminder(db: DBLike, orderId: string): Promise<boolean> {
+  const rows = await db
+    .insert(orderEvents)
+    .values({ orderId, actorType: 'system', eventType: 'renewal_reminder_sent' })
+    .onConflictDoNothing()
+    .returning({ id: orderEvents.id });
+  return rows.length > 0;
+}
+
+/**
  * Записать событие в append-only `order_events` БЕЗ смены статуса заказа — для
  * не-переходных событий (напоминание о продлении, уведомление). `orders.status`
  * не трогается, поэтому `from_status`/`to_status` остаются null. Только INSERT
