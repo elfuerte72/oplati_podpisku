@@ -346,8 +346,6 @@ rate-limit на кнопки бота, бэкап панели Dokploy, мони
 
 
 
-- **tool-cards.ts → Zod** (CodeRabbit 2026-07-19): самописная валидация
-  tool-call payload'ов в веб-чате → схемы из `@oplati/types`.
 
 ---
 
