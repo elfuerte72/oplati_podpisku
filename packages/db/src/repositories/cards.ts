@@ -244,6 +244,8 @@ export async function syncCardBalance(
  * = `created_at + CARD_LIFETIME_DAYS`, то есть дату в прошлом. Срок жизни карты
  * жёсткий и считается от выпуска, статус на него не влияет.
  */
+const RECYCLE_BATCH_LIMIT = 100;
+
 export async function findCardsToRecycle(db: DB): Promise<Card[]> {
   const rows = await db
     .select()
@@ -255,7 +257,12 @@ export async function findCardsToRecycle(db: DB): Promise<Card[]> {
         sql`${cards.createdAt} < now() - make_interval(days => ${CARD_LIFETIME_DAYS})`,
       ),
     )
-    .orderBy(sql`${cards.createdAt} ASC`);
+    .orderBy(sql`${cards.createdAt} ASC`)
+    // Кап: каждая карта в пачке — это сетевой вызов release к PaySpace, и
+    // накопленный хвост без предела упёрся бы в таймаут крона, не закрыв ни
+    // одной. Сортировка по возрасту гарантирует, что первыми уходят самые
+    // старые, а остаток заберёт следующий суточный прогон.
+    .limit(RECYCLE_BATCH_LIMIT);
   return rows.map(mapRowToCard);
 }
 

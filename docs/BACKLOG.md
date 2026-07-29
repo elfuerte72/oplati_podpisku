@@ -313,9 +313,6 @@ rate-limit на кнопки бота, бэкап панели Dokploy, мони
 - Нет индексов под cron-выборки: `order_events(event_type, created_at)`,
   `payments(created_at)`, `messages(created_at)` — сейчас Seq Scan по крошечным
   таблицам, при 500 заказах/день станет больно.
-- Выборки без `LIMIT`: `findExpiredPayableOrders`, `findOrdersForRenewalReminder`,
-  `findCardsToRecycle`, `listReferralRollupCandidates` — накопленный бэклог
-  оборвётся по таймауту и будет переигрываться по кругу.
 - `poll-payment` обрабатывает платежи строго последовательно; при тормозящем
   провайдере не влезает в окно — а это единственная страховка потерянных
   вебхуков.
@@ -349,8 +346,6 @@ rate-limit на кнопки бота, бэкап панели Dokploy, мони
 - На старом VPS `177.7.34.106` лежит остановленная прод-БД с данными клиентов.
 
 **UX и мелочи:**
-- `repeat_confirm` на штатном повторе пишет `duplicate_transition_skipped` —
-  ложный warning в логах рабочего пути.
 - VPN отдаёт истёкшую подписку без пометки: мёртвая ссылка и «действует до
   <прошедшая дата>».
 - Секрет алёртов Sentry передаётся в query `?s=` (виден в логах Traefik) —
@@ -359,18 +354,12 @@ rate-limit на кнопки бота, бэкап панели Dokploy, мони
 
 
 
-- **L-1** — фильтр `original_currency='USD'` в суммах оборота рефералки
-  (`referral-progression.ts`, `referral-cabinet.ts`): не-USD заказы завышали бы
-  оборот (guard в accrue-пути есть, в витрине/прогрессии — нет).
 - **T-5** — тесты `splitForTelegram`/`tokenizeForSplit` (разбивка сообщений по
   4096 с code-блоками) и link-handoff.
 - **tool-cards.ts → Zod** (CodeRabbit 2026-07-19): самописная валидация
   tool-call payload'ов в веб-чате → схемы из `@oplati/types`.
 - **B-2** — дедуп `renewal_reminder_sent` — read-then-write, не атомарный. При
   одновременном запуске двух джобов клиент получит напоминание дважды.
-- **B-4** — `SELF_BASE_URL` безусловно приоритетнее и не проверяется на «свой
-  хост»: ошибочное значение создаст инвойс в чужом стеке и отдаст
-  `X-Internal-Token` промежуточным прокси.
 - **C-5** — `init-roles.ts` создаёт локальный `pino` в обход `lib/logger.ts` с его
   redact-листом: `logger.error({ err })` сериализует ошибку `postgres`-клиента
   без скраба (детали соединения → stdout → Loki).

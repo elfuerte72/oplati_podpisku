@@ -30,11 +30,21 @@ const PURCHASED = sql`('paid','in_fulfillment','completed')`;
  * один реферал с `referred_by = them`). Только у них может быть оборот сети; у
  * остальных статистику считать не с чего.
  */
+const ROLLUP_CANDIDATES_LIMIT = 5000;
+
 export async function listReferralRollupCandidates(db: DB): Promise<string[]> {
   const rows = await db.execute<{ id: string }>(sql`
     SELECT DISTINCT referred_by AS id
     FROM users
     WHERE referred_by IS NOT NULL
+    -- Кап с детерминированным порядком: прогрессия зовётся раз в месяц, и на
+    -- каждого партнёра приходится несколько запросов. Без предела рост
+    -- партнёрской сети однажды упрёт джоб в таймаут, а идемпотентность
+    -- (PK по user_id и month) означает, что оборванный прогон переигрывался бы
+    -- с самого начала — то есть хвост списка не обработался бы НИКОГДА.
+    -- С капом и ORDER BY недобор виден в логе ровно как счётчик, равный капу.
+    ORDER BY id
+    LIMIT ${ROLLUP_CANDIDATES_LIMIT}
   `);
   return rows.map((r) => r.id);
 }
@@ -63,6 +73,11 @@ export async function getMonthlyRollupInput(
     WHERE u.referred_by = ${userId}
       AND o.status IN ${PURCHASED}
       AND o.original_amount IS NOT NULL
+      -- Оборот считается в USD-центах, и суммировать разные валюты как одно
+      -- число нельзя: не-USD заказ завысил бы оборот и мог бы вытолкнуть
+      -- партнёра на статус со ставкой выше заслуженной. Тот же guard давно
+      -- стоит в accrue-пути — здесь его не было (L-1).
+      AND o.original_currency = 'USD'
       AND o.paid_at >= ${monthKey}::date
       AND o.paid_at < (${monthKey}::date + interval '1 month')
   `);

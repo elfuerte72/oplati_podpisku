@@ -368,6 +368,8 @@ export async function setOrderCardId(
  * pending_payment, cron не должен переводить его в expired — такой заказ чинит
  * poll-payment/оператор, а не «срок оплаты истёк».
  */
+const EXPIRE_BATCH_LIMIT = 200;
+
 export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
@@ -378,7 +380,13 @@ export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
             SELECT 1 FROM ${payments}
             WHERE ${payments.orderId} = ${orders.id} AND ${payments.status} = 'succeeded'
           )`,
-    );
+    )
+    // Порядок + кап: без них накопленный бэклог (провалы крона, всплеск
+    // заказов) выбирался бы целиком, обрывался по таймауту и переигрывался по
+    // кругу, никогда не доходя до конца. С капом каждый прогон гарантированно
+    // добивает свою пачку, а остаток забирает следующий через 15 минут.
+    .orderBy(asc(orders.expiresAt))
+    .limit(EXPIRE_BATCH_LIMIT);
 }
 
 /**
@@ -438,6 +446,8 @@ export async function findStuckInFulfillmentOrders(
  * заказы, по которым напоминание уже отправлено (событие `renewal_reminder_sent`
  * в append-only `order_events`) — идемпотентность на уровне выборки.
  */
+const RENEWAL_BATCH_LIMIT = 200;
+
 export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
@@ -450,7 +460,12 @@ export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> 
             WHERE ${orderEvents.orderId} = ${orders.id}
               AND ${orderEvents.eventType} = 'renewal_reminder_sent'
           )`,
-    );
+    )
+    // Кап по той же причине, что в findExpiredPayableOrders. Здесь он ещё и
+    // предохранитель от рассылки: сорваться на середине пачки лучше, чем
+    // упереться в таймаут, отправив половину и не записав ни одного события.
+    .orderBy(asc(orders.fulfilledAt))
+    .limit(RENEWAL_BATCH_LIMIT);
 }
 
 /**

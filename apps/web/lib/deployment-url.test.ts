@@ -41,6 +41,32 @@ describe('selfCallBaseUrl (денежный self-call на /api/payments/create)
     );
   });
 
+  it('имя сервиса в docker-сети (без домена) допустимо', async () => {
+    process.env.SELF_BASE_URL = 'http://oplatishka-web:3000';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('http://oplatishka-web:3000');
+  });
+
+  it('вся 127.0.0.0/8 и IPv6-loopback допустимы', async () => {
+    for (const url of ['http://127.0.0.2:3000', 'http://[::1]:3000', 'http://localhost:3000']) {
+      vi.resetModules();
+      process.env.SELF_BASE_URL = url;
+      const { selfCallBaseUrl } = await loadModule();
+      expect(selfCallBaseUrl()).toBe(url);
+    }
+  });
+
+  it('внешний хост в SELF_BASE_URL — ошибка старта, а не тихая утечка токена (B-4)', async () => {
+    // Переменная приоритетнее всего, а self-call несёт X-Internal-Token:
+    // опечатка отправила бы внутренний токен в чужой стек и создала там счёт.
+    for (const url of ['https://evil.example.com', 'https://www.oplatishka.com', 'http://8.8.8.8']) {
+      vi.resetModules();
+      process.env.SELF_BASE_URL = url;
+      const { selfCallBaseUrl } = await loadModule();
+      expect(() => selfCallBaseUrl()).toThrow(/SELF_BASE_URL/);
+    }
+  });
+
   it('SELF_BASE_URL="" → игнорируется, работает прежняя Vercel-цепочка', async () => {
     process.env.SELF_BASE_URL = '';
     process.env.VERCEL_URL = 'branch-preview.vercel.app';
