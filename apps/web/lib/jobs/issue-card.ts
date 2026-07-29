@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/nextjs';
 import { GrammyError, InlineKeyboard } from 'grammy';
 
 import {
+  appendOrderEvent,
   createCard,
   findActiveByUserId,
   getDb,
@@ -261,8 +262,27 @@ export async function issueCard(orderId: string): Promise<void> {
       // карту в провайдере необратимо, а переиспользование PAN разными клиентами
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
       // рамках одного клиента через активную карту выше.
+      // Billing address от карты не зависит и берётся заранее (у функции свой
+      // таймаут и локальный фолбэк), чтобы реквизиты можно было зафиксировать
+      // сразу после выпуска — до первой записи в нашу БД.
+      const billingAddress = await getRandomUsBillingAddress();
+
       const created = await paypace.createCard({ amountUsdCents });
       issuedProviderCardId = created.cardId;
+      // Реквизиты фиксируем ДО записи в БД. Ревью показало, что иначе спасение
+      // не покрывает собственный сценарий: падение этого самого INSERT'а
+      // оставляло `pendingCredentials === null`, и PAN профинансированной карты
+      // терялся навсегда. `cardType` дописывается ниже — без него сообщение
+      // чуть беднее, но карта рабочая.
+      pendingCredentials = {
+        fullPan: created.pan,
+        panMasked: created.panMasked,
+        expMonth: created.expMonth,
+        expYear: created.expYear,
+        cvc: created.cvc,
+        cardType: null,
+        billingAddress,
+      };
       card = await createCard(
         db,
         {
@@ -281,22 +301,11 @@ export async function issueCard(orderId: string): Promise<void> {
       });
 
       // Полные реквизиты надо передать пользователю — НЕ логируем сюда `pan`/`cvc`.
-      const [cardMetadata, billingAddress] = await Promise.all([
-        readCardMetadataSafely(paypace, created.cardId, order.shortId),
-        getRandomUsBillingAddress(),
-      ]);
+      const cardMetadata = await readCardMetadataSafely(paypace, created.cardId, order.shortId);
       // Реквизиты отправим ПОСЛЕ фиксации заказа (completed), не здесь: иначе
       // сбой БД на setOrderCardId/transitionOrder ниже откатывал бы уже
       // доставленный заказ в failed + слал ложный ops-алёрт (L5).
-      pendingCredentials = {
-        fullPan: created.pan,
-        panMasked: created.panMasked,
-        expMonth: created.expMonth,
-        expYear: created.expYear,
-        cvc: created.cvc,
-        cardType: cardMetadata.cardType,
-        billingAddress,
-      };
+      pendingCredentials = { ...pendingCredentials, cardType: cardMetadata.cardType };
     }
 
     // 4. Привязать card к order (card гарантированно не null: топ-ап активной
@@ -320,8 +329,7 @@ export async function issueCard(orderId: string): Promise<void> {
     //    не шлёт ложный «не доставлен» (L5). Недоставку добьёт оператор/повтор.
     if (pendingCredentials) {
       try {
-        credentialsDelivered = true;
-        await sendCardCredentialsToUser({
+        credentialsDelivered = await sendCardCredentialsToUser({
           telegramId: await resolveTelegramIdByUserId(order.userId),
           panMasked: pendingCredentials.panMasked,
           fullPan: pendingCredentials.fullPan,
@@ -352,16 +360,40 @@ export async function issueCard(orderId: string): Promise<void> {
     });
 
     // Топап завис в pending — исход НЕИЗВЕСТЕН, деньги могли зачислиться позже.
-    // Заказ остаётся в `in_fulfillment`: `failed` был бы враньём и закрывал бы
-    // путь к нормальному завершению (статус терминальный). Про такие заказы уже
-    // алёртит `poll-payment` через `findStuckInFulfillmentOrders`, а повтор
-    // топапа безопасен — провайдер дедуплицирует по `request_id`.
+    //
+    // Первая версия этой правки оставляла заказ в `in_fulfillment`, чтобы не
+    // врать терминальным `failed`. Ревью показало, что выхода из этого статуса
+    // НЕТ ни одним путём кода: повторный `issueCard` выходит на гейте
+    // `status !== 'paid'`, `findStuckPaidOrders` берёт только `paid`, а
+    // `findStuckInFulfillmentOrders` лишь алёртит — и делает это каждые пять
+    // минут бессрочно, превращая сигнал в фон. Вечная парковка плюс шум хуже
+    // огрублённого статуса, поэтому заказ всё же уходит в `failed`.
+    //
+    // Чтобы информация не потерялась, `requestId`/`cardId` пишутся отдельным
+    // событием в append-only `order_events` — по ним оператор находит операцию
+    // в кабинете, а будущая автосверка (backlog) сможет дожать состояние без
+    // повторного вызова провайдера вслепую.
     if (err instanceof TopupPendingError) {
+      try {
+        await appendOrderEvent(getDb(), {
+          orderId,
+          eventType: 'topup_pending',
+          actorType: 'system',
+          payload: { requestId: err.requestId, cardId: err.cardId },
+        });
+      } catch (eventErr) {
+        log.error({ event: 'job.issue_card.topup_pending_event_failed', orderId, err: eventErr });
+        Sentry.captureException(eventErr, {
+          tags: { source: 'job.issue-card', step: 'topup_pending_event' },
+          extra: { orderId },
+        });
+      }
       await notifyOps(
-        `Заказ ${order.shortId}: топап PaySpace завис в pending. Деньги могли зачислиться позже, ` +
-          `поэтому заказ НЕ помечен failed и ждёт разбора. Проверь операцию в кабинете: ` +
-          `requestId=${err.requestId}, cardId=${err.cardId}. Повтор топапа безопасен (идемпотентен).`,
+        `Заказ ${order.shortId}: топап PaySpace завис в pending — исход неизвестен, деньги могли ` +
+          `зачислиться позже. Проверь операцию в кабинете: requestId=${err.requestId}, ` +
+          `cardId=${err.cardId}. Повтор топапа идемпотентен по request_id.`,
       );
+      await markOrderFailed(orderId, 'paypace_topup_pending', order.shortId);
       return;
     }
 
@@ -372,8 +404,7 @@ export async function issueCard(orderId: string): Promise<void> {
     // сведут руками, но карту клиент получит.
     if (pendingCredentials && !credentialsDelivered) {
       try {
-        credentialsDelivered = true;
-        await sendCardCredentialsToUser({
+        credentialsDelivered = await sendCardCredentialsToUser({
           telegramId: await resolveTelegramIdByUserId(order.userId),
           panMasked: pendingCredentials.panMasked,
           fullPan: pendingCredentials.fullPan,
@@ -388,8 +419,11 @@ export async function issueCard(orderId: string): Promise<void> {
         });
         log.warn({ event: 'job.issue_card.credentials_rescued', orderId });
       } catch (sendErr) {
-        log.error({ event: 'job.issue_card.credentials_rescue_failed', orderId, err: sendErr });
-        Sentry.captureException(sendErr, {
+        // sanitizeSendError обязателен: GrammyError от отправки реквизитов несёт
+        // полный PAN+CVC в перечисляемом `err.payload.text`, и голый
+        // captureException превратил бы это в утечку (находка ревью).
+        logSendFailure('job.issue_card.credentials_rescue_failed', order.shortId, sendErr);
+        Sentry.captureException(sanitizeSendError(sendErr), {
           level: 'error',
           tags: { source: 'job.issue-card', step: 'rescue_credentials' },
           extra: { orderId },
@@ -501,10 +535,18 @@ type SendCredentialsArgs = {
  * Отправка реквизитов карты пользователю в Telegram.
  * Полный PAN и CVC передаются ТОЛЬКО здесь — никаких log.info с этими полями.
  */
-async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<void> {
+/**
+ * Возвращает ФАКТ доставки, а не «попытались».
+ *
+ * Это принципиально: реквизиты нигде не хранятся, и ops-алёрт «реквизиты
+ * отправлены» — единственный сигнал оператору. Если функция молчит про исход,
+ * алёрт врёт ровно в тех случаях, ради которых он написан: у клиента нет
+ * `telegram_id` (веб-заказ), бот заблокирован, Telegram ответил 403.
+ */
+async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<boolean> {
   if (!args.telegramId) {
     log.warn({ event: 'job.issue_card.send_credentials.no_telegram', shortId: args.serviceShortId });
-    return;
+    return false;
   }
 
   // ВСЯ подготовка сообщения — внутри try: сбой сборки текста (напр. в
@@ -544,6 +586,7 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
       shortId: args.serviceShortId,
       panMasked: args.panMasked,
     });
+    return true;
   } catch (err) {
     // ⚠️ НИКОГДА не логировать `err` целиком: это сообщение содержит полный PAN и
     // CVC, а grammY кладёт тело запроса в перечисляемое `err.payload`, откуда
@@ -554,6 +597,7 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
     Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'send_credentials' },
     });
+    return false;
   }
 }
 

@@ -53,7 +53,7 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
     if (event.request.headers) {
       const headers = event.request.headers as Record<string, string>;
       for (const key of Object.keys(headers)) {
-        if (/authorization|cookie|x-telegram-bot-api-secret-token/i.test(key)) {
+        if (/authorization|cookie|x-telegram-bot-api-secret-token|x-alert-token/i.test(key)) {
           headers[key] = '[REDACTED]';
         }
       }

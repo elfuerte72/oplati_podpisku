@@ -218,16 +218,31 @@ async function runWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results: R[] = [];
   let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  // `Math.max(1, …)` — предохранитель: limit <= 0 дал бы ноль воркеров, и вся
+  // выборка молча пропускалась бы при отчёте «обработано N».
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
     for (;;) {
       const index = next++;
+      // Конец очереди — по ДЛИНЕ, а не по `items[index] === undefined`: иначе
+      // элемент-`undefined` в середине выборки тихо обрывал бы воркер, и хвост
+      // очереди не обрабатывался (находка ревью).
+      if (index >= items.length) return;
       const item = items[index];
-      if (item === undefined) return;
+      if (item === undefined) continue;
       results[index] = await fn(item);
     }
   });
   await Promise.all(workers);
   return results;
+}
+
+/** Разбивает список надвое по предикату: `[совпавшие, остальные]`. */
+function partition<T>(items: readonly T[], pred: (item: T) => boolean): [T[], T[]] {
+  const yes: T[] = [];
+  const no: T[] = [];
+  for (const item of items) (pred(item) ? yes : no).push(item);
+  return [yes, no];
 }
 
 export async function pollPayments(): Promise<{
@@ -243,14 +258,26 @@ export async function pollPayments(): Promise<{
 
   log.info({ event: 'cron.poll_payment.found', count: pending.length });
 
-  // Платежи опрашиваются ПАРАЛЛЕЛЬНО, пулом. Последовательный цикл упирался в
-  // сумму задержек провайдера: при тормозящем шлюзе (таймаут клиента — 30 с)
-  // выборка не влезала в шаг крона, и часть платежей просто не опрашивалась —
-  // а это единственная страховка потерянных вебхуков.
+  // Платежи опрашиваются пулом. Последовательный цикл упирался в сумму задержек
+  // провайдера: при тормозящем шлюзе (таймаут клиента — 30 с) выборка не влезала
+  // в шаг крона, и часть платежей просто не опрашивалась — а это единственная
+  // страховка потерянных вебхуков.
   //
-  // Порядок не важен, платежи независимы. `pollOne` не бросает: ошибка одного
-  // не должна убивать воркер и остальную пачку.
-  const outcomes = await runWithConcurrency(pending, POLL_CONCURRENCY, pollOne);
+  // ⚠️ Freekassa опрашивается СТРОГО ПОСЛЕДОВАТЕЛЬНО (находка ревью). Её API
+  // требует `nonce`, который «должен всегда быть больше предыдущего»
+  // (docs/reference/freekassa-api.md §6). Последовательность Postgres даёт
+  // монотонную ВЫДАЧУ, но не порядок ПРИБЫТИЯ: четыре одновременных запроса
+  // уходят с nonce N…N+3 и приходят к провайдеру как попало, а запрос с меньшим
+  // номером после большего отвергается. Прежний цикл держал порядок самим фактом
+  // `await`, и терять это ради скорости в денежном пути нельзя — тем более что
+  // живым вызовом контракт проверен только на одиночных запросах.
+  //
+  // У Love&Pay nonce нет, там параллелизм безопасен и даёт весь выигрыш.
+  const [ordered, parallel] = partition(pending, (p) => p.provider === 'freekassa');
+  const outcomes = [
+    ...(await runWithConcurrency(ordered, 1, pollOne)),
+    ...(await runWithConcurrency(parallel, POLL_CONCURRENCY, pollOne)),
+  ];
   const recovered = outcomes.filter((o) => o === 'recovered').length;
   let errors = outcomes.filter((o) => o === 'error').length;
 
