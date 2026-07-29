@@ -1220,9 +1220,26 @@ describe('getOrCreateActiveConversation (гонка первого сообще�
     const fresh = await createConversation(db, { userId: user.id, channel: 'web' });
     expect(fresh.id).not.toBe(first.id);
 
+    // ⚠️ Порядок задаём ЯВНО, а не полагаемся на то, что вставки получат разное
+    // `now()`: у PGlite часы миллисекундные (проверено — шесть вставок подряд
+    // дают два уникальных значения), и на совпадении `created_at` сортировка
+    // становится произвольной, а тест — плавающим. В настоящем Postgres
+    // разрешение микросекундное и совпадение практически невозможно, поэтому
+    // подпирать тут продовый код нечем и незачем.
+    await db.execute(sql`
+      UPDATE conversations SET created_at = now() + interval '1 second' WHERE id = ${fresh.id}
+    `);
+
     // Дальше подхватывается самый свежий.
     const resumed = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
     expect(resumed.id).toBe(fresh.id);
     expect(resumed.created).toBe(false);
+
+    // И ровно два диалога: геттер не создал третьего.
+    const rows = await db
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.userId, user.id));
+    expect(rows).toHaveLength(2);
   });
 });

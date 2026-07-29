@@ -232,7 +232,12 @@ describe('issueCard', () => {
     );
   });
 
-  it('topup завис в pending → заказ НЕ завершаем, уходим в failed', async () => {
+  it('topup завис в pending → заказ остаётся in_fulfillment, а НЕ уходит в failed', async () => {
+    // Раньше этот тест фиксировал переход в `failed`, и это была ошибка:
+    // `pending` означает НЕИЗВЕСТНЫЙ исход, деньги могли зачислиться минутой
+    // позже. Терминальный `failed` при зачисленных деньгах — враньё, из-за
+    // которого клиент остаётся без карты, а нормально завершить заказ уже
+    // нечем. Правильный ответ — оставить `in_fulfillment` и позвать человека.
     h.topupMock.mockResolvedValue({
       cardId: 'pc-1',
       requestId: 'topup_order-1_card-1',
@@ -242,18 +247,49 @@ describe('issueCard', () => {
 
     await issueCard('order-1');
 
-    // balance не трогаем, заказ не completed — только переход в failed.
     expect(db.updateBalance).not.toHaveBeenCalled();
-    expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+    // Единственный переход — claim `paid → in_fulfillment`; в `failed` не идём.
+    expect(db.transitionOrder).not.toHaveBeenCalled();
+
+    // Алёрт несёт requestId и cardId: по ним операция ищется в кабинете
+    // PaySpace, а повтор топапа безопасен (идемпотентен по request_id).
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    const text = h.sendMessageMock.mock.calls[0]?.[1] as string;
+    expect(text).toContain('pending');
+    expect(text).toContain('topup_order-1_card-1');
+    expect(text).not.toContain('НЕ доставлен');
+  });
+
+  it('карта выпущена, но БД упала → реквизиты всё равно уходят клиенту', async () => {
+    // Деньги с VCC уже списаны, PAN мы принципиально не храним — не отдать
+    // реквизиты значит оставить клиента без карты безвозвратно.
+    h.dbState.activeCard = null; // форсим выпуск НОВОЙ карты
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+    vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+
+    await issueCard('order-1');
+
+    expect(h.createCardMock).toHaveBeenCalledTimes(1);
+
+    const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
+    // Клиент получил карту, несмотря на сбой записи.
+    expect(texts.some((t) => t.includes('4111111111111234'))).toBe(true);
+    // Владелец получил providerCardId: без него карту в кабинете PaySpace
+    // ищут по сумме и времени.
+    expect(texts.some((t) => t.includes('pc-new'))).toBe(true);
+
+    // Заказ всё равно уходит в failed — сводить будет человек.
     expect(db.transitionOrder).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
-    );
-    // Прямой ops-алерт владельцу: оплаченный заказ не доехал.
-    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(h.sendMessageMock).toHaveBeenCalledWith(
-      '111222333',
-      expect.stringContaining('НЕ доставлен'),
     );
   });
 

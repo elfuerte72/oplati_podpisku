@@ -141,6 +141,26 @@ export async function issueCard(orderId: string): Promise<void> {
     }
   }
 
+  // Реквизиты новой карты копим здесь, а отправляем клиенту ПОСЛЕ перехода
+  // заказа в completed (L5). null — если был топ-ап активной карты.
+  //
+  // Объявлено ВНЕ try намеренно: сбой БД случается уже после того, как карта
+  // выпущена и профинансирована у провайдера, и catch обязан видеть реквизиты —
+  // иначе клиент, с которого списаны деньги, не получает ничего, а PAN мы нигде
+  // не храним и восстановить его неоткуда.
+  let pendingCredentials: {
+    fullPan: string;
+    panMasked: string;
+    expMonth: number;
+    expYear: number;
+    cvc: string;
+    cardType: string | null;
+    billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
+  } | null = null;
+  /** Идентификатор карты у провайдера — для ops-алёрта, если наша строка не записалась. */
+  let issuedProviderCardId: string | null = null;
+  let credentialsDelivered = false;
+
   try {
     const paypace = getPaySpaceClient();
 
@@ -160,7 +180,7 @@ export async function issueCard(orderId: string): Promise<void> {
           // сохраняет идемпотентность повтора того же fulfillment.
           requestId: paySpaceRequestId('t', orderId, card.id),
         });
-        ensureTopupCompleted(topup, orderId);
+        ensureTopupCompleted(topup, orderId, card.id);
         await updateBalance(db, card.id, amountUsdCents, log);
         log.info({
           event: 'job.issue_card.topup_ok',
@@ -182,6 +202,9 @@ export async function issueCard(orderId: string): Promise<void> {
         // плоский Error из ensureTopupCompleted (возможна неопределённость по
         // списанию), контракт-дрифт → PaySpaceContractError — пробрасываем (заказ
         // уйдёт в failed, чтобы не рисковать двойной тратой).
+        // TopupPendingError пробрасываем НЕ трогая карту: вывести её из реюза
+        // при неизвестном исходе значило бы выпустить вторую карту и списать
+        // с VCC ещё раз, возможно поверх уже прошедшего топапа.
         if (!(err instanceof PaySpaceApiError)) throw err;
 
         // Диагностика причины отказа: реальный статус карты в PaySpace
@@ -231,17 +254,6 @@ export async function issueCard(orderId: string): Promise<void> {
       }
     }
 
-    // Реквизиты новой карты копим здесь, а отправляем клиенту ПОСЛЕ перехода
-    // заказа в completed (L5). null — если был топ-ап активной карты.
-    let pendingCredentials: {
-      fullPan: string;
-      panMasked: string;
-      expMonth: number;
-      expYear: number;
-      cvc: string;
-      cardType: string | null;
-      billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
-    } | null = null;
 
     if (!card) {
       // 2. Активной карты нет (или реюз отклонён выше) — выпускаем НОВУЮ.
@@ -250,6 +262,7 @@ export async function issueCard(orderId: string): Promise<void> {
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
       // рамках одного клиента через активную карту выше.
       const created = await paypace.createCard({ amountUsdCents });
+      issuedProviderCardId = created.cardId;
       card = await createCard(
         db,
         {
@@ -307,6 +320,7 @@ export async function issueCard(orderId: string): Promise<void> {
     //    не шлёт ложный «не доставлен» (L5). Недоставку добьёт оператор/повтор.
     if (pendingCredentials) {
       try {
+        credentialsDelivered = true;
         await sendCardCredentialsToUser({
           telegramId: await resolveTelegramIdByUserId(order.userId),
           panMasked: pendingCredentials.panMasked,
@@ -336,6 +350,63 @@ export async function issueCard(orderId: string): Promise<void> {
       tags: { source: 'job.issue-card' },
       extra: { orderId },
     });
+
+    // Топап завис в pending — исход НЕИЗВЕСТЕН, деньги могли зачислиться позже.
+    // Заказ остаётся в `in_fulfillment`: `failed` был бы враньём и закрывал бы
+    // путь к нормальному завершению (статус терминальный). Про такие заказы уже
+    // алёртит `poll-payment` через `findStuckInFulfillmentOrders`, а повтор
+    // топапа безопасен — провайдер дедуплицирует по `request_id`.
+    if (err instanceof TopupPendingError) {
+      await notifyOps(
+        `Заказ ${order.shortId}: топап PaySpace завис в pending. Деньги могли зачислиться позже, ` +
+          `поэтому заказ НЕ помечен failed и ждёт разбора. Проверь операцию в кабинете: ` +
+          `requestId=${err.requestId}, cardId=${err.cardId}. Повтор топапа безопасен (идемпотентен).`,
+      );
+      return;
+    }
+
+    // Карта у провайдера уже выпущена и профинансирована, а упала запись в нашу
+    // БД. Реквизиты есть только здесь, в памяти: не отдать их — значит оставить
+    // клиента без карты при списанных деньгах, и восстановить PAN будет неоткуда
+    // (мы его принципиально не храним). Заказ всё равно уйдёт в failed и его
+    // сведут руками, но карту клиент получит.
+    if (pendingCredentials && !credentialsDelivered) {
+      try {
+        credentialsDelivered = true;
+        await sendCardCredentialsToUser({
+          telegramId: await resolveTelegramIdByUserId(order.userId),
+          panMasked: pendingCredentials.panMasked,
+          fullPan: pendingCredentials.fullPan,
+          expMonth: pendingCredentials.expMonth,
+          expYear: pendingCredentials.expYear,
+          cvc: pendingCredentials.cvc,
+          cardType: pendingCredentials.cardType,
+          billingAddress: pendingCredentials.billingAddress,
+          serviceShortId: order.shortId,
+          priceUsdCents,
+          pricingUrl,
+        });
+        log.warn({ event: 'job.issue_card.credentials_rescued', orderId });
+      } catch (sendErr) {
+        log.error({ event: 'job.issue_card.credentials_rescue_failed', orderId, err: sendErr });
+        Sentry.captureException(sendErr, {
+          level: 'error',
+          tags: { source: 'job.issue-card', step: 'rescue_credentials' },
+          extra: { orderId },
+        });
+      }
+    }
+
+    // providerCardId в алёрте — единственная зацепка, если наша строка `cards`
+    // не записалась: без него карту в кабинете PaySpace ищут по сумме и времени.
+    if (issuedProviderCardId) {
+      await notifyOps(
+        `Заказ ${order.shortId}: карта у провайдера ВЫПУЩЕНА (providerCardId=${issuedProviderCardId}), ` +
+          `но запись в нашу БД не прошла. Реквизиты клиенту ` +
+          `${credentialsDelivered ? 'отправлены' : 'НЕ отправлены'}. Нужно свести вручную.`,
+      );
+    }
+
     await markOrderFailed(orderId, 'paypace_error', order.shortId);
   }
 }
@@ -366,19 +437,48 @@ async function markOrderFailed(orderId: string, reason: string, shortId?: string
 }
 
 /**
- * Async-topup PaySpace может вернуть `pending` (деньги ещё не подтверждены) — в
- * этом случае НЕ завершаем заказ: бросаем, чтобы уйти в `failed` и отдать
- * оператору. Повтор безопасен: topup идемпотентен по `requestId`.
+ * Топап завис в `pending` дольше окна опроса.
+ *
+ * Отдельный тип, потому что это НЕ отказ: деньги могли зачислиться минутой
+ * позже, и заказ в таком состоянии нельзя объявлять `failed` — это была бы
+ * ложь, из-за которой клиент не получает карту при списанных деньгах, а
+ * повторить операцию уже нечем (статус терминальный).
+ *
+ * Несёт `requestId` и `cardId`: по ним человек находит операцию в кабинете
+ * PaySpace, а повтор топапа безопасен — провайдер дедуплицирует по `request_id`.
+ */
+class TopupPendingError extends Error {
+  readonly requestId: string;
+  readonly cardId: string;
+
+  constructor(orderId: string, requestId: string, cardId: string) {
+    super(`paypace topup завис в pending (requestId=${requestId}, orderId=${orderId})`);
+    this.name = 'TopupPendingError';
+    this.requestId = requestId;
+    this.cardId = cardId;
+  }
+}
+
+/**
+ * Async-topup PaySpace может вернуть `pending` (деньги ещё не подтверждены).
+ * Различаем два исхода, потому что они требуют разного:
+ *   - `pending` → `TopupPendingError`: состояние неизвестно, заказ оставляем в
+ *     `in_fulfillment` и зовём человека;
+ *   - всё прочее (`failed` и незнакомые статусы) → обычная ошибка: операция не
+ *     прошла, дальше по коду это приведёт к выпуску новой карты или к `failed`.
  */
 function ensureTopupCompleted(
   topup: { status: string; requestId: string },
   orderId: string,
+  cardId: string,
 ): void {
-  if (topup.status !== 'completed') {
-    throw new Error(
-      `paypace topup не завершён (status=${topup.status}, requestId=${topup.requestId}, orderId=${orderId})`,
-    );
+  if (topup.status === 'completed') return;
+  if (topup.status === 'pending') {
+    throw new TopupPendingError(orderId, topup.requestId, cardId);
   }
+  throw new Error(
+    `paypace topup не завершён (status=${topup.status}, requestId=${topup.requestId}, orderId=${orderId})`,
+  );
 }
 
 type SendCredentialsArgs = {
