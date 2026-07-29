@@ -25,6 +25,10 @@ export const redactPaths: string[] = [
   'headers.authorization',
   'headers.cookie',
   'headers["x-telegram-bot-api-secret-token"]',
+  // Альтернативный способ авторизации алёрт-вебхука Sentry: вариант `?s=` уже
+  // закрыт, заголовок оставался открытым (находка ревью).
+  'req.headers["x-alert-token"]',
+  'headers["x-alert-token"]',
   // secrets
   '*.password',
   '*.token',

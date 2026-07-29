@@ -40,7 +40,10 @@ async function selectLatest(
     .select({ id: conversations.id })
     .from(conversations)
     .where(and(eq(conversations.userId, userId), eq(conversations.channel, channel)))
-    .orderBy(desc(conversations.createdAt))
+    // Тай-брейкер по id обязателен: на совпадении `created_at` (у настоящего
+    // Postgres микросекунды, но ничья теоретически возможна) порядок без него
+    // произволен, и «Очистить диалог» молча возвращал бы старую переписку.
+    .orderBy(desc(conversations.createdAt), desc(conversations.id))
     .limit(1);
   return rows[0]?.id ?? null;
 }

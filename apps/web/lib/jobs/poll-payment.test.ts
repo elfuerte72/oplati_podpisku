@@ -238,4 +238,76 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(h.getInvoiceMock).not.toHaveBeenCalled();
     expect(h.findOrderMock).not.toHaveBeenCalled();
   });
+  it('Freekassa опрашивается СТРОГО последовательно — порядок nonce', async () => {
+    // Находка ревью: nextval даёт монотонную ВЫДАЧУ, но не порядок ПРИБЫТИЯ.
+    // Параллельные запросы уходят с nonce N…N+3 и приходят как попало, а
+    // провайдер требует «всегда больше предыдущего» и отвергает опоздавший.
+    h.pending = Array.from({ length: 8 }, (_, i) => ({
+      id: `pay-${i}`,
+      provider: 'freekassa' as const,
+      providerRef: String(i),
+      providerInvoiceNumber: `ORD-${i}`,
+    }));
+
+    let inFlight = 0;
+    let peak = 0;
+    h.findOrderMock.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      inFlight--;
+      return null;
+    });
+
+    await pollPayments();
+
+    expect(h.findOrderMock).toHaveBeenCalledTimes(8);
+    expect(peak).toBe(1);
+  });
+
+  it('Love&Pay опрашивается параллельно, но не более POLL_CONCURRENCY разом', async () => {
+    // У L&P nonce нет, ограничивать порядок нечем — здесь параллелизм безопасен
+    // и даёт весь выигрыш: последовательный цикл не влезал в шаг крона.
+    h.pending = Array.from({ length: 12 }, (_, i) => ({
+      id: `pay-lnp-${i}`,
+      provider: 'loveandpay' as const,
+      providerRef: `inv-${i}`,
+      providerInvoiceNumber: `INV-${i}`,
+    }));
+
+    let inFlight = 0;
+    let peak = 0;
+    h.getInvoiceMock.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      inFlight--;
+      return {
+        id: 'inv-1',
+        invoiceNumber: 'INV-0001',
+        amount: 100,
+        currency: 'RUB',
+        status: 'PENDING',
+      };
+    });
+
+    await pollPayments();
+
+    expect(h.getInvoiceMock).toHaveBeenCalledTimes(12);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it('падение одного платежа не уносит остальную пачку', async () => {
+    h.pending = [FK_PAYMENT, { ...FK_PAYMENT, id: 'pay-fk-2', providerRef: '124' }];
+    h.findOrderMock
+      .mockRejectedValueOnce(new Error('провайдер отвалился'))
+      .mockResolvedValueOnce(fkOrder(1));
+
+    const res = await pollPayments();
+
+    expect(res.errors).toBe(1);
+    // Второй платёж всё равно обработан — воркер пула не умер вместе с первым.
+    expect(h.findOrderMock).toHaveBeenCalledTimes(2);
+  });
 });

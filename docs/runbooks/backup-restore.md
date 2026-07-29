@@ -126,9 +126,27 @@ rm -f /tmp/restore.sql.gz
    миграция 0010 упадёт на `GRANT`. Приоритет env у скрипта тот же, что у
    `drizzle.config` (`DATABASE_URL_DIRECT ?? DATABASE_URL`).
 
-Дамп с `--no-acl` не переносит GRANT'ы из миграции 0010, а повторно миграция не
-прогонится — сейчас инертно (роли `NOLOGIN`), но при появлении anon-клиента это
-надо будет учесть (пункт A-5 в [`../BACKLOG.md`](../BACKLOG.md)).
+6. **Вернуть GRANT'ы на каталог (A-5).** Дамп снимается с `--no-acl`, поэтому
+   `GRANT SELECT ON services TO anon, authenticated` из миграции 0010 в него не
+   попадает, а повторно миграция не прогонится — журнал считает её применённой.
+   Сегодня это инертно (роли `NOLOGIN`, браузерного anon-клиента нет), и
+   направление безопасное — fail-closed, «не видно» вместо «видно лишнее».
+   Но пункт обязателен в чек-листе: в день, когда появится клиентский запрос к
+   каталогу, витрина молча опустеет, и связать это с восстановлением месячной
+   давности будет практически невозможно.
+
+   ```bash
+   # проверить
+   ssh root@187.124.172.104 "docker exec \$(docker ps --filter name=oplatishka-db-ry3smb -q) \
+     psql -U oplatishka -d oplatishka -t -A -c \
+     \"select grantee, privilege_type from information_schema.role_table_grants
+       where table_name='services' and grantee in ('anon','authenticated')\""
+
+   # вернуть, если пусто
+   ssh root@187.124.172.104 "docker exec \$(docker ps --filter name=oplatishka-db-ry3smb -q) \
+     psql -U oplatishka -d oplatishka -c \
+     'GRANT SELECT ON TABLE services TO anon, authenticated'"
+   ```
 
 ---
 

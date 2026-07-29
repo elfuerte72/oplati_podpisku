@@ -61,6 +61,7 @@ vi.mock('@oplati/db', () => ({
   markIdle: vi.fn(async () => {}),
   updateBalance: vi.fn(async () => {}),
   setOrderCardId: vi.fn(async () => {}),
+  appendOrderEvent: vi.fn(async () => {}),
   getUserTelegramId: vi.fn(async () => '12345'),
   getServiceById: vi.fn(async () =>
     h.dbState.serviceSlug ? { slug: h.dbState.serviceSlug } : null,
@@ -232,7 +233,12 @@ describe('issueCard', () => {
     );
   });
 
-  it('topup завис в pending → заказ НЕ завершаем, уходим в failed', async () => {
+  it('topup завис в pending → failed, но с событием topup_pending и requestId в алёрте', async () => {
+    // История правки: сначала заказ оставляли в `in_fulfillment`, чтобы не врать
+    // терминальным `failed`. Ревью показало, что выхода из этого статуса нет ни
+    // одним путём кода, а `findStuckInFulfillmentOrders` алёртит каждые 5 минут
+    // бессрочно. Вечная парковка плюс шум хуже огрублённого статуса, поэтому
+    // заказ уходит в `failed`, а `requestId`/`cardId` сохраняются событием.
     h.topupMock.mockResolvedValue({
       cardId: 'pc-1',
       requestId: 'topup_order-1_card-1',
@@ -242,18 +248,121 @@ describe('issueCard', () => {
 
     await issueCard('order-1');
 
-    // balance не трогаем, заказ не completed — только переход в failed.
     expect(db.updateBalance).not.toHaveBeenCalled();
-    expect(db.transitionOrder).toHaveBeenCalledTimes(1);
+    expect(db.appendOrderEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'order-1',
+        eventType: 'topup_pending',
+        payload: expect.objectContaining({ requestId: 'topup_order-1_card-1', cardId: 'card-1' }),
+      }),
+    );
     expect(db.transitionOrder).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
     );
-    // Прямой ops-алерт владельцу: оплаченный заказ не доехал.
-    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(h.sendMessageMock).toHaveBeenCalledWith(
-      '111222333',
-      expect.stringContaining('НЕ доставлен'),
+
+    const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
+    expect(texts.some((t) => t.includes('topup_order-1_card-1'))).toBe(true);
+  });
+
+  it('прочий статус топапа (failed) — обычная ошибка, событие topup_pending НЕ пишется', async () => {
+    h.topupMock.mockResolvedValue({
+      cardId: 'pc-1',
+      requestId: 'topup_order-1_card-1',
+      status: 'failed',
+      balanceUsdCents: null,
+    });
+
+    await issueCard('order-1');
+
+    expect(db.appendOrderEvent).not.toHaveBeenCalled();
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'failed' }),
+    );
+  });
+
+  it('падение ВСТАВКИ в cards — тот самый сценарий алёрта — тоже спасает реквизиты', async () => {
+    // Находка ревью: раньше pendingCredentials заполнялись ПОСЛЕ этой вставки,
+    // поэтому спасение не покрывало собственный заявленный сценарий — PAN
+    // профинансированной карты терялся навсегда, а тест был зелёным, потому что
+    // ронял более позднюю точку (setOrderCardId).
+    h.dbState.activeCard = null;
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+    vi.mocked(db.createCard).mockRejectedValueOnce(new Error('БД недоступна'));
+
+    await issueCard('order-1');
+
+    const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
+    expect(texts.some((t) => t.includes('4111111111111234'))).toBe(true);
+    expect(texts.some((t) => t.includes('pc-new'))).toBe(true);
+  });
+
+  it('доставка не удалась — алёрт говорит «НЕ отправлены», а не врёт', async () => {
+    // Флаг раньше выставлялся ДО await, а отправка глушит ошибки внутри себя:
+    // владелец получал «реквизиты отправлены» там, где их не получил никто.
+    h.dbState.activeCard = null;
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+    vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+    // Нет telegram_id — веб-заказ: отправка молча выходит. Именно `Once`:
+    // `vi.clearAllMocks()` сбрасывает вызовы, но НЕ реализации, и постоянный
+    // мок протёк бы в соседние тесты.
+    vi.mocked(db.getUserTelegramId).mockResolvedValueOnce(null);
+
+    await issueCard('order-1');
+
+    const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
+    expect(texts.some((t) => t.includes('НЕ отправлены'))).toBe(true);
+    expect(texts.some((t) => t.includes('Реквизиты клиенту отправлены'))).toBe(false);
+  });
+
+  it('карта выпущена, но БД упала → реквизиты всё равно уходят клиенту', async () => {
+    // Деньги с VCC уже списаны, PAN мы принципиально не храним — не отдать
+    // реквизиты значит оставить клиента без карты безвозвратно.
+    h.dbState.activeCard = null; // форсим выпуск НОВОЙ карты
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+    vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+
+    await issueCard('order-1');
+
+    expect(h.createCardMock).toHaveBeenCalledTimes(1);
+
+    const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
+    // Клиент получил карту, несмотря на сбой записи.
+    expect(texts.some((t) => t.includes('4111111111111234'))).toBe(true);
+    // Владелец получил providerCardId: без него карту в кабинете PaySpace
+    // ищут по сумме и времени.
+    expect(texts.some((t) => t.includes('pc-new'))).toBe(true);
+
+    // Заказ всё равно уходит в failed — сводить будет человек.
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'failed' }),
     );
   });
 
