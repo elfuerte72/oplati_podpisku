@@ -140,7 +140,12 @@ jobs:
         env:
           SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
           # dev закрыт Basic Auth, прод — нет. Пустая строка = ходим без -u.
-          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
         run: |
           set -uo pipefail
           # shellcheck disable=SC2086
@@ -243,7 +248,12 @@ jobs:
       - name: Проверить, что стенд обновился
         env:
           SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
-          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
           IS_PROD: ${{ github.ref_name == 'main' }}
           BEFORE: ${{ steps.mark.outputs.before }}
         run: |
@@ -295,7 +305,12 @@ jobs:
       - name: Проверить готовность релиза (БД + миграции)
         env:
           SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
-          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
           IS_PROD: ${{ github.ref_name == 'main' }}
         run: |
           set -uo pipefail

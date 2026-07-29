@@ -1,5 +1,7 @@
 import 'server-only';
 
+import * as Sentry from '@sentry/nextjs';
+
 import { getDb, listActiveServices } from '@oplati/db';
 
 import { serverEnv } from '@/lib/env.server';
@@ -45,6 +47,8 @@ let cache: CacheEntry | null = null;
 /** Идущее обновление: конкурирующие вызовы ждут его, а не запускают своё. */
 let inFlight: Promise<CatalogService[]> | null = null;
 let retryNotBefore = 0;
+/** Чем упала последняя попытка — чтобы отдавать ту же ошибку во время backoff. */
+let lastError: unknown = null;
 
 /**
  * Возвращает отсортированную витрину. Бросает только если витрины нет вовсе
@@ -54,8 +58,15 @@ let retryNotBefore = 0;
 export async function loadCatalog(): Promise<CatalogService[]> {
   const now = Date.now();
   if (cache && cache.expiresAt > now) return cache.services;
-  // Источник недавно отказал — отдаём протухшее, не пытаясь обновиться.
-  if (cache && now < retryNotBefore && now < cache.staleUntil) return cache.services;
+
+  // Источник недавно отказал — не трогаем его до конца backoff. Проверка НЕ
+  // завязана на наличие кэша: холодный старт при лежащей БД и отказ дольше
+  // STALE_FALLBACK_MS — ровно те случаи, когда кэша нет, а долбить источник
+  // каждым запросом хуже всего.
+  if (now < retryNotBefore) {
+    if (cache && now < cache.staleUntil) return cache.services;
+    throw lastError ?? new Error('catalog: источник недоступен');
+  }
 
   inFlight ??= refreshCatalog().finally(() => {
     inFlight = null;
@@ -69,9 +80,14 @@ async function refreshCatalog(): Promise<CatalogService[]> {
     const now = Date.now();
     cache = { services: sorted, expiresAt: now + CACHE_TTL_MS, staleUntil: now + STALE_FALLBACK_MS };
     retryNotBefore = 0;
+    lastError = null;
     return sorted;
   } catch (err) {
     retryNotBefore = Date.now() + ERROR_BACKOFF_MS;
+    lastError = err;
+    // Отдача протухшего — это деградация, а не норма: без Sentry лежащие БД или
+    // Rapira были бы видны только как pino-warn и до 30 минут никем не замечены.
+    Sentry.captureException(err, { tags: { source: 'catalog.load' } });
     if (cache && Date.now() < cache.staleUntil) {
       log.warn({ event: 'catalog.load.stale_served', err });
       return cache.services;
@@ -108,6 +124,7 @@ export function resetCatalogCacheForTests(): void {
   cache = null;
   inFlight = null;
   retryNotBefore = 0;
+  lastError = null;
 }
 
 /**

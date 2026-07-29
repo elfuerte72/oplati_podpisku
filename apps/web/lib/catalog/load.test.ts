@@ -98,6 +98,27 @@ describe('loadCatalog', () => {
     listActiveServices.mockRejectedValue(new Error('db down'));
     await expect(loadCatalog()).rejects.toThrow('db down');
   });
+
+  it('backoff работает и БЕЗ кэша: холодный старт при лежащей БД не долбит источник', async () => {
+    // Находка ревью: прежняя проверка была завязана на наличие кэша, поэтому
+    // самый тяжёлый случай (первая загрузка во время аварии) обходил backoff и
+    // бил в БД каждым запросом.
+    listActiveServices.mockRejectedValue(new Error('db down'));
+
+    await expect(loadCatalog()).rejects.toThrow('db down');
+    const afterFirst = listActiveServices.mock.calls.length;
+
+    await expect(loadCatalog()).rejects.toThrow('db down');
+    await expect(loadCatalog()).rejects.toThrow('db down');
+    expect(listActiveServices.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('во время backoff бросается ИСХОДНАЯ ошибка, а не подменённая', async () => {
+    listActiveServices.mockRejectedValue(new Error('ENOTFOUND oplatishka-db-typo'));
+    await expect(loadCatalog()).rejects.toThrow('ENOTFOUND oplatishka-db-typo');
+    // Второй вызов не ходит в источник, но диагностика обязана остаться той же.
+    await expect(loadCatalog()).rejects.toThrow('ENOTFOUND oplatishka-db-typo');
+  });
 });
 
 /**

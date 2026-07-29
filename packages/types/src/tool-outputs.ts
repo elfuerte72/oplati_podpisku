@@ -51,10 +51,14 @@ export const proposeOrderOutputSchema = z
   .object({
     orderId: z.string().min(1),
     shortId: z.string().min(1),
-    totalRubKopecks: z.number().finite(),
+    totalRubKopecks: z.number().int().nonnegative(),
     expiresAt: z.string().min(1),
-    /** Старые ответы поля не содержали — тогда цена в долларах не показывается. */
-    originalAmountUsdCents: z.number().finite().nullish().catch(null),
+    /**
+     * Старые ответы поля не содержали — тогда цена в долларах не показывается.
+     * Целое и неотрицательное: деньги живут в минимальных единицах (инвариант 3),
+     * дробные или отрицательные центы — признак сломанного контракта.
+     */
+    originalAmountUsdCents: z.number().int().nonnegative().nullish().catch(null),
     isCustom: z.boolean().catch(false).default(false),
     /** Надбавка платёжной системы на плательщика, %; 0 — её нет. */
     buyerFeePercent: z.number().finite().catch(0).default(0),

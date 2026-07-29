@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 
 import { getAppliedMigrations, getDb, pingDb } from '@oplati/db';
@@ -84,6 +85,10 @@ export async function GET(): Promise<NextResponse> {
     // одинаково «не готов»; различать здесь нечего, детали в логе.
     reasons.push('db_unreachable');
     log.error({ event: 'api.ready.db_failed', err });
+    // Красный деплой сам по себе сигнал, но недоступная БД случается и вне
+    // выкатки (пересоздали сервис Postgres, сменился хост) — тогда единственным
+    // следом остаётся строка в логе, которую никто не читает.
+    Sentry.captureException(err, { tags: { source: 'api.ready', step: 'db' } });
   }
 
   if (reasons.length === 0) {

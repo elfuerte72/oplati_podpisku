@@ -189,6 +189,9 @@ async function syncPanelLimits(
     return updated;
   } catch (err) {
     log.warn({ event: 'telegram.vpn.limits_sync_failed', updateId, err });
+    // Выдачу ссылки не блокируем, но и молчать нельзя: постоянный отказ синка
+    // означает, что лимиты и сроки в панели разъехались с настройками.
+    Sentry.captureException(err, { tags: { source: 'telegram.vpn', step: 'sync_limits' } });
     return panelUser;
   }
 }
@@ -225,6 +228,9 @@ async function liftLegacyExpiry(
     return updated.expireAt;
   } catch (err) {
     log.warn({ event: 'telegram.vpn.expiry_lift_failed', updateId, err });
+    // Клиент получит ссылку с прежним (возможно истёкшим) сроком и честную
+    // пометку — но знать, что панель не даёт продлить, нужно нам.
+    Sentry.captureException(err, { tags: { source: 'telegram.vpn', step: 'lift_expiry' } });
     return existing.expireAt;
   }
 }
