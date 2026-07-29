@@ -64,6 +64,10 @@ export async function getReferralNetwork(
       WHERE o.user_id = u.id
         AND o.status IN ${PURCHASED}
         AND o.original_amount IS NOT NULL
+        -- Только USD: сумма считается в USD-центах, и не-USD заказ показал бы
+        -- партнёру завышенный оборот (L-1). Guard есть в accrue-пути, здесь
+        -- его не было — цифры кабинета расходились бы с начислениями.
+        AND o.original_currency = 'USD'
         AND o.paid_at >= ${MONTH_START}
     ) mt ON true
     WHERE u.referred_by = ${userId}

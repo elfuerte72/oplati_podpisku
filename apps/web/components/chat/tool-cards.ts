@@ -1,10 +1,26 @@
+import {
+  chatToolCallSchema,
+  chatToolInputSchema,
+  confirmOrderOutputSchema,
+  proposeOrderOutputSchema,
+  requestHumanOutputSchema,
+  searchCatalogItemSchema,
+  toolErrorOutputSchema,
+  TELEGRAM_LINK_REQUIRED_MARKER,
+} from '@oplati/types';
+
 /**
  * Парсинг `toolCalls` из ответа /api/chat в данные для комикс-карточек.
  *
  * Источник — `ToolCallLog[]` (@oplati/agent): { name, input, output, isError }.
- * Здесь — клиентский слой, поэтому не доверяем форме слепо и нарезаем через
- * type-guard'ы (output типизирован как unknown на границе). web_search и
- * ошибочные вызовы пропускаем.
+ * Это клиентский слой, форме доверять нельзя, поэтому всё проходит через схемы
+ * из `@oplati/types` (инвариант 5). Раньше здесь были самописные type-guard'ы:
+ * они дублировали контракт tool'ов и расходились с ним молча — карточка просто
+ * переставала рисоваться, без единого сигнала.
+ *
+ * Разбор снисходительный и повызовный: невалидная запись пропускается,
+ * остальные карточки рисуются. `web_search` и ошибочные вызовы (кроме гейта
+ * привязки Telegram) карточек не дают.
  */
 
 export type ChatCard =
@@ -31,98 +47,85 @@ export type ChatCard =
   // Гейт привязки: confirm_order отклонён, у веб-пользователя нет Telegram.
   | { type: 'telegram_link'; orderId: string | null };
 
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null;
-}
-function asStr(v: unknown): string | undefined {
-  return typeof v === 'string' ? v : undefined;
-}
-function asNum(v: unknown): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
-}
-
 export function parseToolCards(toolCalls: unknown): ChatCard[] {
   if (!Array.isArray(toolCalls)) return [];
   const cards: ChatCard[] = [];
 
-  for (const tc of toolCalls) {
-    if (!isObj(tc)) continue;
+  for (const raw of toolCalls) {
+    const call = chatToolCallSchema.safeParse(raw);
+    if (!call.success) continue;
+    const { name, input, output, isError } = call.data;
 
     // Единственная «полезная» ошибка tool'а: confirm_order отклонён гейтом
     // привязки Telegram (см. TelegramLinkRequiredError) — рисуем кнопку привязки.
-    if (tc.isError === true) {
-      const errName = asStr(tc.name);
-      const errOut = tc.output;
-      if (
-        errName === 'confirm_order' &&
-        isObj(errOut) &&
-        (asStr(errOut.error) ?? '').includes('telegram_link_required')
-      ) {
-        const input = isObj(tc.input) ? tc.input : {};
-        cards.push({ type: 'telegram_link', orderId: asStr(input.orderId) ?? null });
-      }
+    if (isError === true) {
+      if (name !== 'confirm_order') continue;
+      const err = toolErrorOutputSchema.safeParse(output);
+      if (!err.success || !err.data.error.includes(TELEGRAM_LINK_REQUIRED_MARKER)) continue;
+      cards.push({ type: 'telegram_link', orderId: parseInput(input).orderId ?? null });
       continue;
     }
 
-    const name = asStr(tc.name);
-    const output = tc.output;
-
-    if (name === 'search_catalog' && Array.isArray(output)) {
-      const items = output
-        .filter(isObj)
-        .map((o) => ({
-          id: asStr(o.id) ?? '',
-          name: asStr(o.name) ?? '',
-          requiresKyc: o.requiresKyc === true,
-        }))
-        .filter((o) => o.id.length > 0 && o.name.length > 0);
+    if (name === 'search_catalog') {
+      if (!Array.isArray(output)) continue;
+      const items = output.flatMap((item) => {
+        const parsed = searchCatalogItemSchema.safeParse(item);
+        return parsed.success
+          ? [{ id: parsed.data.id, name: parsed.data.name, requiresKyc: parsed.data.requiresKyc }]
+          : [];
+      });
       if (items.length > 0) cards.push({ type: 'catalog', items });
       continue;
     }
 
-    if (name === 'propose_order' && isObj(output)) {
-      const orderId = asStr(output.orderId);
-      const shortId = asStr(output.shortId);
-      const totalKopecks = asNum(output.totalRubKopecks);
-      const expiresAt = asStr(output.expiresAt);
-      if (orderId && shortId && totalKopecks !== undefined && expiresAt) {
-        const input = isObj(tc.input) ? tc.input : {};
-        const service =
-          asStr(input.serviceName) ?? asStr(input.customDescription) ?? `Заказ ${shortId}`;
-        cards.push({
-          type: 'order',
-          orderId,
-          shortId,
-          service,
-          totalKopecks,
-          usdCents: asNum(output.originalAmountUsdCents) ?? null,
-          expiresAt,
-          isCustom: output.isCustom === true,
-          buyerFeePercent: asNum(output.buyerFeePercent) ?? 0,
-        });
-      }
+    if (name === 'propose_order') {
+      const parsed = proposeOrderOutputSchema.safeParse(output);
+      if (!parsed.success) continue;
+      const o = parsed.data;
+      const fromInput = parseInput(input);
+      cards.push({
+        type: 'order',
+        orderId: o.orderId,
+        shortId: o.shortId,
+        service: fromInput.serviceName ?? fromInput.customDescription ?? `Заказ ${o.shortId}`,
+        totalKopecks: o.totalRubKopecks,
+        usdCents: o.originalAmountUsdCents ?? null,
+        expiresAt: o.expiresAt,
+        isCustom: o.isCustom,
+        buyerFeePercent: o.buyerFeePercent,
+      });
       continue;
     }
 
-    if (name === 'confirm_order' && isObj(output)) {
-      const paymentUrl = asStr(output.paymentUrl);
-      const expiresAt = asStr(output.expiresAt);
-      if (paymentUrl && expiresAt) {
-        cards.push({
-          type: 'payment',
-          paymentUrl,
-          qrPayload: asStr(output.qrPayload) ?? null,
-          expiresAt,
-        });
-      }
+    if (name === 'confirm_order') {
+      const parsed = confirmOrderOutputSchema.safeParse(output);
+      if (!parsed.success) continue;
+      cards.push({
+        type: 'payment',
+        paymentUrl: parsed.data.paymentUrl,
+        qrPayload: parsed.data.qrPayload ?? null,
+        expiresAt: parsed.data.expiresAt,
+      });
       continue;
     }
 
-    if (name === 'request_human' && isObj(output)) {
-      cards.push({ type: 'operator', slaHours: asNum(output.slaHours) ?? 0 });
+    if (name === 'request_human') {
+      const parsed = requestHumanOutputSchema.safeParse(output);
+      if (!parsed.success) continue;
+      cards.push({ type: 'operator', slaHours: parsed.data.slaHours });
       continue;
     }
   }
 
   return cards;
+}
+
+/** `input` вызова может быть чем угодно (в том числе null) — не роняем разбор. */
+function parseInput(input: unknown): {
+  orderId?: string;
+  serviceName?: string;
+  customDescription?: string;
+} {
+  const parsed = chatToolInputSchema.safeParse(input);
+  return parsed.success ? parsed.data : {};
 }

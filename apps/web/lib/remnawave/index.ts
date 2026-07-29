@@ -4,10 +4,21 @@ import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 
 import { createRemnawaveClient, type RemnawaveClient } from './client.ts';
+import { subscriptionExpiry } from './period.ts';
 
 export { RemnawaveApiError, RemnawaveContractError } from './errors.ts';
 export { remnawaveUsername, type RemnawaveClient } from './client.ts';
-export { addOneMonthUtc } from './period.ts';
+export { addOneMonthUtc, isUnlimitedExpiry, subscriptionExpiry } from './period.ts';
+
+/** Целевой срок подписки из env: 0 месяцев = без ограничения. */
+export function targetSubscriptionExpiry(now: Date = new Date()): Date {
+  return subscriptionExpiry(now, serverEnv.REMNAWAVE_SUBSCRIPTION_MONTHS);
+}
+
+/** Подписки бессрочные? От этого зависит, подтягивать ли срок легаси-юзеров. */
+export function isUnlimitedSubscriptionMode(): boolean {
+  return serverEnv.REMNAWAVE_SUBSCRIPTION_MONTHS <= 0;
+}
 
 /** Гейт фичи: без токена кнопка VPN отвечает «временно недоступно». */
 export function isRemnawaveConfigured(): boolean {

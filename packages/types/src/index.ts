@@ -114,6 +114,20 @@ export {
 
 export { CARD_LIFETIME_DAYS } from './card-lifecycle.ts';
 
+// ─── Ответы инструментов агента (карточки веб-чата) ───────────────────────
+
+export {
+  chatToolCallSchema,
+  chatToolInputSchema,
+  confirmOrderOutputSchema,
+  proposeOrderOutputSchema,
+  requestHumanOutputSchema,
+  searchCatalogItemSchema,
+  toolErrorOutputSchema,
+  TELEGRAM_LINK_REQUIRED_MARKER,
+  type ChatToolCall,
+} from './tool-outputs.ts';
+
 // ─── Referral (партнёрская программа) ──────────────────────────────────────
 
 export {

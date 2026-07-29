@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   integer,
+  bigint,
   jsonb,
   boolean,
   check,
@@ -224,6 +225,10 @@ export const messages = pgTable(
     // Покрытие FK (аудит 2026-07-11 F-10): без индекса удаление/поиск по staff
     // деградирует в seq scan по messages.
     staffIdx: index('messages_staff_id_idx').on(t.staffId),
+    // Под retention-джоб (удаление сообщений старше 90 дней): без индекса это
+    // Seq Scan по самой объёмной таблице, и с ростом переписки батч перестаёт
+    // укладываться в окно крона.
+    createdAtIdx: index('messages_created_at_idx').on(t.createdAt),
   }),
 ).enableRLS();
 
@@ -343,6 +348,16 @@ export const orderEvents = pgTable(
   },
   (t) => ({
     orderTimeIdx: index('order_events_order_id_created_at_idx').on(t.orderId, t.createdAt),
+    // Под выборки крона «есть ли событие X за период» (NOT EXISTS в
+    // findOrdersForRenewalReminder, метрика конверсии): без индекса это Seq
+    // Scan по самой быстрорастущей таблице аудита.
+    typeTimeIdx: index('order_events_event_type_created_at_idx').on(t.eventType, t.createdAt),
+    // Ровно одно напоминание о продлении на заказ — на уровне БД, а не гонки
+    // read-then-write в джобе (B-2). Частичный: остальные типы событий
+    // повторяются штатно (статусы, платежи).
+    renewalOnce: uniqueIndex('order_events_renewal_reminder_once_idx')
+      .on(t.orderId)
+      .where(sql`${t.eventType} = 'renewal_reminder_sent'`),
   }),
 ).enableRLS();
 
@@ -377,6 +392,9 @@ export const payments = pgTable(
       t.providerRef,
     ),
     orderIdx: index('payments_order_id_idx').on(t.orderId),
+    // Под retention (очистка raw_payload старше 180 дней) и метрику конверсии
+    // «счёт выставлен → оплачен», которая считает платежи за окно.
+    createdAtIdx: index('payments_created_at_idx').on(t.createdAt),
     // Максимум один живой (pending) платёж на заказ — DB-энфорс против TOCTOU
     // двух конкурентных confirm_order (двойной инвойс L&P на один заказ,
     // находка аудита I3). Проигравший INSERT получает 23505 и возвращает
@@ -588,7 +606,12 @@ export const referralMonthlyStats = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     month: date('month').notNull(),
-    networkTurnoverUsdCents: integer('network_turnover_usd_cents').default(0).notNull(),
+    // bigint, не integer: оборот в USD-центах упирался бы в $21.4M — предел,
+    // достижимый для агрегата по сети, и переполнение здесь означает падение
+    // месячного роллапа целиком.
+    networkTurnoverUsdCents: bigint('network_turnover_usd_cents', { mode: 'number' })
+      .default(0)
+      .notNull(),
     newActiveReferrals: integer('new_active_referrals').default(0).notNull(),
     activeL2: integer('active_l2').default(0).notNull(),
     planMet: boolean('plan_met').default(false).notNull(),

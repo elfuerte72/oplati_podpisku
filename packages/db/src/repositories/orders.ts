@@ -368,6 +368,8 @@ export async function setOrderCardId(
  * pending_payment, cron не должен переводить его в expired — такой заказ чинит
  * poll-payment/оператор, а не «срок оплаты истёк».
  */
+const EXPIRE_BATCH_LIMIT = 200;
+
 export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
@@ -378,7 +380,13 @@ export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
             SELECT 1 FROM ${payments}
             WHERE ${payments.orderId} = ${orders.id} AND ${payments.status} = 'succeeded'
           )`,
-    );
+    )
+    // Порядок + кап: без них накопленный бэклог (провалы крона, всплеск
+    // заказов) выбирался бы целиком, обрывался по таймауту и переигрывался по
+    // кругу, никогда не доходя до конца. С капом каждый прогон гарантированно
+    // добивает свою пачку, а остаток забирает следующий через 15 минут.
+    .orderBy(asc(orders.expiresAt))
+    .limit(EXPIRE_BATCH_LIMIT);
 }
 
 /**
@@ -438,6 +446,8 @@ export async function findStuckInFulfillmentOrders(
  * заказы, по которым напоминание уже отправлено (событие `renewal_reminder_sent`
  * в append-only `order_events`) — идемпотентность на уровне выборки.
  */
+const RENEWAL_BATCH_LIMIT = 200;
+
 export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> {
   return await db
     .select()
@@ -450,7 +460,37 @@ export async function findOrdersForRenewalReminder(db: DB): Promise<OrderRow[]> 
             WHERE ${orderEvents.orderId} = ${orders.id}
               AND ${orderEvents.eventType} = 'renewal_reminder_sent'
           )`,
-    );
+    )
+    // Кап по той же причине, что в findExpiredPayableOrders. Здесь он ещё и
+    // предохранитель от рассылки: сорваться на середине пачки лучше, чем
+    // упереться в таймаут, отправив половину и не записав ни одного события.
+    .orderBy(asc(orders.fulfilledAt))
+    .limit(RENEWAL_BATCH_LIMIT);
+}
+
+/**
+ * Атомарно «занять» право отправить напоминание о продлении.
+ *
+ * Возвращает `true` только тому, кто вставил событие первым; конкурент получает
+ * `false` и молча пропускает заказ. Держится на частичном уникальном индексе
+ * `order_events_renewal_reminder_once_idx` (миграция 0027) — прежняя схема
+ * «выбрать через NOT EXISTS → отправить → записать» атомарной не была, и два
+ * одновременных прогона джоба слали клиенту одно и то же дважды (B-2).
+ *
+ * ⚠️ Порядок намеренный: занимаем ДО отправки, то есть семантика at-most-once.
+ * Обратный порядок (отправить → записать) дал бы at-least-once, но именно он и
+ * порождал дубли, а `order_events` append-only — «отменить» занятую попытку
+ * нечем. Сбой отправки после claim'а означает пропущенное напоминание; он не
+ * тихий (лог + Sentry в джобе), а большинство отказов Telegram здесь всё равно
+ * постоянные («бот заблокирован пользователем»), где повтор бесполезен.
+ */
+export async function claimRenewalReminder(db: DBLike, orderId: string): Promise<boolean> {
+  const rows = await db
+    .insert(orderEvents)
+    .values({ orderId, actorType: 'system', eventType: 'renewal_reminder_sent' })
+    .onConflictDoNothing()
+    .returning({ id: orderEvents.id });
+  return rows.length > 0;
 }
 
 /**

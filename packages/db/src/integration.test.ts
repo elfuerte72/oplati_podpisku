@@ -8,6 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 
 import { OrderTransitionError } from '@oplati/types';
 
+import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import {
@@ -19,12 +20,18 @@ import {
 } from './repositories/payments.ts';
 import { deleteOldMessages } from './repositories/messages.ts';
 import {
+  appendOrderEvent,
+  claimRenewalReminder,
   createDraftOrder,
   findExpiredPayableOrders,
   setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import { nextFreekassaNonce } from './repositories/freekassa.ts';
+import {
+  createConversation,
+  getOrCreateActiveConversation,
+} from './repositories/conversations.ts';
 import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
@@ -147,9 +154,10 @@ beforeAll(async () => {
   // и т.п.) мультистейтментные без `--> statement-breakpoint` — редактировать
   // применённые миграции нельзя. exec исполняет файл как есть.
   // Supabase-роли, на которые ссылаются RLS-политики/GRANT'ы миграций.
-  await client.exec(
-    'CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;',
-  );
+  // ТОТ ЖЕ DDL, что гоняет `db:init-roles` на боевом контуре (E-9): раньше здесь
+  // роли создавались без BYPASSRLS у service_role, и тесты проверяли не тот
+  // контур, что едет в прод.
+  await client.exec(bootstrapRolesSql());
   const dir = join(import.meta.dirname, '..', 'migrations');
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
@@ -1124,5 +1132,97 @@ describe('countInvoiceConversion (метрика «счёт выставлен �
     });
 
     expect(res).toEqual({ invoiced: 1, paid: 1 });
+  });
+});
+
+describe('claimRenewalReminder (атомарный дедуп напоминаний, B-2)', () => {
+  async function makeCompletedOrder(userId: string) {
+    return await createDraftOrder(db, {
+      userId,
+      status: 'completed',
+      customServiceDescription: 'renewal-test order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+  }
+
+  it('первый claim выигрывает, второй молча проигрывает', async () => {
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    expect(await claimRenewalReminder(db, order.id)).toBe(true);
+    expect(await claimRenewalReminder(db, order.id)).toBe(false);
+  });
+
+  it('ПАРАЛЛЕЛЬНЫЕ прогоны джоба: ровно один claim и ровно одно событие', async () => {
+    // Прежняя схема «выбрать через NOT EXISTS → отправить → записать» атомарной
+    // не была, и клиент получал напоминание дважды.
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => claimRenewalReminder(db, order.id)),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+
+    const events = await db
+      .select()
+      .from(schema.orderEvents)
+      .where(eq(schema.orderEvents.orderId, order.id));
+    expect(events.filter((e) => e.eventType === 'renewal_reminder_sent')).toHaveLength(1);
+  });
+
+  it('уникальность частичная: другие типы событий по тому же заказу не мешают', async () => {
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    await appendOrderEvent(db, { orderId: order.id, eventType: 'note', actorType: 'system' });
+    await appendOrderEvent(db, { orderId: order.id, eventType: 'note', actorType: 'system' });
+    expect(await claimRenewalReminder(db, order.id)).toBe(true);
+  });
+
+  it('заказы независимы: claim по одному не блокирует другой', async () => {
+    const user = await makeUser();
+    const a = await makeCompletedOrder(user.id);
+    const b = await makeCompletedOrder(user.id);
+
+    expect(await claimRenewalReminder(db, a.id)).toBe(true);
+    expect(await claimRenewalReminder(db, b.id)).toBe(true);
+  });
+});
+
+describe('getOrCreateActiveConversation (гонка первого сообщения)', () => {
+  it('ПАРАЛЛЕЛЬНЫЕ вызовы дают ОДИН диалог — история не расщепляется', async () => {
+    const user = await makeUser();
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        getOrCreateActiveConversation(db, { userId: user.id, channel: 'telegram' }),
+      ),
+    );
+
+    const ids = new Set(results.map((r) => r.id));
+    expect(ids.size).toBe(1);
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+  });
+
+  it('каналы независимы: telegram и web — разные диалоги', async () => {
+    const user = await makeUser();
+    const tg = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'telegram' });
+    const web = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    expect(tg.id).not.toBe(web.id);
+  });
+
+  it('«Очистить диалог» по-прежнему создаёт НОВЫЙ диалог — уникального индекса тут быть не должно', async () => {
+    const user = await makeUser();
+    const first = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    const fresh = await createConversation(db, { userId: user.id, channel: 'web' });
+    expect(fresh.id).not.toBe(first.id);
+
+    // Дальше подхватывается самый свежий.
+    const resumed = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    expect(resumed.id).toBe(fresh.id);
+    expect(resumed.created).toBe(false);
   });
 });

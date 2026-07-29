@@ -34,6 +34,31 @@ function optionalEnvString(inner: z.ZodTypeAny = z.string().min(1)): z.ZodType {
 
 const optionalUrl = () => optionalEnvString(z.string().url());
 
+/**
+ * Адрес указывает «на самих себя»? Пускаем loopback и бездоменные имена — так
+ * выглядит имя сервиса внутри docker-сети (`oplatishka-web`, `localhost`).
+ * Публичный FQDN или внешний IP — нет.
+ *
+ * Нужно для `SELF_BASE_URL`: он приоритетнее всех прочих баз, а self-call несёт
+ * `X-Internal-Token`, поэтому ошибочное значение — это утечка внутреннего
+ * токена наружу плюс счёт, созданный в чужом стеке (B-4).
+ */
+function isSelfAddressableUrl(value: string): boolean {
+  let host: string;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    return false;
+  }
+  // URL оборачивает IPv6 в скобки: `http://[::1]:3000` → hostname `[::1]`.
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (bare === 'localhost' || bare === '::1') return true;
+  // Вся сеть 127.0.0.0/8, а не только 127.0.0.1.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare)) return true;
+  // Имя сервиса в docker-сети: без точек и без двоеточий.
+  return !bare.includes('.') && !bare.includes(':');
+}
+
 // -------------------------------------------------------------------------
 // Схемы
 // -------------------------------------------------------------------------
@@ -268,6 +293,12 @@ const serverEnvSchema = z.object({
     .nonnegative()
     .max(100_000)
     .default(200),
+  // Срок подписки в календарных месяцах; 0 = БЕЗ ОГРАНИЧЕНИЯ (дефолт, решение
+  // владельца 2026-07-29: VPN бесплатный, месячный срок давал только мёртвую
+  // ссылку у клиента). Ненулевое значение возвращает срочные подписки — тогда
+  // же снова понадобится продление по оплате. Кап 120 месяцев: дальше начинается
+  // сентинел безлимита, и «срочная» подписка стала бы неотличима от бессрочной.
+  REMNAWAVE_SUBSCRIPTION_MONTHS: z.coerce.number().int().nonnegative().max(120).default(0),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
@@ -320,7 +351,21 @@ const serverEnvSchema = z.object({
   // в контейнере задаётся `http://127.0.0.1:3000` — денежный вызов идёт внутрь
   // собственного процесса, не выходя в интернет и не завися от Traefik/DNS.
   // Не задан → прежняя цепочка VERCEL_URL → APP_URL (Vercel не затронут).
-  SELF_BASE_URL: optionalUrl(),
+  //
+  // ⚠️ Значение обязано указывать «на себя», и это проверяется (B-4). Переменная
+  // приоритетнее всего остального, а self-call несёт `X-Internal-Token` —
+  // опечатка во внешний хост отправила бы туда наш внутренний токен и создала
+  // счёт в чужом стеке. Пускаем только loopback и бездоменное имя (имя сервиса
+  // в docker-сети вроде `oplatishka-web`); публичный FQDN или внешний IP —
+  // ошибка старта, а не тихая утечка.
+  SELF_BASE_URL: optionalUrl().refine(
+    (v) => v === undefined || v === '' || isSelfAddressableUrl(v),
+    {
+      message:
+        'SELF_BASE_URL должен указывать на сам сервис: loopback (http://127.0.0.1:3000) ' +
+        'или имя сервиса в docker-сети без точек. Внешний хост запрещён — self-call несёт X-Internal-Token.',
+    },
+  ),
 
   // Секрет cron-endpoint'ов. Vercel Cron шлёт его как `Authorization: Bearer`.
   // Без него `authorizeCron` пускает только NODE_ENV=development (fail-closed

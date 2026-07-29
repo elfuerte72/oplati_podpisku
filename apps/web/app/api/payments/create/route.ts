@@ -414,9 +414,21 @@ async function respondWithExistingPendingPayment(
     });
   } catch (err) {
     if (!(err instanceof OrderTransitionError)) throw err;
-    // Заказ уже ушёл дальше pending_payment — ссылку всё равно возвращаем,
-    // платить по ней или нет, разрулит webhook (claim идемпотентен).
-    log.warn({ event: 'payments.create.duplicate_transition_skipped', orderId, err });
+    // Ссылку возвращаем в любом случае: платить по ней или нет, разрулит
+    // webhook (claim идемпотентен). Различаем два исхода, чтобы штатный путь
+    // не создавал шум в логах:
+    //   - заказ УЖЕ в pending_payment — это и есть обычный повторный confirm
+    //     (живая веб-вкладка, дребезг кнопки). Ожидаемо, уровень info;
+    //   - заказ ушёл в другой статус — стоит посмотреть, warn.
+    if (err.from === 'pending_payment') {
+      log.info({ event: 'payments.create.repeat_confirm', orderId });
+    } else {
+      log.warn({
+        event: 'payments.create.duplicate_transition_skipped',
+        orderId,
+        fromStatus: err.from,
+      });
+    }
   }
 
   const inv = parsed.data.invoice;

@@ -191,6 +191,47 @@ describe('PaySpaceClient.createCard — не-идемпотентность (H2)
     ).rejects.toBeInstanceOf(TypeError);
     expect(fetchMock).toHaveBeenCalledTimes(2); // повтор разрешён — request_id дедуплицирует
   });
+
+  it('НЕ ретраит и 429 — одна попытка есть одна попытка', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResp(429, { success: false, error: { code: 'rate', message: 'slow' } }));
+    const c = makeClient(fetchMock);
+    await expect(c.createCard({ amountUsdCents: 1000 })).rejects.toBeInstanceOf(PaySpaceApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PaySpaceClient — ретрай 429 у идемпотентных вызовов', () => {
+  it('429 повторяется и доходит: запрос не обработан, повтор безопасен', async () => {
+    // Без этого всплеск заказов ронял долив карты уже ПОСЛЕ приёма рублей.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResp(429, { success: false, error: { code: 'rate', message: 'slow down' } }),
+      )
+      .mockResolvedValueOnce(
+        makeResp(200, { success: true, data: { request_id: 'r1', status: 'completed' } }),
+      )
+      .mockResolvedValueOnce(
+        makeResp(200, {
+          success: true,
+          data: {
+            card_id: 'c1',
+            request_id: 'r1',
+            bal_type: 'USD',
+            total_amt: '20.00',
+            recharge_amt: '10.00',
+            op_time: 't',
+          },
+        }),
+      );
+    const c = makeClient(fetchMock);
+    await expect(
+      c.topupCard({ cardId: 'c1', amountUsdCents: 1000, requestId: 'r1' }),
+    ).resolves.toBeDefined();
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('PaySpaceClient.topupCard', () => {

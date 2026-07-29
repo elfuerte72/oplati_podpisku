@@ -3,7 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
-  appendOrderEvent,
+  claimRenewalReminder,
   findOrdersForRenewalReminder,
   getDb,
   getServiceById,
@@ -47,16 +47,18 @@ export async function sendRenewalReminders(): Promise<{ sent: number; errors: nu
         `Через несколько дней закончится оплата ${serviceName} (заказ ${order.shortId}). ` +
         `Нужна оплата на следующий месяц? Напишите /start, продлим.`;
 
+      // Занимаем право на отправку ДО неё: вставка события атомарна (частичный
+      // уникальный индекс, миграция 0027). Прежняя схема «выбрать → отправить →
+      // записать» атомарной не была, и два одновременных прогона слали клиенту
+      // одно и то же дважды (B-2). Проигравший гонку молча пропускает заказ.
+      const claimed = await claimRenewalReminder(db, order.id);
+      if (!claimed) {
+        log.info({ event: 'cron.renewal_reminder.already_claimed', orderId: order.id });
+        continue;
+      }
       // telegramId — СТРОКА (не Number): большие 64-битные chat_id теряют
       // точность в double, уведомление ушло бы не тому получателю (L4).
       await getBot().api.sendMessage(telegramId, message);
-      // Отметить отправку в append-only order_events, чтобы следующий суточный
-      // прогон не выбрал этот заказ повторно (окно фильтра шире шага крона) — M6.
-      await appendOrderEvent(db, {
-        orderId: order.id,
-        eventType: 'renewal_reminder_sent',
-        actorType: 'system',
-      });
       sent++;
     } catch (err) {
       errors++;

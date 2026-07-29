@@ -37,6 +37,21 @@ import { canonicalQuery, signPaySpaceRequest } from './sign.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 2;
+
+/**
+ * Повторяем 5xx и 429.
+ *
+ * 429 добавлен отдельно и осознанно: это «слишком часто», то есть запрос
+ * гарантированно НЕ обработан — повтор безопасен даже там, где идемпотентности
+ * нет. Без него всплеск заказов ронял выпуск карты уже ПОСЛЕ приёма рублей.
+ *
+ * Предикат общий для обеих точек ретрая, а решение «повторять ли вообще»
+ * остаётся за `maxAttempts`: у неидемпотентного `createCard` он равен 1, и
+ * сюда управление не доходит.
+ */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
 const DEFAULT_TOPUP_POLL_ATTEMPTS = 5;
 const DEFAULT_TOPUP_POLL_DELAY_MS = 1500;
 
@@ -427,7 +442,7 @@ export class PaySpaceClient {
           raw = JSON.parse(respText);
         } catch {
           // не-JSON: на 5xx ретраим, иначе контракт-ошибка.
-          if (resp.status >= 500 && attempt < maxAttempts - 1) {
+          if (isRetryableStatus(resp.status) && attempt < maxAttempts - 1) {
             await this.backoff(attempt, opts, resp.status);
             continue;
           }
@@ -461,7 +476,7 @@ export class PaySpaceClient {
         const code = errParsed.success ? errParsed.data.code : `HTTP_${resp.status}`;
         const message = errParsed.success ? errParsed.data.message : respText.slice(0, 500);
 
-        if (resp.status >= 500 && attempt < maxAttempts - 1) {
+        if (isRetryableStatus(resp.status) && attempt < maxAttempts - 1) {
           await this.backoff(attempt, opts, resp.status);
           continue;
         }

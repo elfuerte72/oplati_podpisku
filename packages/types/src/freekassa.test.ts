@@ -37,14 +37,47 @@ describe('parseRubleAmountToKopecks', () => {
     expect(parseRubleAmountToKopecks('0.001')).toBeNull();
   });
 
-  it('отвергает мусор, отрицательные, разделители тысяч и экспоненту', () => {
+  it('отвергает мусор, отрицательные и экспоненту', () => {
     expect(parseRubleAmountToKopecks('')).toBeNull();
     expect(parseRubleAmountToKopecks('abc')).toBeNull();
     expect(parseRubleAmountToKopecks('-100')).toBeNull();
-    expect(parseRubleAmountToKopecks('1 000.00')).toBeNull();
-    expect(parseRubleAmountToKopecks('1,000.00')).toBeNull();
     expect(parseRubleAmountToKopecks('1e3')).toBeNull();
     expect(parseRubleAmountToKopecks('100.')).toBeNull();
+  });
+
+  it('принимает группировку разрядов пробелом — в том числе неразрывным', () => {
+    // Живой платёж был на 850 ₽, формат сумм >=1000 ₽ у провайдера не
+    // наблюдался. Не принятое уведомление = бесконечные повторы провайдера при
+    // списанных деньгах, поэтому группировку разбираем заранее.
+    expect(parseRubleAmountToKopecks('1 000.00')).toBe(100_000);
+    expect(parseRubleAmountToKopecks('21 439.60')).toBe(2_143_960);
+    expect(parseRubleAmountToKopecks('1 234,56')).toBe(123_456);
+    expect(parseRubleAmountToKopecks('12 345 678.90')).toBe(1_234_567_890);
+    expect(parseRubleAmountToKopecks('1\u00A0000.00')).toBe(100_000); // неразрывный
+    expect(parseRubleAmountToKopecks('1\u202F000.00')).toBe(100_000); // узкий неразрывный
+    expect(parseRubleAmountToKopecks('1\u2009000.00')).toBe(100_000); // тонкий
+    expect(parseRubleAmountToKopecks('1 000')).toBe(100_000);
+  });
+
+  it('принимает запятую как разделитель разрядов ТОЛЬКО при десятичной точке', () => {
+    expect(parseRubleAmountToKopecks('1,000.00')).toBe(100_000);
+    expect(parseRubleAmountToKopecks('21,439.60')).toBe(2_143_960);
+  });
+
+  it('без точки запятая остаётся десятичной — двусмысленность не разрешаем молча', () => {
+    // `1,000` — это 1 ₽ или 1000 ₽? Догадка здесь означала бы тихо принять не ту
+    // сумму. Читаем как десятичную (прежнее поведение), а расхождение поймает
+    // сверка `amount_mismatch`: заказ терминально в `failed` + DM владельцу.
+    expect(parseRubleAmountToKopecks('1,000')).toBe(100);
+    expect(parseRubleAmountToKopecks('1,00')).toBe(100);
+  });
+
+  it('отвергает кривую группировку', () => {
+    expect(parseRubleAmountToKopecks('1 23 4')).toBeNull();
+    expect(parseRubleAmountToKopecks('1 2345.00')).toBeNull();
+    expect(parseRubleAmountToKopecks('1234 567.00')).toBeNull();
+    expect(parseRubleAmountToKopecks('1,23.00')).toBeNull();
+    expect(parseRubleAmountToKopecks('1 000.505')).toBeNull();
   });
 
   it('не теряет точность там, где её теряет parseFloat', () => {

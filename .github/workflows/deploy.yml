@@ -140,7 +140,12 @@ jobs:
         env:
           SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
           # dev закрыт Basic Auth, прод — нет. Пустая строка = ходим без -u.
-          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
         run: |
           set -uo pipefail
           # shellcheck disable=SC2086
@@ -243,7 +248,12 @@ jobs:
       - name: Проверить, что стенд обновился
         env:
           SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
-          HEALTH_AUTH: ${{ github.ref_name == 'main' && '' || secrets.DEV_HEALTH_AUTH }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
           IS_PROD: ${{ github.ref_name == 'main' }}
           BEFORE: ${{ steps.mark.outputs.before }}
         run: |
@@ -279,6 +289,60 @@ jobs:
             sleep 15
           done
           echo "::error::Стенд не обновился за 15 минут после принятого триггера — сборка упала или зависла. Смотри логи в панели Dokploy."
+          exit 1
+
+      # Обновившийся контейнер ещё не означает работоспособный релиз. `/api/ready`
+      # (в отличие от liveness-`/api/health`) проверяет, что БД отвечает и что
+      # применены ВСЕ миграции, приехавшие с этим кодом.
+      #
+      # 2026-07-28 ровно этого не хватило: код Freekassa уехал в main 26.07,
+      # миграции 0025/0026 на прод не попали, и первый счёт упал с
+      # `relation "freekassa_nonce" does not exist` — при зелёном деплое,
+      # здоровом health и без единого алёрта (docs/incidents.md). Пайплайн
+      # миграции по-прежнему НЕ применяет (нужен ssh-ключ в секретах, отдельное
+      # решение по доступам) — но теперь он громко об этом сообщает, а не
+      # оставляет находку первому клиенту.
+      - name: Проверить готовность релиза (БД + миграции)
+        env:
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
+          IS_PROD: ${{ github.ref_name == 'main' }}
+        run: |
+          set -uo pipefail
+          if [ "$IS_PROD" != "true" ] && [ -z "${HEALTH_AUTH:-}" ]; then
+            echo "::warning::Секрет DEV_HEALTH_AUTH не задан — готовность dev-стенда не проверена."
+            exit 0
+          fi
+          # Тот же хост, соседний путь: URL здоровья настраивается переменной,
+          # и второй переменной для этого заводить не хочется.
+          READY="${SITE%/api/health}/api/ready"
+          # Пара попыток: сразу после переключения трафика первый запрос может
+          # прийти в ещё прогревающийся контейнер.
+          for attempt in 1 2 3; do
+            # shellcheck disable=SC2086
+            body=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$READY" 2>/dev/null) || body=''
+            status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || echo '')
+            if [ "$status" = "ok" ]; then
+              echo "Релиз готов: БД отвечает, миграции применены."
+              exit 0
+            fi
+            echo "Попытка $attempt/3: status=${status:-<нет ответа>} body=${body:-<пусто>}"
+            sleep 10
+          done
+          reasons=$(printf '%s' "$body" | jq -r '.reasons // [] | join(", ")' 2>/dev/null || echo '')
+          case "$reasons" in
+            *migrations_pending*)
+              echo "::error::Код выкачен, а миграции на БД НЕ применены. Применить по docs/runbooks/deploy.md, иначе клиентский путь упадёт в рантайме." ;;
+            *db_unreachable*)
+              echo "::error::Релиз выкачен, но приложение не видит БД (проверь DATABASE_URL — имя сервиса Postgres меняется при пересоздании)." ;;
+            *)
+              echo "::error::/api/ready отвечает не 'ok' (причины: ${reasons:-неизвестны})." ;;
+          esac
           exit 1
 
       # Провал деплоя раньше был виден только тому, кто зайдёт в Actions: оба

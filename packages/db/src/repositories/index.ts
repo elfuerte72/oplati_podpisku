@@ -53,7 +53,7 @@ export {
   type AiUsageTotals,
 } from './ai-usage.ts';
 
-export { pingDb } from './health.ts';
+export { getAppliedMigrations, pingDb, type AppliedMigrations } from './health.ts';
 
 export { nextFreekassaNonce } from './freekassa.ts';
 
@@ -137,6 +137,7 @@ export {
   findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
   appendOrderEvent,
+  claimRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   hasPurchasedOrders,
