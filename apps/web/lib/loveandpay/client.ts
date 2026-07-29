@@ -15,9 +15,15 @@ import { signRequest } from './sign.ts';
  *
  * - HMAC v2 подпись исходящих (см. `./sign.ts`).
  * - `fetch` всегда с `AbortController` (timeout 30s — L&P медленный).
- * - Retry для 429/5xx: max 3, exponential backoff (500ms, 1s, 2s). 400/401/403 — no-retry.
- *   Таймаут (AbortError) НЕ ретраится для POST (L-6: /invoices не идемпотентен —
- *   повтор мог бы создать второй счёт), для GET — ретраится.
+ * - Retry для 429/5xx/сети/таймаута: max 3, exponential backoff (500ms, 1s, 2s);
+ *   400/401/403 — no-retry. НО повторяются только ИДЕМПОТЕНТНЫЕ запросы, а по
+ *   умолчанию идемпотентен лишь GET: `POST /invoices` выполняется РОВНО ОДИН РАЗ.
+ *   Причина — у L&P нет ключа идемпотентности: 5xx от их шлюза (как и таймаут,
+ *   как и оборванный сокет) не отличим от «счёт создан, ответ потерян», поэтому
+ *   повтор оставлял бы у провайдера второй счёт на тот же заказ. Ровно так же
+ *   отключён ретрай у `createCard` в PaySpace и `createOrder` в Freekassa.
+ *   Осиротевший счёт не страшен: клиент жмёт «Оплатить» ещё раз, а повторный
+ *   confirm идемпотентно возвращает живой pending-инвойс (`repeat_confirm`).
  * - Zod-парсинг ответов через `@oplati/types`. Контракт-дрифт → `LoveAndPayContractError`.
  *
  * Singleton через `getLoveAndPayClient()` в `./index.ts` (lazy init, чтобы build
@@ -95,14 +101,24 @@ export class LoveAndPayClient {
     path: string,
     body: unknown,
     parse: (raw: unknown) => T,
+    opts: {
+      /**
+       * Можно ли безопасно повторить запрос. Дефолт — только GET: у L&P нет
+       * ключа идемпотентности, поэтому любой POST по умолчанию выполняется один
+       * раз. Дефолт выбран fail-safe специально — новый POST, добавленный без
+       * этого флага, получит безопасное поведение, а не тихие дубли счетов.
+       */
+      idempotent?: boolean;
+    } = {},
   ): Promise<T> {
     const bodyText = body === null ? '' : JSON.stringify(body);
     // signPath = '/api/v2/invoices' — ПОЛНЫЙ путь для HMAC (без query).
     const signPath = `${this.apiPath}${path}`;
     const url = `${this.origin}${signPath}`;
+    const maxAttempts = (opts.idempotent ?? method === 'GET') ? MAX_RETRIES : 1;
 
     let lastError: unknown;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const { timestamp, signature } = signRequest(method, signPath, bodyText, this.secretKey);
 
       const controller = new AbortController();
@@ -207,7 +223,7 @@ export class LoveAndPayClient {
         }
 
         const retryable = resp.status === 429 || resp.status >= 500;
-        if (retryable && attempt < MAX_RETRIES - 1) {
+        if (retryable && attempt < maxAttempts - 1) {
           const backoffMs = 500 * Math.pow(2, attempt);
           this.log.warn({
             event: 'loveandpay.retry',
@@ -240,20 +256,19 @@ export class LoveAndPayClient {
         throw apiErr;
       } catch (err) {
         clearTimeout(timeoutId);
-        // Network-ошибка (соединение не установилось — запрос до сервера не
-        // дошёл): ретраим как 5xx. Таймаут (AbortError) — ретраим только GET
-        // (L-6 аудита): POST /invoices не идемпотентен, L&P мог успеть создать
-        // счёт после нашего обрыва — повтор выставил бы клиенту второй invoice.
-        // Осиротевший счёт не страшен: клиент жмёт «Оплатить» ещё раз, а
-        // повторный confirm идемпотентно вернёт живой pending-инвойс.
+        // Сетевой сбой и таймаут ретраятся только у идемпотентных запросов
+        // (`maxAttempts > 1`, то есть по умолчанию — только GET). Для POST
+        // повтора не будет ни при каком типе ошибки: `TypeError: fetch failed`
+        // в undici покрывает не только «соединение не установилось», но и
+        // оборванный сокет ПОСЛЕ отправки тела, когда счёт у L&P уже создан.
+        // Дрейф контракта (`LoveAndPayContractError`) не ретраится никогда:
+        // ответ получен и разобран, повтор даст ту же ошибку.
         const isAbort = err instanceof Error && err.name === 'AbortError';
         const isContract = err instanceof LoveAndPayContractError;
-        const timeoutRetryAllowed = method === 'GET';
         if (
           !isContract &&
-          ((isAbort && timeoutRetryAllowed) ||
-            (err instanceof TypeError && /fetch/i.test(err.message))) &&
-          attempt < MAX_RETRIES - 1
+          (isAbort || (err instanceof TypeError && /fetch/i.test(err.message))) &&
+          attempt < maxAttempts - 1
         ) {
           const backoffMs = 500 * Math.pow(2, attempt);
           this.log.warn({

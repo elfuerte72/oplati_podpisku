@@ -50,7 +50,7 @@ describe('LoveAndPayClient.createInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('ретрай при 429', async () => {
+  it('429 на POST /invoices НЕ ретраится', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(makeResp(429, { success: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'wait' } }))
@@ -62,15 +62,89 @@ describe('LoveAndPayClient.createInvoice', () => {
       logger: silentLogger,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    const res = await c.createInvoice({
-      amount: 1,
-      currency: 'RUB',
-      description: 't',
-      customer: {},
-      expiresInHours: 24,
-      kycRequired: false,
+    await expect(
+      c.createInvoice({
+        amount: 1,
+        currency: 'RUB',
+        description: 't',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toBeInstanceOf(LoveAndPayApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('5xx на POST /invoices НЕ ретраится — инвойс-сирота у провайдера невозможен', async () => {
+    // 502/503/504 не отличимы от «счёт создан, ответ потерян»: у L&P нет ключа
+    // идемпотентности, поэтому второй попытки быть не должно (та же политика,
+    // что у createOrder в Freekassa и createCard в PaySpace).
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResp(502, { success: false, error: { code: 'BAD_GATEWAY', message: 'down' } }))
+      .mockResolvedValueOnce(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    expect(res.invoice.id).toBe('INV-1');
+
+    await expect(
+      c.createInvoice({
+        amount: 100,
+        currency: 'RUB',
+        description: 'test',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toBeInstanceOf(LoveAndPayApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('сетевой обрыв на POST /invoices НЕ ретраится', async () => {
+    // `TypeError: fetch failed` в undici — это и «соединение не установилось»,
+    // и «сокет оборвался ПОСЛЕ отправки тела»; второй случай означает уже
+    // созданный счёт, различить их нельзя.
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      c.createInvoice({
+        amount: 100,
+        currency: 'RUB',
+        description: 'test',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toThrow('fetch failed');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('5xx на GET (идемпотентный) по-прежнему ретраится', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResp(503, { success: false, error: { code: 'UNAVAILABLE', message: 'x' } }))
+      .mockResolvedValueOnce(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    const invoice = await c.getInvoice('INV-1');
+    expect(invoice.id).toBe('INV-1');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
