@@ -4,6 +4,9 @@ import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
 import { PAYMENT_ISSUE_LABELS, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
+// Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
+// панели и `serverEnv`, а здесь нужна чистая функция сравнения дат.
+import { isUnlimitedExpiry } from '@/lib/remnawave/period';
 
 import { MIN_AMOUNT_USD, maxAmountUsdFor } from './amount';
 import { telegramBotLink } from './links';
@@ -150,6 +153,18 @@ export function buildVpnMessageHtml(params: {
     params.trafficLimitGb > 0
       ? `Трафик: ${params.trafficLimitGb} ГБ в месяц, хватит с запасом.`
       : 'Трафик безлимитный.';
+  // Три состояния срока, и молчать нельзя ни в одном:
+  // - бессрочная (дефолт) — про дату не говорим вовсе, «действует до 2037» лишь
+  //   пугает и выглядит как баг;
+  // - истёкшая — ссылка МЁРТВАЯ, панель уже перевела юзера в EXPIRED. Раньше мы
+  //   отдавали её как ни в чём не бывало, с датой из прошлого: клиент вставлял
+  //   ссылку в Happ и получал пустоту, не понимая, что не так;
+  // - живая срочная — как было.
+  const access = isUnlimitedExpiry(params.expireAt)
+    ? traffic
+    : params.expireAt.getTime() <= Date.now()
+      ? `⚠️ <b>Срок доступа истёк ${formatVpnExpiry(params.expireAt)}</b> — по этой ссылке VPN не подключится. Жми «Обновить ссылку» внизу, и если не поможет — напиши в поддержку.`
+      : `Доступ действует до ${formatVpnExpiry(params.expireAt)}. ${traffic}`;
   return [
     intro,
     '',
@@ -163,7 +178,7 @@ export function buildVpnMessageHtml(params: {
     '4. Вставь ссылку и жми «Готово».',
     '',
     'Внутри два сервера: 🇱🇹 Литва и 🇷🇺 «При белых списках». Что-то не открывается? Просто переключись.',
-    `Доступ действует до ${formatVpnExpiry(params.expireAt)}. ${traffic}`,
+    access,
   ].join('\n');
 }
 

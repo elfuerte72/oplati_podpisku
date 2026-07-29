@@ -11,10 +11,11 @@ import { siteUrl } from '@/lib/deployment-url';
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import {
-  addOneMonthUtc,
   getRemnawaveClient,
   isRemnawaveConfigured,
+  isUnlimitedSubscriptionMode,
   RemnawaveApiError,
+  targetSubscriptionExpiry,
 } from '@/lib/remnawave';
 
 import { getBot } from './bot';
@@ -38,12 +39,19 @@ import {
  *   1. Строка в `vpn_subscriptions` есть → возвращаем ту же ссылку (новая НЕ
  *      генерируется — подписка per-user и стабильна по shortUuid).
  *   2. Строки нет → ищем юзера панели `by-telegram-id` (идемпотентность: не
- *      плодим дубли), нет и там → создаём (username `tg_<id>`, срок +1 месяц,
- *      Default-Squad) → upsert снимка в БД → ссылка + инструкция клиенту.
+ *      плодим дубли), нет и там → создаём (username `tg_<id>`, срок из
+ *      `REMNAWAVE_SUBSCRIPTION_MONTHS`, Default-Squad) → upsert снимка в БД →
+ *      ссылка + инструкция клиенту.
+ *
+ * Срок по умолчанию — БЕЗ ОГРАНИЧЕНИЯ (решение владельца 2026-07-29: VPN
+ * бесплатный, месячный срок давал клиенту только мёртвую ссылку). Уже выданные
+ * месячные подписки подтягиваются к бессрочным при первом же нажатии кнопки —
+ * см. `liftLegacyExpiry`.
  *
  * Кнопка «Обновить ссылку» (callback `vpn:refresh`) — перевыпуск: в панели
  * `actions/revoke` МЕНЯЕТ shortUuid (старая ссылка перестаёт работать сразу),
- * срок действия НЕ продлевается — иначе кнопка была бы бесплатным продлением.
+ * срок действия сам по себе НЕ продлевается — в срочном режиме кнопка иначе
+ * была бы бесплатным продлением.
  * Юзер панели тот же, обновляется только снимок в БД. Если юзера панели
  * удалили вручную (404) — выпускаем заново.
  *
@@ -142,23 +150,82 @@ async function replyWithSubscription(
 }
 
 /**
- * Подтягивает лимит трафика юзера панели к настройке env: легаси-юзеры,
- * созданные до введения лимита 200 ГБ, оставались безлимитными. Best-effort,
- * сбой синка не блокирует выдачу ссылки.
+ * Подтягивает юзера панели к текущим настройкам: лимит трафика (легаси-юзеры,
+ * созданные до введения лимита 200 ГБ, оставались безлимитными) и срок доступа.
+ *
+ * Срок двигаем ТОЛЬКО вверх и ТОЛЬКО в безлимитном режиме. В срочном режиме
+ * такой синк был бы бесплатным продлением на каждое нажатие кнопки — ровно то,
+ * ради чего «Обновить ссылку» намеренно не трогает `expireAt`.
+ *
+ * Best-effort: сбой синка не блокирует выдачу ссылки. Возвращает обновлённого
+ * юзера панели (или исходного, если синк не понадобился либо не удался) —
+ * дальше он идёт и в снимок БД, и в текст клиенту, поэтому важно не потерять
+ * новые значения.
  */
-async function syncTrafficLimit(panelUser: RemnawaveUser, updateId: number): Promise<void> {
+async function syncPanelLimits(
+  panelUser: RemnawaveUser,
+  updateId: number,
+): Promise<RemnawaveUser> {
   const targetBytes = serverEnv.REMNAWAVE_TRAFFIC_LIMIT_GB * 1024 ** 3;
-  if (panelUser.trafficLimitBytes === undefined || panelUser.trafficLimitBytes === targetBytes) {
-    return;
+  const patch: { trafficLimitBytes?: number; expireAt?: Date } = {};
+
+  if (panelUser.trafficLimitBytes !== undefined && panelUser.trafficLimitBytes !== targetBytes) {
+    patch.trafficLimitBytes = targetBytes;
   }
+  const targetExpiry = targetSubscriptionExpiry();
+  if (isUnlimitedSubscriptionMode() && panelUser.expireAt < targetExpiry) {
+    patch.expireAt = targetExpiry;
+  }
+  if (patch.trafficLimitBytes === undefined && patch.expireAt === undefined) return panelUser;
+
   try {
-    await getRemnawaveClient().updateUser({
-      uuid: panelUser.uuid,
-      trafficLimitBytes: targetBytes,
+    const updated = await getRemnawaveClient().updateUser({ uuid: panelUser.uuid, ...patch });
+    log.info({
+      event: 'telegram.vpn.limits_synced',
+      updateId,
+      traffic: patch.trafficLimitBytes !== undefined,
+      expiry: patch.expireAt !== undefined,
     });
-    log.info({ event: 'telegram.vpn.traffic_synced', updateId });
+    return updated;
   } catch (err) {
-    log.warn({ event: 'telegram.vpn.traffic_sync_failed', updateId, err });
+    log.warn({ event: 'telegram.vpn.limits_sync_failed', updateId, err });
+    return panelUser;
+  }
+}
+
+/**
+ * Подтягивает срок УЖЕ выданной подписки к бессрочному, когда включён
+ * безлимитный режим.
+ *
+ * Повторное нажатие «VPN» отвечает из снимка в БД и панель не трогает вовсе —
+ * поэтому клиенты, получившие подписку в эпоху месячного срока, иначе так и
+ * получали бы мёртвую ссылку с прошедшей датой (панель сама переводит юзера в
+ * EXPIRED по `expireAt`). Патчим по `remnawaveUuid` из снимка, без лишнего GET.
+ *
+ * Срабатывает один раз на клиента: после успешного PATCH снимок несёт уже
+ * бессрочную дату, и следующее нажатие в панель не пойдёт. Сбой (в том числе
+ * 404 удалённого вручную юзера) не ломает выдачу — вернём прежний срок, а
+ * протухший клиент увидит честную пометку вместо молчания.
+ */
+async function liftLegacyExpiry(
+  ctx: PersistContext,
+  telegramId: string,
+  existing: { remnawaveUuid: string; expireAt: Date },
+  updateId: number,
+): Promise<Date> {
+  const target = targetSubscriptionExpiry();
+  if (!isUnlimitedSubscriptionMode() || existing.expireAt >= target) return existing.expireAt;
+  try {
+    const updated = await getRemnawaveClient().updateUser({
+      uuid: existing.remnawaveUuid,
+      expireAt: target,
+    });
+    await persistSnapshot(ctx, telegramId, updated);
+    log.info({ event: 'telegram.vpn.expiry_lifted', updateId });
+    return updated.expireAt;
+  } catch (err) {
+    log.warn({ event: 'telegram.vpn.expiry_lift_failed', updateId, err });
+    return existing.expireAt;
   }
 }
 
@@ -186,13 +253,14 @@ export async function handleVpnCallback(
     const existing = await findVpnSubscriptionByUserId(getDb(), ctx.userId);
     if (existing) {
       log.info({ event: 'telegram.vpn.existing', updateId, chatId });
+      const expireAt = await liftLegacyExpiry(ctx, telegramId, existing, updateId);
       await replyWithSubscription(
         ctx,
         chatId,
         updateId,
         'existing',
         existing.subscriptionUrl,
-        existing.expireAt,
+        expireAt,
       );
       return;
     }
@@ -206,7 +274,7 @@ export async function handleVpnCallback(
       try {
         panelUser = await client.createUser({
           telegramId,
-          expireAt: addOneMonthUtc(new Date()),
+          expireAt: targetSubscriptionExpiry(),
         });
         created = true;
       } catch (err) {
@@ -219,7 +287,7 @@ export async function handleVpnCallback(
       }
     }
     if (!created) {
-      await syncTrafficLimit(panelUser, updateId);
+      panelUser = await syncPanelLimits(panelUser, updateId);
     }
     await persistSnapshot(ctx, telegramId, panelUser);
     log.info({ event: created ? 'telegram.vpn.issued' : 'telegram.vpn.adopted', updateId, chatId });
@@ -276,18 +344,18 @@ export async function handleVpnRefreshCallback(
       if (err instanceof RemnawaveApiError && err.status === 404) {
         // Юзера панели удалили вручную — снимок протух, выпускаем заново.
         // Живой срок сохраняем (перевыпуск ссылки не продлевает доступ),
-        // истёкший — новый месяц (иначе создали бы уже EXPIRED юзера).
+        // истёкший — берём целевой, иначе создали бы уже EXPIRED юзера.
         log.warn({ event: 'telegram.vpn.refresh_recreate', updateId, chatId });
+        const target = targetSubscriptionExpiry();
         panelUser = await client.createUser({
           telegramId,
-          expireAt:
-            existing.expireAt > new Date() ? existing.expireAt : addOneMonthUtc(new Date()),
+          expireAt: existing.expireAt > new Date() ? existing.expireAt : target,
         });
       } else {
         throw err;
       }
     }
-    await syncTrafficLimit(panelUser, updateId);
+    panelUser = await syncPanelLimits(panelUser, updateId);
     await persistSnapshot(ctx, telegramId, panelUser);
     log.info({ event: 'telegram.vpn.refreshed', updateId, chatId });
     await replyWithSubscription(
