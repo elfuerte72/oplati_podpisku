@@ -1,16 +1,18 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { conversations } from '../schema.ts';
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
  * Найти активный conversation для пары `(user_id, channel)` или создать новый.
  *
- * Стратегия: SELECT последнего по `created_at` → если есть, возвращаем; иначе INSERT.
- * Нет partial-unique по `(user_id, channel)` на этом milestone — допускается дубликат
- * при concurrent webhook'ах (на 50 заказов/день — пренебрежимо). Полный TTL/закрытие
- * conversation придёт в milestone «Handoff оператору».
+ * Стратегия — двойная проверка: SELECT последнего по `created_at` без
+ * транзакции (быстрый путь, он же почти все вызовы), а если диалога нет —
+ * транзакция с advisory-lock'ом по паре ключей, повторный SELECT под ней и
+ * INSERT. Прежняя схема без блокировки допускала дубликат при одновременных
+ * webhook'ах, и часть переписки уезжала в осиротевший conversation.
+ * Полный TTL/закрытие conversation придёт в milestone «Handoff оператору».
  *
  * `handoff_mode` оставляем default `'ai'` — `assigned_operator_id` остаётся NULL.
  */
@@ -25,6 +27,24 @@ export type GetOrCreateActiveConversationResult = {
   created: boolean;
 };
 
+/**
+ * Самый свежий диалог пары (user, channel) или null. Вынесено, чтобы быстрый
+ * путь и повторная проверка под блокировкой не разъехались в условиях.
+ */
+async function selectLatest(
+  db: DBLike,
+  userId: string,
+  channel: 'telegram' | 'web',
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(and(eq(conversations.userId, userId), eq(conversations.channel, channel)))
+    .orderBy(desc(conversations.createdAt))
+    .limit(1);
+  return rows[0]?.id ?? null;
+}
+
 export async function getOrCreateActiveConversation(
   db: DB,
   input: GetOrCreateActiveConversationInput,
@@ -34,6 +54,20 @@ export async function getOrCreateActiveConversation(
 
   log.debug({ event: 'db.conversations.lookup', userId, channel });
 
+  // Быстрый путь БЕЗ транзакции — он же подавляющее большинство вызовов: у
+  // существующего пользователя диалог уже есть, и на каждое сообщение открывать
+  // транзакцию с блокировкой значило бы платить лишними round-trip'ами
+  // (BEGIN + lock + SELECT + COMMIT вместо одного SELECT) на самом горячем пути
+  // бота и веб-чата. Гонка здесь невозможна по определению: раз строка уже
+  // найдена, создавать нечего.
+  const fastPath = await selectLatest(db, userId, channel);
+  if (fastPath) {
+    log.debug({ event: 'db.conversations.resumed', conversationId: fastPath, userId, channel });
+    return { id: fastPath, created: false };
+  }
+
+  // Медленный путь — только первое сообщение пользователя в этом канале.
+  //
   // «Найти или создать» без атомарности расщепляло историю: два сообщения,
   // пришедшие одновременно от нового пользователя (веб-вкладка + бот, дребезг
   // отправки), оба не находили диалога и создавали по своему — часть переписки
@@ -50,24 +84,18 @@ export async function getOrCreateActiveConversation(
       sql`SELECT pg_advisory_xact_lock(hashtext(${userId}), hashtext(${channel}))`,
     );
 
-    const existing = await tx
-      .select({ id: conversations.id })
-      .from(conversations)
-      .where(
-        and(eq(conversations.userId, userId), eq(conversations.channel, channel)),
-      )
-      .orderBy(desc(conversations.createdAt))
-      .limit(1);
-
-    const found = existing[0];
+    // Повторная проверка ПОД блокировкой обязательна: пока мы её ждали,
+    // победитель гонки уже мог создать диалог. Без неё двойная проверка
+    // выродилась бы в ту же гонку, только с лишним запросом.
+    const found = await selectLatest(tx, userId, channel);
     if (found) {
       log.debug({
         event: 'db.conversations.resumed',
-        conversationId: found.id,
+        conversationId: found,
         userId,
         channel,
       });
-      return { id: found.id, created: false };
+      return { id: found, created: false };
     }
 
     const inserted = await tx
