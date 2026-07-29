@@ -37,6 +37,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Дешёвая сверка без Docker: стадия deps копирует манифесты пакетов
+      # поимённо (ради кэша слоя `pnpm install`), и новый пакет легко забыть.
+      # Тогда `pnpm install --frozen-lockfile` падает уже при docker build на
+      # VPS — то есть в момент выкатки, а здесь всё было зелёное.
+      - name: Dockerfile копирует манифесты всех пакетов
+        run: ./scripts/check-dockerfile-manifests.sh
+
       # Версия pnpm НЕ дублируется здесь: она берётся из package.json#packageManager.
       # Два источника правды разъезжаются, и action на это ругается.
       - uses: pnpm/action-setup@v6
