@@ -225,7 +225,21 @@ export function ChatClient() {
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    if (!el) return;
+    // Прокрутка не должна ронять страницу целиком. 2026-07-30 в Sentry прилетел
+    // `TypeError: e.scrollTo is not a function` из ИНЛАЙНОВОГО скрипта (стек
+    // весь в `<script>:1:...`, наши чанки грузятся файлами) — то есть чужой код
+    // на странице (расширение/антивирус) подменил метод. Ошибку поймал
+    // error boundary, и клиент увидел заглушку вместо сайта из-за автоскролла.
+    try {
+      if (typeof el.scrollTo === 'function') {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
+    } catch {
+      // Последний рубеж: не доскроллили — не повод показывать заглушку.
+    }
   }, [items, sending]);
 
   // AI-диалог: отправка текста в /api/chat. Форма ручного ввода убрана (веб-чат
