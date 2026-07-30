@@ -20,6 +20,7 @@ import {
 import { DocsFooter } from '@/components/info/DocsFooter';
 import { FreekassaBadge } from '@/components/info/FreekassaBadge';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
+import { track } from '@/lib/analytics/client';
 import { ErrorNotice } from './ErrorNotice';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
@@ -92,10 +93,35 @@ export function ChatClient() {
   const [profileOpen, setProfileOpen] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pageViewSentRef = useRef(false);
   const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const celebrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollsRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const historyLoadedRef = useRef(false);
+
+  // Первый экран: откуда пришёл человек. Ref-гейт — StrictMode в dev монтирует
+  // эффекты дважды, и без него каждый визит считался бы за два.
+  useEffect(() => {
+    if (pageViewSentRef.current) return;
+    pageViewSentRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    // Только источник трафика, без пути с параметрами: в query могут оказаться
+    // чужие идентификаторы, а в аналитике им не место.
+    let referrerHost = '';
+    try {
+      referrerHost = document.referrer ? new URL(document.referrer).hostname : '';
+    } catch {
+      referrerHost = '';
+    }
+    track('page_view', {
+      path: window.location.pathname,
+      ...(params.get('src') ? { src: params.get('src') as string } : {}),
+      ...(params.get('utm_source') ? { utm_source: params.get('utm_source') as string } : {}),
+      ...(params.get('utm_medium') ? { utm_medium: params.get('utm_medium') as string } : {}),
+      ...(params.get('utm_campaign') ? { utm_campaign: params.get('utm_campaign') as string } : {}),
+      ...(referrerHost ? { referrer_host: referrerHost } : {}),
+    });
+  }, []);
 
   // Поза маскота: ставим pose, опционально откатываемся в idle через settleMs.
   const setPoseSettling = useCallback((p: MascotPose, settleMs?: number) => {
@@ -389,6 +415,7 @@ export function ChatClient() {
         const isPaid = paidOrders.includes(card.orderId);
         return (
           <OrderPanel
+            analyticsSurface="web_chat"
             key={key}
             service={card.service}
             rows={[
@@ -424,6 +451,10 @@ export function ChatClient() {
             paymentUrl={card.paymentUrl}
             qrPayload={card.qrPayload}
             expiresAt={card.expiresAt}
+            onPayClick={() =>
+              // immediate: вкладка уходит на домен провайдера, debounce ждать некому.
+              track('pay_link_click', { surface: 'web_chat' }, { immediate: true })
+            }
           />
         );
       case 'telegram_link': {

@@ -6,7 +6,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { eq, sql } from 'drizzle-orm';
 
-import { OrderTransitionError } from '@oplati/types';
+import { OrderTransitionError, analyticsDictionaryRows } from '@oplati/types';
 
 import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
@@ -55,6 +55,11 @@ import {
   findVpnSubscriptionByUserId,
   upsertVpnSubscription,
 } from './repositories/vpn-subscriptions.ts';
+import {
+  deleteOldAnalyticsEvents,
+  insertAnalyticsEvents,
+  syncAnalyticsDictionary,
+} from './repositories/analytics.ts';
 
 /**
  * Интеграционные тесты репозиториев на РЕАЛЬНОМ Postgres (PGlite, WASM) с
@@ -1239,5 +1244,249 @@ describe('getOrCreateActiveConversation (гонка первого сообще�
       .from(schema.conversations)
       .where(eq(schema.conversations.userId, user.id));
     expect(rows).toHaveLength(2);
+  });
+});
+
+// ─── Поведенческая аналитика ──────────────────────────────────────────────
+
+describe('analytics_events', () => {
+  it('идемпотентность по event_key: повтор батча не удваивает воронку', async () => {
+    const key = `ev-${++seq}-${Date.now()}`;
+    const base = {
+      eventKey: key,
+      name: 'catalog_open',
+      channel: 'web',
+      origin: 'client' as const,
+      webSessionId: `sess-${seq}`,
+      occurredAt: new Date(),
+    };
+
+    expect(await insertAnalyticsEvents(db, [base])).toBe(1);
+    // Ретрай sendBeacon / двойной клик.
+    expect(await insertAnalyticsEvents(db, [base])).toBe(0);
+
+    const rows = await db.execute<{ count: string }>(
+      sql`SELECT count(*)::text AS count FROM analytics_events WHERE event_key = ${key}`,
+    );
+    expect(Number(firstOf(rows, 'count').count)).toBe(1);
+  });
+
+  it('история неизменяема: UPDATE отклоняется триггером', async () => {
+    const key = `ev-immutable-${++seq}`;
+    await insertAnalyticsEvents(db, [
+      {
+        eventKey: key,
+        name: 'page_view',
+        channel: 'web',
+        origin: 'client',
+        webSessionId: `sess-${seq}`,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    // Именно поэтому резолв личности — JOIN, а не backfill: переписать
+    // накопленное невозможно даже намеренно.
+    await expect(
+      db.execute(sql`UPDATE analytics_events SET name = 'hacked' WHERE event_key = ${key}`),
+    ).rejects.toSatisfy((err: unknown) => pgErrorMatches(err, /append-only/));
+  });
+
+  it('retention удаляет старое батчами, свежее не трогает', async () => {
+    const tag = `ret-${++seq}`;
+    const old = new Date(Date.now() - 500 * 24 * 60 * 60 * 1000);
+    await insertAnalyticsEvents(db, [
+      { eventKey: `${tag}-old-1`, name: 'page_view', channel: 'web', origin: 'client', occurredAt: old },
+      { eventKey: `${tag}-old-2`, name: 'page_view', channel: 'web', origin: 'client', occurredAt: old },
+      { eventKey: `${tag}-new`, name: 'page_view', channel: 'web', origin: 'client', occurredAt: new Date() },
+    ]);
+
+    // DELETE разрешён (в отличие от order_events) — иначе телеметрия росла бы вечно.
+    const deleted = await deleteOldAnalyticsEvents(db, { olderThanDays: 400, limit: 100 });
+    expect(deleted).toBeGreaterThanOrEqual(2);
+
+    const left = await db.execute<{ event_key: string }>(
+      sql`SELECT event_key FROM analytics_events WHERE event_key LIKE ${`${tag}%`}`,
+    );
+    expect(left.map((r) => r.event_key)).toEqual([`${tag}-new`]);
+  });
+
+  it('словарь синхронизируется идемпотентно и переписывает подписи', async () => {
+    const rows = analyticsDictionaryRows();
+    await syncAnalyticsDictionary(db, rows);
+    await syncAnalyticsDictionary(db, rows);
+
+    const stored = await db.execute<{ count: string }>(
+      sql`SELECT count(*)::text AS count FROM analytics_event_types`,
+    );
+    expect(Number(firstOf(stored, 'dict count').count)).toBe(rows.length);
+
+    // Правка подписи в коде доезжает до отчёта без миграции.
+    await syncAnalyticsDictionary(db, [
+      { ...firstOf(rows, 'first row'), title: 'Новая подпись' },
+    ]);
+    const title = await db.execute<{ title: string }>(
+      sql`SELECT title FROM analytics_event_types WHERE name = ${firstOf(rows, 'first row').name}`,
+    );
+    expect(firstOf(title, 'title').title).toBe('Новая подпись');
+  });
+});
+
+describe('analytics_timeline / analytics_user_path', () => {
+  it('анонимные события подписываются именем после привязки Telegram — без единого UPDATE', async () => {
+    const webSessionId = `sess-link-${++seq}`;
+    const telegramId = `tg-link-${seq}`;
+
+    // 1. Аноним ходит по сайту: user_id ещё не существует.
+    await insertAnalyticsEvents(db, [
+      {
+        eventKey: `${webSessionId}-1`,
+        name: 'page_view',
+        channel: 'web',
+        origin: 'client',
+        webSessionId,
+        occurredAt: new Date(Date.now() - 60_000),
+      },
+      {
+        eventKey: `${webSessionId}-2`,
+        name: 'catalog_open',
+        channel: 'web',
+        origin: 'client',
+        webSessionId,
+        occurredAt: new Date(Date.now() - 30_000),
+      },
+    ]);
+
+    const before = await db.execute<{ user_id: string | null }>(
+      sql`SELECT user_id FROM analytics_timeline WHERE web_session_id = ${webSessionId}`,
+    );
+    expect(before).toHaveLength(2);
+    expect(before.every((r) => r.user_id === null)).toBe(true);
+
+    // 2. Клиент привязывает Telegram — тот самый момент опознания.
+    const token = await createLinkToken(db, { webSessionId });
+    const consumed = await consumeLinkToken(db, {
+      token: token.token,
+      telegramId,
+      displayName: 'Тест',
+    });
+    expect(consumed.ok).toBe(true);
+
+    // 3. Прошлые события подписаны задним числом: это JOIN, а не backfill.
+    const after = await db.execute<{ user_id: string | null; telegram_id: string | null; name: string }>(
+      sql`SELECT user_id, telegram_id, name FROM analytics_timeline WHERE web_session_id = ${webSessionId}`,
+    );
+    // Два наших события + веха telegram_linked из link_tokens: сам факт
+    // привязки телеметрией не дублируется, он читается из БД.
+    expect(after).toHaveLength(3);
+    expect(after.map((r) => r.name)).toContain('telegram_linked');
+    expect(after.every((r) => r.user_id !== null)).toBe(true);
+    expect(after.every((r) => r.telegram_id === telegramId)).toBe(true);
+  });
+
+  it('merge пользователей не трогает аналитику и не теряет её', async () => {
+    // Клиент уже платил в боте (telegram-строка есть), потом пришёл на сайт
+    // анонимно — merge убивает ВЕБ-строку. Если бы user_id хранился в событии,
+    // здесь он повис бы на удалённой строке.
+    const telegramId = `tg-merge-${++seq}`;
+    const webSessionId = `sess-merge-${seq}`;
+    await makeUser({ telegramId });
+    const webUser = await makeUser({ telegramId: null, webSessionId });
+
+    await insertAnalyticsEvents(db, [
+      {
+        eventKey: `${webSessionId}-view`,
+        name: 'page_view',
+        channel: 'web',
+        origin: 'client',
+        webSessionId,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    const token = await createLinkToken(db, { webSessionId });
+    const consumed = await consumeLinkToken(db, { token: token.token, telegramId });
+    expect(consumed.ok && consumed.merged).toBe(true);
+
+    // Веб-строка удалена...
+    const gone = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, webUser.id));
+    expect(gone).toHaveLength(0);
+
+    // ...а событие резолвится на выжившую telegram-строку.
+    const resolved = await db.execute<{ user_id: string | null }>(
+      sql`SELECT user_id FROM analytics_timeline WHERE web_session_id = ${webSessionId} AND kind = 'event'`,
+    );
+    expect(resolved).toHaveLength(1);
+    expect(firstOf(resolved, 'resolved').user_id).toBe(consumed.ok ? consumed.userId : null);
+  });
+
+  it('денежные вехи попадают в ленту из order_events, а не из телеметрии', async () => {
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    const names = await db.execute<{ name: string; kind: string }>(sql`
+      SELECT name, kind FROM analytics_timeline
+      WHERE order_id = ${order.id} ORDER BY occurred_at
+    `);
+
+    // order_created пишет createDraftOrder — телеметрия его не дублирует.
+    expect(names.map((r) => r.name)).toContain('order_proposed');
+    expect(names.every((r) => r.kind === 'milestone')).toBe(true);
+
+    const dupes = await db.execute<{ count: string }>(sql`
+      SELECT count(*)::text AS count FROM analytics_events WHERE name = 'order_proposed'
+    `);
+    expect(Number(firstOf(dupes, 'dupes').count)).toBe(0);
+  });
+
+  it('путь считает паузы и режет сессии по разрыву 30 минут', async () => {
+    const webSessionId = `sess-path-${++seq}`;
+    const t0 = new Date('2026-07-20T10:00:00.000Z');
+    const mk = (n: number, offsetMs: number, name: string) => ({
+      eventKey: `${webSessionId}-${n}`,
+      name,
+      channel: 'web',
+      origin: 'client' as const,
+      webSessionId,
+      occurredAt: new Date(t0.getTime() + offsetMs),
+    });
+
+    await insertAnalyticsEvents(db, [
+      mk(1, 0, 'page_view'),
+      mk(2, 20_000, 'catalog_open'),
+      // Разрыв 45 минут — новый заход.
+      mk(3, 45 * 60_000, 'page_view'),
+    ]);
+    await syncAnalyticsDictionary(db, analyticsDictionaryRows());
+
+    const path = await db.execute<{
+      name: string;
+      title: string;
+      pause: unknown;
+      session_no: number;
+    }>(sql`
+      SELECT name, title, pause, session_no FROM analytics_user_path
+      WHERE web_session_id = ${webSessionId} ORDER BY occurred_at
+    `);
+
+    expect(path).toHaveLength(3);
+    // Человеческие подписи приезжают из словаря, а не хардкодятся в отчёте.
+    expect(firstOf(path, 'first').title).toBe('Зашёл на сайт');
+    expect(firstOf(path, 'first').pause).toBeNull();
+    expect(Number(path[2]?.session_no)).toBe(2);
+    expect(Number(path[1]?.session_no)).toBe(1);
+  });
+
+  it('воронка отдаёт семь шагов по порядку и не включает привязку Telegram', async () => {
+    await syncAnalyticsDictionary(db, analyticsDictionaryRows());
+    const funnel = await db.execute<{ step: number; name: string; subjects: string }>(
+      sql`SELECT step, name, subjects::text FROM analytics_funnel`,
+    );
+    expect(funnel.map((r) => Number(r.step))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(firstOf(funnel, 'step 1').name).toBe('page_view');
+    // Привязка обязательна только для веб-пути — как шаг она ломала монотонность.
+    expect(funnel.map((r) => r.name)).not.toContain('telegram_linked');
   });
 });

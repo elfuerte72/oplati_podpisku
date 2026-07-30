@@ -182,3 +182,13 @@ export {
   type VpnSubscription,
   type UpsertVpnSubscriptionInput,
 } from './vpn-subscriptions.ts';
+
+export {
+  insertAnalyticsEvents,
+  syncAnalyticsDictionary,
+  deleteOldAnalyticsEvents,
+  analyticsEventsStats,
+  countAnalyticsEventsByTelegramId,
+  type AnalyticsEventInsert,
+  type AnalyticsDictionaryRow,
+} from './analytics.ts';

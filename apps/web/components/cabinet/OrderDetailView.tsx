@@ -13,6 +13,7 @@ import {
   type PaymentIssueType,
 } from '@/lib/cabinet/payment-issues';
 import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
+import { track } from '@/lib/analytics/client';
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 import {
   PAYMENT_ISSUE_EVENT,
@@ -165,7 +166,14 @@ function HowPriceComputed({
       ? order.originalAmount
       : null;
   return (
-    <details className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+    <details
+      className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5"
+      onToggle={(e) => {
+        if ((e.currentTarget as HTMLDetailsElement).open) {
+          track('price_breakdown_open', { surface: 'cabinet' });
+        }
+      }}
+    >
       <summary className="cursor-pointer list-none font-display text-sm font-bold text-[var(--text)]">
         <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
         Как рассчитана сумма

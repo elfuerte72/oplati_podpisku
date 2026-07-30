@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { formatDeadlineWithYear, formatUsd } from '@/components/comic/format';
 import { IconCheck } from '@/components/comic/icons';
 import type { CardView } from './cabinet-api';
+import { track } from '@/lib/analytics/client';
 
 const STATUS_DOT: Record<string, string> = {
   active: 'var(--success)',
@@ -185,7 +186,12 @@ export function CardHero({
           {paymentUrl && onOpenExternalLink && (
             <button
               type="button"
-              onClick={() => onOpenExternalLink(paymentUrl)}
+              onClick={() => {
+                // Последнее наблюдаемое действие перед сайтом сервиса: дальше
+                // клиент вне периметра до отметки об успехе или жалобы.
+                track('service_site_click', { target: 'payment_url' }, { immediate: true });
+                onOpenExternalLink(paymentUrl);
+              }}
               className={`${actionBtn} bg-[var(--accent)] text-[var(--color-paper)]`}
             >
               Перейти на сайт сервиса

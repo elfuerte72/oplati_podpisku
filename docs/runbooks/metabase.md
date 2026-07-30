@@ -75,6 +75,105 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 - Компонент подключён к `dokploy-network` (она `attachable`) — иначе не виден ни
   боевой Postgres (`oplatishka-db-ry3smb:5432`), ни Traefik.
 
+## Поведенческая аналитика: доступ и готовые вопросы
+
+Таблицы `analytics_events` / `analytics_event_types` и вьюхи
+`analytics_timeline`, `analytics_user_path`, `analytics_funnel` появляются
+миграциями `0028`/`0029`. Словарь подписей наполняет cron `retention`
+(идемпотентный upsert из `packages/types/src/analytics.ts`) — отдельного шага
+после деплоя не требуется, но первый прогон случится в 04:15.
+
+**Гранты после применения миграций** (без них Metabase таблиц не увидит —
+`ALTER DEFAULT PRIVILEGES` у нас намеренно не стоит):
+
+```bash
+ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
+  psql -U oplatishka -d oplatishka -c "
+    GRANT SELECT ON analytics_events, analytics_event_types TO metabase_ro;
+    GRANT SELECT ON analytics_timeline, analytics_user_path, analytics_funnel TO metabase_ro;
+  "'
+```
+
+Затем в Metabase — «Admin → Databases → Sync database schema».
+
+⚠️ **Почему через вьюху, а не через гранты на `users`.** `metabase_ro` не имеет
+`SELECT` на `users.telegram_id` и `users.web_session_id` (см. список колонок
+выше), а резолв личности в аналитике — это JOIN именно по ним. Обычная вью в
+Postgres выполняется с правами СВОЕГО ВЛАДЕЛЬЦА, поэтому грант на вьюху даёт
+доступ к пути клиента, не расширяя доступ к таблице `users`. Наружу отдаётся
+ровно то, что перечислено во вьюхе: `user_id`, `telegram_id`, `web_session_id`,
+событие и props — но не `display_name`, не `phone`, не `email`.
+
+### Вопрос «Путь пользователя»
+
+Ищем по Telegram-ID (его же присылает клиент в жалобе):
+
+```sql
+SELECT to_char(occurred_at, 'DD.MM HH24:MI:SS')     AS "время",
+       coalesce(to_char(pause, 'MI:SS'), '—')       AS "пауза",
+       'заход ' || session_no                        AS "заход",
+       channel                                       AS "канал",
+       title                                         AS "что сделал",
+       description                                   AS "что это значит",
+       coalesce(order_ref, '')                       AS "заказ",
+       props
+FROM analytics_user_path
+WHERE telegram_id = {{telegram_id}}
+ORDER BY occurred_at DESC
+LIMIT 200;
+```
+
+Строки с `kind = 'milestone'` — денежные вехи из `order_events`, они были и до
+включения аналитики. Сессия («заход») считается по разрыву 30 минут прямо в
+запросе: чтобы изменить длину сессии, правится запрос, а не накопленные данные.
+
+### Вопрос «Воронка»
+
+```sql
+SELECT step AS "шаг", title AS "этап", subjects AS "человек"
+FROM analytics_funnel ORDER BY step;
+```
+
+⚠️ Шаги 1–3 (сайт) наполняются только с момента включения телеметрии, шаги 4–7
+— за всю историю проекта. Сравнивать проценты между этими группами до
+накопления данных нельзя.
+
+### Вопрос «Гейт привязки Telegram»
+
+Самостоятельный вопрос, а НЕ шаг воронки: привязка обязательна только для
+пришедших с сайта.
+
+```sql
+SELECT count(*) FILTER (WHERE name = 'telegram_link_click') AS "нажали кнопку",
+       count(*) FILTER (WHERE name = 'telegram_linked')     AS "привязались"
+FROM analytics_timeline
+WHERE occurred_at > now() - interval '30 days';
+```
+
+### Вопрос «Бот промолчал»
+
+Пока `BOT_AI_ENABLED` выключен, бот не отвечает на текст. Сколько людей в это
+упирается, не видно больше нигде:
+
+```sql
+SELECT date_trunc('day', occurred_at)::date AS "день",
+       count(*)                              AS "случаев",
+       count(DISTINCT telegram_id)           AS "человек"
+FROM analytics_events
+WHERE name = 'bot_text_ignored'
+GROUP BY 1 ORDER BY 1 DESC;
+```
+
+### Чего в аналитике нет
+
+- **Нажатий url-кнопок в боте** — Telegram о них не сообщает вообще: «Сайт»,
+  канал, кнопки сторов и ссылка оплаты. `pay_link_click` есть только для сайта
+  и Mini App.
+- **Событий на доменах платёжного провайдера и сервиса-подписки** — там мы вне
+  периметра.
+- **Переписки.** `messages` закрыт для `metabase_ro` намеренно, и события
+  текста клиента не содержат: у `bot_text_ignored` пишется только длина.
+
 ## Пароли
 
 В репозитории не хранятся. Пароль админ-аккаунта, роли `metabase_ro` и env

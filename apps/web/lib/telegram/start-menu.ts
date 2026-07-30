@@ -11,6 +11,7 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
 import { miniAppUrl, paymentInstructionUrl, siteUrl } from '@/lib/deployment-url';
 import { serverEnv } from '@/lib/env.server';
+import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
 
 import { handleLinkDeepLink } from './link-flow';
@@ -50,6 +51,16 @@ export async function handleStartCommand(
     chatId,
     telegramUserId: message.from?.id,
     languageCode: message.from?.language_code,
+  });
+
+  // С чем пришёл: привязка с сайта, реферальная ссылка, кабинет или просто так.
+  // Пишем ДО ветвлений — часть из них возвращается раньше.
+  const startPayloadRaw = text.startsWith('/start ') ? text.slice('/start '.length).trim() : '';
+  trackServer({
+    name: 'bot_start',
+    telegramId: message.from?.id ? String(message.from.id) : null,
+    props: { payload_kind: classifyStartPayload(startPayloadRaw) },
+    eventKey: `tg-${update.update_id}-start`,
   });
 
   // Deep-link привязки веб-сессии: /start link_<token> (кнопка «Связать
@@ -157,4 +168,17 @@ async function resolveReferrerFromStart(
     Sentry.captureException(err, { tags: { source: 'telegram.referral' } });
     return null;
   }
+}
+
+/**
+ * Во что превращается payload `/start <...>` в аналитике. Не сам payload:
+ * в нём едет одноразовый токен привязки, а секретам в телеметрии не место.
+ */
+function classifyStartPayload(payload: string): string {
+  if (!payload) return 'plain';
+  const lower = payload.toLowerCase();
+  if (lower.startsWith('link_')) return 'link';
+  if (lower.startsWith('ref_')) return 'ref';
+  if (lower.startsWith('cabinet')) return 'cabinet';
+  return 'other';
 }

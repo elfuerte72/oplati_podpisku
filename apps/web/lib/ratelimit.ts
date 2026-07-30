@@ -49,6 +49,7 @@ export type RateLimitName =
   | 'web-order'
   | 'web-order-status'
   | 'web-link'
+  | 'web-analytics'
   | 'alert-webhook-auth';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
@@ -77,6 +78,13 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   // <a>-ссылка вместо window.open, фикс мобильной привязки 2026-07-03), а не
   // по клику — базовый расход выше, лимит поднят 5 → 10.
   'web-link': { limit: 10, windowSeconds: 60 },
+  // Поведенческая аналитика: батч до 20 событий за запрос, отправка пачками с
+  // debounce. Отдельный бакет ОБЯЗАТЕЛЕН — телеметрия шумнее любого другого
+  // роута, и общий бакет с `web-order` она бы просто выедала, блокируя создание
+  // заказов (ровно та авария, что была у `web-order-status` до 2026-07-28).
+  // Потолок щедрый намеренно: потеря события дешевле потери заказа, но и
+  // бесконечно принимать записи в БД от анонима нельзя (инвариант 9).
+  'web-analytics': { limit: 30, windowSeconds: 60 },
   // Только НЕУДАЧНЫЕ попытки авторизации на `/api/alerts/sentry`. Секрет ездит
   // в query (экшен «webhook» в Sentry не умеет кастомные заголовки), а значит
   // виден в access-логах Traefik — подбор и переигрывание надо ограничивать.

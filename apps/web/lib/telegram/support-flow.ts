@@ -7,6 +7,7 @@ import { childLogger } from '@/lib/logger';
 import { persistInbound, readPendingMeta, resolveCallbackContext, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely } from './send';
 import { sendToSupportOperator } from './support';
+import { trackServer } from '@/lib/analytics/track';
 import {
   buildSupportOperatorMessage,
   SUPPORT_ASK_TEXT,
@@ -51,11 +52,22 @@ async function submitSupportRequest(
   from: TelegramUser | undefined,
   description: string,
   updateId: number,
+  surface: 'command' | 'pending' = 'pending',
 ): Promise<boolean> {
   if (!from?.id) {
     log.warn({ event: 'telegram.support.no_from', updateId });
     return false;
   }
+
+  // Единая точка на оба входа (`/support <текст>` и двухшаговый флоу): событие
+  // пишем в момент реальной отправки оператору, а не при нажатии кнопки —
+  // иначе «обратился» считалось бы и там, где человек передумал.
+  trackServer({
+    name: 'support_requested',
+    telegramId: String(from.id),
+    props: { surface, stage: 'submitted' },
+    eventKey: `tg-${updateId}-support`,
+  });
   const operatorMessage = buildSupportOperatorMessage({
     telegramId: from.id,
     firstName: from.first_name,
@@ -86,7 +98,7 @@ export async function handleSupportCommand(
 
   const inline = extractSupportInline(text);
   if (inline) {
-    const ok = await submitSupportRequest(message.from, inline, updateId);
+    const ok = await submitSupportRequest(message.from, inline, updateId, 'command');
     const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
     const ctx = await persistInbound(update, message);
     if (ctx) {
