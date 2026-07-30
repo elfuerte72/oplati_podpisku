@@ -139,6 +139,11 @@ export type LoveAndPayWebhookData = {
   status: LoveAndPayInvoiceStatus;
 };
 
+/** Копейки принимаются только как положительное целое; всё остальное — «нет данных». */
+function positiveKopecks(v: number | undefined): number | undefined {
+  return v !== undefined && Number.isInteger(v) && v > 0 ? v : undefined;
+}
+
 export const loveAndPayWebhookData = z
   .object({
     id: z.string().optional(),
@@ -147,8 +152,14 @@ export const loveAndPayWebhookData = z
     amount: z.number().optional(),
     // Однозначные поля новой платформы (2026-07-29). См. `amountKopecks` в transform:
     // сам `amount` провайдер объявил исторически неоднозначным.
-    amountKopecks: z.number().int().optional(),
-    amountRub: z.number().optional(),
+    //
+    // `.positive()` — чтобы мусор (0, отрицательное, дробные копейки) не выдавал себя
+    // за точную сумму: такие значения отбрасываются как отсутствующие, и потребитель
+    // падает на легаси-`amount`. Гейт недоплаты сверку нулевой суммы пропускает
+    // (осознанное fail-open, см. `handlers.ts`), поэтому фальшивая точность здесь
+    // опаснее её отсутствия.
+    amountKopecks: z.number().int().positive().optional().catch(undefined),
+    amountRub: z.number().positive().optional().catch(undefined),
     currency: z.string().optional(),
     status: loveAndPayInvoiceStatus,
     paidAt: z.string().optional(),
@@ -174,10 +185,14 @@ export const loveAndPayWebhookData = z
      *
      * `undefined` — когда однозначных полей в теле нет (легаси-вебхуки, тестовая
      * панель кабинета, а также polling-путь, который строит эти данные из ответа
-     * `getInvoice` вручную). Тогда потребитель падает обратно на `amount` в рублях.
+     * `getInvoice` вручную) ЛИБО когда они не дают положительной суммы в копейках
+     * (например `amountRub: 0.004` округлился бы в 0). Тогда потребитель падает
+     * обратно на `amount` в рублях — лучше честное отсутствие, чем фальшивый ноль,
+     * который гейт недоплаты пропускает как «нечего сравнивать».
      */
-    amountKopecks:
+    amountKopecks: positiveKopecks(
       d.amountKopecks ?? (d.amountRub !== undefined ? Math.round(d.amountRub * 100) : undefined),
+    ),
     currency: d.currency ?? 'RUB',
     status: d.status,
   }));

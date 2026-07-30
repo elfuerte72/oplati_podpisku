@@ -60,6 +60,21 @@ describe('loveAndPayWebhookEventSchema', () => {
     expect(parsed.data.amountKopecks).toBe(431819);
   });
 
+  it.each([
+    ['ноль копеек', { amountKopecks: 0 }],
+    ['отрицательные копейки', { amountKopecks: -100 }],
+    ['дробные копейки', { amountKopecks: 12.5 }],
+    ['рубли, округляющиеся в ноль', { amountRub: 0.004 }],
+    ['отрицательные рубли', { amountRub: -10 }],
+  ])('не выдаёт мусор за точную сумму: %s', (_name, patch) => {
+    const parsed = loveAndPayWebhookEventSchema.parse({
+      ...realPaidPayload,
+      data: { ...realPaidPayload.data, ...patch },
+    });
+    // Фальшивый ноль опаснее отсутствия: гейт недоплаты пропускает нулевую сверку.
+    expect(parsed.data.amountKopecks).toBeUndefined();
+  });
+
   it('оставляет amountKopecks пустым на легаси-теле — потребитель падает на amount', () => {
     const parsed = loveAndPayWebhookEventSchema.parse(realPaidPayload);
     expect(parsed.data.amountKopecks).toBeUndefined();

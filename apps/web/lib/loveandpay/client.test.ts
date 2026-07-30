@@ -280,13 +280,13 @@ describe('дефолтный base URL', () => {
   });
 
   it('подписывает и зовёт ПОЛНЫЙ путь /api/v2/invoices', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(makeResp(200, INVOICE_OK_BODY));
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(makeResp(200, INVOICE_OK_BODY));
     const c = new LoveAndPayClient({
       apiKey: 'pk',
       secretKey: 'sk',
       baseUrl: LOVEANDPAY_DEFAULT_BASE_URL,
       logger: silentLogger,
-      fetchImpl: fetchMock as unknown as typeof fetch,
+      fetchImpl: fetchMock,
     });
     await c.createInvoice({
       amount: 100,
