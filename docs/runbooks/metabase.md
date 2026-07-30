@@ -89,10 +89,18 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 ```bash
 ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
   psql -U oplatishka -d oplatishka -c "
-    GRANT SELECT ON analytics_events, analytics_event_types TO metabase_ro;
+    GRANT SELECT ON analytics_event_types TO metabase_ro;
     GRANT SELECT ON analytics_timeline, analytics_user_path, analytics_funnel TO metabase_ro;
   "'
 ```
+
+⚠️ **Грант на сырую `analytics_events` НЕ выдаётся** (ревью 2026-07-30). В ней
+лежит `web_session_id` — значение httpOnly-cookie без подписи, то есть
+фактически пароль веб-сессии: кто его знает, тот и есть тот пользователь (по
+нему резолвится клиент, его заказы и история). Вьюхи отдают вместо него
+`web_session_hash` — суррогат, по которому сессии различимы, но не
+подделываемы. Если понадобится смотреть сырую таблицу, выдавайте
+**колоночный** грант без `web_session_id`.
 
 Затем в Metabase — «Admin → Databases → Sync database schema».
 
@@ -101,8 +109,16 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 выше), а резолв личности в аналитике — это JOIN именно по ним. Обычная вью в
 Postgres выполняется с правами СВОЕГО ВЛАДЕЛЬЦА, поэтому грант на вьюху даёт
 доступ к пути клиента, не расширяя доступ к таблице `users`. Наружу отдаётся
-ровно то, что перечислено во вьюхе: `user_id`, `telegram_id`, `web_session_id`,
-событие и props — но не `display_name`, не `phone`, не `email`.
+ровно то, что перечислено во вьюхе: `user_id`, `telegram_id`,
+`web_session_hash`, событие и props — но не сырая cookie, не `display_name`, не
+`phone`, не `email`.
+
+⚠️ **Вьюхи жёстко зависят от колонок** `users`, `orders`, `link_tokens`,
+`vpn_subscriptions`, а drizzle-kit о вьюхах не знает и в сгенерированную
+миграцию эту зависимость не заложит. Меняете тип или имя такой колонки —
+сначала `DROP VIEW` (все три), затем `ALTER`, затем пересоздать из
+`0029_analytics_views.sql`. Иначе миграция упадёт при ручном применении
+(«cannot alter type of a column used by a view») — уже ПОСЛЕ выката кода.
 
 ### Вопрос «Путь пользователя»
 

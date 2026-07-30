@@ -105,6 +105,10 @@ export function ChatClient() {
     if (pageViewSentRef.current) return;
     pageViewSentRef.current = true;
     const params = new URLSearchParams(window.location.search);
+    const param = (key: string): Record<string, string> => {
+      const value = params.get(key);
+      return value ? { [key]: value } : {};
+    };
     // Только источник трафика, без пути с параметрами: в query могут оказаться
     // чужие идентификаторы, а в аналитике им не место.
     let referrerHost = '';
@@ -115,10 +119,10 @@ export function ChatClient() {
     }
     track('page_view', {
       path: window.location.pathname,
-      ...(params.get('src') ? { src: params.get('src') as string } : {}),
-      ...(params.get('utm_source') ? { utm_source: params.get('utm_source') as string } : {}),
-      ...(params.get('utm_medium') ? { utm_medium: params.get('utm_medium') as string } : {}),
-      ...(params.get('utm_campaign') ? { utm_campaign: params.get('utm_campaign') as string } : {}),
+      ...param('src'),
+      ...param('utm_source'),
+      ...param('utm_medium'),
+      ...param('utm_campaign'),
       ...(referrerHost ? { referrer_host: referrerHost } : {}),
     });
   }, []);

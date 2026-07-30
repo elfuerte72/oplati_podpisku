@@ -121,15 +121,17 @@ export async function deleteOldAnalyticsEvents(
 ): Promise<number> {
   const cutoff = new Date(Date.now() - params.olderThanDays * 24 * 60 * 60 * 1000);
 
+  // Идентификаторы через drizzle, а не литеральной строкой: переименование
+  // колонки в schema.ts иначе не поймал бы tsc, и крон упал бы уже в проде.
   const deleted = await db.execute<{ id: string }>(sql`
-    DELETE FROM analytics_events
-    WHERE id IN (
-      SELECT id FROM analytics_events
-      WHERE occurred_at < ${cutoff.toISOString()}
-      ORDER BY occurred_at
+    DELETE FROM ${analyticsEvents}
+    WHERE ${analyticsEvents.id} IN (
+      SELECT ${analyticsEvents.id} FROM ${analyticsEvents}
+      WHERE ${analyticsEvents.occurredAt} < ${cutoff.toISOString()}
+      ORDER BY ${analyticsEvents.occurredAt}
       LIMIT ${params.limit}
     )
-    RETURNING id
+    RETURNING ${analyticsEvents.id}
   `);
 
   const count = deleted.length;
@@ -144,7 +146,8 @@ export async function analyticsEventsStats(
   db: DB,
 ): Promise<{ total: number; lastAt: Date | null }> {
   const rows = await db.execute<{ total: string; last_at: Date | null }>(sql`
-    SELECT count(*)::text AS total, max(occurred_at) AS last_at FROM analytics_events
+    SELECT count(*)::text AS total, max(${analyticsEvents.occurredAt}) AS last_at
+    FROM ${analyticsEvents}
   `);
   const row = rows[0];
   return {
@@ -159,7 +162,8 @@ export async function countAnalyticsEventsByTelegramId(
   telegramId: string,
 ): Promise<number> {
   const rows = await db.execute<{ count: string }>(sql`
-    SELECT count(*)::text AS count FROM analytics_events WHERE telegram_id = ${telegramId}
+    SELECT count(*)::text AS count FROM ${analyticsEvents}
+    WHERE ${analyticsEvents.telegramId} = ${telegramId}
   `);
   return rows[0] ? Number(rows[0].count) : 0;
 }

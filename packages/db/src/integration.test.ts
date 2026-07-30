@@ -1357,7 +1357,7 @@ describe('analytics_timeline / analytics_user_path', () => {
     ]);
 
     const before = await db.execute<{ user_id: string | null }>(
-      sql`SELECT user_id FROM analytics_timeline WHERE web_session_id = ${webSessionId}`,
+      sql`SELECT user_id FROM analytics_timeline WHERE web_session_hash = left(md5(${webSessionId}), 12)`,
     );
     expect(before).toHaveLength(2);
     expect(before.every((r) => r.user_id === null)).toBe(true);
@@ -1373,7 +1373,7 @@ describe('analytics_timeline / analytics_user_path', () => {
 
     // 3. Прошлые события подписаны задним числом: это JOIN, а не backfill.
     const after = await db.execute<{ user_id: string | null; telegram_id: string | null; name: string }>(
-      sql`SELECT user_id, telegram_id, name FROM analytics_timeline WHERE web_session_id = ${webSessionId}`,
+      sql`SELECT user_id, telegram_id, name FROM analytics_timeline WHERE web_session_hash = left(md5(${webSessionId}), 12)`,
     );
     // Два наших события + веха telegram_linked из link_tokens: сам факт
     // привязки телеметрией не дублируется, он читается из БД.
@@ -1416,7 +1416,7 @@ describe('analytics_timeline / analytics_user_path', () => {
 
     // ...а событие резолвится на выжившую telegram-строку.
     const resolved = await db.execute<{ user_id: string | null }>(
-      sql`SELECT user_id FROM analytics_timeline WHERE web_session_id = ${webSessionId} AND kind = 'event'`,
+      sql`SELECT user_id FROM analytics_timeline WHERE web_session_hash = left(md5(${webSessionId}), 12) AND kind = 'event'`,
     );
     expect(resolved).toHaveLength(1);
     expect(firstOf(resolved, 'resolved').user_id).toBe(consumed.ok ? consumed.userId : null);
@@ -1439,6 +1439,64 @@ describe('analytics_timeline / analytics_user_path', () => {
       SELECT count(*)::text AS count FROM analytics_events WHERE name = 'order_proposed'
     `);
     expect(Number(firstOf(dupes, 'dupes').count)).toBe(0);
+  });
+
+
+  it('событие с обоими идентификаторами даёт РОВНО одну строку ленты', async () => {
+    // Mini App шлёт cookie И подписанную initData, а до привязки этим ключам
+    // соответствуют ДВЕ строки users. OR-джойн размножал одно событие на две
+    // строки с разными subject_key — один человек считался за двух, причём
+    // именно в непривязанном сегменте (находка ревью 2026-07-30).
+    const telegramId = `tg-both-${++seq}`;
+    const webSessionId = `sess-both-${seq}`;
+    const tgUser = await makeUser({ telegramId });
+    await makeUser({ telegramId: null, webSessionId });
+
+    await insertAnalyticsEvents(db, [
+      {
+        eventKey: `${webSessionId}-cabinet`,
+        name: 'cabinet_open',
+        channel: 'miniapp',
+        origin: 'client',
+        webSessionId,
+        telegramId,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    const rows = await db.execute<{ user_id: string | null }>(sql`
+      SELECT user_id FROM analytics_timeline
+      WHERE name = 'cabinet_open' AND telegram_id = ${telegramId}
+    `);
+
+    expect(rows).toHaveLength(1);
+    // Приоритет у telegram-строки: она переживает merge, веб-строка умирает.
+    expect(firstOf(rows, 'resolved').user_id).toBe(tgUser.id);
+  });
+
+  it('воронка не двоит человека, у которого есть и cookie, и telegram', async () => {
+    const telegramId = `tg-funnel-${++seq}`;
+    const webSessionId = `sess-funnel-${seq}`;
+    await makeUser({ telegramId });
+    await makeUser({ telegramId: null, webSessionId });
+
+    await insertAnalyticsEvents(db, [
+      {
+        eventKey: `${webSessionId}-pv`,
+        name: 'page_view',
+        channel: 'web',
+        origin: 'client',
+        webSessionId,
+        telegramId,
+        occurredAt: new Date(),
+      },
+    ]);
+
+    const subjects = await db.execute<{ subject_key: string }>(sql`
+      SELECT DISTINCT subject_key FROM analytics_timeline
+      WHERE name = 'page_view' AND telegram_id = ${telegramId}
+    `);
+    expect(subjects).toHaveLength(1);
   });
 
   it('путь считает паузы и режет сессии по разрыву 30 минут', async () => {
@@ -1468,7 +1526,7 @@ describe('analytics_timeline / analytics_user_path', () => {
       session_no: number;
     }>(sql`
       SELECT name, title, pause, session_no FROM analytics_user_path
-      WHERE web_session_id = ${webSessionId} ORDER BY occurred_at
+      WHERE web_session_hash = left(md5(${webSessionId}), 12) ORDER BY occurred_at
     `);
 
     expect(path).toHaveLength(3);

@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 
 import {
   ANALYTICS_EVENTS,
-  analyticsIngestBatchSchema,
+  ANALYTICS_MAX_BATCH,
+  analyticsIngestEventSchema,
   isClientTrackable,
   resolveOccurredAt,
 } from '@oplati/types';
@@ -53,8 +54,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
   }
 
-  const parsed = analyticsIngestBatchSchema.safeParse(body);
-  if (!parsed.success) {
+  // Батч разбирается ПОШТУЧНО, а не одной схемой на массив: закэшированный
+  // старый клиент с одним устаревшим событием иначе терял бы и все соседние,
+  // валидные. Отклоняем целиком только то, что не похоже на батч вообще.
+  const rawEvents =
+    typeof body === 'object' && body !== null && Array.isArray((body as { events?: unknown }).events)
+      ? ((body as { events: unknown[] }).events satisfies unknown[])
+      : null;
+  if (!rawEvents || rawEvents.length === 0 || rawEvents.length > ANALYTICS_MAX_BATCH) {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
@@ -70,10 +77,18 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const receivedAt = new Date();
   const rows: AnalyticsEventInsert[] = [];
+  let rejected = 0;
 
-  for (const event of parsed.data.events) {
+  for (const raw of rawEvents) {
+    const parsed = analyticsIngestEventSchema.safeParse(raw);
+    if (!parsed.success) {
+      rejected += 1;
+      continue;
+    }
+    const event = parsed.data;
     if (!isClientTrackable(event.name)) {
       log.warn({ event: 'analytics.server_only_rejected', name: event.name });
+      rejected += 1;
       continue;
     }
     // Канал берём из словаря, а не из тела: клиент не решает, чем он является.
@@ -91,6 +106,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
   }
 
+  if (rejected > 0) {
+    log.warn({ event: 'analytics.partial_batch', rejected, accepted: rows.length });
+  }
+
+  // Пустой батч после фильтрации — не ошибка запроса: клиент про неё ничего
+  // осмысленного сделать не может, а 4xx лишь спровоцировал бы ретраи.
   const accepted = await writeEvents(rows);
   return NextResponse.json({ ok: true, accepted }, { status: 200 });
 }

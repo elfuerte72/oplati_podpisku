@@ -162,7 +162,7 @@ describe("bot_text_ignored", () => {
       (c) => (c[0] as { eventKey?: string })?.eventKey,
     );
     expect(new Set(keys).size).toBe(1);
-    expect(keys[0]).toBe("tg-777-ignored");
+    expect(keys[0]).toBe('tg-777-379336096-ignored');
   });
 });
 

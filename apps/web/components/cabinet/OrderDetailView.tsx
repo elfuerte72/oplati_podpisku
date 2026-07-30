@@ -169,7 +169,7 @@ function HowPriceComputed({
     <details
       className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5"
       onToggle={(e) => {
-        if ((e.currentTarget as HTMLDetailsElement).open) {
+        if (e.currentTarget.open) {
           track('price_breakdown_open', { surface: 'cabinet' });
         }
       }}

@@ -73,7 +73,7 @@ export const ANALYTICS_EVENTS = {
       'Развернул объяснение из трёх шагов. По props видно, досмотрел до конца или бросил на первом.',
     channel: 'web',
     origin: 'client',
-    props: ['step', 'completed'],
+    props: ['step', 'count', 'completed'],
   },
   catalog_open: {
     title: 'Открыл список сервисов',
@@ -127,7 +127,10 @@ export const ANALYTICS_EVENTS = {
     description: 'Разовый показ реквизитов в кабинете (скрываются через минуту).',
     channel: 'miniapp',
     origin: 'client',
-    props: ['card_last4'],
+    // Ни одного поля про карту: даже `card_last4` не заводим — ключ с таким
+    // именем приглашает вписать туда PAN целиком, а пользы от него нет
+    // (карта у клиента одна, она видна в кабинете).
+    props: [],
   },
   service_site_click: {
     title: 'Ушёл оплачивать на сайт сервиса',
@@ -328,7 +331,6 @@ export const ANALYTICS_PROP_KEYS = [
   'provider',
   'entry',
   'target',
-  'card_last4',
   'action',
   'button',
   'payload_kind',
@@ -348,6 +350,14 @@ export const ANALYTICS_MAX_PROPS = 16;
 /** Потолок длины строкового значения. */
 export const ANALYTICS_MAX_PROP_LENGTH = 200;
 
+/**
+ * Последовательности из 12+ цифр (возможный PAN) вырезаются из строковых
+ * значений. Allowlist ограничивает КЛЮЧИ, но не содержимое: под разрешённым
+ * ключом можно прислать что угодно. Тот же приём уже применяется к комментарию
+ * клиента перед отправкой оператору (`buildPaymentIssueOperatorMessage`).
+ */
+const PAN_LIKE_RE = /\d[\d\s-]{10,}\d/g;
+
 export type AnalyticsProps = Partial<Record<AnalyticsPropKey, string | number | boolean>>;
 
 /**
@@ -365,7 +375,7 @@ export function sanitizeAnalyticsProps(raw: unknown): AnalyticsProps {
     if (!PROP_KEY_SET.has(key)) continue;
 
     if (typeof value === 'string') {
-      out[key] = value.slice(0, ANALYTICS_MAX_PROP_LENGTH);
+      out[key] = value.replace(PAN_LIKE_RE, '[REDACTED]').slice(0, ANALYTICS_MAX_PROP_LENGTH);
     } else if (typeof value === 'number') {
       if (!Number.isFinite(value)) continue;
       out[key] = value;
@@ -382,8 +392,15 @@ export function sanitizeAnalyticsProps(raw: unknown): AnalyticsProps {
 
 // ─── Контракт приёма ──────────────────────────────────────────────────────
 
-/** Максимум событий в одном батче с клиента. */
-export const ANALYTICS_MAX_BATCH = 20;
+/**
+ * Максимум событий в одном батче с клиента.
+ *
+ * Вместе с бакетом rate-limit это и есть потолок записи для анонима: 10 событий
+ * × 20 запросов/мин = 200 строк в минуту с одного IP. Живому клиенту столько не
+ * нужно (весь путь до оплаты — десяток событий), а раздувание общего с боевой
+ * БД тома перестаёт быть дешёвым.
+ */
+export const ANALYTICS_MAX_BATCH = 10;
 
 /**
  * Расхождение часов клиента, после которого `occurred_at` не заслуживает
@@ -400,8 +417,16 @@ export const analyticsIngestEventSchema = z.object({
   /** Время на источнике (ISO). Санитизируется на приёме. */
   occurredAt: z.string().datetime({ offset: true }),
   props: z.unknown().optional().transform(sanitizeAnalyticsProps),
-  /** Номер заказа (ORD-...), если событие про заказ. */
-  orderRef: z.string().max(32).optional(),
+  /**
+   * Номер заказа (`ORD-XXXXX`), если событие про заказ. Именно человеческий
+   * номер, а не UUID: он короткий, он же показан клиенту и он же лежит в
+   * `orders.short_id`. Формат проверяется явно — иначе UUID (36 символов)
+   * молча отбивал бы весь батч как invalid_body.
+   */
+  orderRef: z
+    .string()
+    .regex(/^ORD-[A-Z0-9]{1,24}$/, 'orderRef должен быть номером вида ORD-XXXXX')
+    .optional(),
 });
 export type AnalyticsIngestEvent = z.infer<typeof analyticsIngestEventSchema>;
 

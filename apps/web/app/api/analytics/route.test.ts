@@ -159,13 +159,37 @@ describe('POST /api/analytics', () => {
     expect(rows[0]?.props).toEqual({ slug: 'spotify' });
   });
 
-  it('битый JSON и битое тело — 400 без записи', async () => {
+  it('битый JSON и не-батч — 400 без записи', async () => {
     expect((await POST(makeRequest('не json'))).status).toBe(400);
     expect((await POST(makeRequest({ events: [] }))).status).toBe(400);
-    expect((await POST(makeRequest({ events: [event({ name: 'catalogOpened' })] }))).status).toBe(
-      400,
-    );
+    expect((await POST(makeRequest({ nope: 1 }))).status).toBe(400);
     expect(h.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('одно битое событие не роняет соседние в том же батче', async () => {
+    // Закэшированный старый клиент с устаревшим именем не должен уносить с
+    // собой валидные события (находка ревью 2026-07-30).
+    const res = await POST(
+      makeRequest({
+        events: [
+          event({ name: 'catalogOpened' }),
+          event({ occurredAt: 'не дата' }),
+          event({ orderRef: '11111111-1111-4111-8111-111111111111' }),
+          event(),
+        ],
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const rows = h.insertMock.mock.calls[0]?.[1] as { name: string }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.name).toBe('catalog_open');
+  });
+
+  it('номер заказа доезжает в props как order_ref', async () => {
+    await POST(makeRequest({ events: [event({ orderRef: 'ORD-K2M4A' })] }));
+    const rows = h.insertMock.mock.calls[0]?.[1] as { props: Record<string, unknown> }[];
+    expect(rows[0]?.props).toMatchObject({ order_ref: 'ORD-K2M4A' });
   });
 
   it('недоступная БД не роняет запрос', async () => {

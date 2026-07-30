@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
+import { track } from '@/lib/analytics/client';
 import { IconArrowLeft, IconArrowRight, IconCheck } from '@/components/comic/icons';
 import { Mascot, type MascotPose } from './Mascot';
 
@@ -48,6 +49,28 @@ const LAST = STEPS.length - 1;
 
 export function HowItWorksOverlay({ onClose }: { onClose: () => void }) {
   const [frame, setFrame] = useState(0);
+  // Досмотрел или бросил на первом шаге — ровно то, что обещает описание
+  // события. Пишем на ЗАКРЫТИИ и один раз: до этого нечего сообщать, а
+  // отдельное событие на каждый шаг раздувало бы ленту без пользы.
+  const frameRef = useRef(0);
+  // Обновляем ref в эффекте, а не во время рендера: прямая запись нарушает
+  // правила React (доступ к ref в фазе рендера) и падает на lint.
+  useEffect(() => {
+    frameRef.current = frame;
+  }, [frame]);
+  const reportedRef = useRef(false);
+  useEffect(
+    () => () => {
+      if (reportedRef.current) return;
+      reportedRef.current = true;
+      track('how_it_works_open', {
+        step: frameRef.current + 1,
+        count: STEPS.length,
+        completed: frameRef.current >= LAST,
+      });
+    },
+    [],
+  );
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Доступность: при открытии фокус уходит внутрь диалога (иначе клавиатурный

@@ -69,15 +69,22 @@ export async function runRetention(): Promise<{
     if (stripped < BATCH_SIZE) break;
   }
 
+  // Отдельный try: пока миграция 0028 не применена на боевой БД (а применяется
+  // она вручную ПОСЛЕ деплоя), таблицы ещё нет — и падение здесь унесло бы
+  // с собой весь джоб, включая уже выполненную чистку переписки и payload'ов.
   let analyticsDeleted = 0;
-  for (let i = 0; i < MAX_BATCHES_PER_RUN; i++) {
-    const deleted = await deleteOldAnalyticsEvents(
-      db,
-      { olderThanDays: ANALYTICS_RETENTION_DAYS, limit: BATCH_SIZE },
-      log,
-    );
-    analyticsDeleted += deleted;
-    if (deleted < BATCH_SIZE) break;
+  try {
+    for (let i = 0; i < MAX_BATCHES_PER_RUN; i++) {
+      const deleted = await deleteOldAnalyticsEvents(
+        db,
+        { olderThanDays: ANALYTICS_RETENTION_DAYS, limit: BATCH_SIZE },
+        log,
+      );
+      analyticsDeleted += deleted;
+      if (deleted < BATCH_SIZE) break;
+    }
+  } catch (err) {
+    log.error({ event: 'cron.retention.analytics_failed', err });
   }
 
   // Словарь синхронизируем последним и не роняем им весь джоб: чистка данных

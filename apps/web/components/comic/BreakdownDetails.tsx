@@ -35,7 +35,7 @@ export function BreakdownDetails({
       className={className}
       onToggle={(e) => {
         if (!analyticsSurface) return;
-        if ((e.currentTarget as HTMLDetailsElement).open) {
+        if (e.currentTarget.open) {
           track('price_breakdown_open', { surface: analyticsSurface });
         }
       }}

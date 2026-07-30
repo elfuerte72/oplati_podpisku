@@ -104,6 +104,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
       if (data.ok && data.services && data.services.length > 0) {
         setCatalog(data.services);
         setBuyerFeePercent(data.buyerFeePercent ?? 0);
+        track('catalog_open', { source: 'cta_hero', items: data.services.length });
       } else {
         setFailed(true);
       }
@@ -117,8 +118,14 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
   const openList = useCallback(() => {
     setListOpen(true);
     onListOpen?.();
-    track('catalog_open', { source: 'cta_hero', ...(catalog ? { items: catalog.length } : {}) });
-    if (!catalog) void loadCatalog();
+    // При ПЕРВОМ открытии (самый частый случай) каталог ещё не загружен, и
+    // `items` было бы пустым ровно там, где интересно. Поэтому событие пишется
+    // после загрузки — см. loadCatalog; здесь только для уже прогретого списка.
+    if (catalog) {
+      track('catalog_open', { source: 'cta_hero', items: catalog.length });
+      return;
+    }
+    void loadCatalog();
   }, [catalog, loadCatalog, onListOpen]);
 
   const propose = useCallback(
@@ -226,10 +233,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
             <ComicButton onClick={openList}>Выбрать сервис</ComicButton>
             <ComicButton
               variant="surface"
-              onClick={() => {
-                track('how_it_works_open', { step: 1, completed: false });
-                setHowOpen(true);
-              }}
+              onClick={() => setHowOpen(true)}
             >
               Как это работает
             </ComicButton>

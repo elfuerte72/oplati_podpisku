@@ -59,15 +59,7 @@ async function submitSupportRequest(
     return false;
   }
 
-  // Единая точка на оба входа (`/support <текст>` и двухшаговый флоу): событие
-  // пишем в момент реальной отправки оператору, а не при нажатии кнопки —
-  // иначе «обратился» считалось бы и там, где человек передумал.
-  trackServer({
-    name: 'support_requested',
-    telegramId: String(from.id),
-    props: { surface, stage: 'submitted' },
-    eventKey: `tg-${updateId}-support`,
-  });
+
   const operatorMessage = buildSupportOperatorMessage({
     telegramId: from.id,
     firstName: from.first_name,
@@ -75,7 +67,20 @@ async function submitSupportRequest(
     username: from.username,
     description,
   });
-  return notifyOperator(operatorMessage, updateId);
+  const delivered = await notifyOperator(operatorMessage, updateId);
+
+  // Пишем ПОСЛЕ доставки и с честным исходом. Раньше событие ставилось до
+  // вызова, и при незаданном SUPPORT_OPERATOR_CHAT_ID или 403 от Telegram
+  // отчёт утверждал бы «обращение ушло оператору», хотя оно не ушло — а это
+  // единственный канал связи с клиентом.
+  trackServer({
+    name: 'support_requested',
+    telegramId: String(from.id),
+    props: { surface, stage: delivered ? 'delivered' : 'failed' },
+    eventKey: `tg-${updateId}-${from.id}-support`,
+  });
+
+  return delivered;
 }
 
 /**

@@ -60,7 +60,7 @@ export async function handleStartCommand(
     name: 'bot_start',
     telegramId: message.from?.id ? String(message.from.id) : null,
     props: { payload_kind: classifyStartPayload(startPayloadRaw) },
-    eventKey: `tg-${update.update_id}-start`,
+    eventKey: `tg-${update.update_id}-${message.from?.id ?? 'anon'}-start`,
   });
 
   // Deep-link привязки веб-сессии: /start link_<token> (кнопка «Связать

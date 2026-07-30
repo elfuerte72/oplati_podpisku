@@ -53,7 +53,17 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
     if (event.request.headers) {
       const headers = event.request.headers as Record<string, string>;
       for (const key of Object.keys(headers)) {
-        if (/authorization|cookie|x-telegram-bot-api-secret-token|x-alert-token/i.test(key)) {
+        // `x-telegram-init-data` — подписанная initData Mini App: живёт 24 часа
+        // и её достаточно для `/api/cabinet` `card-details`, то есть для показа
+        // PAN+CVC чужой карты. `/api/cabinet` возит её в ТЕЛЕ (там ловит
+        // денилист `init_?data`), а `/api/analytics` — заголовком, поэтому без
+        // этого имени в списке она уезжала бы в Sentry целиком (найдено
+        // ревью 2026-07-30).
+        if (
+          /authorization|cookie|x-telegram-bot-api-secret-token|x-alert-token|x-telegram-init-data/i.test(
+            key,
+          )
+        ) {
           headers[key] = '[REDACTED]';
         }
       }

@@ -301,7 +301,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       track(
         'pay_link_click',
         { surface: 'cabinet' },
-        { orderRef: detail.orderId, immediate: true },
+        // shortId (ORD-...), а НЕ orderId: UUID длиннее лимита схемы приёма —
+        // событие вместе со всем батчем отбивалось бы как invalid_body.
+        { orderRef: detail.shortId, immediate: true },
       );
       const tg = tgRef.current;
       if (tg) tg.openLink(res.paymentUrl);

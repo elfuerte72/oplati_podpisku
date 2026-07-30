@@ -116,7 +116,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           name: 'bot_text_ignored',
           telegramId: telegramUserId ? String(telegramUserId) : null,
           props: { kind: 'media' },
-          eventKey: `tg-${update.update_id}-ignored`,
+          eventKey: `tg-${update.update_id}-${telegramUserId ?? 'anon'}-ignored`,
         });
       }
       return;
@@ -163,7 +163,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         name: 'bot_text_ignored',
         telegramId: telegramUserId ? String(telegramUserId) : null,
         props: { kind: 'menu' },
-        eventKey: `tg-${update.update_id}-ignored`,
+        eventKey: `tg-${update.update_id}-${telegramUserId ?? 'anon'}-ignored`,
       });
       return;
     }
@@ -255,7 +255,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       name: 'bot_text_ignored',
       telegramId: telegramUserId ? String(telegramUserId) : null,
       props: { kind: 'text', len: text.length },
-      eventKey: `tg-${update.update_id}-ignored`,
+      eventKey: `tg-${update.update_id}-${telegramUserId ?? 'anon'}-ignored`,
     });
     return;
   }
@@ -293,17 +293,6 @@ async function handleCallbackQuery(
 
   log.info({ event: 'telegram.callback.received', updateId, chatId, action });
 
-  // Одна точка на все inline-кнопки: какая именно — в props.button. Отдельными
-  // именами событий их делать нельзя — кнопки меняются, а имена событий вечны.
-  // ВНИМАНИЕ: сюда попадают только callback-кнопки. Нажатия url-кнопок («Сайт»,
-  // канал, сторы, ссылка оплаты) Telegram не сообщает вообще — их в аналитике
-  // нет и быть не может.
-  trackServer({
-    name: 'bot_menu_click',
-    telegramId: cb.from?.id ? String(cb.from.id) : null,
-    props: parts[1] ? { button: action, slug: parts[1] } : { button: action },
-    eventKey: `tg-${updateId}-cb`,
-  });
 
   // Сразу подтверждаем callback (Telegram перестанет крутить кнопку).
   try {
@@ -334,6 +323,23 @@ async function handleCallbackQuery(
     );
     return;
   }
+
+  // Одна точка на все inline-кнопки: какая именно — в props.button. Отдельными
+  // именами событий их делать нельзя — кнопки меняются, а имена событий вечны.
+  //
+  // ПОСЛЕ анти-абьюз-гейта, а не до (инвариант 9): иначе зажатая кнопка — тот
+  // самый кейс, ради которого лимит на callback'и и вводили — писала бы строку
+  // в БД на каждое нажатие, хотя пользователю уже отвечено «слишком много».
+  //
+  // ВНИМАНИЕ: сюда попадают только callback-кнопки. Нажатия url-кнопок («Сайт»,
+  // канал, сторы, ссылка оплаты) Telegram не сообщает вообще — их в аналитике
+  // нет и быть не может.
+  trackServer({
+    name: 'bot_menu_click',
+    telegramId: cb.from?.id ? String(cb.from.id) : null,
+    props: parts[1] ? { button: action, slug: parts[1] } : { button: action },
+    eventKey: `tg-${updateId}-${cb.from?.id ?? 'anon'}-cb`,
+  });
 
   // Кнопочный каталог в чате — за флагом BOT_AI_ENABLED. Выключен (по умолчанию,
   // 2026-07-03) → каталожные кнопки (в т.ч. старые в истории чата) не реагируют

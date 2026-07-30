@@ -112,6 +112,20 @@ describe('sanitizeAnalyticsProps', () => {
     expect(Object.keys(out).length).toBeLessThanOrEqual(ANALYTICS_MAX_PROPS);
   });
 
+  it('PAN-подобные последовательности вырезаются из значений', () => {
+    // Allowlist ограничивает ключи, но не содержимое — под разрешённым ключом
+    // можно прислать что угодно, включая номер карты (находка ревью).
+    expect(sanitizeAnalyticsProps({ plan: '4111111111111111' })).toEqual({ plan: '[REDACTED]' });
+    expect(sanitizeAnalyticsProps({ plan: '4111 1111 1111 1111' })).toEqual({ plan: '[REDACTED]' });
+    // Короткие числа остаются: год, сумма, позиция — обычные значения.
+    expect(sanitizeAnalyticsProps({ plan: 'Individual 2026' })).toEqual({ plan: 'Individual 2026' });
+  });
+
+  it('ключа про номер карты в allowlist нет вовсе', () => {
+    expect(ANALYTICS_PROP_KEYS as readonly string[]).not.toContain('card_last4');
+    expect(sanitizeAnalyticsProps({ card_last4: '4417' })).toEqual({});
+  });
+
   it('булев false сохраняется (а не теряется как falsy)', () => {
     expect(sanitizeAnalyticsProps({ completed: false })).toEqual({ completed: false });
   });
@@ -171,6 +185,18 @@ describe('схема приёма', () => {
     expect(analyticsIngestBatchSchema.safeParse({ events: [{ ...valid, eventKey: 'x' }] }).success).toBe(
       false,
     );
+  });
+
+  it('orderRef — номер ORD-..., а не UUID заказа', () => {
+    // UUID (36 символов) молча отбивал бы ВЕСЬ батч как invalid_body, и событие
+    // «нажал Оплатить» из кабинета не писалось бы никогда (находка ревью).
+    const uuid = '11111111-1111-4111-8111-111111111111';
+    expect(analyticsIngestBatchSchema.safeParse({ events: [{ ...valid, orderRef: uuid }] }).success).toBe(
+      false,
+    );
+    expect(
+      analyticsIngestBatchSchema.safeParse({ events: [{ ...valid, orderRef: 'ORD-K2M4A' }] }).success,
+    ).toBe(true);
   });
 
   it('событие без props валидно', () => {

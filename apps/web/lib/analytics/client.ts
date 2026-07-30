@@ -22,6 +22,8 @@ import {
 
 const ENDPOINT = '/api/analytics';
 const FLUSH_DELAY_MS = 1500;
+/** Конвенция проекта: `fetch` без таймаута запрещён. keepalive это не ломает. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 type QueuedEvent = {
   eventKey: string;
@@ -63,7 +65,8 @@ function send(events: QueuedEvent[]): void {
       keepalive: true,
       headers: { 'content-type': 'application/json', 'x-telegram-init-data': initData },
       body,
-    }).catch(() => undefined);
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }).catch(reportTransportFailure);
     return;
   }
 
@@ -77,7 +80,28 @@ function send(events: QueuedEvent[]): void {
     keepalive: true,
     headers: { 'content-type': 'application/json' },
     body,
-  }).catch(() => undefined);
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  }).catch(reportTransportFailure);
+}
+
+/**
+ * Отказ транспорта сообщаем РОВНО ОДИН раз за загрузку страницы.
+ *
+ * Молчаливый `catch` здесь был бы худшим вариантом из возможных: полностью
+ * сломанный приём (CSP, 4xx на весь батч, блокировщик) выглядел бы ровно как
+ * «никто ничего не нажимал», и заметили бы это только по пустой воронке.
+ * Но и слать по событию на каждый батч нельзя — отвалившаяся сеть устроила бы
+ * шторм в Sentry.
+ */
+let transportFailureReported = false;
+function reportTransportFailure(err: unknown): void {
+  if (transportFailureReported) return;
+  transportFailureReported = true;
+  void import('@sentry/nextjs')
+    .then((Sentry) => {
+      Sentry.captureException(err, { tags: { source: 'analytics.client_transport' } });
+    })
+    .catch(() => undefined);
 }
 
 export function flushAnalytics(): void {
