@@ -197,6 +197,20 @@
       "when": 1785339519426,
       "tag": "0027_motionless_wallflower",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785417632166,
+      "tag": "0028_charming_raider",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785417632167,
+      "tag": "0029_analytics_views",
+      "breakpoints": true
     }
   ]
 }

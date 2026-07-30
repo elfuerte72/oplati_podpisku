@@ -13,6 +13,7 @@ import { buyerFeeNote } from '@/lib/payments/buyer-fee';
 import { parseCustomAmountUsd } from '@/lib/telegram/amount';
 
 import { HowItWorksOverlay } from './HowItWorksOverlay';
+import { track } from '@/lib/analytics/client';
 import { ServiceLogo } from './ServiceLogos';
 import type { ChatCard } from './tool-cards';
 
@@ -103,6 +104,7 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
       if (data.ok && data.services && data.services.length > 0) {
         setCatalog(data.services);
         setBuyerFeePercent(data.buyerFeePercent ?? 0);
+        track('catalog_open', { source: 'cta_hero', items: data.services.length });
       } else {
         setFailed(true);
       }
@@ -116,7 +118,14 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
   const openList = useCallback(() => {
     setListOpen(true);
     onListOpen?.();
-    if (!catalog) void loadCatalog();
+    // При ПЕРВОМ открытии (самый частый случай) каталог ещё не загружен, и
+    // `items` было бы пустым ровно там, где интересно. Поэтому событие пишется
+    // после загрузки — см. loadCatalog; здесь только для уже прогретого списка.
+    if (catalog) {
+      track('catalog_open', { source: 'cta_hero', items: catalog.length });
+      return;
+    }
+    void loadCatalog();
   }, [catalog, loadCatalog, onListOpen]);
 
   const propose = useCallback(
@@ -222,7 +231,10 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
 
           <div className="flex flex-wrap items-center justify-center gap-3">
             <ComicButton onClick={openList}>Выбрать сервис</ComicButton>
-            <ComicButton variant="surface" onClick={() => setHowOpen(true)}>
+            <ComicButton
+              variant="surface"
+              onClick={() => setHowOpen(true)}
+            >
               Как это работает
             </ComicButton>
           </div>
@@ -264,6 +276,10 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
                     type="button"
                     disabled={proposing}
                     onClick={() => {
+                      track('service_click', {
+                        slug: svc.slug,
+                        ...(svc.instructions ? { requires_vpn: svc.instructions.requiresVpn } : {}),
+                      });
                       setSelected(svc);
                       setAmount('');
                       setAmountError(null);
@@ -362,7 +378,14 @@ export function StartScreen({ onOrderCreated, onOwnVariant, onError, onListOpen 
                   key={`${t.name}-${t.period}`}
                   type="button"
                   disabled={proposing}
-                  onClick={() => void propose(selected.slug, { tierName: t.name, tierPeriod: t.period })}
+                  onClick={() => {
+                    track('plan_select', {
+                      slug: selected.slug,
+                      plan: t.name,
+                      amount_usd_cents: t.usdCents,
+                    });
+                    void propose(selected.slug, { tierName: t.name, tierPeriod: t.period });
+                  }}
                   className="flex w-full items-center justify-between gap-3 rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-3 shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] hover:-translate-y-0.5 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span className="font-body text-sm font-semibold text-[var(--text)]">

@@ -9,12 +9,16 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
 const h = vi.hoisted(() => ({
   deleteMock: vi.fn(),
   stripMock: vi.fn(),
+  analyticsDeleteMock: vi.fn(),
+  dictionaryMock: vi.fn(),
 }));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   deleteOldMessages: h.deleteMock,
   stripOldPaymentPayloads: h.stripMock,
+  deleteOldAnalyticsEvents: h.analyticsDeleteMock,
+  syncAnalyticsDictionary: h.dictionaryMock,
 }));
 
 import { runRetention } from './retention.ts';
@@ -23,13 +27,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.deleteMock.mockResolvedValue(0);
   h.stripMock.mockResolvedValue(0);
+  h.analyticsDeleteMock.mockResolvedValue(0);
+  h.dictionaryMock.mockResolvedValue(25);
 });
 
 describe('runRetention (M-13: чистка messages и raw_payload)', () => {
   it('пустая база → по одному пробному батчу, суммы нулевые', async () => {
     const result = await runRetention();
 
-    expect(result).toEqual({ messagesDeleted: 0, payloadsStripped: 0 });
+    expect(result).toEqual({
+      messagesDeleted: 0,
+      payloadsStripped: 0,
+      analyticsDeleted: 0,
+      dictionarySynced: 25,
+    });
     expect(h.deleteMock).toHaveBeenCalledTimes(1);
     expect(h.stripMock).toHaveBeenCalledTimes(1);
     // Сроки — решение владельца 2026-07-19: 90 дней переписка, 180 — raw_payload.

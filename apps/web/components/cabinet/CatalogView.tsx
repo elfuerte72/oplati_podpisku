@@ -8,6 +8,7 @@ import { IconArrowLeft } from '@/components/comic/icons';
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ServicePricingButton } from '@/components/catalog/ServicePricingButton';
 import { fetchWithTimeout } from '@/lib/http';
+import { track } from '@/lib/analytics/client';
 import { groupCatalog, type CatalogService } from '@/lib/catalog/build';
 import { buyerFeeNote } from '@/lib/payments/buyer-fee';
 import { parseCustomAmountUsd } from '@/lib/telegram/amount';
@@ -202,6 +203,10 @@ export function CatalogView({
                     type="button"
                     disabled={proposing}
                     onClick={() => {
+                      track('service_click', {
+                        slug: svc.slug,
+                        ...(svc.instructions ? { requires_vpn: svc.instructions.requiresVpn } : {}),
+                      });
                       setSelected(svc);
                       setAmount('');
                       setNotice(null);
@@ -274,7 +279,14 @@ export function CatalogView({
                   key={`${t.name}-${t.period}`}
                   type="button"
                   disabled={proposing}
-                  onClick={() => void propose(selected.slug, { tierName: t.name, tierPeriod: t.period })}
+                  onClick={() => {
+                    track('plan_select', {
+                      slug: selected.slug,
+                      plan: t.name,
+                      amount_usd_cents: t.usdCents,
+                    });
+                    void propose(selected.slug, { tierName: t.name, tierPeriod: t.period });
+                  }}
                   className="flex w-full items-center justify-between gap-3 rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-4 py-3 shadow-[2px_2px_0_var(--shadow-ink)] transition-[transform,box-shadow] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <span className="font-body text-sm font-semibold text-[var(--text)]">

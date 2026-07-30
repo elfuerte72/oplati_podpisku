@@ -4,10 +4,12 @@ type PaymentBlockProps = {
   paymentUrl: string;
   qrPayload: string | null;
   expiresAt: string;
+  /** Клик по ссылке оплаты — последнее, что мы видим перед доменом провайдера. */
+  onPayClick?: () => void;
 };
 
 /** Блок оплаты (confirm_order) — кнопка-ссылка на счёт + QR-подсказка + срок. */
-export function PaymentBlock({ paymentUrl, qrPayload, expiresAt }: PaymentBlockProps) {
+export function PaymentBlock({ paymentUrl, qrPayload, expiresAt, onPayClick }: PaymentBlockProps) {
   return (
     <div className="w-[320px] max-w-full rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-5 shadow-[var(--shadow-comic-lg)]">
       <h3 className="font-display text-sm font-bold uppercase tracking-wider text-[var(--text-muted)]">
@@ -17,6 +19,7 @@ export function PaymentBlock({ paymentUrl, qrPayload, expiresAt }: PaymentBlockP
         href={paymentUrl}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={onPayClick}
         className={[
           'mt-3 inline-block text-center font-display font-bold text-[var(--color-paper)]',
           'rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)]',

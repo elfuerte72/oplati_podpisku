@@ -644,6 +644,84 @@ export const aiUsageDaily = pgTable('ai_usage_daily', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }).enableRLS();
 
+// ─── Поведенческая аналитика ──────────────────────────────────────────────
+//
+// Наблюдения за поведением: клики, открытия, отвалы. Денежные вехи здесь НЕ
+// дублируются — они уже в `order_events` в одной транзакции с деньгами
+// (инвариант 1); отчёт подмешивает их вьюхой. Словарь имён — единственный
+// источник правды в `@oplati/types/analytics`.
+//
+// Три решения, которые делают таблицу устойчивой к изменениям остальной БД:
+//
+// 1. `user_id` НЕ хранится. Держим identity канала как есть (`web_session_id`
+//    из cookie, `telegram_id`), а личность резолвится JOIN'ом на `users` при
+//    чтении. Иначе таблица попала бы в ручную цепочку `UPDATE ... SET user_id`
+//    внутри `consumeLinkToken` (merge пользователей) — а забытая строка в этой
+//    цепочке означает молча повисшие данные. Побочный выигрыш: анонимный
+//    хвост сессии подписывается именем ретроспективно, без backfill'а —
+//    то есть без UPDATE в append-only таблице.
+// 2. `name`/`channel` — `text`, а НЕ enum и БЕЗ FK на словарь. Миграции у нас
+//    применяются вручную ПОСЛЕ деплоя: FK или enum означали бы, что свежий код
+//    с новым событием пишет в БД, которая о нём ещё не знает → отказ вставки
+//    (ровно инцидент 2026-07-28 в новой обёртке). Allowlist имён — в коде
+//    (Zod), справочник подключается LEFT JOIN только ради подписей.
+// 3. `order_id` без FK. Аналитика — наблюдатель; FK дал бы ей право
+//    заблокировать операцию в денежном пути.
+
+export const analyticsEvents = pgTable(
+  'analytics_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    // Идемпотентность: ретрай sendBeacon и двойной клик не удваивают воронку.
+    eventKey: text('event_key').notNull(),
+    name: text('name').notNull(),
+    channel: text('channel').notNull(),
+    // 'client' (пришло по HTTP, доверия нет) | 'server' (записали мы сами).
+    origin: text('origin').notNull(),
+    webSessionId: text('web_session_id'),
+    telegramId: text('telegram_id'),
+    orderId: uuid('order_id'),
+    props: jsonb('props').$type<Record<string, string | number | boolean>>(),
+    // Время на источнике (санитизировано на приёме) и момент получения.
+    // Раздельно: часы клиента врут и подделываются, а сбитая дата ломает
+    // сортировку всего пути.
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    keyUnique: uniqueIndex('analytics_events_event_key_idx').on(t.eventKey),
+    timeIdx: index('analytics_events_occurred_at_idx').on(t.occurredAt),
+    nameTimeIdx: index('analytics_events_name_occurred_at_idx').on(t.name, t.occurredAt),
+    webSessionIdx: index('analytics_events_web_session_idx')
+      .on(t.webSessionId, t.occurredAt)
+      .where(sql`${t.webSessionId} IS NOT NULL`),
+    telegramIdx: index('analytics_events_telegram_idx')
+      .on(t.telegramId, t.occurredAt)
+      .where(sql`${t.telegramId} IS NOT NULL`),
+    orderIdx: index('analytics_events_order_idx')
+      .on(t.orderId)
+      .where(sql`${t.orderId} IS NOT NULL`),
+  }),
+).enableRLS();
+
+/**
+ * Справочник подписей: техническое имя → человеческое название и описание.
+ * Наполняется идемпотентным upsert'ом из `analyticsDictionaryRows()` (cron
+ * `retention` + `db:seed`), а НЕ миграцией — ручной шаг применения миграций
+ * не должен становиться условием работы отчётов.
+ */
+export const analyticsEventTypes = pgTable('analytics_event_types', {
+  name: text('name').primaryKey(),
+  title: text('title').notNull(),
+  description: text('description').notNull(),
+  channel: text('channel').notNull(),
+  origin: text('origin').notNull(),
+  funnelStep: integer('funnel_step'),
+  // 'event' — пишем сами; 'milestone' — выводится из существующих таблиц.
+  kind: text('kind').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}).enableRLS();
+
 // ─── Attachments (Supabase Storage refs) ──────────────────────────────────
 
 export const attachments = pgTable(

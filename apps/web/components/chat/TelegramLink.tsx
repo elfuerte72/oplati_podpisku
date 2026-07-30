@@ -6,6 +6,7 @@ import { siTelegram } from 'simple-icons';
 
 import { ComicButton, comicButtonClassName } from '@/components/comic';
 import { fetchWithTimeout } from '@/lib/http';
+import { track } from '@/lib/analytics/client';
 
 /**
  * Привязка Telegram к веб-сессии (deep-link flow).
@@ -230,6 +231,10 @@ export function useTelegramLink(opts?: {
   /** Вызывается в onClick якоря: сам переход делает браузер по href. */
   const opened = useCallback(() => {
     if (linkedRef.current) return;
+    // Наш самый крупный гейт: без Telegram оплата недоступна. Кто нажал, но не
+    // дошёл до бота, виден как telegram_link_click без вехи telegram_linked.
+    // immediate — универсальная ссылка уводит из браузера сразу.
+    track('telegram_link_click', { gate: 'telegram_link_required' }, { immediate: true });
     setPhase('waiting');
     stopPoll();
     let attempts = 0;

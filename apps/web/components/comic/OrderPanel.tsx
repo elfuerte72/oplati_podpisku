@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { buyerFeeAmountNote } from '@/lib/payments/buyer-fee';
 import { formatRub, formatUsd } from './format';
+import { BreakdownDetails } from './BreakdownDetails';
 
 type OrderRow = { label: string; value: string };
 
@@ -20,6 +21,12 @@ type OrderPanelProps = {
   confirm?: ReactNode;
   secondary?: ReactNode;
   stamp?: ReactNode;
+  /**
+   * Где показана панель («web_chat»). Задан — раскрытие «Как рассчитана сумма»
+   * попадает в аналитику. Строка, а не колбэк: функция-проп не переживает
+   * границу серверного и клиентского компонента.
+   */
+  analyticsSurface?: string;
 };
 
 /** Панель заказа (propose_order) — комикс-панель с суммой и подтверждением. */
@@ -33,6 +40,7 @@ export function OrderPanel({
   confirm,
   secondary,
   stamp,
+  analyticsSurface,
 }: OrderPanelProps) {
   return (
     <div
@@ -90,11 +98,17 @@ export function OrderPanel({
       )}
 
       {/* «Как рассчитана сумма» (ТЗ §3) — раскрывающийся блок без сюрпризов. */}
-      <details className="group mt-2 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2">
-        <summary className="cursor-pointer list-none font-display text-xs font-bold text-[var(--text)]">
-          <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
-          Как рассчитана сумма
-        </summary>
+      <BreakdownDetails
+        className="group mt-2 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2"
+        summaryClassName="cursor-pointer list-none font-display text-xs font-bold text-[var(--text)]"
+        analyticsSurface={analyticsSurface}
+        summary={
+          <>
+            <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
+            Как рассчитана сумма
+          </>
+        }
+      >
         <p className="mt-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
           Итог = цена подписки в долларах × курс на момент заказа + комиссия сервиса
           (рассчитывается системой). Если это твой первый заказ и виртуальной карты ещё
@@ -104,7 +118,7 @@ export function OrderPanel({
             ? 'Наша сумма после создания заказа не меняется, комиссия платёжной системы добавляется при оплате — она указана выше.'
             : 'После создания заказа сумма не меняется: платишь ровно столько, сколько на кнопке.'}
         </p>
-      </details>
+      </BreakdownDetails>
 
       {(confirm || secondary) && (
         <div className="mt-4 flex items-center gap-3">

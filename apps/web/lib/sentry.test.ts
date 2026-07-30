@@ -92,4 +92,33 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(crumb.pan).toBe('[REDACTED]');
     expect(crumb.step).toBe('issue');
   });
+
+  it('редактирует заголовки с секретами, включая initData Mini App', () => {
+    // `x-telegram-init-data` живёт 24 часа и её достаточно для card-details,
+    // то есть для показа PAN+CVC чужой карты. `/api/analytics` возит её
+    // заголовком (в отличие от `/api/cabinet`, где она в теле), поэтому без
+    // этого имени в денилисте она уезжала бы в Sentry целиком.
+    const event = makeEvent({
+      request: {
+        headers: {
+          'x-telegram-init-data': 'query_id=AAA&user=%7B%22id%22%3A1%7D&hash=deadbeef',
+          authorization: 'Bearer secret',
+          cookie: 'session=uuid',
+          'x-alert-token': 'token',
+          'content-type': 'application/json',
+          'user-agent': 'Mozilla/5.0',
+        },
+      },
+    });
+
+    const out = beforeSend(event);
+    const headers = out?.request?.headers as Record<string, string>;
+    expect(headers['x-telegram-init-data']).toBe('[REDACTED]');
+    expect(headers.authorization).toBe('[REDACTED]');
+    expect(headers.cookie).toBe('[REDACTED]');
+    expect(headers['x-alert-token']).toBe('[REDACTED]');
+    // Безобидные заголовки остаются: скраббер не должен слепить диагностику.
+    expect(headers['content-type']).toBe('application/json');
+    expect(headers['user-agent']).toBe('Mozilla/5.0');
+  });
 });

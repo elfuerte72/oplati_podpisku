@@ -19,6 +19,7 @@ import { telegramShareLink } from '@/lib/telegram/links';
 import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
+import { track } from '@/lib/analytics/client';
 import {
   doMarkSubscriptionPaid,
   doPay,
@@ -192,6 +193,15 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     };
   }, [previewSnapshot]);
 
+  // Открытие кабинета. Ref-гейт: StrictMode монтирует эффекты дважды, а два
+  // «открыл кабинет» на один вход исказили бы всю статистику Mini App.
+  const cabinetOpenSentRef = useRef(false);
+  useEffect(() => {
+    if (cabinetOpenSentRef.current || !snapshot) return;
+    cabinetOpenSentRef.current = true;
+    track('cabinet_open', { entry: previewSnapshot ? 'preview' : 'telegram' });
+  }, [snapshot, previewSnapshot]);
+
   const reloadSnapshot = useCallback(async () => {
     const res = await fetchSnapshot(initDataRef.current);
     if (res.ok) setSnapshot(res.data);
@@ -208,6 +218,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     const res = await fetchCardDetails(initDataRef.current, cardId);
     setRevealingCard(false);
     if (res.ok) {
+      // Только факт показа. Ни PAN, ни CVC в телеметрию не попадают никогда —
+      // маска номера тоже не нужна, `card_last4` берём из снапшота выше по UI.
+      track('card_details_view');
       setCardDetails({ number: res.number, exp: res.exp, cvc: res.cvc });
     } else {
       setNotice('Не удалось показать реквизиты. Попробуй ещё раз.');
@@ -285,6 +298,13 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     setBusy(null);
     if (res.ok) {
       setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
+      track(
+        'pay_link_click',
+        { surface: 'cabinet' },
+        // shortId (ORD-...), а НЕ orderId: UUID длиннее лимита схемы приёма —
+        // событие вместе со всем батчем отбивалось бы как invalid_body.
+        { orderRef: detail.shortId, immediate: true },
+      );
       const tg = tgRef.current;
       if (tg) tg.openLink(res.paymentUrl);
       else window.open(res.paymentUrl, '_blank');
@@ -524,6 +544,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
+                track('referral_link_share', { action: 'copy', surface: 'cabinet_home' });
                 void copyToClipboard(link).then((ok) => {
                   if (ok) {
                     setRefCopied(true);
@@ -543,6 +564,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
+                track('referral_link_share', { action: 'share', surface: 'cabinet_home' });
                 const shareUrl = telegramShareLink(
                   link,
                   'Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!',

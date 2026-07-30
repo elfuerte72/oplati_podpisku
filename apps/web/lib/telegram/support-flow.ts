@@ -7,6 +7,7 @@ import { childLogger } from '@/lib/logger';
 import { persistInbound, readPendingMeta, resolveCallbackContext, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely } from './send';
 import { sendToSupportOperator } from './support';
+import { trackServer } from '@/lib/analytics/track';
 import {
   buildSupportOperatorMessage,
   SUPPORT_ASK_TEXT,
@@ -51,11 +52,14 @@ async function submitSupportRequest(
   from: TelegramUser | undefined,
   description: string,
   updateId: number,
+  surface: 'command' | 'pending' = 'pending',
 ): Promise<boolean> {
   if (!from?.id) {
     log.warn({ event: 'telegram.support.no_from', updateId });
     return false;
   }
+
+
   const operatorMessage = buildSupportOperatorMessage({
     telegramId: from.id,
     firstName: from.first_name,
@@ -63,7 +67,20 @@ async function submitSupportRequest(
     username: from.username,
     description,
   });
-  return notifyOperator(operatorMessage, updateId);
+  const delivered = await notifyOperator(operatorMessage, updateId);
+
+  // Пишем ПОСЛЕ доставки и с честным исходом. Раньше событие ставилось до
+  // вызова, и при незаданном SUPPORT_OPERATOR_CHAT_ID или 403 от Telegram
+  // отчёт утверждал бы «обращение ушло оператору», хотя оно не ушло — а это
+  // единственный канал связи с клиентом.
+  trackServer({
+    name: 'support_requested',
+    telegramId: String(from.id),
+    props: { surface, stage: delivered ? 'delivered' : 'failed' },
+    eventKey: `tg-${updateId}-${from.id}-support`,
+  });
+
+  return delivered;
 }
 
 /**
@@ -86,7 +103,7 @@ export async function handleSupportCommand(
 
   const inline = extractSupportInline(text);
   if (inline) {
-    const ok = await submitSupportRequest(message.from, inline, updateId);
+    const ok = await submitSupportRequest(message.from, inline, updateId, 'command');
     const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
     const ctx = await persistInbound(update, message);
     if (ctx) {

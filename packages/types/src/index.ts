@@ -190,6 +190,40 @@ export {
   type PayoutStatus,
 } from './referral-payout.ts';
 
+// ─── Поведенческая аналитика ──────────────────────────────────────────────
+
+export {
+  ANALYTICS_CHANNELS,
+  analyticsChannel,
+  ANALYTICS_ORIGINS,
+  analyticsOrigin,
+  ANALYTICS_EVENTS,
+  ANALYTICS_EVENT_NAMES,
+  analyticsEventName,
+  CLIENT_EVENT_NAMES,
+  isClientTrackable,
+  ANALYTICS_MILESTONES,
+  ANALYTICS_FUNNEL,
+  ANALYTICS_PROP_KEYS,
+  ANALYTICS_MAX_PROPS,
+  ANALYTICS_MAX_PROP_LENGTH,
+  ANALYTICS_MAX_BATCH,
+  ANALYTICS_MAX_CLOCK_SKEW_MS,
+  sanitizeAnalyticsProps,
+  analyticsIngestEventSchema,
+  analyticsIngestBatchSchema,
+  resolveOccurredAt,
+  analyticsDictionaryRows,
+  type AnalyticsChannel,
+  type AnalyticsOrigin,
+  type AnalyticsEventName,
+  type AnalyticsMilestoneName,
+  type AnalyticsPropKey,
+  type AnalyticsProps,
+  type AnalyticsIngestEvent,
+  type AnalyticsIngestBatch,
+} from './analytics.ts';
+
 // ─── Order parameters (гибкая структура) ──────────────────────────────────
 
 export const orderParameters = z.object({
