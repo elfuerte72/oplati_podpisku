@@ -368,7 +368,15 @@ jobs:
           MAIN_SHA: ${{ github.sha }}
         run: |
           set -uo pipefail
-          diff_files=$(gh api "repos/$REPO/compare/dev...main" --jq '.files | length' 2>/dev/null || echo 'error')
+          # ⚠️ Направление именно main...dev, не наоборот. `.files` в ответе
+          # compare — это то, что HEAD добавляет поверх BASE, а не полный diff в
+          # обе стороны. При `dev...main` там оказывались изменения, которые
+          # принёс сам релиз, поэтому проверка срабатывала ровно тогда, когда
+          # выравнивание и требовалось (первый прогон 2026-07-30 так и завершился
+          # предупреждением). При `main...dev` пустой список означает ровно то,
+          # что нам нужно: в dev нет ни одного изменения, которого нет в main —
+          # хоть она просто отстала, хоть разошлась историей после squash.
+          diff_files=$(gh api "repos/$REPO/compare/main...dev" --jq '.files | length' 2>/dev/null || echo 'error')
           if [ "$diff_files" = "error" ]; then
             echo "::warning::Не удалось сравнить dev и main — ветки не выровнены, сделать вручную."
             exit 0
