@@ -105,7 +105,10 @@ export type TopupCardResult = {
   requestId: string;
   status: PaySpaceAsyncOpStatus;
   /**
-   * Поле `total_amt` из `/vcc/card/topup/check/`; `null`, пока операция pending.
+   * Поле `total_amt` из `/vcc/card/topup/check/`. `null` — не только когда
+   * операция pending: `tryReadTopupTotal` отдаёт `null` и когда ответ прочитать
+   * не удалось, так что отсутствие значения НЕ означает незавершённый топап
+   * (статус смотреть по `status`).
    *
    * ⚠️ Это НЕ баланс карты, хотя раньше поле так и называлось. Наблюдение
    * 2026-07-30 (заказ ORD-9NAGJ): `total_amt` вернул 17310 при фактическом
@@ -376,11 +379,13 @@ export class PaySpaceClient {
 
   // ─── низкоуровневое ─────────────────────────────────────────────────────
 
-  /** topup/check: вернуть баланс карты (центы), либо null если ещё не зачислено. */
   /**
    * Читает `total_amt` из `/vcc/card/topup/check/`. Успешный ответ = операция
    * завершена; само значение — см. предупреждение у `TopupCardResult`, это НЕ
    * баланс карты.
+   *
+   * `null` — операция ещё не подтверждена ИЛИ ответ прочитать не удалось
+   * (404/ошибка сети). Дрейф контракта пробрасывается исключением, а не глушится.
    */
   private async tryReadTopupTotal(cardId: string, requestId: string): Promise<number | null> {
     try {
