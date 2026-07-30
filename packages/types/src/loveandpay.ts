@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { paymentStatus, type PaymentStatus } from './index.ts';
 
 /**
- * Zod-схемы интеграции Love & Pay (https://loveandpay.io/api/v2).
+ * Zod-схемы интеграции Love & Pay (https://api.prod.loveandpay.io/api/v2).
  *
  * Источник правды — план `.ai-factory/plans/mvp.md` (раздел 6.5 ТЗ).
  * Точные имена полей в ответах подтверждаются при первом успешном вызове sandbox'а;
@@ -122,12 +122,44 @@ export type LoveAndPayInvoiceResponse = z.infer<typeof loveAndPayInvoiceResponse
  * Хендлеры и cron `poll-payment` работают с единым типом `LoveAndPayWebhookData`
  * ({ id, invoiceNumber, amount, currency, status }).
  */
+/**
+ * Единый вид данных счёта для хендлеров — общий для webhook-пути и polling-пути
+ * (`poll-payment` строит его из ответа `getInvoice`). Тип объявлен явно, а не через
+ * `z.infer`, ради опционального `amountKopecks`: у polling-пути и легаси-вебхуков
+ * этого поля нет, и требовать его от каждого конструктора было бы шумом.
+ */
+export type LoveAndPayWebhookData = {
+  id: string;
+  invoiceNumber: string;
+  /** Сумма как её прислал провайдер. В `invoice.paid` — рубли. */
+  amount: number;
+  /** Однозначные копейки, если провайдер их прислал. См. transform ниже. */
+  amountKopecks?: number;
+  currency: string;
+  status: LoveAndPayInvoiceStatus;
+};
+
+/** Копейки принимаются только как положительное целое; всё остальное — «нет данных». */
+function positiveKopecks(v: number | undefined): number | undefined {
+  return v !== undefined && Number.isInteger(v) && v > 0 ? v : undefined;
+}
+
 export const loveAndPayWebhookData = z
   .object({
     id: z.string().optional(),
     invoiceId: z.string().optional(),
     invoiceNumber: z.string(),
     amount: z.number().optional(),
+    // Однозначные поля новой платформы (2026-07-29). См. `amountKopecks` в transform:
+    // сам `amount` провайдер объявил исторически неоднозначным.
+    //
+    // `.positive()` — чтобы мусор (0, отрицательное, дробные копейки) не выдавал себя
+    // за точную сумму: такие значения отбрасываются как отсутствующие, и потребитель
+    // падает на легаси-`amount`. Гейт недоплаты сверку нулевой суммы пропускает
+    // (осознанное fail-open, см. `handlers.ts`), поэтому фальшивая точность здесь
+    // опаснее её отсутствия.
+    amountKopecks: z.number().int().positive().optional().catch(undefined),
+    amountRub: z.number().positive().optional().catch(undefined),
     currency: z.string().optional(),
     status: loveAndPayInvoiceStatus,
     paidAt: z.string().optional(),
@@ -137,14 +169,33 @@ export const loveAndPayWebhookData = z
   .refine((d) => Boolean(d.id ?? d.invoiceId), {
     message: 'either id or invoiceId must be provided',
   })
-  .transform((d) => ({
+  .transform((d): LoveAndPayWebhookData => ({
     id: d.id ?? d.invoiceId ?? '',
     invoiceNumber: d.invoiceNumber,
     amount: d.amount ?? 0,
+    /**
+     * Сумма в копейках, если провайдер прислал её ОДНОЗНАЧНО.
+     *
+     * Документация новой платформы (кабинет → Вебхуки, 2026-07-29) прямо
+     * предупреждает: `amount` в `invoice.created` приходит в копейках, а в
+     * остальных событиях — в рублях («так сложилось исторически»), и опираться
+     * следует на `amountKopecks`/`amountRub`. Для нас цена ошибки максимальная:
+     * недоплата ТЕРМИНАЛЬНА (заказ → failed + DM владельцу), поэтому смена
+     * семантики `amount` уронила бы каждый платёж.
+     *
+     * `undefined` — когда однозначных полей в теле нет (легаси-вебхуки, тестовая
+     * панель кабинета, а также polling-путь, который строит эти данные из ответа
+     * `getInvoice` вручную) ЛИБО когда они не дают положительной суммы в копейках
+     * (например `amountRub: 0.004` округлился бы в 0). Тогда потребитель падает
+     * обратно на `amount` в рублях — лучше честное отсутствие, чем фальшивый ноль,
+     * который гейт недоплаты пропускает как «нечего сравнивать».
+     */
+    amountKopecks: positiveKopecks(
+      d.amountKopecks ?? (d.amountRub !== undefined ? Math.round(d.amountRub * 100) : undefined),
+    ),
     currency: d.currency ?? 'RUB',
     status: d.status,
   }));
-export type LoveAndPayWebhookData = z.infer<typeof loveAndPayWebhookData>;
 
 /** Канонические имена событий (прод). Тестовая панель шлёт UPPER_SNAKE — алиасим. */
 const loveAndPayEventAliases: Record<string, string> = {

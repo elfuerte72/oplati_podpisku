@@ -19,6 +19,8 @@ import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import {
   confirmOrder,
+  aboveMaxAmountText,
+  OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
   TelegramLinkRequiredError,
@@ -138,6 +140,12 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
         error: 'not_payable',
         message: 'Срок фиксации цены истёк — оформи заказ заново.',
       };
+    }
+    // Лимит операции шлюза: «попробуй ещё раз через минуту» здесь враньё —
+    // столько провайдер не примет никогда.
+    if (err instanceof OrderAboveMaxAmountError) {
+      log.info({ event: 'cabinet.pay.above_max_amount', orderId });
+      return { ok: false, error: 'not_payable', message: aboveMaxAmountText(err.maxAmountRub) };
     }
     log.error({ event: 'cabinet.pay.failed', orderId, err });
     Sentry.captureException(err, { tags: { source: 'cabinet.pay' }, extra: { orderId } });

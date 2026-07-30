@@ -1,9 +1,10 @@
 import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
-import { InlineKeyboard } from 'grammy';
+import { GrammyError, InlineKeyboard } from 'grammy';
 
 import {
+  appendOrderEvent,
   createCard,
   findActiveByUserId,
   getDb,
@@ -141,6 +142,26 @@ export async function issueCard(orderId: string): Promise<void> {
     }
   }
 
+  // Реквизиты новой карты копим здесь, а отправляем клиенту ПОСЛЕ перехода
+  // заказа в completed (L5). null — если был топ-ап активной карты.
+  //
+  // Объявлено ВНЕ try намеренно: сбой БД случается уже после того, как карта
+  // выпущена и профинансирована у провайдера, и catch обязан видеть реквизиты —
+  // иначе клиент, с которого списаны деньги, не получает ничего, а PAN мы нигде
+  // не храним и восстановить его неоткуда.
+  let pendingCredentials: {
+    fullPan: string;
+    panMasked: string;
+    expMonth: number;
+    expYear: number;
+    cvc: string;
+    cardType: string | null;
+    billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
+  } | null = null;
+  /** Идентификатор карты у провайдера — для ops-алёрта, если наша строка не записалась. */
+  let issuedProviderCardId: string | null = null;
+  let credentialsDelivered = false;
+
   try {
     const paypace = getPaySpaceClient();
 
@@ -160,7 +181,7 @@ export async function issueCard(orderId: string): Promise<void> {
           // сохраняет идемпотентность повтора того же fulfillment.
           requestId: paySpaceRequestId('t', orderId, card.id),
         });
-        ensureTopupCompleted(topup, orderId);
+        ensureTopupCompleted(topup, orderId, card.id);
         await updateBalance(db, card.id, amountUsdCents, log);
         log.info({
           event: 'job.issue_card.topup_ok',
@@ -182,6 +203,9 @@ export async function issueCard(orderId: string): Promise<void> {
         // плоский Error из ensureTopupCompleted (возможна неопределённость по
         // списанию), контракт-дрифт → PaySpaceContractError — пробрасываем (заказ
         // уйдёт в failed, чтобы не рисковать двойной тратой).
+        // TopupPendingError пробрасываем НЕ трогая карту: вывести её из реюза
+        // при неизвестном исходе значило бы выпустить вторую карту и списать
+        // с VCC ещё раз, возможно поверх уже прошедшего топапа.
         if (!(err instanceof PaySpaceApiError)) throw err;
 
         // Диагностика причины отказа: реальный статус карты в PaySpace
@@ -231,17 +255,6 @@ export async function issueCard(orderId: string): Promise<void> {
       }
     }
 
-    // Реквизиты новой карты копим здесь, а отправляем клиенту ПОСЛЕ перехода
-    // заказа в completed (L5). null — если был топ-ап активной карты.
-    let pendingCredentials: {
-      fullPan: string;
-      panMasked: string;
-      expMonth: number;
-      expYear: number;
-      cvc: string;
-      cardType: string | null;
-      billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
-    } | null = null;
 
     if (!card) {
       // 2. Активной карты нет (или реюз отклонён выше) — выпускаем НОВУЮ.
@@ -249,7 +262,27 @@ export async function issueCard(orderId: string): Promise<void> {
       // карту в провайдере необратимо, а переиспользование PAN разными клиентами
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
       // рамках одного клиента через активную карту выше.
+      // Billing address от карты не зависит и берётся заранее (у функции свой
+      // таймаут и локальный фолбэк), чтобы реквизиты можно было зафиксировать
+      // сразу после выпуска — до первой записи в нашу БД.
+      const billingAddress = await getRandomUsBillingAddress();
+
       const created = await paypace.createCard({ amountUsdCents });
+      issuedProviderCardId = created.cardId;
+      // Реквизиты фиксируем ДО записи в БД. Ревью показало, что иначе спасение
+      // не покрывает собственный сценарий: падение этого самого INSERT'а
+      // оставляло `pendingCredentials === null`, и PAN профинансированной карты
+      // терялся навсегда. `cardType` дописывается ниже — без него сообщение
+      // чуть беднее, но карта рабочая.
+      pendingCredentials = {
+        fullPan: created.pan,
+        panMasked: created.panMasked,
+        expMonth: created.expMonth,
+        expYear: created.expYear,
+        cvc: created.cvc,
+        cardType: null,
+        billingAddress,
+      };
       card = await createCard(
         db,
         {
@@ -268,22 +301,11 @@ export async function issueCard(orderId: string): Promise<void> {
       });
 
       // Полные реквизиты надо передать пользователю — НЕ логируем сюда `pan`/`cvc`.
-      const [cardMetadata, billingAddress] = await Promise.all([
-        readCardMetadataSafely(paypace, created.cardId, order.shortId),
-        getRandomUsBillingAddress(),
-      ]);
+      const cardMetadata = await readCardMetadataSafely(paypace, created.cardId, order.shortId);
       // Реквизиты отправим ПОСЛЕ фиксации заказа (completed), не здесь: иначе
       // сбой БД на setOrderCardId/transitionOrder ниже откатывал бы уже
       // доставленный заказ в failed + слал ложный ops-алёрт (L5).
-      pendingCredentials = {
-        fullPan: created.pan,
-        panMasked: created.panMasked,
-        expMonth: created.expMonth,
-        expYear: created.expYear,
-        cvc: created.cvc,
-        cardType: cardMetadata.cardType,
-        billingAddress,
-      };
+      pendingCredentials = { ...pendingCredentials, cardType: cardMetadata.cardType };
     }
 
     // 4. Привязать card к order (card гарантированно не null: топ-ап активной
@@ -307,7 +329,7 @@ export async function issueCard(orderId: string): Promise<void> {
     //    не шлёт ложный «не доставлен» (L5). Недоставку добьёт оператор/повтор.
     if (pendingCredentials) {
       try {
-        await sendCardCredentialsToUser({
+        credentialsDelivered = await sendCardCredentialsToUser({
           telegramId: await resolveTelegramIdByUserId(order.userId),
           panMasked: pendingCredentials.panMasked,
           fullPan: pendingCredentials.fullPan,
@@ -336,6 +358,89 @@ export async function issueCard(orderId: string): Promise<void> {
       tags: { source: 'job.issue-card' },
       extra: { orderId },
     });
+
+    // Топап завис в pending — исход НЕИЗВЕСТЕН, деньги могли зачислиться позже.
+    //
+    // Первая версия этой правки оставляла заказ в `in_fulfillment`, чтобы не
+    // врать терминальным `failed`. Ревью показало, что выхода из этого статуса
+    // НЕТ ни одним путём кода: повторный `issueCard` выходит на гейте
+    // `status !== 'paid'`, `findStuckPaidOrders` берёт только `paid`, а
+    // `findStuckInFulfillmentOrders` лишь алёртит — и делает это каждые пять
+    // минут бессрочно, превращая сигнал в фон. Вечная парковка плюс шум хуже
+    // огрублённого статуса, поэтому заказ всё же уходит в `failed`.
+    //
+    // Чтобы информация не потерялась, `requestId`/`cardId` пишутся отдельным
+    // событием в append-only `order_events` — по ним оператор находит операцию
+    // в кабинете, а будущая автосверка (backlog) сможет дожать состояние без
+    // повторного вызова провайдера вслепую.
+    if (err instanceof TopupPendingError) {
+      try {
+        await appendOrderEvent(getDb(), {
+          orderId,
+          eventType: 'topup_pending',
+          actorType: 'system',
+          payload: { requestId: err.requestId, cardId: err.cardId },
+        });
+      } catch (eventErr) {
+        log.error({ event: 'job.issue_card.topup_pending_event_failed', orderId, err: eventErr });
+        Sentry.captureException(eventErr, {
+          tags: { source: 'job.issue-card', step: 'topup_pending_event' },
+          extra: { orderId },
+        });
+      }
+      await notifyOps(
+        `Заказ ${order.shortId}: топап PaySpace завис в pending — исход неизвестен, деньги могли ` +
+          `зачислиться позже. Проверь операцию в кабинете: requestId=${err.requestId}, ` +
+          `cardId=${err.cardId}. Повтор топапа идемпотентен по request_id.`,
+      );
+      await markOrderFailed(orderId, 'paypace_topup_pending', order.shortId);
+      return;
+    }
+
+    // Карта у провайдера уже выпущена и профинансирована, а упала запись в нашу
+    // БД. Реквизиты есть только здесь, в памяти: не отдать их — значит оставить
+    // клиента без карты при списанных деньгах, и восстановить PAN будет неоткуда
+    // (мы его принципиально не храним). Заказ всё равно уйдёт в failed и его
+    // сведут руками, но карту клиент получит.
+    if (pendingCredentials && !credentialsDelivered) {
+      try {
+        credentialsDelivered = await sendCardCredentialsToUser({
+          telegramId: await resolveTelegramIdByUserId(order.userId),
+          panMasked: pendingCredentials.panMasked,
+          fullPan: pendingCredentials.fullPan,
+          expMonth: pendingCredentials.expMonth,
+          expYear: pendingCredentials.expYear,
+          cvc: pendingCredentials.cvc,
+          cardType: pendingCredentials.cardType,
+          billingAddress: pendingCredentials.billingAddress,
+          serviceShortId: order.shortId,
+          priceUsdCents,
+          pricingUrl,
+        });
+        log.warn({ event: 'job.issue_card.credentials_rescued', orderId });
+      } catch (sendErr) {
+        // sanitizeSendError обязателен: GrammyError от отправки реквизитов несёт
+        // полный PAN+CVC в перечисляемом `err.payload.text`, и голый
+        // captureException превратил бы это в утечку (находка ревью).
+        logSendFailure('job.issue_card.credentials_rescue_failed', order.shortId, sendErr);
+        Sentry.captureException(sanitizeSendError(sendErr), {
+          level: 'error',
+          tags: { source: 'job.issue-card', step: 'rescue_credentials' },
+          extra: { orderId },
+        });
+      }
+    }
+
+    // providerCardId в алёрте — единственная зацепка, если наша строка `cards`
+    // не записалась: без него карту в кабинете PaySpace ищут по сумме и времени.
+    if (issuedProviderCardId) {
+      await notifyOps(
+        `Заказ ${order.shortId}: карта у провайдера ВЫПУЩЕНА (providerCardId=${issuedProviderCardId}), ` +
+          `но запись в нашу БД не прошла. Реквизиты клиенту ` +
+          `${credentialsDelivered ? 'отправлены' : 'НЕ отправлены'}. Нужно свести вручную.`,
+      );
+    }
+
     await markOrderFailed(orderId, 'paypace_error', order.shortId);
   }
 }
@@ -366,19 +471,48 @@ async function markOrderFailed(orderId: string, reason: string, shortId?: string
 }
 
 /**
- * Async-topup PaySpace может вернуть `pending` (деньги ещё не подтверждены) — в
- * этом случае НЕ завершаем заказ: бросаем, чтобы уйти в `failed` и отдать
- * оператору. Повтор безопасен: topup идемпотентен по `requestId`.
+ * Топап завис в `pending` дольше окна опроса.
+ *
+ * Отдельный тип, потому что это НЕ отказ: деньги могли зачислиться минутой
+ * позже, и заказ в таком состоянии нельзя объявлять `failed` — это была бы
+ * ложь, из-за которой клиент не получает карту при списанных деньгах, а
+ * повторить операцию уже нечем (статус терминальный).
+ *
+ * Несёт `requestId` и `cardId`: по ним человек находит операцию в кабинете
+ * PaySpace, а повтор топапа безопасен — провайдер дедуплицирует по `request_id`.
+ */
+class TopupPendingError extends Error {
+  readonly requestId: string;
+  readonly cardId: string;
+
+  constructor(orderId: string, requestId: string, cardId: string) {
+    super(`paypace topup завис в pending (requestId=${requestId}, orderId=${orderId})`);
+    this.name = 'TopupPendingError';
+    this.requestId = requestId;
+    this.cardId = cardId;
+  }
+}
+
+/**
+ * Async-topup PaySpace может вернуть `pending` (деньги ещё не подтверждены).
+ * Различаем два исхода, потому что они требуют разного:
+ *   - `pending` → `TopupPendingError`: состояние неизвестно, заказ оставляем в
+ *     `in_fulfillment` и зовём человека;
+ *   - всё прочее (`failed` и незнакомые статусы) → обычная ошибка: операция не
+ *     прошла, дальше по коду это приведёт к выпуску новой карты или к `failed`.
  */
 function ensureTopupCompleted(
   topup: { status: string; requestId: string },
   orderId: string,
+  cardId: string,
 ): void {
-  if (topup.status !== 'completed') {
-    throw new Error(
-      `paypace topup не завершён (status=${topup.status}, requestId=${topup.requestId}, orderId=${orderId})`,
-    );
+  if (topup.status === 'completed') return;
+  if (topup.status === 'pending') {
+    throw new TopupPendingError(orderId, topup.requestId, cardId);
   }
+  throw new Error(
+    `paypace topup не завершён (status=${topup.status}, requestId=${topup.requestId}, orderId=${orderId})`,
+  );
 }
 
 type SendCredentialsArgs = {
@@ -401,10 +535,18 @@ type SendCredentialsArgs = {
  * Отправка реквизитов карты пользователю в Telegram.
  * Полный PAN и CVC передаются ТОЛЬКО здесь — никаких log.info с этими полями.
  */
-async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<void> {
+/**
+ * Возвращает ФАКТ доставки, а не «попытались».
+ *
+ * Это принципиально: реквизиты нигде не хранятся, и ops-алёрт «реквизиты
+ * отправлены» — единственный сигнал оператору. Если функция молчит про исход,
+ * алёрт врёт ровно в тех случаях, ради которых он написан: у клиента нет
+ * `telegram_id` (веб-заказ), бот заблокирован, Telegram ответил 403.
+ */
+async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<boolean> {
   if (!args.telegramId) {
     log.warn({ event: 'job.issue_card.send_credentials.no_telegram', shortId: args.serviceShortId });
-    return;
+    return false;
   }
 
   // ВСЯ подготовка сообщения — внутри try: сбой сборки текста (напр. в
@@ -444,11 +586,18 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<voi
       shortId: args.serviceShortId,
       panMasked: args.panMasked,
     });
+    return true;
   } catch (err) {
-    log.error({ event: 'job.issue_card.send_credentials.failed', shortId: args.serviceShortId, err });
-    Sentry.captureException(err, {
+    // ⚠️ НИКОГДА не логировать `err` целиком: это сообщение содержит полный PAN и
+    // CVC, а grammY кладёт тело запроса в перечисляемое `err.payload`, откуда
+    // pino вытащит `payload.text` со всеми реквизитами (redact-пути logger.ts
+    // работают на глубине 2 и такой вложенности не видят). Логируем только код
+    // и описание — тот же приём, что в `lib/telegram/send.ts`.
+    logSendFailure('job.issue_card.send_credentials.failed', args.serviceShortId, err);
+    Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'send_credentials' },
     });
+    return false;
   }
 }
 
@@ -487,11 +636,39 @@ async function sendTopupNotice(args: {
     });
     log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
   } catch (err) {
-    log.error({ event: 'job.issue_card.topup_notice.failed', shortId: args.serviceShortId, err });
-    Sentry.captureException(err, {
+    // Реквизитов в этом сообщении нет, но текст всё равно клиентский —
+    // логируем так же узко, как и в ветке с реквизитами.
+    logSendFailure('job.issue_card.topup_notice.failed', args.serviceShortId, err);
+    Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'topup_notice' },
     });
   }
+}
+
+/**
+ * Безопасный лог сбоя отправки: из `GrammyError` берём ТОЛЬКО код и описание.
+ * Само тело запроса (`err.payload.text`) несёт PAN и CVC — оно не должно попасть
+ * ни в stdout, ни в docker json-file, ни в Loki.
+ */
+function logSendFailure(event: string, shortId: string, err: unknown): void {
+  if (err instanceof GrammyError) {
+    log.error({ event, shortId, errorCode: err.error_code, description: err.description });
+    return;
+  }
+  log.error({ event, shortId, message: err instanceof Error ? err.message : String(err) });
+}
+
+/**
+ * То же для Sentry: отдаём плоскую ошибку без `payload`. Дефолтный Node-SDK
+ * нестандартные поля не сериализует, но полагаться на это в коде, который держит
+ * в руках реквизиты карты, нельзя — включённый кем-то `extraErrorDataIntegration`
+ * молча превратил бы отчёт в утечку.
+ */
+function sanitizeSendError(err: unknown): Error {
+  if (err instanceof GrammyError) {
+    return new Error(`GrammyError ${err.error_code}: ${err.description}`);
+  }
+  return err instanceof Error ? new Error(err.message) : new Error(String(err));
 }
 
 function buildCardActionKeyboard(pricingUrl: string | null): InlineKeyboard {

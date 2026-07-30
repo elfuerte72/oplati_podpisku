@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import pino from 'pino';
 
+import { LOVEANDPAY_DEFAULT_BASE_URL } from '../env.ts';
 import { LoveAndPayClient } from './client.ts';
 import { LoveAndPayApiError, LoveAndPayContractError } from './errors.ts';
 
@@ -50,7 +51,7 @@ describe('LoveAndPayClient.createInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('ретрай при 429', async () => {
+  it('429 на POST /invoices НЕ ретраится', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(makeResp(429, { success: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'wait' } }))
@@ -62,15 +63,89 @@ describe('LoveAndPayClient.createInvoice', () => {
       logger: silentLogger,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    const res = await c.createInvoice({
-      amount: 1,
-      currency: 'RUB',
-      description: 't',
-      customer: {},
-      expiresInHours: 24,
-      kycRequired: false,
+    await expect(
+      c.createInvoice({
+        amount: 1,
+        currency: 'RUB',
+        description: 't',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toBeInstanceOf(LoveAndPayApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('5xx на POST /invoices НЕ ретраится — инвойс-сирота у провайдера невозможен', async () => {
+    // 502/503/504 не отличимы от «счёт создан, ответ потерян»: у L&P нет ключа
+    // идемпотентности, поэтому второй попытки быть не должно (та же политика,
+    // что у createOrder в Freekassa и createCard в PaySpace).
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResp(502, { success: false, error: { code: 'BAD_GATEWAY', message: 'down' } }))
+      .mockResolvedValueOnce(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
     });
-    expect(res.invoice.id).toBe('INV-1');
+
+    await expect(
+      c.createInvoice({
+        amount: 100,
+        currency: 'RUB',
+        description: 'test',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toBeInstanceOf(LoveAndPayApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('сетевой обрыв на POST /invoices НЕ ретраится', async () => {
+    // `TypeError: fetch failed` в undici — это и «соединение не установилось»,
+    // и «сокет оборвался ПОСЛЕ отправки тела»; второй случай означает уже
+    // созданный счёт, различить их нельзя.
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      c.createInvoice({
+        amount: 100,
+        currency: 'RUB',
+        description: 'test',
+        customer: {},
+        expiresInHours: 24,
+        kycRequired: false,
+      }),
+    ).rejects.toThrow('fetch failed');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('5xx на GET (идемпотентный) по-прежнему ретраится', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResp(503, { success: false, error: { code: 'UNAVAILABLE', message: 'x' } }))
+      .mockResolvedValueOnce(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: 'https://lp/api/v2',
+      logger: silentLogger,
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    const invoice = await c.getInvoice('INV-1');
+    expect(invoice.id).toBe('INV-1');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -188,5 +263,42 @@ describe('LoveAndPayClient.createInvoice', () => {
         kycRequired: false,
       }),
     ).rejects.toBeInstanceOf(LoveAndPayContractError);
+  });
+});
+
+/**
+ * Регресс на смену хоста 2026-07-29. Провайдер объявил новым base URL голый
+ * `https://api.prod.loveandpay.io`, но живая проба показала, что префикс `/api/v2`
+ * сохранён: без него сервер отвечает 404, а подпись считается по укороченному пути.
+ * Дефолт из env-схемы обязан оставаться полным.
+ */
+describe('дефолтный base URL', () => {
+  it('указывает на новый хост и сохраняет префикс /api/v2', () => {
+    const u = new URL(LOVEANDPAY_DEFAULT_BASE_URL);
+    expect(u.host).toBe('api.prod.loveandpay.io');
+    expect(u.pathname).toBe('/api/v2');
+  });
+
+  it('подписывает и зовёт ПОЛНЫЙ путь /api/v2/invoices', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(makeResp(200, INVOICE_OK_BODY));
+    const c = new LoveAndPayClient({
+      apiKey: 'pk',
+      secretKey: 'sk',
+      baseUrl: LOVEANDPAY_DEFAULT_BASE_URL,
+      logger: silentLogger,
+      fetchImpl: fetchMock,
+    });
+    await c.createInvoice({
+      amount: 100,
+      currency: 'RUB',
+      description: 'test',
+      customer: {},
+      expiresInHours: 24,
+      kycRequired: false,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.prod.loveandpay.io/api/v2/invoices',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

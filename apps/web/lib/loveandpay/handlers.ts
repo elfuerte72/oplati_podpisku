@@ -69,13 +69,15 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     return { kind: 'not_found', providerRef: data.id };
   }
 
-  // Сверка суммы оплаты с суммой заказа. L&P шлёт `amount` в РУБЛЯХ (не копейках);
-  // наш `payment.amountRub` — копейки. В webhook-пути `amount` опционален и может
+  // Сверка суммы оплаты с суммой заказа. Обе величины — копейки: `amountKopecks`
+  // нормализуется схемой (см. `loveAndPayWebhookData` — сам `amount` у провайдера
+  // неоднозначен: копейки в invoice.created, рубли в остальных событиях), наш
+  // `payment.amountRub` тоже в копейках. В webhook-пути сумма опциональна и может
   // прийти как 0 — тогда сверку пропускаем (нечего сравнивать). При polling-пути
   // (getInvoice) сумма всегда реальная. Если оплачено заметно МЕНЬШЕ выставленного
   // (допуск 1 копейка на округление) — НЕ фулфилим: иначе выпустим карту на полную
   // сумму, получив неполную оплату (прямой убыток). Деньги-вопрос → разбирает оператор.
-  const gotKopecks = Math.round(data.amount * 100);
+  const gotKopecks = data.amountKopecks ?? Math.round(data.amount * 100);
   if (gotKopecks > 0 && gotKopecks < payment.amountRub - 1) {
     log.error({
       event: 'loveandpay.handlers.amount_mismatch',
@@ -248,8 +250,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
 
   // Побочные эффекты — только когда заказ реально перешёл в paid (находка
   // аудита I4: раньше «Оплата получена, обрабатываем заказ» уходило и клиенту,
-  // оплатившему мёртвый счёт, хотя обработка не начиналась). Аномальный кейс
-  // (paidOk=false) уже заалерчен выше — им занимается оператор.
+  // оплатившему мёртвый счёт, хотя обработка не начиналась).
   if (outcome.paidOk) {
     // Уведомляем пользователя в Telegram, что оплата получена — срабатывает всегда
     // при переходе в `paid` (даже если PaySpace не настроен и карта не выпускается).
@@ -264,6 +265,16 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     // await (а не dispatch): дёшево, и гарантированно отрабатывает до 200 OK
     // (setImmediate Vercel может заморозить).
     await accrueReferralForPayment({ orderId: payment.orderId, paymentId: payment.id });
+  } else {
+    // Платёж succeeded, а заказ в paid не перешёл (запрещённый переход из
+    // терминального статуса). Деньги приняты, fulfillment не запустится, и
+    // recovery такое не подхватывает: `findStuckPaidOrders` ищет `paid`,
+    // `findPendingPaymentsForPoll` — `pending`. До аудита 2026-07-28 здесь был
+    // только Sentry (и комментарий, будто DM уже ушёл выше — он уходит в другой
+    // ветке, `paid_after_terminal`).
+    await notifyOps(
+      `Оплата принята (Love&Pay, инвойс ${data.invoiceNumber ?? data.id}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
+    );
   }
 
   log.info({

@@ -1,0 +1,270 @@
+# ТЗ: переезд прода Vercel+Supabase → Hostinger VPS (Dokploy)
+
+> Решение владельца 2026-07-24. Мотив: РФ-доступ без цепочки Timeweb-прокси и Vercel-костылей
+> (System Bypass / SNI / alt-svc), экономия подписки, обучение self-host.
+> VPS: Hostinger KVM 2, **US Boston 2**, `177.7.34.106` (Dokploy + Traefik уже стоят;
+> там же Remnawave-панель (только control-plane, VPN-трафик на внешних нодах), squid `lnp-proxy`,
+> портфолио, grafana-alloy → Loki, Beszel). После чистки n8n/Ollama: диск 39/96 ГБ, RAM 3.0/7.8.
+>
+> **Ключевой факт:** Supabase используется ТОЛЬКО как Postgres (postgres-js + Drizzle через
+> `DATABASE_URL`; SDK `@supabase/supabase-js` в коде отсутствует, RLS-миграции — чистый SQL без
+> `auth.*`). Мигрируем на **чистый `postgres:17`-контейнер**, НЕ self-hosted Supabase-стек.
+>
+> **Рабочая ветка:** `feat/dokploy-migration`. Прод (`main` → Vercel) не трогается до Фазы 4.
+> Все изменения кода — инертные для Vercel (Dockerfile игнорируется, рантайм — за env-гейтами).
+> Dokploy деплоит тестовый контур ПРЯМО с этой ветки.
+
+Статусы: `[ ]` не начато · `[x]` готово · `[~]` в работе.
+
+---
+
+## Фаза 0 — подготовка (сделано 2026-07-24)
+
+- [x] VPS почищен: n8n/Ollama удалены (контейнеры, volumes, образы) — освобождено ~15 ГБ.
+- [x] Ветки репо вычищены (14 локальных + 13 remote, все squash-влиты; проверено `git cherry`).
+- [x] Создана ветка `feat/dokploy-migration` от `main`.
+- [x] Инвентаризация Vercel-зависимостей кода (см. Фазу 1 — список исчерпывающий).
+
+## Фаза 1 — изменения кода (все — Vercel-инертные)
+
+- [x] **1.1 `output: 'standalone'`** в `apps/web/next.config.ts`. На Vercel не влияет
+      (Vercel собирает по-своему), для Docker — обязателен.
+- [x] **1.2 `Dockerfile`** (корень репо) + **`.dockerignore`**. Multi-stage под
+      pnpm+Turborepo-монорепо: `corepack enable` → install по lockfile →
+      `pnpm --filter web build` → рантайм-слой из `.next/standalone` + `public` +
+      `.next/static`. Node 24-slim, non-root user, `EXPOSE 3000`,
+      `HEALTHCHECK` → `GET /api/health` (node fetch — curl в slim нет).
+      Единственный `NEXT_PUBLIC_*` в проекте — `NEXT_PUBLIC_SENTRY_DSN` →
+      build-arg. Проверено локальным билдом: образ 446 МБ, контейнер healthy.
+- [x] **1.3 Self-call `payments/create`**: в `confirm-order.ts:129` цепочка
+      `VERCEL_URL → APP_URL`. Добавлен приоритетный env `SELF_BASE_URL`
+      (`http://127.0.0.1:3000` в контейнере): денежный self-call не выходит в интернет
+      и не зависит от Traefik/DNS. Не задан → поведение прежнее (Vercel не затронут).
+- [x] **1.4 `getClientIp` за Dokploy-Traefik** (`apps/web/lib/ratelimit.ts:87`).
+      Сейчас приоритет — `x-real-ip` («Vercel проставляет сам»). За Traefik это
+      **небезопасно**: Traefik по умолчанию НЕ затирает клиентский `X-Real-Ip` →
+      подделка → обход rate-limit (тот же CWE-348, что уже дважды чинили).
+      Добавить env-гейт `CLIENT_IP_MODE=traefik`: игнорировать `x-real-ip`, брать
+      ПРАВЫЙ элемент `x-forwarded-for` (Traefik с дефолтным `forwardedHeaders`
+      срезает входящие XFF и пишет реальный IP). Не задан → прежняя Vercel-логика.
+      **Контракт Traefik НЕ выдумывать** — подтвердить живым вызовом на тестовом
+      контуре (curl с поддельными `x-real-ip`/`x-forwarded-for` → лог фактических
+      заголовков) и только потом закрепить. + unit-тест нового режима.
+- [x] **1.5 `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_SERVICE_ROLE_KEY` →
+      `.optional()`** в `apps/web/lib/env.ts` (в рантайме не используются — только
+      redact-лист логгера). Vercel-прод продолжает их задавать — ничего не ломается.
+- [x] **1.6 Роли Postgres для чистого инстанса**: `packages/db/` — init-SQL
+      (`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN;
+      CREATE ROLE service_role NOLOGIN BYPASSRLS;`) — миграция `0010` делает
+      `GRANT TO anon, authenticated` и упадёт без них. Оформить как idempotent
+      pre-migrate скрипт (`db:init-roles`), НЕ как Drizzle-миграцию (на Supabase
+      роли уже есть — конфликт).
+- [x] **1.7 Crontab-манифест** `infra/crontab` (файл в репо → копируется на VPS в
+      `/etc/cron.d/oplatishka`): 7 джобов из `vercel.json` (без `keepalive` — на
+      чистом Postgres автопаузы нет) как `curl -fsS -H "Authorization: Bearer $CRON_SECRET"
+      https://<домен>/api/cron/<job>`. Код cron-роутов НЕ меняется — авторизация
+      уже совместима (`poll-payment/route.ts:43`).
+- [ ] **1.8 Проверить, что НЕ требует правок** (зафиксировать в PR):
+      `deployment-url.ts` — без `VERCEL_*` сам падает в `APP_URL` (корректно);
+      `after()` из `next/server` — работает в self-hosted standalone (Next ≥15.1);
+      `preferredRegion`/`maxDuration` экспорты — инертны вне Vercel;
+      cron-роуты, webhook-роуты, Sentry, pino → stdout.
+- [x] **1.9 `pnpm typecheck` + `pnpm --filter web test` + lint** зелёные; локальный
+      `docker build` + запуск контейнера с dev-env — смоук `GET /api/health`.
+
+## Фаза 2 — инфраструктура VPS/Dokploy (через Dokploy MCP + SSH)
+
+- [x] **2.1 Postgres**: СДЕЛАНО 2026-07-24: сервис `oplatishka-db` (postgres:17,
+      host в docker-сети `oplatishka-db-ry3smb`), внешний порт открывался только
+      на время миграций и снят. Прогнано: db:init-roles -> db:migrate (17 таблиц,
+      append-only триггер, RLS) -> db:seed (13 активных сервисов). Секреты
+      контура — в `.env.dokploy-test.local` (gitignored).
+- [x] **2.2 Бэкапы** (СДЕЛАНО 2026-07-24 через НАТИВНЫЙ backup Dokploy, не rclone-
+      костыль): destination `postgresql_backup` (R2 bucket `dokploy-backups`, уже был
+      настроен владельцем) → расписание `0 3 * * *` UTC, prefix `oplatishka-db/`,
+      keepLatestCount 14. `pg_dump -Fc | gzip → rclone → R2`. **Проверено end-to-end:**
+      ручной бэкап → файл в R2 (13 КБ), restore-учение (3.6): скачан → восстановлен в
+      чистую `restore_test` без ошибок → 17 таблиц + 13 сервисов идентичны → БД удалена.
+      ⚠️ этап 2 (WAL-архив/PITR через wal-g) — отложен до появления клиентов: суточный
+      дамп даёт RPO=24ч, для платежей на дистанции нужен PITR (RPO~мин); пока клиентов
+      нет — приемлемо. ⚠️ R2 S3-креды видны в логах Dokploy на VPS (root-only).
+- [x] **2.3 Dokploy-app** (СДЕЛАНО 2026-07-24: задеплоен, контейнер healthy, главная отдаёт каталог из нового Postgres; билд на VPS ~5 мин — риск R6 снят; ЖДЁТ: A-запись DNS от владельца) из GitHub-репо, ветка `feat/dokploy-migration`, build по
+      Dockerfile, домен `new.oplatishka.com` (владелец: A-запись в CF DNS →
+      `177.7.34.106`, серое облако), TLS — Traefik/ACME (уже выпускает для
+      mxpkn8ns.ru).
+- [x] **2.4 Env тестового контура** (СДЕЛАНО, кроме TELEGRAM_* — dev-токен добавит владелец) (канон списка — `apps/web/lib/env.ts`; значения —
+      из локального `.env`/владельца, в Dokploy Secrets): dev-бот
+      (`TELEGRAM_BOT_TOKEN`/`WEBHOOK_SECRET` dev-значения), `ANTHROPIC_MODEL` =
+      Haiku, `APP_URL=https://new.oplatishka.com`, `SELF_BASE_URL=http://127.0.0.1:3000`,
+      `CLIENT_IP_MODE=traefik`, `DATABASE_URL` → внутренний Postgres,
+      отдельный `CRON_SECRET`/`INTERNAL_API_TOKEN`, `AI_DAILY_TOKEN_BUDGET=200000`.
+      **`LOVEANDPAY_PROXY_URL` НЕ задавать**: egress-IP VPS = `177.7.34.106` = уже
+      задекларирован у L&P → прямое соединение легально (squid остаётся только для
+      Vercel-прода до cutover). **`PAYSPACE_*` НЕ задавать**: гейт
+      `skipped_no_paypace` оставит тестовые заказы в `paid` — тест не выпускает
+      реальные карты и не жжёт VCC-баланс.
+- [x] **2.5 Crontab на VPS** (установлен /etc/cron.d/oplatishka, 7 джобов, ручной вызов подтверждён) из `infra/crontab` (пока на тестовый домен).
+- [x] **2.6 Логи** (alloy: discovery.docker "all" -> все контейнеры уже в Loki): проверить, что stdout контейнера попадает в grafana-alloy → Loki
+      (label по имени сервиса); Sentry — отдельный `environment=dokploy-test`.
+
+## Фаза 3 — обкатка тестового контура (критерии выхода)
+
+- [x] **3.1** (✅ 2026-07-24: владелец проверил с телефона из РФ БЕЗ VPN — сайт
+      открывается, визуально идентичен Vercel-проду) Сайт из РФ без VPN.
+- [x] **3.2** (✅ 2026-07-24: владелец подтвердил — бот `@oplatishkadokploy_bot`
+      отвечает, флоу работает) Бот на `new.oplatishka.com`.
+- [ ] **3.3** Кнопочный заказ → инвойс L&P создаётся НАПРЯМУЮ (без squid);
+      webhook L&P продолжает бить в Vercel-прод (там `provider_ref` неизвестен →
+      идемпотентный skip, это штатно) — тестовый контур добирает оплату через
+      cron `poll-payment` ≤5 мин. Оплатить малый реальный счёт → заказ `paid` →
+      `skipped_no_paypace`.
+- [x] **3.4** (✅ 2026-07-24: 8×400→4×429, ротация поддельных x-real-ip/XFF НЕ обходит лимит; Traefik пишет реальный IP правым элементом XFF; self-host Redis подтверждён) Подделка `x-real-ip`/`x-forwarded-for` НЕ обходит rate-limit
+      (фиксация контракта Traefik из 1.4); rate-limit различает два разных IP.
+- [~] **3.5** Ручной вызов cron с `Bearer CRON_SECRET` работает (poll-payment →
+      `{ok:true}`; без секрета → 401). Расписание `/etc/cron.d/oplatishka` стоит —
+      дождаться прогона по времени и сверить в Loki.
+- [x] **3.6** Restore-учение (СДЕЛАНО 2026-07-24): дамп из R2 → `pg_restore` в чистую
+      `restore_test` без ошибок → 17 таблиц + 13 сервисов идентичны → БД удалена.
+      Бэкап признан рабочим.
+- [ ] **3.7** Мини-нагрузка (напр. `hey`/`ab` на каталог): p95, RAM контейнера —
+      убедиться, что KVM 2 не упирается (Beszel).
+
+## Dev-стенд (аналог Vercel preview/prod) — СДЕЛАНО 2026-07-24
+
+- [x] Ветка `dev` (от feat/dokploy-migration), поддомен `dev.oplatishka.com`
+      (A-запись создана через CF API, DNS-only), TLS от Let's Encrypt.
+- [x] `oplatishka-web-dev` — приложение на ветке `dev`, **autoDeploy на push**
+      (triggerType push). Флоу: push в `dev` → автодеплой на dev-домен → проверил →
+      merge `dev`→`main` → прод. Смоук: health ok, каталог из dev-БД.
+- [x] `oplatishka-db-dev` — Postgres 17, СТРУКТУРА идентична prod (17 таблиц,
+      триггеры, RLS, 25 миграций в журнале), каталог 13 сервисов, **0 клиентских
+      данных** (orders/users/payments пусты — перенос через `pg_dump` prod→dev с
+      `--exclude-table-data` клиентских таблиц напрямую на VPS).
+- [x] Dev-env: Haiku, `AI_DAILY_TOKEN_BUDGET=100000`, `RATE_LIMIT_DISABLED=1`
+      (изоляция от prod-лимитов), БЕЗ `LOVEANDPAY_*`/`PAYSPACE_*` (dev не выставляет
+      реальные счета и не выпускает карты).
+- [x] **Dev-бот** (СДЕЛАНО 2026-07-24): `@dev_test_podpiska_bot`, webhook на
+      `dev.oplatishka.com/api/bot` (last_error None). Токен добавил владелец.
+- [x] **Basic Auth на dev** (СДЕЛАНО 2026-07-24): чтобы никто случайно не тыкал в
+      незарелиженное. Dokploy-нативный `security` (переживает редеплой), логин
+      `dev`. Prod остаётся публичным. Исключение `/api/bot` — persistent
+      Traefik-роутер `oplatishka-dev-webhook.yml` (публичный, но защищён
+      secret-token'ом; Telegram basic-auth не умеет). Секретность имени поддомена
+      осознанно НЕ используем — это security-through-obscurity (антипаттерн:
+      поддомены палятся через Certificate-Transparency-логи); правильно — auth.
+
+## Откат (Rollback) — 5 уровней, подтверждено
+
+| Уровень | Механизм | Время |
+|---|---|---|
+| Dokploy-деплой | история деплоев + Rollback на пред. образ (`rollbackActive`) | секунды |
+| Git-код | revert-PR в main (история цела) | минуты |
+| DNS/webhook | вернуть записи на Vercel-цепочку (TTL 60с) | минуты |
+| Данные | Supabase НЕ удаляем + бэкап R2; sequences=0 (UUID) → нет id-конфликтов | — |
+| Snapshot VPS | откат всего сервера (id 312962, 24ч) | ~30 мин |
+
+**Главная страховка:** Vercel-прод жив и нетронут до шага 6 cutover. До переключения
+DNS всё откатывается без следа; после — обратимо по DNS, при 0 активных клиентов
+в окне без потери данных.
+
+## Репетиция переноса данных — СДЕЛАНО 2026-07-24 (прод НЕ тронут)
+
+- [x] Механизм отработан: `pg_dump` Supabase (session-порт 5432, `--schema=public
+      --schema=drizzle --no-owner --no-acl`, PGPASSWORD без светки в ps) →
+      очистка Dokploy-prod-БД → restore. Занимает секунды.
+- [x] Сверка 1:1 с эталоном Supabase (снят ДО): все 17 таблиц + денежные суммы
+      совпали (orders 133, payments 46, cards 7, users 75, Σamount_rub 27 597 300,
+      Σoriginal_amount 995 288). Журнал миграций (25), append-триггер, RLS на месте.
+- [x] `pg_sequences` = 0 (вся схема на UUID) → риск конфликта id при новых
+      заказах после cutover ОТСУТСТВУЕТ.
+- [x] Приложение (new.oplatishka.com) работает на реальных данных, health ok,
+      каталог грузится, ошибок БД в логах нет.
+- ⚠️ Данные в Dokploy-prod-БД = снимок на 2026-07-24; к моменту cutover устареют
+      (клиенты пишут в Supabase днём) → на cutover ПОВТОРИТЬ свежий дамп.
+
+## Фаза 4 — cutover прода (НОЧЬ, окно низкой активности; решение владельца 2026-07-24)
+
+**Runbook (по шагам, с точками отката):**
+1. Пауза Vercel-автодеплоя (merge в main не тронет Vercel-прод — он остаётся
+   страховкой). Откат: не требуется.
+2. merge `feat/dokploy-migration` → `main` (PR, зелёный CI). Откат: revert-PR.
+3. Dokploy prod-контур (`oplatishka-web`) → ветка `main` + ПРОД-env:
+   `ANTHROPIC_MODEL=claude-sonnet-4-6`, `PAYSPACE_*` (выпуск карт), прод-бот
+   `@oplatishkaa_bot` токен+webhook-secret, снять `RATE_LIMIT_DISABLED`. Откат:
+   Dokploy Rollback.
+4. Свежий `pg_dump` Supabase → Dokploy-prod-БД (повтор репетиции) + сверка. Откат:
+   ничего не переключено.
+   ── всё выше обратимо без следа ──
+5. DNS `www`+apex (CF) → A `177.7.34.106` (DNS-only). Откат: DNS назад на Timeweb.
+6. webhook `@oplatishkaa_bot` → `www.oplatishka.com/api/bot`; webhook L&P (кабинет
+   L&P) → `www.oplatishka.com/api/payments/loveandpay`. Откат: webhook'и назад.
+7. Боевой смоук: заказ → оплата (малый) → выпуск карты → реквизиты → completed.
+8. **Только теперь** — выключить Vercel (снять домены/paused). Supabase-прод НЕ
+   удалять ≥ месяц (страховка данных).
+
+- [ ] **4.1** Merge `feat/dokploy-migration` → `main` (PR, зелёный CI). Vercel-прод
+      от merge не меняет поведения (всё за env-гейтами).
+- [ ] **4.2** Переключить Dokploy-app на ветку `main`; APP_URL → `https://www.oplatishka.com`.
+- [ ] **4.3** Данные: `pg_dump` прод-Supabase → restore в VPS-Postgres.
+      `pg_dump` переносит ВСЁ: строки, sequences, триггеры (append-only на
+      `order_events`), RLS-политики — Drizzle-миграции при restore не гоняются
+      (структура уже в дампе). Верификация — эталон ДО / сверка ПОСЛЕ:
+      (а) точный `COUNT(*)` по всем 17 таблицам (снимок ~2026-07-24: messages 826,
+      link_tokens 457, order_events 342, orders 133, conversations 131, users 75,
+      payments 46, services 37, ai_usage_daily 11, cards 7, vpn_subscriptions 6,
+      referral_accruals 5, остальные 0 — всего ~2000 строк, restore = секунды);
+      (б) денежные контрольные суммы: `SUM(amount_rub)` payments,
+      `SUM(original_amount)` orders, `SUM(amount_usd_cents)` referral_accruals;
+      (в) последний `orders.ref` совпадает; (г) sequences не отстают (тестовый
+      INSERT без конфликта id → откат); (д) смоук приложением: кабинет видит
+      карту/данные на новой БД. Расхождение хоть в одной строке = стоп-фактор.
+- [ ] **4.4** DNS: `www` + apex → A `177.7.34.106` (вместо Timeweb); Traefik/ACME
+      выпускает сертификаты.
+- [ ] **4.5** Прод-бот `@oplatishkaa_bot`: webhook → новый домен. L&P-webhook в
+      кабинете → `www.oplatishka.com/api/payments/loveandpay`. Env прод-значения
+      в Dokploy (боевой bot-token, Sonnet, `PAYSPACE_*` — с этого момента карты
+      выпускаются здесь).
+- [ ] **4.6** Боевой смоук: заказ → оплата → выпуск карты → реквизиты в Telegram →
+      `completed`. Кроны переключены на www.
+- [ ] **4.7** Откат (если что-то не так): DNS назад на Timeweb-цепочку + webhook'и
+      назад — Vercel-прод жив до конца подписки, данные в Supabase не устарели
+      (окно переключения ≈ минуты).
+
+## Фаза 5 — после стабилизации
+
+- [x] **5.0 Self-host Redis вместо Upstash** (СДЕЛАНО 2026-07-24, досрочно —
+      Upstash-креды через `vercel env pull` недоступны, Sensitive → маска 11
+      символов). В Dokploy: `oplatishka-redis` (redis:7) + `oplatishka-srh`
+      (`hiett/serverless-redis-http` — Upstash-совместимый REST-прокси). Приложение
+      → `UPSTASH_REDIS_REST_URL=http://oplatishka-srh-hv8tmh:80` +
+      `UPSTASH_REDIS_REST_TOKEN=<srh_token>`. Код НЕ менялся (@upstash/redis клиент
+      говорит с SRH). Проверено: SET/GET через SRH→Redis; rate-limit боевой.
+      ⚠️ **Урок Dokploy API:** `application.one` возвращает sensitive-значения как
+      литерал `[SENSITIVE]`. НЕЛЬЗЯ читать этот env и писать обратно целиком —
+      затрёшь секреты. При `saveEnvironment` Dokploy трактует `[SENSITIVE]` как
+      «не менять» (секреты уцелели), но полагаться нельзя: менять ТОЛЬКО нужные
+      строки, не трогая sensitive.
+- [ ] **5.1** `MINIAPP_BASE_URL` убрать: кабинет с VPS доступен из РФ без VPN —
+      отдельный vercel.app-домен больше не нужен. Владелец: Direct Link Web App URL
+      в @BotFather → `https://www.oplatishka.com/cabinet`.
+- [ ] **5.2** Better Stack: монитор на www (VPS) + `GET /api/health`.
+- [ ] **5.3** Timeweb-прокси → холодный резерв (если `177.7.34.106` попадёт под
+      ТСПУ); squid `lnp-proxy` можно погасить (egress теперь нативный).
+- [ ] **5.4** Vercel: не продлевать подписку (дата окончания = дедлайн Фаз 1–4,
+      не триггер). Supabase-прод не удалять минимум месяц (страховка данных).
+- [ ] **5.5** Обновить `CLAUDE.md` (деплой/инварианты 9 про заголовки, env-таблицы),
+      `docs/architecture.md`, `docs/monitoring.md`, `docs/CHANGELOG.md`.
+- [ ] **5.6** (при появлении клиентов) Postgres → отдельный VPS (data-node,
+      5432 только в приватной сети/WireGuard); при упоре в железо — апгрейд
+      KVM 2→4 кнопкой в hPanel ($42.99/мес, односторонний).
+
+## Риски / открытые вопросы
+
+| # | Риск | Митигация |
+|---|---|---|
+| R1 | Контракт заголовков Traefik (X-Real-Ip/XFF) — предположение | 1.4/3.4: подтвердить живым вызовом ДО закрепления; не выдумывать контракт |
+| R2 | Один VPS = один failure-domain (фронт+БД+панель) | Приемлемо при 0 клиентов; выход — 5.6 (data-node) + бэкапы 2.2 |
+| R3 | `177.7.34.106` под ТСПУ в будущем | Timeweb-цепочка в холодном резерве (5.3); DNS-переключение — минуты |
+| R4 | L&P-webhook общего аккаунта бьёт в прод во время тестов | Штатно: prod идемпотентно скипает чужой `provider_ref`; тест живёт poll'ом (3.3) |
+| R5 | Sensitive-env не вытащить из Vercel (`env pull` пуст) | Значения — из локального `.env` + владелец; критичные (bot-token прод) вводит владелец в Dokploy UI |
+| R6 | Билд монорепо в Docker тяжёлый для 2 vCPU | Собирать можно локально/в CI и пушить образ; для старта — билд на VPS ночью, замерить |

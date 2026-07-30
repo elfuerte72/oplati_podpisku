@@ -1,0 +1,33 @@
+# Traefik: публичное исключение для Telegram-webhook на dev-стенде.
+#
+# Установка (dev-VPS):
+#   scp infra/traefik/oplatishka-dev-webhook.yml.example \
+#       root@VPS:/etc/dokploy/traefik/dynamic/oplatishka-dev-webhook.yml
+#   docker service ls | grep oplatishka-web-dev
+#   sed -i 's|__WEB_DEV_SERVICE__|oplatishka-web-dev-XXXXXX|' \
+#     /etc/dokploy/traefik/dynamic/oplatishka-dev-webhook.yml
+#
+# `/api/bot` доступен БЕЗ basic-auth: Telegram basic-auth не умеет и получает 401,
+# из-за чего бот на dev просто молчит. Endpoint при этом не открыт — он защищён
+# secret-token'ом (`X-Telegram-Bot-Api-Secret-Token`, проверяется в /api/bot,
+# единственный non-200 кейс роута). Сам сайт dev остаётся под basic-auth.
+#
+# Отдельный файл — Dokploy не перегенерирует (не per-app), переживает редеплои
+# приложения. Приоритет выше Dokploy-роутера: Host+PathPrefix специфичнее, чем
+# один Host, но Traefik сортирует по длине правила, поэтому приоритет задан явно.
+http:
+  routers:
+    oplatishka-dev-webhook:
+      rule: "Host(`dev.oplatishka.com`) && PathPrefix(`/api/bot`)"
+      service: oplatishka-dev-webhook-svc
+      entryPoints:
+        - websecure
+      priority: 1000000
+      tls:
+        certResolver: letsencrypt
+  services:
+    oplatishka-dev-webhook-svc:
+      loadBalancer:
+        servers:
+          - url: http://__WEB_DEV_SERVICE__:3000
+        passHostHeader: true

@@ -14,13 +14,21 @@ import pino, { type Logger, type LoggerOptions } from 'pino';
 const isDev = process.env.NODE_ENV !== 'production';
 const defaultLevel = process.env.LOG_LEVEL ?? (isDev ? 'debug' : 'info');
 
-const redactPaths: string[] = [
+/**
+ * Экспортируется ради canary-теста: список путей — это защита от утечки PII,
+ * и его сужение должно ронять тест, а не выясняться в проде по логам.
+ */
+export const redactPaths: string[] = [
   // headers
   'req.headers.authorization',
   'req.headers.cookie',
   'headers.authorization',
   'headers.cookie',
   'headers["x-telegram-bot-api-secret-token"]',
+  // Альтернативный способ авторизации алёрт-вебхука Sentry: вариант `?s=` уже
+  // закрыт, заголовок оставался открытым (находка ревью).
+  'req.headers["x-alert-token"]',
+  'headers["x-alert-token"]',
   // secrets
   '*.password',
   '*.token',
@@ -31,8 +39,6 @@ const redactPaths: string[] = [
   'env.SUPABASE_SERVICE_ROLE_KEY',
   'env.ANTHROPIC_API_KEY',
   'env.TELEGRAM_BOT_TOKEN',
-  'env.YOOKASSA_SECRET_KEY',
-  'env.CRYPTOBOT_TOKEN',
   'env.SENTRY_AUTH_TOKEN',
   'env.UPSTASH_REDIS_REST_TOKEN',
   // PII denylist из docs/observability.md (на границах request body)
@@ -45,6 +51,14 @@ const redactPaths: string[] = [
   // код никогда их не логирует (card-secrets.ts, non-enumerable rawBody); это
   // страховочный слой на случай будущего рефакторинга. pan_masked НЕ редактируем
   // (маскированный PAN — легитимный идентификатор в логах).
+  // Тело запроса grammY: `GrammyError.payload` — ПЕРЕЧИСЛЯЕМОЕ поле, и pino
+  // сериализует его вместе с ошибкой. В сообщении о выпуске карты там лежат
+  // полный PAN и CVC, а путь `*.text` до `err.payload.text` не достаёт: у него
+  // глубина 2. Первичная защита — не логировать такие ошибки целиком
+  // (`jobs/issue-card.ts` → `logSendFailure`), это страховка на будущий код.
+  '*.payload.text',
+  '*.payload.caption',
+  'err.payload',
   '*.pan',
   '*.cvc',
   '*.cvv',
@@ -53,6 +67,11 @@ const redactPaths: string[] = [
   '*.initData',
   '*.init_data',
   '*.signature',
+  // Freekassa: `payer_account` — счёт/карта плательщика в уведомлении. Код его
+  // не логирует (в `payments.raw_payload` уходит только маска, см.
+  // `toStorableNotification`), это страховочный слой на будущий рефакторинг.
+  '*.payer_account',
+  '*.SIGN',
   'body.content',
   'body.text',
   'body.message',

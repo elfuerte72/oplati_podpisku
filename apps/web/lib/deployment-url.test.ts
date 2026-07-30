@@ -9,6 +9,100 @@ async function loadModule() {
   return await import('./deployment-url.ts');
 }
 
+describe('selfCallBaseUrl (денежный self-call на /api/payments/create)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.APP_URL = 'https://www.oplatishka.com';
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_URL;
+    delete process.env.SELF_BASE_URL;
+  });
+
+  afterEach(() => {
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_URL;
+    delete process.env.SELF_BASE_URL;
+    vi.resetModules();
+  });
+
+  it('self-host: SELF_BASE_URL приоритетнее всего (вызов замкнут в контейнере)', async () => {
+    process.env.SELF_BASE_URL = 'http://127.0.0.1:3000';
+    process.env.VERCEL_URL = 'some-hash.vercel.app';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('http://127.0.0.1:3000');
+  });
+
+  it('SELF_BASE_URL с завершающим слэшем нормализуется (иначе // в пути)', async () => {
+    process.env.SELF_BASE_URL = 'http://127.0.0.1:3000/';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('http://127.0.0.1:3000');
+    expect(`${selfCallBaseUrl()}/api/payments/create`).toBe(
+      'http://127.0.0.1:3000/api/payments/create',
+    );
+  });
+
+  it('имя сервиса в docker-сети (без домена) допустимо', async () => {
+    process.env.SELF_BASE_URL = 'http://oplatishka-web:3000';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('http://oplatishka-web:3000');
+  });
+
+  it('вся 127.0.0.0/8 и IPv6-loopback допустимы', async () => {
+    for (const url of ['http://127.0.0.2:3000', 'http://[::1]:3000', 'http://localhost:3000']) {
+      vi.resetModules();
+      process.env.SELF_BASE_URL = url;
+      const { selfCallBaseUrl } = await loadModule();
+      expect(selfCallBaseUrl()).toBe(url);
+    }
+  });
+
+  it('внешний хост в SELF_BASE_URL — ошибка старта, а не тихая утечка токена (B-4)', async () => {
+    // Переменная приоритетнее всего, а self-call несёт X-Internal-Token:
+    // опечатка отправила бы внутренний токен в чужой стек и создала там счёт.
+    for (const url of ['https://evil.example.com', 'https://www.oplatishka.com', 'http://8.8.8.8']) {
+      vi.resetModules();
+      process.env.SELF_BASE_URL = url;
+      const { selfCallBaseUrl } = await loadModule();
+      expect(() => selfCallBaseUrl()).toThrow(/SELF_BASE_URL/);
+    }
+  });
+
+  it('SELF_BASE_URL="" → игнорируется, работает прежняя Vercel-цепочка', async () => {
+    process.env.SELF_BASE_URL = '';
+    process.env.VERCEL_URL = 'branch-preview.vercel.app';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('https://branch-preview.vercel.app');
+  });
+
+  it('Vercel preview: свой host деплоя, НЕ APP_URL (там нет L&P-ключей → 401)', async () => {
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_URL = 'branch-preview.vercel.app';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('https://branch-preview.vercel.app');
+  });
+
+  it('Vercel production: тоже свой host деплоя, мимо reverse-proxy', async () => {
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_URL = 'prod-hash.vercel.app';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('https://prod-hash.vercel.app');
+  });
+
+  it('ничего не задано (локально) → APP_URL без завершающего слэша', async () => {
+    process.env.APP_URL = 'https://www.oplatishka.com/';
+    const { selfCallBaseUrl } = await loadModule();
+    expect(selfCallBaseUrl()).toBe('https://www.oplatishka.com');
+  });
+
+  it('отличается от deploymentBaseUrl: публичная ссылка идёт на APP_URL, self-call — на свой host', async () => {
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_URL = 'prod-hash.vercel.app';
+    const { selfCallBaseUrl, deploymentBaseUrl } = await loadModule();
+    expect(deploymentBaseUrl()).toBe('https://www.oplatishka.com');
+    expect(selfCallBaseUrl()).toBe('https://prod-hash.vercel.app');
+  });
+});
+
 describe('deploymentBaseUrl / miniAppUrl', () => {
   beforeEach(() => {
     vi.resetModules();

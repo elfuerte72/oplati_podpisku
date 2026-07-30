@@ -7,10 +7,12 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { formatExpires, formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
+import { currentBuyerFeePercent } from '@/lib/payments/gateway';
 import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
 
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
+import { buildBuyerFeeLine } from './templates';
 
 /**
  * Привязка веб-сессии к Telegram: deep-link `/start link_<token>` + handoff
@@ -181,6 +183,8 @@ async function buildPendingOrderHandoffText(
     if (confirmResult.qrPayload) {
       parts.push('Или отсканируй QR-код в приложении банка по СБП.');
     }
+    const feeLine = buildBuyerFeeLine(currentBuyerFeePercent(), pending.amountRub ?? 0);
+    if (feeLine) parts.push(feeLine);
     parts.push(
       `Счёт действует до ${formatExpires(confirmResult.expiresAt)}. Чек и доступы после оплаты придут сюда, в Telegram.`,
     );

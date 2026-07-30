@@ -36,6 +36,37 @@ describe('buildVpnMessageHtml', () => {
     expect(new Set([fresh, existing, refreshed]).size).toBe(3);
   });
 
+  it('бессрочная подписка: про дату не говорим вовсе', () => {
+    // «Доступ действует до 31 декабря 2037» читается как баг и только пугает.
+    const html = buildVpnMessageHtml({
+      kind: 'new',
+      ...BASE,
+      expireAt: new Date('2037-12-31T23:59:59.000Z'),
+    });
+    expect(html).not.toContain('действует до');
+    expect(html).not.toContain('2037');
+    expect(html).toContain('200 ГБ в месяц');
+  });
+
+  it('истёкшая подписка помечается честно, а не выдаётся как рабочая', () => {
+    // Регресс: раньше мёртвая ссылка отдавалась с датой из прошлого — клиент
+    // вставлял её в Happ и получал пустоту, не понимая, что не так.
+    const html = buildVpnMessageHtml({
+      kind: 'existing',
+      ...BASE,
+      expireAt: new Date('2026-06-01T00:00:00.000Z'),
+    });
+    expect(html).toContain('Срок доступа истёк');
+    expect(html).toContain('Обновить ссылку');
+    expect(html).not.toContain('Доступ действует до');
+  });
+
+  it('живой срочный доступ показывает дату как раньше', () => {
+    const html = buildVpnMessageHtml({ kind: 'new', ...BASE });
+    expect(html).toContain('Доступ действует до 21 августа 2026.');
+    expect(html).not.toContain('истёк');
+  });
+
   it('HTML-небезопасные символы во внешней ссылке экранируются', () => {
     const html = buildVpnMessageHtml({
       kind: 'new',

@@ -70,8 +70,8 @@ describe('parseCustomAmountUsd — запятая-разделитель тыс�
     expect(parseCustomAmountUsd('1,000', NORMAL)).toEqual({ kind: 'invalid' });
   });
 
-  it('«2,500» для высоколимитного → $2500', () => {
-    expect(parseCustomAmountUsd('2,500', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 250_000 });
+  it('«1,100» для высоколимитного → $1100', () => {
+    expect(parseCustomAmountUsd('1,100', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 110_000 });
   });
 
   it('«1,000.50» — тысячи + десятичная точка', () => {
@@ -91,15 +91,18 @@ describe('parseCustomAmountUsd — запятая-разделитель тыс�
   });
 });
 
-describe('parseCustomAmountUsd — высоколимитные сервисы (до $5000)', () => {
+describe('parseCustomAmountUsd — высоколимитные сервисы (до $1200)', () => {
   it('сумма >$500 проходит для Airbnb/Booking', () => {
     expect(parseCustomAmountUsd('610', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 61_000 });
-    expect(parseCustomAmountUsd('5000', 'booking')).toEqual({ kind: 'ok', usdCents: 500_000 });
+    expect(parseCustomAmountUsd('1200', 'booking')).toEqual({ kind: 'ok', usdCents: 120_000 });
   });
 
-  it('граница $5000 включительно → ok, выше → invalid', () => {
-    expect(parseCustomAmountUsd('5000', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 500_000 });
-    expect(parseCustomAmountUsd('5001', HIGH_VALUE)).toEqual({ kind: 'invalid' });
+  // Потолок опущен с $5000 до $1200 (2026-07-28) под лимит операции Freekassa
+  // 150 000 ₽: при курсе ~81 ₽ и наценке 30% $1200 это ~126 000 ₽, а прежние
+  // $5000 не влезали в лимит ни при каком курсе.
+  it('граница $1200 включительно → ok, выше → invalid', () => {
+    expect(parseCustomAmountUsd('1200', HIGH_VALUE)).toEqual({ kind: 'ok', usdCents: 120_000 });
+    expect(parseCustomAmountUsd('1201', HIGH_VALUE)).toEqual({ kind: 'invalid' });
   });
 
   it('обычный сервис на той же сумме всё равно режется на $500', () => {

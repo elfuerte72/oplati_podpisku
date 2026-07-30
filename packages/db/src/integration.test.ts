@@ -8,6 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 
 import { OrderTransitionError } from '@oplati/types';
 
+import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import {
@@ -19,11 +20,19 @@ import {
 } from './repositories/payments.ts';
 import { deleteOldMessages } from './repositories/messages.ts';
 import {
+  appendOrderEvent,
+  claimRenewalReminder,
   createDraftOrder,
   findExpiredPayableOrders,
   setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
+import { nextFreekassaNonce } from './repositories/freekassa.ts';
+import {
+  createConversation,
+  getOrCreateActiveConversation,
+} from './repositories/conversations.ts';
+import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
 import { getOrCreateUserByTelegramId } from './repositories/users.ts';
@@ -35,7 +44,13 @@ import {
   createReferralPayout,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
-import { idleAgedActiveCards, syncCardBalance, updateBalance } from './repositories/cards.ts';
+import {
+  findCardByIdForUser,
+  findCardsByUserIdForCabinet,
+  findCardsToRecycle,
+  syncCardBalance,
+  updateBalance,
+} from './repositories/cards.ts';
 import {
   findVpnSubscriptionByUserId,
   upsertVpnSubscription,
@@ -139,9 +154,10 @@ beforeAll(async () => {
   // и т.п.) мультистейтментные без `--> statement-breakpoint` — редактировать
   // применённые миграции нельзя. exec исполняет файл как есть.
   // Supabase-роли, на которые ссылаются RLS-политики/GRANT'ы миграций.
-  await client.exec(
-    'CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;',
-  );
+  // ТОТ ЖЕ DDL, что гоняет `db:init-roles` на боевом контуре (E-9): раньше здесь
+  // роли создавались без BYPASSRLS у service_role, и тесты проверяли не тот
+  // контур, что едет в прод.
+  await client.exec(bootstrapRolesSql());
   const dir = join(import.meta.dirname, '..', 'migrations');
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
@@ -744,52 +760,90 @@ describe('createDraftOrder — снапшот надбавки за карту �
   });
 });
 
-describe('idleAgedActiveCards (M5)', () => {
-  it('идлит active-карту с last_used_at=NULL по created_at (>90д), свежую не трогает', async () => {
+describe('срок жизни карты 180 дней (S-9)', () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  async function makeCard(opts: {
+    userId: string;
+    status: 'active' | 'idle' | 'recycled';
+    ageDays: number;
+    lastUsedAgeDays?: number;
+    recycledAt?: Date;
+  }) {
+    return firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: opts.userId,
+          providerCardId: `pc-life-${++seq}`,
+          panMasked: '400000******0009',
+          status: opts.status,
+          createdAt: new Date(Date.now() - opts.ageDays * dayMs),
+          ...(opts.lastUsedAgeDays !== undefined
+            ? { lastUsedAt: new Date(Date.now() - opts.lastUsedAgeDays * dayMs) }
+            : {}),
+          ...(opts.recycledAt ? { recycledAt: opts.recycledAt } : {}),
+        })
+        .returning(),
+      'card',
+    );
+  }
+
+  it('РЕГРЕСС: закрывает ACTIVE-карту старше 180д — регулярно доливаемая не идлилась и не закрывалась НИКОГДА', async () => {
     const user = await makeUser();
-    const dayMs = 24 * 60 * 60 * 1000;
+    // Клиент доливал карту неделю назад → last_used_at свежий → idle-порог (90д)
+    // не сработает никогда, а раньше release требовал status='idle'.
+    const card = await makeCard({
+      userId: user.id,
+      status: 'active',
+      ageDays: 200,
+      lastUsedAgeDays: 7,
+    });
 
-    const old = firstOf(
-      await db
-        .insert(schema.cards)
-        .values({
-          userId: user.id,
-          providerCardId: `pc-old-${++seq}`,
-          panMasked: '400000******0001',
-          status: 'active',
-          createdAt: new Date(Date.now() - 91 * dayMs),
-          // lastUsedAt НЕ задаём → NULL, как у реальных выпущенных карт
-        })
-        .returning(),
-      'old card',
-    );
-    const fresh = firstOf(
-      await db
-        .insert(schema.cards)
-        .values({
-          userId: user.id,
-          providerCardId: `pc-fresh-${++seq}`,
-          panMasked: '400000******0002',
-          status: 'active',
-          createdAt: new Date(Date.now() - 10 * dayMs),
-        })
-        .returning(),
-      'fresh card',
-    );
+    const toRecycle = await findCardsToRecycle(db);
+    expect(toRecycle.map((c) => c.id)).toContain(card.id);
+  });
 
-    const idled = await idleAgedActiveCards(db);
-    expect(idled).toBe(1);
+  it('закрывает idle-карту старше 180д и НЕ трогает моложе 180д', async () => {
+    const user = await makeUser();
+    const old = await makeCard({ userId: user.id, status: 'idle', ageDays: 181 });
+    const young = await makeCard({ userId: user.id, status: 'idle', ageDays: 179 });
 
-    const oldRow = firstOf(
-      await db.select().from(schema.cards).where(eq(schema.cards.id, old.id)),
-      'old refetch',
-    );
-    const freshRow = firstOf(
-      await db.select().from(schema.cards).where(eq(schema.cards.id, fresh.id)),
-      'fresh refetch',
-    );
-    expect(oldRow.status).toBe('idle'); // раньше NULL last_used_at не матчился — баг M5
-    expect(freshRow.status).toBe('active');
+    const ids = (await findCardsToRecycle(db)).map((c) => c.id);
+    expect(ids).toContain(old.id);
+    expect(ids).not.toContain(young.id);
+  });
+
+  it('уже закрытую карту не берёт повторно (recycled_at IS NULL)', async () => {
+    const user = await makeUser();
+    const done = await makeCard({
+      userId: user.id,
+      status: 'recycled',
+      ageDays: 300,
+      recycledAt: new Date(),
+    });
+
+    const ids = (await findCardsToRecycle(db)).map((c) => c.id);
+    expect(ids).not.toContain(done.id);
+  });
+
+  it('кабинет скрывает просроченную карту, даже пока cron до неё не дошёл', async () => {
+    const user = await makeUser();
+    const expired = await makeCard({ userId: user.id, status: 'active', ageDays: 181 });
+    const alive = await makeCard({ userId: user.id, status: 'active', ageDays: 30 });
+
+    const ids = (await findCardsByUserIdForCabinet(db, user.id)).map((c) => c.id);
+    expect(ids).toContain(alive.id);
+    expect(ids).not.toContain(expired.id);
+  });
+
+  it('реквизиты просроченной карты не отдаются по card-details', async () => {
+    const user = await makeUser();
+    const expired = await makeCard({ userId: user.id, status: 'idle', ageDays: 181 });
+    const alive = await makeCard({ userId: user.id, status: 'active', ageDays: 30 });
+
+    expect(await findCardByIdForUser(db, expired.id, user.id)).toBeNull();
+    expect(await findCardByIdForUser(db, alive.id, user.id)).not.toBeNull();
   });
 });
 
@@ -960,5 +1014,230 @@ describe('upsertVpnSubscription (снимок VPN-ссылки Remnawave, оди
   it('у пользователя без подписки find возвращает null', async () => {
     const user = await makeUser();
     expect(await findVpnSubscriptionByUserId(db, user.id)).toBeNull();
+  });
+});
+
+describe('nextFreekassaNonce (последовательность Postgres, миграция 0026)', () => {
+  it('монотонно возрастает при ПАРАЛЛЕЛЬНЫХ вызовах', async () => {
+    // Ровно то, чего не даёт Date.now(): два конкурентных confirm_order в одну
+    // миллисекунду получили бы одинаковый nonce, и провайдер отверг бы второй
+    // запрос («должен всегда быть больше предыдущего»).
+    const values = await Promise.all(
+      Array.from({ length: 25 }, () => nextFreekassaNonce(db)),
+    );
+
+    expect(new Set(values).size).toBe(values.length);
+    const sorted = [...values].sort((a, b) => a - b);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i]).toBeGreaterThan(sorted[i - 1] as number);
+    }
+  });
+
+  it('стартует выше unix-времени в секундах — не конфликтует с прежними nonce = time()', async () => {
+    // Если по магазину уже слались запросы с nonce = time(), счётчик с единицы
+    // был бы МЕНЬШЕ использованного и провайдер отвергал бы всё подряд.
+    const value = await nextFreekassaNonce(db);
+    expect(value).toBeGreaterThan(2_000_000_000);
+    expect(Number.isSafeInteger(value)).toBe(true);
+  });
+});
+
+describe('countInvoiceConversion (метрика «счёт выставлен → оплачен»)', () => {
+  const WINDOW = { windowMinutes: 70, graceMinutes: 10 };
+
+  /**
+   * События вставляем НАПРЯМУЮ с явным `created_at`: окно метрики сдвинуто в
+   * прошлое, а `order_events` append-only (триггер 0018 запрещает UPDATE) —
+   * задним числом подвинуть время у обычного перехода нельзя.
+   */
+  async function addEvent(orderId: string, eventType: string, minutesAgo: number) {
+    await db.execute(sql`
+      INSERT INTO order_events (order_id, actor_type, event_type, created_at)
+      VALUES (${orderId}, 'system', ${eventType}, now() - make_interval(mins => ${minutesAgo}::int))
+    `);
+  }
+
+  async function makeOrder(userId: string) {
+    return await createDraftOrder(db, {
+      userId,
+      status: 'pending_payment',
+      customServiceDescription: 'conversion-test order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+  }
+
+  /**
+   * База PGlite общая на весь сьют, поэтому меряем ДЕЛЬТУ, а не абсолютные
+   * числа: иначе тесты зависели бы от порядка исполнения соседей.
+   */
+  async function delta(fn: () => Promise<void>) {
+    const before = await countInvoiceConversion(db, WINDOW);
+    await fn();
+    const after = await countInvoiceConversion(db, WINDOW);
+    return { invoiced: after.invoiced - before.invoiced, paid: after.paid - before.paid };
+  }
+
+  it('считает выставленные и оплаченные в окне', async () => {
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const paidOrder = await makeOrder(user.id);
+      const unpaidOrder = await makeOrder(user.id);
+      await addEvent(paidOrder.id, 'payment_invoice_created', 30);
+      await addEvent(paidOrder.id, 'payment_succeeded', 25);
+      await addEvent(unpaidOrder.id, 'payment_invoice_created', 30);
+    });
+
+    expect(res).toEqual({ invoiced: 2, paid: 1 });
+  });
+
+  it('один заказ считается ОДИН раз, даже если счёт выставлялся повторно', async () => {
+    // Повторный confirm пишет второе `payment_invoice_created` (duplicate:true) —
+    // без DISTINCT заказ удваивал бы знаменатель и занижал конверсию.
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const order = await makeOrder(user.id);
+      await addEvent(order.id, 'payment_invoice_created', 30);
+      await addEvent(order.id, 'payment_invoice_created', 29);
+    });
+
+    expect(res.invoiced).toBe(1);
+  });
+
+  it('свежие счета исключены отсрочкой, старые — окном', async () => {
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const tooFresh = await makeOrder(user.id);
+      const tooOld = await makeOrder(user.id);
+      await addEvent(tooFresh.id, 'payment_invoice_created', 2);
+      await addEvent(tooOld.id, 'payment_invoice_created', 500);
+    });
+
+    expect(res.invoiced).toBe(0);
+  });
+
+  it('оплата ПОЗЖЕ окна всё равно засчитывается заказу', async () => {
+    // Считаем судьбу счёта, а не события в окне: иначе оплата на 71-й минуте
+    // выглядела бы как неоплаченный счёт и давала ложный алёрт.
+    const user = await makeUser();
+
+    const res = await delta(async () => {
+      const order = await makeOrder(user.id);
+      await addEvent(order.id, 'payment_invoice_created', 60);
+      await addEvent(order.id, 'payment_succeeded', 1);
+    });
+
+    expect(res).toEqual({ invoiced: 1, paid: 1 });
+  });
+});
+
+describe('claimRenewalReminder (атомарный дедуп напоминаний, B-2)', () => {
+  async function makeCompletedOrder(userId: string) {
+    return await createDraftOrder(db, {
+      userId,
+      status: 'completed',
+      customServiceDescription: 'renewal-test order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+  }
+
+  it('первый claim выигрывает, второй молча проигрывает', async () => {
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    expect(await claimRenewalReminder(db, order.id)).toBe(true);
+    expect(await claimRenewalReminder(db, order.id)).toBe(false);
+  });
+
+  it('ПАРАЛЛЕЛЬНЫЕ прогоны джоба: ровно один claim и ровно одно событие', async () => {
+    // Прежняя схема «выбрать через NOT EXISTS → отправить → записать» атомарной
+    // не была, и клиент получал напоминание дважды.
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => claimRenewalReminder(db, order.id)),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+
+    const events = await db
+      .select()
+      .from(schema.orderEvents)
+      .where(eq(schema.orderEvents.orderId, order.id));
+    expect(events.filter((e) => e.eventType === 'renewal_reminder_sent')).toHaveLength(1);
+  });
+
+  it('уникальность частичная: другие типы событий по тому же заказу не мешают', async () => {
+    const user = await makeUser();
+    const order = await makeCompletedOrder(user.id);
+
+    await appendOrderEvent(db, { orderId: order.id, eventType: 'note', actorType: 'system' });
+    await appendOrderEvent(db, { orderId: order.id, eventType: 'note', actorType: 'system' });
+    expect(await claimRenewalReminder(db, order.id)).toBe(true);
+  });
+
+  it('заказы независимы: claim по одному не блокирует другой', async () => {
+    const user = await makeUser();
+    const a = await makeCompletedOrder(user.id);
+    const b = await makeCompletedOrder(user.id);
+
+    expect(await claimRenewalReminder(db, a.id)).toBe(true);
+    expect(await claimRenewalReminder(db, b.id)).toBe(true);
+  });
+});
+
+describe('getOrCreateActiveConversation (гонка первого сообщения)', () => {
+  it('ПАРАЛЛЕЛЬНЫЕ вызовы дают ОДИН диалог — история не расщепляется', async () => {
+    const user = await makeUser();
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        getOrCreateActiveConversation(db, { userId: user.id, channel: 'telegram' }),
+      ),
+    );
+
+    const ids = new Set(results.map((r) => r.id));
+    expect(ids.size).toBe(1);
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+  });
+
+  it('каналы независимы: telegram и web — разные диалоги', async () => {
+    const user = await makeUser();
+    const tg = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'telegram' });
+    const web = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    expect(tg.id).not.toBe(web.id);
+  });
+
+  it('«Очистить диалог» по-прежнему создаёт НОВЫЙ диалог — уникального индекса тут быть не должно', async () => {
+    const user = await makeUser();
+    const first = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    const fresh = await createConversation(db, { userId: user.id, channel: 'web' });
+    expect(fresh.id).not.toBe(first.id);
+
+    // Порядок задаём ЯВНО: у PGlite часы миллисекундные (проверено — шесть
+    // вставок подряд дают два уникальных `now()`), поэтому без этого тест
+    // плавал бы. В самом запросе теперь есть тай-брейкер по id, но полагаться
+    // в тесте на случайный порядок uuid — не проверка, а совпадение.
+    await db.execute(sql`
+      UPDATE conversations SET created_at = now() + interval '1 second' WHERE id = ${fresh.id}
+    `);
+
+    // Дальше подхватывается самый свежий.
+    const resumed = await getOrCreateActiveConversation(db, { userId: user.id, channel: 'web' });
+    expect(resumed.id).toBe(fresh.id);
+    expect(resumed.created).toBe(false);
+
+    // И ровно два диалога: геттер не создал третьего.
+    const rows = await db
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.userId, user.id));
+    expect(rows).toHaveLength(2);
   });
 });

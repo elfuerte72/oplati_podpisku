@@ -14,6 +14,21 @@ import { z } from 'zod';
  * Sprint-1 опциональные: Telegram/Upstash — помечены `.optional()`.
  */
 
+/**
+ * Base URL API Love&Pay по умолчанию.
+ *
+ * ⚠️ Суффикс `/api/v2` — ОБЯЗАТЕЛЬНАЯ часть значения, а не украшение: клиент берёт
+ * `pathname` из этого URL и подписывает им HMAC (`signPath` в `lib/loveandpay/client.ts`).
+ *
+ * Письмо провайдера от 2026-07-29 называет новым base URL голый
+ * `https://api.prod.loveandpay.io` — записать его буквально нельзя. Живая проба с
+ * прод-VPS: `POST /api/v2/invoices` → `401 MISSING_HEADERS` (путь верный, ждёт
+ * заголовки), `POST /invoices` → `404 Not found`. То есть хост сменился, а префикс
+ * версии сохранён. Старый `https://loveandpay.io/api/v2` провайдер гасит после
+ * 2026-08-01.
+ */
+export const LOVEANDPAY_DEFAULT_BASE_URL = 'https://api.prod.loveandpay.io/api/v2';
+
 // -------------------------------------------------------------------------
 // Хелперы для опциональных env-переменных
 // -------------------------------------------------------------------------
@@ -33,6 +48,31 @@ function optionalEnvString(inner: z.ZodTypeAny = z.string().min(1)): z.ZodType {
 }
 
 const optionalUrl = () => optionalEnvString(z.string().url());
+
+/**
+ * Адрес указывает «на самих себя»? Пускаем loopback и бездоменные имена — так
+ * выглядит имя сервиса внутри docker-сети (`oplatishka-web`, `localhost`).
+ * Публичный FQDN или внешний IP — нет.
+ *
+ * Нужно для `SELF_BASE_URL`: он приоритетнее всех прочих баз, а self-call несёт
+ * `X-Internal-Token`, поэтому ошибочное значение — это утечка внутреннего
+ * токена наружу плюс счёт, созданный в чужом стеке (B-4).
+ */
+function isSelfAddressableUrl(value: string): boolean {
+  let host: string;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    return false;
+  }
+  // URL оборачивает IPv6 в скобки: `http://[::1]:3000` → hostname `[::1]`.
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (bare === 'localhost' || bare === '::1') return true;
+  // Вся сеть 127.0.0.0/8, а не только 127.0.0.1.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare)) return true;
+  // Имя сервиса в docker-сети: без точек и без двоеточий.
+  return !bare.includes('.') && !bare.includes(':');
+}
 
 // -------------------------------------------------------------------------
 // Схемы
@@ -117,7 +157,7 @@ const serverEnvSchema = z.object({
   LOVEANDPAY_API_KEY: optionalEnvString(),
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
   LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
-  LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+  LOVEANDPAY_BASE_URL: z.string().url().default(LOVEANDPAY_DEFAULT_BASE_URL),
   // Исходящий CONNECT-прокси для запросов к L&P (верификация доступа по IP, 2026-07-15:
   // L&P принимает запросы только с задекларированных IP; у Vercel egress динамический).
   // Формат: http://user:pass@host:port (VPS с фиксированным IP). TLS идёт насквозь —
@@ -127,6 +167,101 @@ const serverEnvSchema = z.object({
   // Ниже лимита `/api/payments/create` вернёт below_min_amount ДО вызова L&P,
   // чтобы не ловить INTERNAL_ERROR на стороне провайдера.
   LOVEANDPAY_MIN_AMOUNT_RUB: z.coerce.number().int().min(500).default(500),
+
+  // ─── Freekassa — второй шлюз приёма рублей ───────────────────────────────
+  // Интеграция строго через API (не SCI-форма), решение владельца 2026-07-26.
+  // ⚠️ `FREEKASSA_SECRET_WORD_1` намеренно ОТСУТСТВУЕТ в схеме: оно подписывает
+  // только SCI-форму, которую мы не используем. В env прода оно лежит про запас
+  // (переход на SCI не потребовал бы беготни по кабинету), но кодом не читается —
+  // объявление его здесь создавало бы ложное впечатление, что читается.
+  FREEKASSA_API_KEY: optionalEnvString(),
+  // Секретное слово 2 — проверка подписи ВХОДЯЩЕГО уведомления (MD5).
+  FREEKASSA_SECRET_WORD_2: optionalEnvString(),
+  // ID магазина; обязателен в каждом запросе к API. Приходит числом.
+  FREEKASSA_SHOP_ID: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().int().positive().optional(),
+  ),
+  FREEKASSA_BASE_URL: z.string().url().default('https://api.fk.life/v1'),
+  // Способ оплаты по умолчанию (`i`): 44 — СБП, 36 — карты РФ. Выбор способа
+  // клиентом означал бы новый элемент UI сразу в трёх местах (веб, Mini App,
+  // бот) — пока шлём один и тот же (открытый вопрос §7 ТЗ).
+  FREEKASSA_METHOD_ID: z.coerce.number().int().positive().default(44),
+  // Значение поля `ip` (IP ПЛАТЕЛЬЩИКА) в запросе `/orders/create`, когда
+  // реальный неизвестен: счёт выставляет сервер внутренним self-call'ом, а у
+  // заказов из бота и Mini App клиентского IP нет в принципе. `127.0.0.1`
+  // провайдер блокирует, поэтому шлём публичный IP нашего VPS.
+  // ⚠️ Это НЕ запасной платёжный шлюз — тот за `PAYMENT_AUTO_FALLBACK`.
+  FREEKASSA_FALLBACK_IP: optionalEnvString(z.string().ip()).pipe(
+    z.string().default('187.124.172.104'),
+  ),
+  // Сколько живёт счёт Freekassa. Провайдер срок жизни заказа НЕ отдаёт (в
+  // ответе `/orders/create` его нет) — это НАШ срок ожидания оплаты, по нему
+  // выравнивается `orders.expires_at`. Умышленно отдельная переменная, а не
+  // переиспользование `INVOICE_TTL_HOURS` L&P: у провайдеров срок разный, и
+  // копирование вслепую даёт либо преждевременное захоронение оплаченного
+  // заказа, либо протухший курс. Уточнить у провайдера при смоуке.
+  FREEKASSA_INVOICE_TTL_HOURS: z.coerce.number().int().min(1).max(72).default(1),
+  // Минимальная сумма счёта в рублях. Дефолт 500 — решение владельца
+  // 2026-07-26: тот же порог, что у L&P. Своего минимума провайдер не
+  // публиковал, но одинаковый порог у обоих шлюзов означает, что переключение
+  // не меняет, какие заказы вообще можно оформить, и совпадает с полом витрины
+  // (`lib/catalog/build.ts` прячет тарифы дешевле `LOVEANDPAY_MIN_AMOUNT_RUB`).
+  // 0 — аварийный выключатель гейта, если провайдер окажется терпимее.
+  // ⚠️ Поднимать выше 500 нельзя без синхронного подъёма пола витрины: иначе
+  // клиент оформит заказ, который `payments/create` отвергнет как
+  // below_min_amount уже после выбора тарифа.
+  FREEKASSA_MIN_AMOUNT_RUB: z.coerce.number().int().nonnegative().default(500),
+  // Максимальная сумма счёта в рублях. Лимит операции у провайдера — 150 000 ₽
+  // и по СБП (`i=44`), и по картам РФ (`i=36`); снято из кабинета 2026-07-28.
+  // Дефолт 140 000 — запас на комиссию покупателя (6% СБП / 7% карты
+  // накручиваются на нашу сумму уже на стороне провайдера, и неизвестно,
+  // считается лимит до или после неё). 0 — выключатель гейта.
+  // У L&P потолка нет (`maxAmountRubFor` вернёт 0), поэтому переключение шлюза
+  // меняет и максимум оформляемого заказа — верхний кап витрины держится в
+  // `HIGH_VALUE_MAX_AMOUNT_USD` и рассчитан на этот лимит.
+  FREEKASSA_MAX_AMOUNT_RUB: z.coerce.number().int().nonnegative().default(140_000),
+  // Комиссия, которую провайдер накручивает ПЛАТЕЛЬЩИКУ поверх нашего счёта
+  // (ползунок «Магазин ↔ Покупатель» в кабинете; 2026-07-28 выкручен на
+  // покупателя: 6% СБП / 7% карты). Мы её не считаем и не берём — только
+  // ПОКАЗЫВАЕМ, чтобы сумма на странице провайдера не была сюрпризом.
+  // ⚠️ Значение обязано совпадать с ползунком в кабинете: разъедутся — клиенту
+  // будем обещать не ту цифру. 0 → тексты о комиссии не показываются вовсе.
+  FREEKASSA_BUYER_FEE_PERCENT: z.coerce.number().min(0).max(50).default(6),
+  // Allowlist отправителей уведомления, через запятую. НЕ задан → используем
+  // список из доки, но несовпадение только алёртим (подпись MD5 остаётся
+  // единственным жёстким гейтом). Задан → несовпадение отвергает уведомление.
+  // Разделение сделано намеренно: провайдер может сменить адреса молча, и
+  // жёсткий allowlist по умолчанию положил бы приём денег без единого симптома,
+  // кроме тишины.
+  FREEKASSA_ALLOWED_IPS: optionalEnvString(),
+
+  // Кто принимает рубли ПРЯМО СЕЙЧАС. Меняется значением env + перезапуском
+  // контейнера, без правок кода и релиза. Влияет ТОЛЬКО на создание нового
+  // счёта (`/api/payments/create`); вебхуки ОБОИХ провайдеров работают всегда —
+  // в момент переключения у части клиентов уже выставлены счета прежнего
+  // шлюза, и закрытый вебхук означал бы «деньги списаны, заказ не оплачен».
+  // Дефолт `loveandpay` намеренно: он проверен живыми деньгами, Freekassa —
+  // ещё ни одним платежом. Потеря env возвращает контур в известное рабочее
+  // состояние, а не в неопробованное.
+  PAYMENT_PRIMARY_PROVIDER: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.enum(['loveandpay', 'freekassa']).default('loveandpay'),
+  ),
+
+  // Автоматический фоллбэк на ВТОРОЙ шлюз, когда основной не отвечает
+  // (таймаут / сетевой сбой / 5xx после ретраев). Без него клиент в этот момент
+  // видит «технический сбой, попробуй позже» — а «позже» не помогает, если шлюз
+  // лёг всерьёз.
+  //
+  // ⚠️ Это НЕ замена ручному переключателю. Детектор ловит только транспорт;
+  // самый частый реальный отказ — «шлюз отвечает 200, ссылку выдаёт, а платежи
+  // у клиентов не проходят» — для кода выглядит успехом, и фоллбэк не сработает.
+  // Дефолт ВЫКЛЮЧЕНО: включать после того, как ОБА шлюза проверены живыми
+  // деньгами — иначе сбой основного увёл бы поток на непроверенный контур.
+  PAYMENT_AUTO_FALLBACK: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
 
   // app.pay.space (MVP) — выпуск виртуальных USD-карт
   PAYSPACE_API_KEY: optionalEnvString(),
@@ -173,6 +308,12 @@ const serverEnvSchema = z.object({
     .nonnegative()
     .max(100_000)
     .default(200),
+  // Срок подписки в календарных месяцах; 0 = БЕЗ ОГРАНИЧЕНИЯ (дефолт, решение
+  // владельца 2026-07-29: VPN бесплатный, месячный срок давал только мёртвую
+  // ссылку у клиента). Ненулевое значение возвращает срочные подписки — тогда
+  // же снова понадобится продление по оплате. Кап 120 месяцев: дальше начинается
+  // сентинел безлимита, и «срочная» подписка стала бы неотличима от бессрочной.
+  REMNAWAVE_SUBSCRIPTION_MONTHS: z.coerce.number().int().nonnegative().max(120).default(0),
 
   // Снапшот комиссии (10 = 10%); дефолт совпадает с константой в propose-order
   COMMISSION_PERCENT: z.coerce.number().int().min(0).max(50).default(10),
@@ -225,7 +366,21 @@ const serverEnvSchema = z.object({
   // в контейнере задаётся `http://127.0.0.1:3000` — денежный вызов идёт внутрь
   // собственного процесса, не выходя в интернет и не завися от Traefik/DNS.
   // Не задан → прежняя цепочка VERCEL_URL → APP_URL (Vercel не затронут).
-  SELF_BASE_URL: optionalUrl(),
+  //
+  // ⚠️ Значение обязано указывать «на себя», и это проверяется (B-4). Переменная
+  // приоритетнее всего остального, а self-call несёт `X-Internal-Token` —
+  // опечатка во внешний хост отправила бы туда наш внутренний токен и создала
+  // счёт в чужом стеке. Пускаем только loopback и бездоменное имя (имя сервиса
+  // в docker-сети вроде `oplatishka-web`); публичный FQDN или внешний IP —
+  // ошибка старта, а не тихая утечка.
+  SELF_BASE_URL: optionalUrl().refine(
+    (v) => v === undefined || v === '' || isSelfAddressableUrl(v),
+    {
+      message:
+        'SELF_BASE_URL должен указывать на сам сервис: loopback (http://127.0.0.1:3000) ' +
+        'или имя сервиса в docker-сети без точек. Внешний хост запрещён — self-call несёт X-Internal-Token.',
+    },
+  ),
 
   // Секрет cron-endpoint'ов. Vercel Cron шлёт его как `Authorization: Bearer`.
   // Без него `authorizeCron` пускает только NODE_ENV=development (fail-closed
@@ -241,10 +396,15 @@ const serverEnvSchema = z.object({
   SENTRY_ALERT_WEBHOOK_SECRET: optionalEnvString(),
   ALERT_TELEGRAM_CHAT_ID: optionalEnvString(),
 
-  // Отдельный alert-бот (@oplatishkaAlert_bot) — канал ВСЕХ операционных алёртов
-  // (notifyOps: proxy-health/недоплаты; Sentry-relay). Изолирован от прод-бота
-  // (клиенты) и dev-бота (тестирование фич перед PR): наблюдатель не должен
-  // зависеть от наблюдаемого. Не задан → fallback на прод-бот (backward-compat).
+  // Отдельный alert-бот — канал ВСЕХ операционных алёртов (notifyOps:
+  // proxy-health/недоплаты; Sentry-relay). Изолирован от прод-бота (клиенты) и
+  // dev-бота (тестирование фич перед PR): наблюдатель не должен зависеть от
+  // наблюдаемого. С 2026-07-26 здесь токен @hermesbymxpk_bot — того же бота, через
+  // которого владелец говорит со своим Hermes-агентом, чтобы алёрты и разговор с
+  // ним были в одном диалоге. Он тоже только ОТПРАВЛЯЕТ отсюда: апдейты его
+  // webhook'а слушает агент, а Telegram не шлёт боту события о его же исходящих
+  // сообщениях, так что каналы не пересекаются.
+  // Не задан → fallback на прод-бот (backward-compat).
   ALERT_BOT_TOKEN: optionalEnvString(),
 
   // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
@@ -273,9 +433,16 @@ const serverEnvSchema = z.object({
   // per-IP лимит, CWE-348), доверенный источник — ПРАВЫЙ элемент
   // `x-forwarded-for`. Включать ТОЛЬКО после живой проверки контракта Traefik
   // на тестовом контуре (Фаза 3.4 docs/dokploy-migration-plan.md).
+  // ДЕФОЛТ `traefik` (сменён с `vercel` 2026-07-28): прод и dev живут за
+  // Dokploy-Traefik, Vercel остался только дальним резервом отката. Прежний
+  // дефолт был небезопасным — потеря переменной (а правка env через API Dokploy
+  // перезаписывает его ЦЕЛИКОМ) молча включала доверие к `x-real-ip`, который
+  // за Traefik подделывается клиентом, и per-IP лимит обходился полностью
+  // (CWE-348, инвариант 9). Ошибиться в сторону строгого режима безопаснее:
+  // на Vercel неверный режим даёт слишком строгий лимит, а не дырявый.
   CLIENT_IP_MODE: z.preprocess(
     (v) => (v === '' ? undefined : v),
-    z.enum(['vercel', 'traefik']).default('vercel'),
+    z.enum(['vercel', 'traefik']).default('traefik'),
   ),
   RATE_LIMIT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
@@ -292,7 +459,35 @@ const serverEnvSchema = z.object({
   // Vercel runtime (приходит автоматически)
   VERCEL_ENV: z.enum(['development', 'preview', 'production']).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).optional(),
-});
+})
+  // Гейт «выбран провайдер — обязаны быть его ключи». Без него неизбежен
+  // сценарий «переключили флаг, забыли ключ», и узнаём мы о нём от первого
+  // клиента, а не от валидации: контейнер поднялся бы, кнопка «Оплатить»
+  // отвечала бы 500.
+  //
+  // ⚠️ Гейт ОДНОСТОРОННИЙ — проверяются только ключи Freekassa. Симметричная
+  // проверка ключей L&P сломала бы dev-стенд: там платёжных ключей нет
+  // НАМЕРЕННО (иначе тестовый заказ выставит реальный счёт), а
+  // `PAYMENT_PRIMARY_PROVIDER` там не задан и берёт дефолт `loveandpay` —
+  // приложение просто перестало бы стартовать. Значение `freekassa`, наоборот,
+  // задаётся руками и только на проде: раз задали — ключи обязаны быть.
+  .superRefine((env, ctx) => {
+    if (env.PAYMENT_PRIMARY_PROVIDER !== 'freekassa') return;
+    const required = [
+      ['FREEKASSA_API_KEY', env.FREEKASSA_API_KEY],
+      ['FREEKASSA_SHOP_ID', env.FREEKASSA_SHOP_ID],
+      ['FREEKASSA_SECRET_WORD_2', env.FREEKASSA_SECRET_WORD_2],
+    ] as const;
+    for (const [name, value] of required) {
+      if (value === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `обязателен при PAYMENT_PRIMARY_PROVIDER=freekassa`,
+        });
+      }
+    }
+  });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 

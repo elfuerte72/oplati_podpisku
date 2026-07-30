@@ -16,20 +16,52 @@ permissions:
   contents: read
 
 jobs:
+  # Репозиторий ПУБЛИЧНЫЙ, а `.gitignore` ловит только известные имена файлов
+  # (`.env*`). Секрет, вписанный прямо в код, конфиг или тестовую фикстуру, он не
+  # увидит — а в проекте уже был случай засвеченного токена бота. Сканер смотрит
+  # содержимое, а не имена.
+  #
+  # ГЛУБИНА СКАНА ЗАВИСИТ ОТ СОБЫТИЯ (снято прогоном 2026-07-25, в доке action'а
+  # это не выделено):
+  #   pull_request      — только коммиты самого PR (у нашего первого прогона это
+  #                       был 1 коммит, 5.86 КБ), `fetch-depth: 0` на это не влияет;
+  #   workflow_dispatch — ВСЯ история (195 коммитов, 7.26 МБ);
+  #   schedule          — то же, еженедельно по понедельникам.
+  # То есть PR-чек ловит новую утечку, а исторические находит только полный
+  # прогон. Оба нужны, и по этой же причине `fetch-depth: 0` оставлен.
+  #
+  # Полный прогон 2026-07-25: 1 находка, разобрана вручную — плейсхолдер
+  # `sk_live_abc123` из обучающего чек-листа (раздел «Never Do This»), внесён в
+  # `.gitleaksignore` с обоснованием. Реальных утечек в истории нет, поэтому чек
+  # блокирующий, без `continue-on-error`.
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Нужна полная история — иначе прогон по расписанию не увидит секрет,
+          # удалённый следующим коммитом: в объектах он остаётся, а репозиторий
+          # публичный.
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   dependency-audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.12.0
-          run_install: false
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: pnpm
@@ -50,16 +82,17 @@ jobs:
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
           # Намерение — гейтить только production (runtime) зависимости,

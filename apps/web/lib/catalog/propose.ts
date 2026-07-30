@@ -8,6 +8,12 @@ import { pricingPolicy } from '@oplati/types';
 import { formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import {
+  currentBuyerFeePercent,
+  minAmountRubFor,
+  primaryPaymentGateway,
+} from '@/lib/payments/gateway';
+import { MIN_AMOUNT_USD, maxAmountUsdFor } from '@/lib/telegram/amount';
+import {
   OrderAmountOutOfBoundsError,
   OrderBelowMinimumError,
   OrderCapExceededError,
@@ -52,6 +58,12 @@ export type ProposeOrderCard = {
   totalKopecks: number;
   expiresAt: string;
   isCustom: boolean;
+  /**
+   * Надбавка платёжной системы на плательщика в процентах (0 — её нет).
+   * Считается на сервере по текущему шлюзу и едет вместе с картой заказа:
+   * предупреждение о ней должно быть на том же экране, где кнопка «Оплатить».
+   */
+  buyerFeePercent: number;
 };
 
 export type ProposeFromCatalogError =
@@ -79,13 +91,18 @@ const FAIL_TEXT: Record<ProposeFromCatalogError, string> = {
   service_unavailable:
     'Этот сервис временно недоступен. Выбери другой или напиши в чат — подключу оператора.',
   tier_not_found: 'Такого тарифа уже нет. Открой список заново или напиши в чат.',
-  amount_required: 'Для этого сервиса нужна сумма в долларах. Напиши число от $1 до $500.',
+  // ⚠️ Границы НЕ зашивать: потолок зависит от сервиса ($1200 у пополнений
+  // против $500 у остальных), а пол — от env активного шлюза. Зашитые «до $500»
+  // и «500 ₽» врали клиенту, как только значения разошлись (аудит 2026-07-28).
+  amount_required: 'Для этого сервиса нужна сумма в долларах — напиши число.',
   order_cap_exceeded:
     'Лимит новых заказов на сегодня исчерпан. Напиши в чат — подключу оператора.',
+  // Оба текста подставляются динамически (см. `boundsText`/`belowMinText`);
+  // строки здесь — фоллбэк, если лимит по какой-то причине неизвестен.
   amount_out_of_bounds:
-    'Сумма заказа должна быть от $1 до $500. Для больших сумм напиши в чат — оформим через оператора.',
+    'Сумма заказа вне допустимых границ. Для больших сумм напиши в чат — оформим через оператора.',
   below_min:
-    'Минимальная сумма заказа — 500 ₽ (ограничение оплаты). Выбери тариф подороже или оплати сразу несколько подписок. Нужна именно эта сумма — напиши в чат, подключу оператора.',
+    'Сумма заказа ниже минимума платёжной системы. Выбери тариф подороже или оплати сразу несколько подписок. Нужна именно эта сумма — напиши в чат, подключу оператора.',
   propose_failed:
     'Не получилось создать заказ. Попробуй ещё раз или напиши в чат — подключу оператора.',
 };
@@ -207,6 +224,7 @@ export async function proposeFromCatalog(
         totalKopecks: result.totalRubKopecks,
         expiresAt: result.expiresAt,
         isCustom: false,
+        buyerFeePercent: currentBuyerFeePercent(),
       },
     };
   } catch (err) {
@@ -216,11 +234,19 @@ export async function proposeFromCatalog(
     }
     if (err instanceof OrderAmountOutOfBoundsError) {
       log.warn({ event: 'catalog.propose.bounds', channel, slug });
-      return fail('amount_out_of_bounds');
+      return {
+        ok: false,
+        error: 'amount_out_of_bounds',
+        text: `Сумма заказа должна быть от $${MIN_AMOUNT_USD} до $${maxAmountUsdFor(slug)}. Для больших сумм напиши в чат — оформим через оператора.`,
+      };
     }
     if (err instanceof OrderBelowMinimumError) {
       log.warn({ event: 'catalog.propose.below_min', channel, slug });
-      return fail('below_min');
+      return {
+        ok: false,
+        error: 'below_min',
+        text: `Минимальная сумма заказа — ${minAmountRubFor(primaryPaymentGateway())} ₽ (ограничение оплаты). Выбери тариф подороже или оплати сразу несколько подписок. Нужна именно эта сумма — напиши в чат, подключу оператора.`,
+      };
     }
     log.error({ event: 'catalog.propose.failed', channel, slug, err });
     Sentry.captureException(err, { tags: { source: 'catalog.propose' } });

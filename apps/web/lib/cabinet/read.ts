@@ -21,6 +21,7 @@ import {
 } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import { currentBuyerFeePercent } from '../payments/gateway.ts';
 import { withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
@@ -256,6 +257,7 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
     usdtRubRateKopecks: order.usdtRubRateKopecks,
     instructions,
     cardIssueFeeKopecks: order.cardIssueFeeKopecks,
+    buyerFeePercent: currentBuyerFeePercent(),
     paidAt: toIso(order.paidAt),
     fulfilledAt: toIso(order.fulfilledAt),
     events: events.map(mapEvent),

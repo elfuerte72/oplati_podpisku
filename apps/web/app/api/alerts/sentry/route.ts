@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { formatSentryAlertMessage, sentryAlertPayloadSchema } from '@/lib/alerts/sentry';
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { sendAlert } from '@/lib/telegram/alert-bot';
 
@@ -43,14 +44,24 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, skipped: 'not_configured' }, { status: 200 });
   }
 
-  // Секрет в query (`?s=`) — осознанный компромисс: экшен «webhook» в Sentry
-  // не умеет кастомные заголовки, поэтому header-only сломал бы алёрты.
-  // Trade-off: значение попадает в access-логи Vercel — при подозрении на утечку
-  // ротировать SENTRY_ALERT_WEBHOOK_SECRET (+ обновить URL в alert rule Sentry).
+  // Секрет в query (`?s=`) — вынужденный компромисс, а не лень: экшен «webhook»
+  // в Sentry не умеет кастомные заголовки, поэтому header-only сломал бы алёрты
+  // целиком. Заголовок `X-Alert-Token` принимаем как альтернативу для ручных
+  // вызовов и на случай, если Sentry когда-нибудь научится.
+  //
+  // Цена компромисса: значение видно в access-логах Traefik. Убрать его оттуда
+  // можно только настройкой прокси; что зависит от кода — ограничить ПОДБОР,
+  // поэтому неудачные попытки идут под rate-limit по IP.
   const provided =
     new URL(req.url).searchParams.get('s') ?? req.headers.get('x-alert-token') ?? '';
   if (!provided || !timingSafeEqualStr(provided, secret)) {
-    log.warn({ event: 'alerts.sentry.unauthorized' });
+    // Лимит проверяется ПОСЛЕ неудачи и только для неудач: успешные алёрты не
+    // должны отбрасываться никогда, особенно в шторм.
+    const rl = await checkRateLimit('alert-webhook-auth', getClientIp(req));
+    log.warn({ event: 'alerts.sentry.unauthorized', throttled: !rl.allowed });
+    if (!rl.allowed) {
+      return NextResponse.json({ ok: false, error: 'rate_limited' }, { status: 429 });
+    }
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
   }
 

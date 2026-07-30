@@ -3,7 +3,8 @@
  * (self-host/Dokploy, docs/dokploy-migration-plan.md Фаза 2.1).
  *
  * Запуск: `pnpm --filter @oplati/db db:init-roles` (грузит `.env` из корня;
- * для целевой БД переопределить `DATABASE_URL` в shell — как у db:migrate).
+ * для целевой БД переопределить `DATABASE_URL_DIRECT` в shell — тот же
+ * приоритет, что у drizzle.config.ts, чтобы роли и миграции попали в ОДНУ БД).
  *
  * Зачем: миграции писались под Supabase, где роли `anon`/`authenticated`/
  * `service_role` существуют из коробки. Миграция `0010` делает
@@ -23,45 +24,50 @@
  */
 
 import postgres from 'postgres';
-import pino from 'pino';
 
-const logger = pino({ name: 'init-roles' });
+import { bootstrapRolesSql, BOOTSTRAP_ROLES } from '../src/bootstrap-roles.ts';
+
+/**
+ * Свой pino здесь был бы pino БЕЗ redact-листа приложения: `logger.error({ err })`
+ * сериализует ошибку клиента `postgres` целиком, а в ней — строка подключения с
+ * паролем (C-5). Скрипт разовый и консольный, полноценный логгер ему не нужен,
+ * поэтому печатаем только то, что сами сформировали: имя ошибки и сообщение,
+ * без объекта и без стека драйвера.
+ */
+function fail(err: unknown): never {
+  const name = err instanceof Error ? err.name : 'Error';
+  const message = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`init-roles failed: ${name}: ${message}\n`);
+  process.exit(1);
+}
 
 async function main(): Promise<void> {
-  const url = process.env.DATABASE_URL ?? process.env.DATABASE_URL_DIRECT;
+  // Приоритет ОБЯЗАН совпадать с drizzle.config.ts (`DATABASE_URL_DIRECT ??
+  // DATABASE_URL`): роли должны появиться в той же БД, куда пойдёт db:migrate.
+  // Обратный порядок ронял сценарий из CLAUDE.md, где в shell переопределяют
+  // только DATABASE_URL_DIRECT: роли создавались в БД из корневого .env
+  // (вплоть до прод-Supabase, где DO-блок молча скипает и печатает
+  // «roles ready»), а миграция 0010 падала на «role does not exist».
+  const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
   if (!url) {
-    throw new Error('DATABASE_URL or DATABASE_URL_DIRECT must be set (see .env in repo root)');
+    throw new Error('DATABASE_URL_DIRECT or DATABASE_URL must be set (see .env in repo root)');
   }
 
-  const sql = postgres(url, { max: 1, prepare: false });
+  // connect_timeout: без него недоступная БД вешает скрипт бесконечно, а он
+  // стоит первым шагом деплоя на новый контур.
+  const sql = postgres(url, { max: 1, prepare: false, connect_timeout: 10 });
   try {
-    await sql.unsafe(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
-          CREATE ROLE anon NOLOGIN;
-        END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
-          CREATE ROLE authenticated NOLOGIN;
-        END IF;
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
-          CREATE ROLE service_role NOLOGIN BYPASSRLS;
-        END IF;
-      END
-      $$;
-    `);
+    await sql.unsafe(bootstrapRolesSql());
+    const expected = BOOTSTRAP_ROLES.map((r) => r.name);
     const roles = await sql<{ rolname: string }[]>`
       SELECT rolname FROM pg_roles
-      WHERE rolname IN ('anon', 'authenticated', 'service_role')
+      WHERE rolname = ANY(${expected})
       ORDER BY rolname
     `;
-    logger.info({ roles: roles.map((r) => r.rolname) }, 'roles ready');
+    process.stdout.write(`roles ready: ${roles.map((r) => r.rolname).join(', ')}\n`);
   } finally {
     await sql.end();
   }
 }
 
-main().catch((err: unknown) => {
-  logger.error({ err }, 'init-roles failed');
-  process.exit(1);
-});
+main().catch(fail);

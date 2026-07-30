@@ -16,13 +16,17 @@ import { OrderTransitionError } from '@oplati/types';
 import { serverEnv } from '@/lib/env.server';
 import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
-import {
-  isPaymentProviderUnavailable,
-  PROVIDER_UNAVAILABLE_TEXT,
-} from '@/lib/loveandpay/availability';
+import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
+import { isPaymentGatewayUnavailable } from '@/lib/payments/availability';
 import { isPriceLockExpired } from '@/lib/payments/expiry';
+import {
+  createGatewayInvoice,
+  maxAmountRubFor,
+  minAmountRubFor,
+  primaryPaymentGateway,
+} from '@/lib/payments/gateway';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
-import { getLoveAndPayClient, LoveAndPayApiError } from '@/lib/loveandpay';
+import { LoveAndPayApiError } from '@/lib/loveandpay';
 
 /**
  * POST /api/payments/create — внутренний endpoint, дёргается из tool-handler
@@ -31,13 +35,17 @@ import { getLoveAndPayClient, LoveAndPayApiError } from '@/lib/loveandpay';
  * Поток:
  *   1. Проверяем `X-Internal-Token` (защита от внешнего вызова).
  *   2. Загружаем order; status должен быть `ready_for_payment`, иначе 409.
- *   3. Создаём L&P invoice (amount = order.amountRub / 100 — L&P принимает рубли).
+ *   3. Создаём счёт у ТЕКУЩЕГО шлюза (`PAYMENT_PRIMARY_PROVIDER` — L&P или
+ *      Freekassa; развилка целиком в `lib/payments/gateway.ts`).
  *   4. Идемпотентный upsert payment по (provider, providerRef).
  *   5. Атомарный transitionOrder → `pending_payment`.
  *   6. Возвращаем { paymentUrl, qrPayload, expiresAt }.
  *
- * Внешний HTTP-вызов делаем ДО транзакции БД — иначе долгий L&P-запрос держит lock.
- * Идемпотентность по дублю — через `upsertPaymentByProviderRef` (UNIQUE constraint).
+ * ⚠️ Это ЕДИНСТВЕННОЕ место, зависящее от переключателя провайдера: вебхуки
+ * обоих шлюзов принимают деньги всегда (ТЗ, этап 3).
+ *
+ * Внешний HTTP-вызов делаем ДО транзакции БД — иначе долгий запрос к шлюзу
+ * держит lock. Идемпотентность по дублю — через `upsertPaymentByProviderRef`.
  */
 
 export const dynamic = 'force-dynamic';
@@ -46,10 +54,6 @@ export const preferredRegion = 'fra1';
 export const maxDuration = 60;
 
 const log = childLogger('payments-create');
-
-// Срок жизни счёта L&P (решение владельца 2026-07-18; было 24ч — СБП/карта
-// оплачиваются за минуты, длинное окно = опцион на курс за счёт маржи).
-const INVOICE_TTL_HOURS = 1;
 
 const requestSchema = z.object({
   orderId: z.string().uuid(),
@@ -88,7 +92,11 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const { orderId, paymentMethod } = parsed.data;
 
-  log.info({ event: 'payments.create.start', orderId, paymentMethod });
+  // Кто принимает деньги прямо сейчас. Читаем ДО try: значение нужно и в
+  // обработчике ошибок (healthcheck прокси дёргаем только для L&P).
+  const gateway = primaryPaymentGateway();
+
+  log.info({ event: 'payments.create.start', orderId, paymentMethod, gateway });
 
   try {
     const db = getDb();
@@ -154,22 +162,48 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: false, error: 'invalid_amount' }, { status: 400 });
     }
 
-    // Гард минимума терминала (KANYON не принимает < 500 ₽). Ловим ДО вызова
-    // L&P, иначе провайдер вернёт INTERNAL_ERROR с непрозрачным телом.
-    const minAmountRubKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
-    if (order.amountRub < minAmountRubKopecks) {
+    // Гард минимума шлюза (у L&P терминал KANYON не принимает < 500 ₽). Ловим
+    // ДО вызова провайдера, иначе получим непрозрачное тело ошибки. У Freekassa
+    // минимум не объявлен → по умолчанию гейта нет (см. `minAmountRubFor`).
+    const minAmountRub = minAmountRubFor(gateway);
+    if (minAmountRub > 0 && order.amountRub < minAmountRub * 100) {
       log.warn({
         event: 'payments.create.below_min',
         orderId,
+        gateway,
         amountRubKopecks: order.amountRub,
-        minAmountRubKopecks,
+        minAmountRubKopecks: minAmountRub * 100,
       });
       return NextResponse.json(
         {
           ok: false,
           error: 'below_min_amount',
-          minAmountRub: serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB,
-          message: `Минимальная сумма оплаты — ${serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB} ₽`,
+          minAmountRub,
+          message: `Минимальная сумма оплаты — ${minAmountRub} ₽`,
+        },
+        { status: 422 },
+      );
+    }
+
+    // Потолок шлюза (у Freekassa лимит операции 150 000 ₽). Витрина держит
+    // верхний кап в долларах (`HIGH_VALUE_MAX_AMOUNT_USD`), но курс плавает —
+    // страховкой служит именно этот гейт: здесь сумма уже в рублях и известна
+    // точно. Ловим ДО вызова провайдера, иначе клиент получит его текст ошибки.
+    const maxAmountRub = maxAmountRubFor(gateway);
+    if (maxAmountRub > 0 && order.amountRub > maxAmountRub * 100) {
+      log.warn({
+        event: 'payments.create.above_max',
+        orderId,
+        gateway,
+        amountRubKopecks: order.amountRub,
+        maxAmountRubKopecks: maxAmountRub * 100,
+      });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'above_max_amount',
+          maxAmountRub,
+          message: `Максимальная сумма оплаты — ${maxAmountRub} ₽. Напиши в поддержку, оформим заказ частями.`,
         },
         { status: 422 },
       );
@@ -177,47 +211,24 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
     const orderAmountKopecks = order.amountRub;
-    const amountRubFull = orderAmountKopecks / 100;
-    const successUrl = buildTelegramDeepLink(order.shortId);
-    const description = `Оплата заказа ${order.shortId}`;
 
-    const loveAndPay = getLoveAndPayClient();
-    const invoiceResp = await loveAndPay.createInvoice({
-      amount: amountRubFull,
-      currency: 'RUB',
-      description,
-      customer: {},
-      expiresInHours: INVOICE_TTL_HOURS,
-      successUrl,
-      kycRequired: false,
-      ...(paymentMethod !== undefined ? { paymentMethod } : {}),
+    const invoice = await createGatewayInvoice({
+      gateway,
+      order,
+      amountKopecks: orderAmountKopecks,
+      paymentMethod,
     });
 
-    const invoice = invoiceResp.invoice;
-    // paymentLink в схеме optional (в ответе на проверку статуса его нет), но в
-    // ответе на СОЗДАНИЕ он обязателен — инвойс без ссылки на оплату непригоден.
-    // Форсим явно, чтобы не отдать клиенту пустой paymentUrl.
-    if (!invoice.paymentLink) {
-      throw new LoveAndPayApiError({
-        code: 'missing_payment_link',
-        httpStatus: 502,
-        message: 'L&P создал инвойс без paymentLink',
-      });
-    }
     log.info({
       event: 'payments.create.invoice_created',
       orderId,
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
-      amountRub: order.amountRub,
+      gateway: invoice.provider,
+      providerRef: invoice.providerRef,
+      invoiceNumber: invoice.providerInvoiceNumber,
+      amountRub: orderAmountKopecks,
     });
 
-    // Единый нормализованный срок инвойса: L&P не вернул expiresAt → считаем
-    // сами от TTL. Один и тот же момент уходит в payment, orders.expires_at и
-    // ответ клиенту — рассинхрон источников исключён.
-    const invoiceExpiresAt = invoice.expiresAt
-      ? new Date(invoice.expiresAt)
-      : new Date(Date.now() + INVOICE_TTL_HOURS * 60 * 60 * 1000);
+    const invoiceExpiresAt = invoice.expiresAt;
 
     // INSERT платежа + переход заказа + выравнивание срока — В ОДНОЙ транзакции
     // (M-2 аудита 2026-07-18). Раньше это были отдельные await'ы: транзиентный
@@ -231,13 +242,16 @@ export async function POST(req: Request): Promise<NextResponse> {
       upsert = await db.transaction(async (tx) => {
         const u = await upsertPaymentByProviderRef(tx, {
           orderId,
-          provider: 'loveandpay',
-          providerRef: invoice.id,
-          providerInvoiceNumber: invoice.invoiceNumber,
+          // Имя провайдера — по ФАКТУ выставления счёта, а не выводится из
+          // флага задним числом: иначе после переключения история платежей
+          // начнёт врать (ТЗ, этап 3).
+          provider: invoice.provider,
+          providerRef: invoice.providerRef,
+          providerInvoiceNumber: invoice.providerInvoiceNumber,
           amountRub: orderAmountKopecks,
           status: 'pending',
           expiresAt: invoiceExpiresAt,
-          rawPayload: { invoice } as Record<string, unknown>,
+          rawPayload: invoice.rawPayload,
         });
         // isNew=true — двигаем order вперёд; дубль (повторный confirm_order)
         // просто вернёт существующий инвойс без переходов.
@@ -247,7 +261,12 @@ export async function POST(req: Request): Promise<NextResponse> {
             toStatus: 'pending_payment',
             actorType: 'system',
             eventType: 'payment_invoice_created',
-            payload: { paymentId: u.payment.id, invoiceId: invoice.id, paymentMethod: paymentMethod ?? 'any' },
+            payload: {
+              paymentId: u.payment.id,
+              provider: invoice.provider,
+              invoiceId: invoice.providerRef,
+              paymentMethod: paymentMethod ?? 'any',
+            },
           });
           // M-4: срок заказа выравнивается по сроку счёта — иначе cron
           // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
@@ -262,7 +281,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       // создавали два живых инвойса — клиент мог оплатить второй по уже
       // завершённому заказу. Проигравший INSERT получает 23505 (транзакция
       // откатывается целиком) — возвращаем ему уже существующий pending-инвойс
-      // победителя (созданный здесь invoice остаётся висяком в L&P и истечёт сам).
+      // победителя (созданный здесь счёт остаётся висяком у шлюза и истечёт сам).
+      //
+      // Тот же путь закрывает и смену провайдера при живом счёте прежнего
+      // (ТЗ, этап 3): заказ с pending-платежом уже имеет статус
+      // `pending_payment`, поэтому до создания нового счёта дело не доходит —
+      // клиент получает рабочую ссылку прежнего шлюза, чей вебхук намеренно
+      // продолжает принимать деньги. Гасить чужой pending через
+      // `claimPaymentTerminal` не требуется.
       if (!isPendingPaymentConflict(err)) throw err;
       log.warn({ event: 'payments.create.concurrent_duplicate', orderId });
       return await respondWithExistingPendingPayment(orderId, paymentMethod);
@@ -278,11 +304,11 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     return NextResponse.json({
       ok: true,
-      paymentUrl: invoice.paymentLink,
-      qrPayload: invoice.qrPayload ?? null,
+      paymentUrl: invoice.paymentUrl,
+      qrPayload: invoice.qrPayload,
       expiresAt: invoiceExpiresAt.toISOString(),
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber,
+      invoiceId: invoice.providerRef,
+      invoiceNumber: invoice.providerInvoiceNumber,
     });
   } catch (err) {
     const isApiErr = err instanceof LoveAndPayApiError;
@@ -296,12 +322,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     Sentry.captureException(err, {
       tags: { source: 'payments.create', orderId },
     });
-    // Тех. сбой транспорта/провайдера (лежит прокси, таймаут, 5xx L&P) —
-    // отличаем от прочих ошибок: клиент получает честное «технический сбой»,
-    // а healthcheck прокси запускается сразу (не ждём 5-минутный cron) —
-    // при упавшем VPS владельцу уходит DM.
-    if (isPaymentProviderUnavailable(err)) {
-      after(() => alertOnLoveAndPayProxyDown());
+    // Тех. сбой транспорта/провайдера (лежит прокси, таймаут, 5xx шлюза) —
+    // отличаем от прочих ошибок: клиент получает честное «технический сбой».
+    // Healthcheck прокси дёргаем только для L&P: у Freekassa своего прокси нет
+    // (egress прямой), и лишний CONNECT-пробник на её сбое лишь шумел бы.
+    if (isPaymentGatewayUnavailable(err)) {
+      if (gateway === 'loveandpay') {
+        after(() => alertOnLoveAndPayProxyDown());
+      }
       return NextResponse.json(
         { ok: false, error: 'provider_unavailable', message: PROVIDER_UNAVAILABLE_TEXT },
         { status: 503 },
@@ -314,15 +342,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 }
 
-function buildTelegramDeepLink(shortId: string): string {
-  // Возможно, имя бота лежит в TELEGRAM_BOT_TOKEN — в формате <id>:<secret>;
-  // для прямой deep-link нужен `username`, которого в env нет. Используем APP_URL —
-  // success-страница на нашем web, оттуда редирект на бот по `tg://`.
-  const base = serverEnv.APP_URL.replace(/\/$/, '');
-  return `${base}/payment-success?order=${encodeURIComponent(shortId)}`;
-}
-
-/** Форма инвойса, сохранённого в payments.raw_payload при создании. */
+/**
+ * Форма инвойса, сохранённого в payments.raw_payload при создании.
+ * Конверт `{ invoice: {...} }` общий для обоих шлюзов (см. `lib/payments/gateway.ts`),
+ * поэтому повторный confirm отдаёт ссылку, не зная, кто выставил счёт.
+ */
 const storedInvoiceSchema = z.object({
   invoice: z.object({
     id: z.string(),
@@ -390,9 +414,21 @@ async function respondWithExistingPendingPayment(
     });
   } catch (err) {
     if (!(err instanceof OrderTransitionError)) throw err;
-    // Заказ уже ушёл дальше pending_payment — ссылку всё равно возвращаем,
-    // платить по ней или нет, разрулит webhook (claim идемпотентен).
-    log.warn({ event: 'payments.create.duplicate_transition_skipped', orderId, err });
+    // Ссылку возвращаем в любом случае: платить по ней или нет, разрулит
+    // webhook (claim идемпотентен). Различаем два исхода, чтобы штатный путь
+    // не создавал шум в логах:
+    //   - заказ УЖЕ в pending_payment — это и есть обычный повторный confirm
+    //     (живая веб-вкладка, дребезг кнопки). Ожидаемо, уровень info;
+    //   - заказ ушёл в другой статус — стоит посмотреть, warn.
+    if (err.from === 'pending_payment') {
+      log.info({ event: 'payments.create.repeat_confirm', orderId });
+    } else {
+      log.warn({
+        event: 'payments.create.duplicate_transition_skipped',
+        orderId,
+        fromStatus: err.from,
+      });
+    }
   }
 
   const inv = parsed.data.invoice;

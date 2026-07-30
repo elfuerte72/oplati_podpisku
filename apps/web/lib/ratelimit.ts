@@ -1,5 +1,7 @@
 import 'server-only';
 
+import { isIP } from 'node:net';
+
 import * as Sentry from '@sentry/nextjs';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
@@ -41,7 +43,13 @@ export type RateLimitResult = {
   remaining: number;
 };
 
-export type RateLimitName = 'web-chat' | 'telegram' | 'web-order' | 'web-link';
+export type RateLimitName =
+  | 'web-chat'
+  | 'telegram'
+  | 'web-order'
+  | 'web-order-status'
+  | 'web-link'
+  | 'alert-webhook-auth';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
@@ -56,10 +64,28 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   'web-chat': { limit: 12, windowSeconds: 60 },
   telegram: { limit: 20, windowSeconds: 60 },
   'web-order': { limit: 8, windowSeconds: 60 },
+  // Отдельный бакет для ЧТЕНИЯ статуса (аудит 2026-07-28). После оплаты клиент
+  // опрашивает `/api/orders/status` каждые 4 с до 5 минут — это ~15 запросов в
+  // минуту против лимита 8 у общего с ним `web-order`. Итог был двойной: штамп
+  // «ОПЛАЧЕНО» приходил поздно, а исчерпанный бакет блокировал СОЗДАНИЕ
+  // следующего заказа с того же IP на пять минут. За CGNAT мобильных операторов
+  // (основная аудитория) в один IP схлопывается несколько живых клиентов,
+  // поэтому запас взят кратный: 60 = 4 клиента, опрашивающих одновременно.
+  // Разделять безопасно: это read-only роут, он не создаёт ни сессий, ни строк.
+  'web-order-status': { limit: 60, windowSeconds: 60 },
   // web-link: токен привязки выпускается ЗАРАНЕЕ при рендере кнопки (прямая
   // <a>-ссылка вместо window.open, фикс мобильной привязки 2026-07-03), а не
   // по клику — базовый расход выше, лимит поднят 5 → 10.
   'web-link': { limit: 10, windowSeconds: 60 },
+  // Только НЕУДАЧНЫЕ попытки авторизации на `/api/alerts/sentry`. Секрет ездит
+  // в query (экшен «webhook» в Sentry не умеет кастомные заголовки), а значит
+  // виден в access-логах Traefik — подбор и переигрывание надо ограничивать.
+  //
+  // ⚠️ Считаются ИМЕННО отказы. Лимитировать успешные алёрты нельзя: шторм
+  // алёртов случается ровно тогда, когда всё горит, и молча отброшенное
+  // уведомление хуже отсутствующего. Порог низкий: у настоящего Sentry секрет
+  // верный с первого раза, промахиваться некому.
+  'alert-webhook-auth': { limit: 10, windowSeconds: 300 },
 };
 
 /**
@@ -98,7 +124,7 @@ export function getClientIp(req: Request): string {
   const proxySecret = serverEnv.PROXY_SHARED_SECRET;
   if (proxySecret) {
     const providedSecret = req.headers.get('x-proxy-secret');
-    const clientIp = req.headers.get('x-client-ip')?.trim();
+    const clientIp = normalizeIp(req.headers.get('x-client-ip'));
     if (providedSecret && clientIp && timingSafeEqualStr(providedSecret, proxySecret)) {
       return clientIp;
     }
@@ -106,16 +132,27 @@ export function getClientIp(req: Request): string {
 
   if (serverEnv.CLIENT_IP_MODE === 'traefik') {
     // За Traefik клиентскому `x-real-ip` верить нельзя — только правый XFF.
+    // Нет валидного XFF → 'unknown', и это ОСОЗНАННО fail-closed: такие запросы
+    // делят один bucket. Фолбэк на `x-real-ip` здесь был бы регрессом
+    // безопасности (клиент подделает заголовок и обнулит лимит, CWE-348).
+    // Публичный трафик всегда идёт через Traefik; мимо него ходит только
+    // внутренний healthcheck на /api/health, который не лимитируется.
     return rightmostForwardedFor(req) ?? 'unknown';
   }
 
-  const realIp = req.headers.get('x-real-ip')?.trim();
+  const realIp = normalizeIp(req.headers.get('x-real-ip'));
   if (realIp) return realIp;
 
   return rightmostForwardedFor(req) ?? 'unknown';
 }
 
-/** Правый (добавленный ближайшим доверенным прокси) элемент X-Forwarded-For. */
+/**
+ * Правый (добавленный ближайшим доверенным прокси) элемент X-Forwarded-For.
+ *
+ * Берём СТРОГО правый: если он не парсится как IP — возвращаем null, а НЕ идём
+ * левее. Левые элементы подконтрольны клиенту, и «добор» по цепочке вернул бы
+ * ровно ту дыру, от которой этот код защищает.
+ */
 function rightmostForwardedFor(req: Request): string | null {
   const xff = req.headers.get('x-forwarded-for');
   if (!xff) return null;
@@ -123,7 +160,35 @@ function rightmostForwardedFor(req: Request): string | null {
     .split(',')
     .map((p) => p.trim())
     .filter(Boolean);
-  return parts[parts.length - 1] ?? null;
+  return normalizeIp(parts[parts.length - 1]);
+}
+
+/**
+ * Приводит значение заголовка к каноническому IP или отдаёт null.
+ *
+ * SECURITY: без нормализации `x-forwarded-for: 1.2.3.4:56789` от прокси,
+ * который пишет `host:port`, давал бы НОВУЮ identity на каждом соединении
+ * (эфемерный порт меняется всегда) — per-IP лимит обходился бы полностью, то
+ * есть cost-DoS на строки БД и на дневной AI-бюджет. Мусор («unknown»,
+ * obfuscated-идентификаторы из RFC 7239, пустая строка) тоже не должен
+ * становиться ключом лимита, поэтому валидация через `node:net`, а не «взять
+ * что дали».
+ */
+function normalizeIp(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+
+  let value = trimmed;
+  const bracketed = /^\[([^\]]+)\](?::\d{1,5})?$/.exec(value);
+  if (bracketed?.[1]) {
+    // `[2001:db8::1]:443` → `2001:db8::1`
+    value = bracketed[1];
+  } else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d{1,5}$/.test(value)) {
+    // `1.2.3.4:56789` → `1.2.3.4`
+    value = value.slice(0, value.lastIndexOf(':'));
+  }
+
+  return isIP(value) === 0 ? null : value.toLowerCase();
 }
 
 let cachedRedis: Redis | null = null;

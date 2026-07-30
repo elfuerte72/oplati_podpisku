@@ -14,14 +14,12 @@ const h = vi.hoisted(() => ({
   vccBalanceMock: vi.fn(),
   paySpaceConfigured: { value: true },
   state: {
-    idled: 0,
     toRecycle: [] as CardLike[],
   },
 }));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
-  idleAgedActiveCards: vi.fn(async () => h.state.idled),
   findCardsToRecycle: vi.fn(async () => h.state.toRecycle),
   markRecycled: vi.fn(async () => {}),
 }));
@@ -44,7 +42,6 @@ describe('recycleCards', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.paySpaceConfigured.value = true;
-    h.state.idled = 2;
     h.state.toRecycle = [
       { id: 'card-1', providerCardId: 'pc-1' },
       { id: 'card-2', providerCardId: 'pc-2' },
@@ -53,10 +50,10 @@ describe('recycleCards', () => {
     h.vccBalanceMock.mockResolvedValue({ balanceUsdCents: 100000, pendingUsdCents: 0, currency: 'USD' });
   });
 
-  it('happy path: idle + release каждой карты + markRecycled', async () => {
+  it('happy path: release каждой карты + markRecycled', async () => {
     const res = await recycleCards();
 
-    expect(res).toEqual({ idled: 2, recycled: 2, errors: 0 });
+    expect(res).toEqual({ recycled: 2, errors: 0 });
     expect(h.releaseMock).toHaveBeenCalledTimes(2);
     // Короткий детерминированный request_id (длинный PaySpace молча отклоняет).
     expect(h.releaseMock).toHaveBeenCalledWith('pc-1', expect.stringMatching(/^rel_[0-9a-f]{16}$/));
@@ -79,13 +76,13 @@ describe('recycleCards', () => {
     expect(sentry.captureException).toHaveBeenCalled();
   });
 
-  it('PaySpace выключен → шаг release пропускаем, idle всё равно идёт', async () => {
+  it('PaySpace выключен → шаг release пропускаем, джоб не падает', async () => {
     h.paySpaceConfigured.value = false;
 
     const res = await recycleCards();
 
-    expect(res.idled).toBe(2);
     expect(res.recycled).toBe(0);
+    expect(res.errors).toBe(0);
     expect(db.findCardsToRecycle).not.toHaveBeenCalled();
     expect(h.releaseMock).not.toHaveBeenCalled();
     expect(h.vccBalanceMock).not.toHaveBeenCalled();

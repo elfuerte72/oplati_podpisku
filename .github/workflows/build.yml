@@ -1,0 +1,71 @@
+name: Build
+
+# Зачем отдельная проверка, если есть Type Check.
+#
+# `tsc --noEmit` и `next build` ловят РАЗНОЕ. Сборка Next падает на том, чего
+# типы не видят: неверный экспорт route-сегмента (`runtime`/`dynamic`/
+# `maxDuration`), клиентский код в серверном компоненте, отсутствующий модуль в
+# рантайм-графе, ошибка при пререндере статической страницы. До этой проверки
+# такой коммит проходил гейт, мержился и падал уже при docker build на VPS —
+# то есть в момент, когда прод пересобирается.
+#
+# Секретов сборка НЕ требует: serverEnv в apps/web/lib/env.ts валидируется лениво
+# (проверено локально с вычищенным окружением). Единственная NEXT_PUBLIC_*
+# переменная — Sentry DSN, без неё собирается, просто клиентский Sentry молчит.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    # Без лимита зависший прогон занимает раннер до 6 часов по умолчанию.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # Дешёвая сверка без Docker: стадия deps копирует манифесты пакетов
+      # поимённо (ради кэша слоя `pnpm install`), и новый пакет легко забыть.
+      # Тогда `pnpm install --frozen-lockfile` падает уже при docker build на
+      # VPS — то есть в момент выкатки, а здесь всё было зелёное.
+      - name: Dockerfile копирует манифесты всех пакетов
+        run: ./scripts/check-dockerfile-manifests.sh
+
+      # Версия pnpm НЕ дублируется здесь: она берётся из package.json#packageManager.
+      # Два источника правды разъезжаются, и action на это ругается.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Кэш turbo между прогонами: неизменившиеся пакеты не пересобираются.
+      # Ключ по SHA + restore-keys по ветке — свежий прогон подхватывает
+      # ближайший предыдущий кэш вместо холодного старта.
+      - name: Restore turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo
+          key: turbo-build-${{ github.sha }}
+          restore-keys: |
+            turbo-build-
+
+      - name: Production build
+        run: pnpm build

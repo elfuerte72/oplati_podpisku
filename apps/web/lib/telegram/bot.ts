@@ -21,13 +21,49 @@ let _bot: Bot | undefined;
 let _botUsername: string | undefined;
 const log = childLogger('telegram-bot');
 
+/**
+ * Максимум ПОВТОРОВ после 429 (сверх исходной попытки).
+ * Держим маленьким: роут бота живёт 90 с, а ожидание тут синхронное.
+ */
+const FLOOD_MAX_RETRIES = 2;
+/**
+ * Ждём не дольше этого. Флуд-контроль на один чат обычно просит 1–3 секунды —
+ * это нормальный всплеск, его переживаем. Большое значение означает серьёзное
+ * ограничение, и ждать его в обработчике вебхука неправильно: лучше отдать
+ * ошибку наверх, чем занять слот и не ответить Telegram вовсе.
+ */
+const FLOOD_MAX_WAIT_SECONDS = 5;
+
+export function withFloodRetry(bot: Bot): Bot {
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    for (let attempt = 0; ; attempt++) {
+      const res = await prev(method, payload, signal);
+      if (res.ok) return res;
+
+      // 429 у Telegram — не ошибка запроса, а «подожди `retry_after` секунд».
+      // Без повтора сообщение молча терялось: клиент не получал ни ссылку на
+      // оплату, ни реквизиты карты, а в логах оставался один warning.
+      const retryAfter = res.parameters?.retry_after;
+      if (res.error_code !== 429 || retryAfter === undefined) return res;
+      if (attempt >= FLOOD_MAX_RETRIES || retryAfter > FLOOD_MAX_WAIT_SECONDS) {
+        log.warn({ event: 'telegram.flood.giving_up', method, retryAfter, attempt });
+        return res;
+      }
+      log.warn({ event: 'telegram.flood.retrying', method, retryAfter, attempt });
+      // +250 мс: у Telegram и у нас часы разные, впритык можно получить 429 снова.
+      await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000 + 250));
+    }
+  });
+  return bot;
+}
+
 export function getBot(): Bot {
   if (_bot) return _bot;
   const token = serverEnv.TELEGRAM_BOT_TOKEN;
   if (!token) {
     throw new Error('TELEGRAM_BOT_TOKEN is not set; cannot initialize Telegram bot');
   }
-  _bot = new Bot(token);
+  _bot = withFloodRetry(new Bot(token));
   log.debug({ event: 'telegram.bot.initialized' });
   return _bot;
 }

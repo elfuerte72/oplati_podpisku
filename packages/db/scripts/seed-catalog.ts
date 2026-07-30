@@ -233,6 +233,22 @@ const CATALOG: readonly CatalogEntry[] = [
     pricingPolicy: policy([usd('Plus', 59), usd('Ultra', 129)]),
     paymentInstructions: usInstructions('https://higgsfield.ai/pricing'),
   },
+  {
+    slug: 'heygen',
+    name: 'HeyGen',
+    description: 'AI-видео с цифровыми аватарами и озвучкой',
+    category: 'ai',
+    requiresKyc: false,
+    // Сверено по heygen.com/pricing 2026-07-27. Берём только МЕСЯЧНЫЕ цены:
+    // годовые ($24/$39 за месяц) списываются сразу за год, картой такой платёж
+    // не покрывается — тот же принцип, что у Higgsfield.
+    //   Free ($0) — продавать нечего.
+    //   Business ($149/мес + $20 за место) НЕ берём: сумма зависит от числа мест,
+    //     и карта, выпущенная на базовые $149, не покроет счёт с местами.
+    //   Enterprise — цена по запросу, витрине не подходит.
+    pricingPolicy: policy([usd('Creator', 29), usd('Pro', 49)]),
+    paymentInstructions: usInstructions('https://www.heygen.com/pricing'),
+  },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
   // Netflix / Spotify / YouTube Premium выведены из витрины 2026-07-07 (решение

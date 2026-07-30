@@ -2,15 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Ord = { id: string; userId: string; shortId: string; serviceId: string | null };
 
-const state: { orders: Ord[]; telegramId: string | null } = { orders: [], telegramId: null };
+const state: { orders: Ord[]; telegramId: string | null; claim: boolean } = {
+  orders: [],
+  telegramId: null,
+  claim: true,
+};
 const sendMessage = vi.fn<(chatId: string | number, text: string) => Promise<unknown>>();
+const claimRenewalReminder = vi.fn(async () => state.claim);
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   findOrdersForRenewalReminder: vi.fn(async () => state.orders),
   getUserTelegramId: vi.fn(async () => state.telegramId),
   getServiceById: vi.fn(async () => ({ name: 'Spotify' })),
-  appendOrderEvent: vi.fn(async () => {}),
+  claimRenewalReminder: (...args: unknown[]) => claimRenewalReminder(...(args as [])),
 }));
 
 vi.mock('../telegram/bot.ts', () => ({
@@ -19,7 +24,6 @@ vi.mock('../telegram/bot.ts', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
-import * as db from '@oplati/db';
 import { sendRenewalReminders } from './subscription-renewal-reminder.ts';
 
 describe('sendRenewalReminders', () => {
@@ -27,9 +31,10 @@ describe('sendRenewalReminders', () => {
     vi.clearAllMocks();
     state.orders = [];
     state.telegramId = '123456789012345'; // большой id — проверяем, что уходит строкой
+    state.claim = true;
   });
 
-  it('шлёт напоминание строковым telegramId и пишет renewal_reminder_sent (M6 + L4)', async () => {
+  it('шлёт напоминание строковым telegramId, заняв право на отправку (M6 + L4 + B-2)', async () => {
     state.orders = [{ id: 'o1', userId: 'u1', shortId: 'ORD-1', serviceId: 's1' }];
 
     const res = await sendRenewalReminders();
@@ -42,14 +47,25 @@ describe('sendRenewalReminders', () => {
     expect(chatId).toBe('123456789012345');
     expect(typeof chatId).toBe('string');
 
-    // M6: событие-дедуп записано после отправки → следующий прогон не повторит.
-    expect(db.appendOrderEvent).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ orderId: 'o1', eventType: 'renewal_reminder_sent' }),
+    // B-2: право занято ДО отправки — иначе два одновременных прогона джоба
+    // отправили бы оба и только потом обнаружили конфликт.
+    expect(claimRenewalReminder).toHaveBeenCalledWith(expect.anything(), 'o1');
+    expect(claimRenewalReminder.mock.invocationCallOrder[0]!).toBeLessThan(
+      sendMessage.mock.invocationCallOrder[0]!,
     );
   });
 
-  it('нет telegramId → пропуск, ни отправки, ни события', async () => {
+  it('право занял конкурент → ни отправки, ни ошибки', async () => {
+    state.claim = false;
+    state.orders = [{ id: 'o1', userId: 'u1', shortId: 'ORD-1', serviceId: 's1' }];
+
+    const res = await sendRenewalReminders();
+
+    expect(res).toEqual({ sent: 0, errors: 0 });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('нет telegramId → пропуск: ни claim, ни отправки', async () => {
     state.telegramId = null;
     state.orders = [{ id: 'o1', userId: 'u1', shortId: 'ORD-1', serviceId: null }];
 
@@ -57,6 +73,8 @@ describe('sendRenewalReminders', () => {
 
     expect(res.sent).toBe(0);
     expect(sendMessage).not.toHaveBeenCalled();
-    expect(db.appendOrderEvent).not.toHaveBeenCalled();
+    // Занимать право, не имея куда слать, нельзя: заказ навсегда остался бы
+    // «уведомлённым», хотя клиент ничего не получил.
+    expect(claimRenewalReminder).not.toHaveBeenCalled();
   });
 });

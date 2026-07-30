@@ -1,0 +1,377 @@
+name: Deploy
+
+# Единственный триггер деплоя на Dokploy — этот workflow.
+#
+# Почему не встроенный GitHub App Dokploy (`autoDeploy`), который был раньше:
+#   1. Он деплоит СРАЗУ на push, не дожидаясь CI. Красный main уезжал бы на
+#      боевой контур, где живые платежи, — гейта не было вообще.
+#   2. Его доставки не видны из репозитория: когда мерж PR #102 не вызвал сборку
+#      (2026-07-25) и когда та же история случилась с вебхуком Vercel
+#      (2026-07-18), понять «GitHub не отправил» или «Dokploy отверг подпись»
+#      было нельзя — журнал доставок лежит в настройках самого App.
+#      Здесь каждый деплой — обычный run в Actions с логом и кодом ответа.
+#   3. Он молчал при отказе. Прод сутки жил на ручных сборках, и это заметили
+#      только по расхождению коммита.
+#
+# Контракт per-app вебхука Dokploy — снят живой проверкой 2026-07-25, в доках
+# его нет, поэтому фиксирую целиком:
+#   POST /api/deploy/<refreshToken>
+#     заголовок  X-GitHub-Event: push        ← БЕЗ него Dokploy не умеет достать
+#                                             ветку и отвечает 301
+#                                             {"message":"Branch Not Match"}
+#     тело       {"ref":"refs/heads/<ветка>"} ← ветка обязана совпасть с branch
+#                                              приложения, иначе тот же 301
+#   → 200 {"message":"Application deployed successfully"}
+#   неизвестный токен → 404 {"message":"Application Not Found"}
+#   Подпись HMAC этому роуту НЕ нужна (в отличие от /api/deploy/github, который
+#   требует X-Hub-Signature-256 от секрета GitHub App).
+# Токен узкий: триггерит сборку РОВНО одного приложения, в отличие от админского
+# DOKPLOY_API_KEY, которым можно всё. Ротация — кнопка refresh token в Dokploy
+# плюс обновить секрет здесь.
+#
+# ⚠️ ФЛАГ autoDeploy У ПРИЛОЖЕНИЯ ОБЯЗАН БЫТЬ ВКЛЮЧЁН. Он называется «autoDeploy»,
+# но это НЕ «слушать GitHub App» — это общий выключатель ВЕБХУК-деплоев. Выключив
+# его (чтобы остался один триггер), мы обрубили и этот workflow: Dokploy отвечает
+# 400 {"message":"Automatic deployments are disabled for this application"}.
+# Проверено 2026-07-25 на живом проде. Единственность триггера обеспечивается тем,
+# что App-вебхук всё равно не доставляет события; а даже если оживёт, ungated-сборка
+# `main` не страшна — прямой push в main запрещён ruleset'ом, туда попадает только
+# PR с зелёными Tests/Type Check/Lint.
+
+on:
+  push:
+    branches: [main, dev]
+    # Правки только документации не должны пересобирать прод: сборка занимает
+    # минуты и грузит тот же VPS, на котором живёт панель Dokploy (из-за чего она
+    # перестаёт отвечать — см. ретраи ниже). GitHub пропускает workflow, только
+    # если ВСЕ изменённые файлы попали под paths-ignore, так что смешанный коммит
+    # «код + доки» задеплоится как обычно.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+# Деплои одной ветки не должны наезжать друг на друга; и НЕ отменяем начатый
+# (cancel-in-progress: false) — прерванная на середине сборка оставила бы
+# контур в неопределённом состоянии.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate (typecheck + tests + lint + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Гейт держим здесь, а не в `workflow_run` от Tests/Type Check/Lint:
+      # цепочка из трёх workflow требует проверять, что успешны ВСЕ три, и
+      # молча пропускает деплой, если один не запустился. Прогон дублирует ~1
+      # минуту CI и взамен даёт атомарное «зелено → деплой». Побочная польза:
+      # у ветки `dev` до этого не было CI вообще (остальные workflow слушают
+      # только main и pull_request).
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm -r --if-present test
+
+      - name: Lint
+        run: pnpm lint
+
+      # Сборка в гейте, хотя её же делает Dokploy: `tsc --noEmit` не ловит
+      # ошибок пререндера и конфигурации route-сегментов, и такой коммит
+      # обнаруживался только когда VPS уже тратил минуты на docker build.
+      # Здесь это стоит ~минуту на раннере GitHub и не грузит боевую машину.
+      - name: Build
+        run: pnpm build
+
+  deploy:
+    name: Trigger Dokploy
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Значения из github.* — ТОЛЬКО через env, без прямой подстановки ${{ }} в
+      # тело скрипта: `github.ref_name` приходит извне, и ветка с кавычками или
+      # подстановкой команд иначе выполнилась бы как код раннера (классическая
+      # script injection в Actions). Находка CodeRabbit на PR #115.
+      - name: Resolve target
+        id: target
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_NAME" = "main" ]; then
+            echo "app=oplatishka-web (prod)" >> "$GITHUB_OUTPUT"
+            echo "token_name=DOKPLOY_DEPLOY_TOKEN_PROD" >> "$GITHUB_OUTPUT"
+          else
+            echo "app=oplatishka-web-dev (dev)" >> "$GITHUB_OUTPUT"
+            echo "token_name=DOKPLOY_DEPLOY_TOKEN_DEV" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Снимаем ТЕКУЩЕЕ время старта прода до триггера, чтобы потом дождаться
+      # ДРУГОГО значения.
+      #
+      # Раньше здесь была отметка `date -u +%s` на раннере, и шаг проверки
+      # сравнивал её с `startedAt` от прода — то есть часы двух РАЗНЫХ машин.
+      # Расхождение хоть на минуту (дрейф NTP на VPS) давало бы либо ложное
+      # «прод не обновился» при успешном деплое, либо наоборот — засчитывало бы
+      # старый контейнер как новый. Сравнение значения с самим собой от этого
+      # не зависит вовсе. Находка CodeRabbit на PR #115.
+      - name: Снять текущее состояние стенда
+        id: mark
+        env:
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          # dev закрыт Basic Auth, прод — нет. Пустая строка = ходим без -u.
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
+        run: |
+          set -uo pipefail
+          # shellcheck disable=SC2086
+          before=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null | jq -r '.startedAt // empty' 2>/dev/null || echo '')
+          # Пустое значение — стенд не ответил. Это не повод останавливаться:
+          # тогда подойдёт любой валидный ответ после деплоя.
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "Сейчас на стенде startedAt=${before:-<нет ответа>}"
+
+      - name: Deploy
+        env:
+          TOKEN: ${{ github.ref_name == 'main' && secrets.DOKPLOY_DEPLOY_TOKEN_PROD || secrets.DOKPLOY_DEPLOY_TOKEN_DEV }}
+          PANEL: ${{ vars.DOKPLOY_PANEL_URL || 'https://dokploy.mxpkn8ns.ru' }}
+          # Через env, не подстановкой в тело скрипта — см. комментарий выше.
+          REF: ${{ github.ref }}
+          APP: ${{ steps.target.outputs.app }}
+          TOKEN_NAME: ${{ steps.target.outputs.token_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::Секрет $TOKEN_NAME не задан — деплой не запущен."
+            exit 1
+          fi
+          echo "Триггерю сборку: $APP ($REF)"
+          # Ретраи нужны из-за КОРОТКИХ ЭПИЗОДОВ СЕТЕВОЙ НЕДОСТУПНОСТИ VPS со
+          # стороны раннеров GitHub: TCP-соединение к 443 не устанавливается
+          # вовсе (curl exit 28 «Couldn't connect to server»), при живых Traefik
+          # и панели. Так упали деплои PR #110 и #113 — оба пересобирали руками.
+          #
+          # ⚠️ Прежнее объяснение «панель не отвечает под нагрузкой собственной
+          # сборки» ОПРОВЕРГНУТО замерами 2026-07-25 — не возвращать его:
+          #   - лог сборки #109 закрыт в 08:31:52, падение #110 в 08:40–08:42;
+          #   - лог сборки #112 закрыт в 13:03:01, падение #113 в 13:08–13:16;
+          #   - sar в 13:10:31 (разгар падения): load average 1 мин = 0.25,
+          #     blocked = 0, то есть машина ПРОСТАИВАЛА.
+          # Проба из Actions в 15:00 того же дня: 5/5 на панель, 3/3 на прод-сайт,
+          # голый nc на 443/80/22 — всё проходит. Причина внешняя и
+          # невоспроизводимая по требованию, поэтому лечим её пережиданием.
+          #
+          # `--connect-timeout 10` критичен: без него неотвечающий SYN висит
+          # ~133 с (системный таймаут ядра), и три попытки съедали весь бюджет
+          # шага почти сплошным ожиданием — окно ретраев было фиктивным.
+          # Двойной триггер безопасен: повторная сборка того же коммита даёт тот
+          # же образ, Dokploy её сериализует, результат идемпотентен.
+          # X-GitHub-Event и ref обязательны — см. контракт в шапке файла.
+          attempt=0
+          max=10
+          while :; do
+            attempt=$((attempt + 1))
+            rc=0
+            # `|| rc=$?` обязателен: под `set -e` ненулевой выход curl оборвал бы
+            # скрипт ДО разбора кода, и в лог попадала бы не причина, а текст самого
+            # шага (ровно это и путало при разборе падения PR #110).
+            code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' --connect-timeout 10 --max-time 60 \
+              -X POST "$PANEL/api/deploy/$TOKEN" \
+              -H 'X-GitHub-Event: push' \
+              -H 'Content-Type: application/json' \
+              -d "$(jq -nc --arg ref "$REF" '{ref: $ref}')") || rc=$?
+
+            if [ "$rc" -ne 0 ]; then
+              echo "Попытка $attempt/$max: сбой транспорта (curl exit $rc)."
+            else
+              echo "Попытка $attempt/$max: HTTP $code"
+              # Тело безопасно логировать: токен в него не попадает.
+              cat /tmp/resp.txt || true
+              echo
+              [ "$code" = "200" ] && break
+              # 4xx — конфигурация, ретраить бессмысленно: неверный токен (404),
+              # выключенный autoDeploy (400), не та ветка (301).
+              case "$code" in
+                4*|3*)
+                  echo "::error::Dokploy отказал (HTTP $code) — это конфигурация, не транспорт. Смотри контракт в шапке workflow."
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::Не удалось дозвониться до Dokploy за $max попыток (~9 минут). Прод НЕ пересобран."
+              exit 1
+            fi
+            echo "Ждём 45 с и пробуем снова."
+            sleep 45
+          done
+          echo "Сборка запущена. Прогресс — в панели Dokploy."
+
+      # Триггер, принятый панелью, НЕ означает выкаченный релиз: сборка может
+      # упасть, и раньше пайплайн этого не замечал — зелёный workflow при старом
+      # коде на стенде. Ждём, пока стенд не отдаст время старта, ОТЛИЧНОЕ от
+      # снятого до триггера, то есть пока контейнер реально не пересоздан.
+      #
+      # С 2026-07-28 проверка идёт и для dev. Раньше её там не было («ради dev
+      # лишняя связанность»), и это оказалось дороже секрета: при переводе
+      # стенда на текущий main workflow был ЗЕЛЁНЫМ, пока dev ещё крутил
+      # позавчерашнюю сборку. Стенд, на котором тестируют перед PR, обязан
+      # доказывать свою версию так же, как прод, — иначе тест проверяет не тот
+      # код. Секрет DEV_HEALTH_AUTH — пара `логин:пароль` от Basic Auth стенда
+      # (Dokploy → приложение → Security). Не задан → проверка пропускается с
+      # предупреждением, деплой не валится: dev не должен блокировать работу.
+      - name: Проверить, что стенд обновился
+        env:
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
+          IS_PROD: ${{ github.ref_name == 'main' }}
+          BEFORE: ${{ steps.mark.outputs.before }}
+        run: |
+          set -uo pipefail
+          if [ "$IS_PROD" != "true" ] && [ -z "${HEALTH_AUTH:-}" ]; then
+            echo "::warning::Секрет DEV_HEALTH_AUTH не задан — не могу подтвердить, что dev-стенд обновился. Он мог остаться на прежней сборке."
+            exit 0
+          fi
+          deadline=$(( $(date -u +%s) + 900 ))   # 15 минут: обычная сборка ~2.5 мин
+          fresh=0
+          while [ "$(date -u +%s)" -lt "$deadline" ]; do
+            # shellcheck disable=SC2086
+            body=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$SITE" 2>/dev/null) || body=''
+            started=$(printf '%s' "$body" | jq -r '.startedAt // empty' 2>/dev/null || echo '')
+            if [ -n "$started" ] && [ "$started" != "$BEFORE" ]; then
+              # Swarm во время обновления какое-то время держит и старый
+              # контейнер, поэтому одного свежего ответа мало — ждём три
+              # подряд, иначе можно объявить успех, поймав новый контейнер, к
+              # которому трафик ещё не переключился целиком.
+              fresh=$((fresh + 1))
+              echo "Свежий ответ $fresh/3 (startedAt=$started)"
+              if [ "$fresh" -ge 3 ]; then
+                echo "Стенд пересобран и отвечает."
+                exit 0
+              fi
+            elif [ -n "$started" ]; then
+              fresh=0
+              echo "Пока прежний процесс (startedAt=$started), ждём…"
+            else
+              fresh=0
+              echo "Health не ответил или без startedAt, ждём…"
+            fi
+            sleep 15
+          done
+          echo "::error::Стенд не обновился за 15 минут после принятого триггера — сборка упала или зависла. Смотри логи в панели Dokploy."
+          exit 1
+
+      # Обновившийся контейнер ещё не означает работоспособный релиз. `/api/ready`
+      # (в отличие от liveness-`/api/health`) проверяет, что БД отвечает и что
+      # применены ВСЕ миграции, приехавшие с этим кодом.
+      #
+      # 2026-07-28 ровно этого не хватило: код Freekassa уехал в main 26.07,
+      # миграции 0025/0026 на прод не попали, и первый счёт упал с
+      # `relation "freekassa_nonce" does not exist` — при зелёном деплое,
+      # здоровом health и без единого алёрта (docs/incidents.md). Пайплайн
+      # миграции по-прежнему НЕ применяет (нужен ssh-ключ в секретах, отдельное
+      # решение по доступам) — но теперь он громко об этом сообщает, а не
+      # оставляет находку первому клиенту.
+      - name: Проверить готовность релиза (БД + миграции)
+        env:
+          SITE: ${{ github.ref_name == 'main' && (vars.PROD_HEALTH_URL || 'https://www.oplatishka.com/api/health') || (vars.DEV_HEALTH_URL || 'https://dev.oplatishka.com/api/health') }}
+          # ⚠️ Условие ИНВЕРТИРОВАНО намеренно. Псевдо-тернарник GitHub
+          # `cond && A || B` отдаёт B всегда, когда A ложно, а пустая строка
+          # ложна — то есть прежнее `ref == 'main' && '' || secrets.…` ВСЕГДА
+          # подставляло dev-креды, в том числе на проде. Здесь ветка с непустым
+          # значением стоит первой, поэтому выбор работает как задумано.
+          HEALTH_AUTH: ${{ github.ref_name != 'main' && secrets.DEV_HEALTH_AUTH || '' }}
+          IS_PROD: ${{ github.ref_name == 'main' }}
+        run: |
+          set -uo pipefail
+          if [ "$IS_PROD" != "true" ] && [ -z "${HEALTH_AUTH:-}" ]; then
+            echo "::warning::Секрет DEV_HEALTH_AUTH не задан — готовность dev-стенда не проверена."
+            exit 0
+          fi
+          # Тот же хост, соседний путь: URL здоровья настраивается переменной,
+          # и второй переменной для этого заводить не хочется.
+          READY="${SITE%/api/health}/api/ready"
+          # Пара попыток: сразу после переключения трафика первый запрос может
+          # прийти в ещё прогревающийся контейнер.
+          for attempt in 1 2 3; do
+            # shellcheck disable=SC2086
+            body=$(curl -sS ${HEALTH_AUTH:+-u "$HEALTH_AUTH"} --connect-timeout 10 --max-time 20 "$READY" 2>/dev/null) || body=''
+            status=$(printf '%s' "$body" | jq -r '.status // empty' 2>/dev/null || echo '')
+            if [ "$status" = "ok" ]; then
+              echo "Релиз готов: БД отвечает, миграции применены."
+              exit 0
+            fi
+            echo "Попытка $attempt/3: status=${status:-<нет ответа>} body=${body:-<пусто>}"
+            sleep 10
+          done
+          reasons=$(printf '%s' "$body" | jq -r '.reasons // [] | join(", ")' 2>/dev/null || echo '')
+          case "$reasons" in
+            *migrations_pending*)
+              echo "::error::Код выкачен, а миграции на БД НЕ применены. Применить по docs/runbooks/deploy.md, иначе клиентский путь упадёт в рантайме." ;;
+            *db_unreachable*)
+              echo "::error::Релиз выкачен, но приложение не видит БД (проверь DATABASE_URL — имя сервиса Postgres меняется при пересоздании)." ;;
+            *)
+              echo "::error::/api/ready отвечает не 'ok' (причины: ${reasons:-неизвестны})." ;;
+          esac
+          exit 1
+
+      # Провал деплоя раньше был виден только тому, кто зайдёт в Actions: оба
+      # падения 2026-07-25 заметили постфактум, по расхождению кода на проде.
+      # Секреты не заданы → шаг молча пропускается (workflow всё равно красный).
+      - name: Сообщить о провале в Telegram
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.DEPLOY_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.DEPLOY_ALERT_CHAT_ID }}
+          # Всё, что приходит из контекста github.*, — через env: имя ветки
+          # подконтрольно тому, кто её создаёт, и в теле скрипта стало бы кодом.
+          APP: ${{ steps.target.outputs.app }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::Секреты DEPLOY_ALERT_BOT_TOKEN/DEPLOY_ALERT_CHAT_ID не заданы — алёрт не отправлен."
+            exit 0
+          fi
+          text="Деплой НЕ прошёл: $APP, ветка $REF_NAME, коммит $SHA. Стенд остался на прежней версии. Лог: $RUN_URL"
+          # --fail-with-body обязателен: без него curl считает успехом и 401 от
+          # Bot API (протух токен, бот заблокирован), то есть молчащий алёрт
+          # выглядел бы как отправленный — ровно та слепота, от которой этот шаг
+          # и заведён. Находка CodeRabbit на PR #115.
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 30 \
+            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${text}" \
+            -o /dev/null -w 'Telegram HTTP %{http_code}\n' || echo "::warning::Алёрт отправить не удалось."

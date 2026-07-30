@@ -8,7 +8,17 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
 process.env.SENTRY_ALERT_WEBHOOK_SECRET = 'top-secret';
 process.env.ALERT_TELEGRAM_CHAT_ID = '111222333';
 
-const h = vi.hoisted(() => ({ sendMessageMock: vi.fn() }));
+const h = vi.hoisted(() => ({
+  sendMessageMock: vi.fn(),
+  // Лимитер мокаем явно: без Upstash он fail-open, и тесты «проверяли» бы
+  // поведение, которого нет — упасть они не могли ни при какой поломке.
+  checkRateLimitMock: vi.fn(async () => ({ allowed: true, configured: true, limit: 10, remaining: 9 })),
+}));
+
+vi.mock('@/lib/ratelimit', () => ({
+  checkRateLimit: (...args: unknown[]) => h.checkRateLimitMock(...(args as [])),
+  getClientIp: () => '203.0.113.7',
+}));
 
 vi.mock('@/lib/telegram/bot', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
@@ -34,6 +44,7 @@ function makeReq(query: string, body: unknown): Request {
 describe('POST /api/alerts/sentry', () => {
   beforeEach(() => {
     h.sendMessageMock.mockReset();
+    h.checkRateLimitMock.mockClear();
   });
 
   it('валидный секрет → 200 + пересылка в Telegram', async () => {
@@ -79,5 +90,39 @@ describe('POST /api/alerts/sentry', () => {
     const res = await POST(makeReq('?s=top-secret', SAMPLE));
     expect(res.status).toBe(200);
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+  it('успешные алёрты НЕ лимитируются — лимитер на этом пути не зовётся вовсе', async () => {
+    // Молча отброшенное уведомление хуже отсутствующего: шторм алёртов
+    // случается ровно тогда, когда всё горит. Проверяем не «ответ 200» (он был
+    // бы 200 и при fail-open лимитере), а что лимитер тут вообще не участвует.
+    for (let i = 0; i < 25; i++) {
+      const res = await POST(makeReq('?s=top-secret', SAMPLE));
+      expect(res.status).toBe(200);
+    }
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(25);
+    expect(h.checkRateLimitMock).not.toHaveBeenCalled();
+  });
+
+  it('неудачная попытка считается лимитером по IP', async () => {
+    const res = await POST(makeReq('?s=wrong', SAMPLE));
+
+    expect(res.status).toBe(401);
+    expect(h.checkRateLimitMock).toHaveBeenCalledWith('alert-webhook-auth', '203.0.113.7');
+    expect(h.sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('лимит исчерпан → 429 вместо 401, алёрт не пересылается', async () => {
+    h.checkRateLimitMock.mockResolvedValueOnce({
+      allowed: false,
+      configured: true,
+      limit: 10,
+      remaining: 0,
+    });
+
+    const res = await POST(makeReq('?s=wrong', SAMPLE));
+
+    expect(res.status).toBe(429);
+    await expect(res.json()).resolves.toMatchObject({ error: 'rate_limited' });
+    expect(h.sendMessageMock).not.toHaveBeenCalled();
   });
 });

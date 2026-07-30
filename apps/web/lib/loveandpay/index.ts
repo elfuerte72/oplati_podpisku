@@ -13,6 +13,15 @@ import { buildProxyFetch, proxyHostForLog } from './proxy-fetch.ts';
 
 let _client: LoveAndPayClient | undefined;
 
+/**
+ * Заданы ли ключи L&P. Нужен автофоллбэку (`lib/payments/gateway.ts`): падать
+ * на «резервный шлюз не настроен» в момент, когда основной уже лёг, — худший
+ * из возможных моментов.
+ */
+export function isLoveAndPayConfigured(): boolean {
+  return Boolean(serverEnv.LOVEANDPAY_API_KEY && serverEnv.LOVEANDPAY_SECRET_KEY);
+}
+
 export function getLoveAndPayClient(): LoveAndPayClient {
   if (_client) return _client;
 

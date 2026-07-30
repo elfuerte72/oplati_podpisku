@@ -1,0 +1,72 @@
+# Traefik: роутеры прод-домена (www.oplatishka.com + apex) и снятие Alt-Svc.
+#
+# Установка на VPS:
+#   1. Скопировать:  scp infra/traefik/oplatishka-www.yml.example \
+#                        root@VPS:/etc/dokploy/traefik/dynamic/oplatishka-www.yml
+#   2. Подставить имя swarm-сервиса приложения (Dokploy генерирует суффикс сам,
+#      на каждом инстансе он СВОЙ — на бостонском это `oplatishka-web-wwrt50`):
+#        docker service ls | grep oplatishka-web
+#        sed -i 's|__WEB_SERVICE__|oplatishka-web-XXXXXX|' \
+#          /etc/dokploy/traefik/dynamic/oplatishka-www.yml
+#   3. Положить сертификат в `certs/` (см. ниже) и проверить:
+#        curl -sD - -o /dev/null https://www.oplatishka.com/ | grep -i alt-svc
+#      Ожидаемо `alt-svc: clear`. Traefik подхватывает файл за секунды
+#      (`providers.file.watch: true`), рестарт НЕ нужен.
+#
+# ⚠️ Зачем этот файл лежит в репозитории. Он живёт вне Dokploy: панель генерирует
+# свои per-app файлы (`oplatishka-web-<suffix>.yml`) и перезаписывает их при каждом
+# редеплое, а этот — persistent, панель его не трогает. Обратная сторона: при
+# переезде на другой VPS он не переносится ничем — ни деплоем, ни system backup
+# Dokploy. Именно так при cutover на Dokploy 2026-07-24 потерялось снятие Alt-Svc
+# (восстановлено 2026-07-27), см. docs/runbooks/deploy.md.
+#
+# ⚠️ Сертификат выпускается ВНЕШНИМ lego через Cloudflare DNS-01 и здесь только
+# читается (`tls.certificates`), а НЕ через `certResolver` с HTTP-01. Это
+# сознательно: HTTP-01 требует, чтобы A-запись уже указывала на этот сервер, то
+# есть сертификат нельзя было бы получить до переключения DNS. С DNS-01 он
+# предвыпускается заранее → cutover проходит без downtime и без окна с ошибкой
+# сертификата у клиентов.
+tls:
+  certificates:
+    - certFile: /etc/dokploy/traefik/dynamic/certs/oplatishka.crt
+      keyFile: /etc/dokploy/traefik/dynamic/certs/oplatishka.key
+http:
+  middlewares:
+    # Гасит рекламу HTTP/3: entryPoint websecure в traefik.yml поднят с `http3`,
+    # и Traefik по умолчанию отдаёт `Alt-Svc: h3=":443"; ma=2592000`. Браузер,
+    # увидев его, на следующем заходе пробует QUIC (UDP/443), а ТСПУ режет QUIC
+    # у мобильных операторов РФ — клиент ждёт таймаута и только потом
+    # откатывается на TCP. Тот же middleware стоял на реверс-прокси Timeweb
+    # (`oplatishka-strip-altsvc`) в эпоху Vercel.
+    #
+    # Значение `clear` (RFC 7838), а НЕ пустая строка: пустая лишь убирает
+    # заголовок из новых ответов, но уже выданный клиенту `ma=2592000` живёт в
+    # кэше браузера ещё 30 дней — вернувшийся посетитель продолжал бы упираться
+    # в QUIC. `clear` инвалидирует запись явно и безопасен как постоянное
+    # значение.
+    oplatishka-strip-altsvc:
+      headers:
+        customResponseHeaders:
+          Alt-Svc: "clear"
+  routers:
+    oplatishka-www-secure:
+      rule: "Host(`www.oplatishka.com`) || Host(`oplatishka.com`)"
+      service: oplatishka-www-svc
+      entryPoints:
+        - websecure
+      middlewares:
+        - oplatishka-strip-altsvc
+      tls: {}
+    oplatishka-www-web:
+      rule: "Host(`www.oplatishka.com`) || Host(`oplatishka.com`)"
+      service: oplatishka-www-svc
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-https
+  services:
+    oplatishka-www-svc:
+      loadBalancer:
+        servers:
+          - url: http://__WEB_SERVICE__:3000
+        passHostHeader: true

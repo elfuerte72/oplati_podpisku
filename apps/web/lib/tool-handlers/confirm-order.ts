@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { ConfirmOrderResult } from '@oplati/agent';
 import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
+import { selfCallBaseUrl } from '../deployment-url.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -70,8 +71,50 @@ export class OrderExpiredError extends Error {
   }
 }
 
+/**
+ * `/api/payments/create` ответил 422 `above_max_amount` — сумма выше лимита
+ * операции у шлюза (у Freekassa 150 000 ₽, гейт `FREEKASSA_MAX_AMOUNT_RUB`).
+ * Повторять бессмысленно: столько этот шлюз не примет ни сейчас, ни через час.
+ * Без отдельного типа ошибка падала в generic `Error`, и клиент получал
+ * «технический сбой у провайдера» — неправда, которая ещё и обещала оператора.
+ */
+export class OrderAboveMaxAmountError extends Error {
+  readonly maxAmountRub: number | null;
+  constructor(maxAmountRub: number | null) {
+    super(
+      `above_max_amount: сумма заказа выше лимита платёжной системы${
+        maxAmountRub ? ` (${maxAmountRub} ₽)` : ''
+      }. Счёт не создан. Скажи пользователю оформить заказ на меньшую сумму или написать в поддержку — крупный заказ проведёт оператор.`,
+    );
+    this.name = 'OrderAboveMaxAmountError';
+    this.maxAmountRub = maxAmountRub;
+  }
+}
+
+/**
+ * Текст отказа для КЛИЕНТСКИХ каналов (веб, Mini App, бот) — один на все три,
+ * чтобы формулировки про деньги не разъезжались. Сообщение самой ошибки выше
+ * адресовано AI-агенту и звучит иначе.
+ */
+export function aboveMaxAmountText(maxAmountRub: number | null): string {
+  const limit = maxAmountRub
+    ? `${maxAmountRub.toLocaleString('ru-RU')} ₽`
+    : 'лимит платёжной системы';
+  return `Сумма заказа выше лимита платёжной системы (${limit}). Оформи заказ на меньшую сумму или напиши в поддержку — крупный заказ проведёт оператор.`;
+}
+
 /** Тело ошибки /api/payments/create (инвариант «Zod на границах»). */
-const errorBodySchema = z.object({ error: z.string() });
+const errorBodySchema = z.object({ error: z.string(), maxAmountRub: z.number().optional() });
+
+/** Лимит из тела 422 — чтобы назвать клиенту конкретную цифру, а не «слишком много». */
+function parseMaxAmountRub(respText: string): number | null {
+  try {
+    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
+    return parsed.success ? (parsed.data.maxAmountRub ?? null) : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseErrorCode(respText: string): string | null {
   try {
@@ -122,18 +165,10 @@ export async function confirmOrder(input: {
     throw new Error('confirm_order: INTERNAL_API_TOKEN не задан');
   }
 
-  // Self-call должен идти в ТОТ ЖЕ deployment. Приоритет — SELF_BASE_URL
-  // (self-host/Dokploy: `http://127.0.0.1:3000` — денежный вызов замыкается
-  // внутри контейнера, не выходя в интернет и не завися от Traefik/DNS).
-  // Дальше прежняя Vercel-цепочка: на preview APP_URL указывает на production
-  // (где нет L&P-ключей и INTERNAL_API_TOKEN), поэтому self-call на APP_URL
-  // ловит 401/недонастроенный L&P — берём собственный URL текущего deployment'а
-  // из VERCEL_URL; APP_URL остаётся fallback'ом (локальная разработка).
-  const ownHost = process.env.VERCEL_URL;
-  const baseUrl =
-    serverEnv.SELF_BASE_URL?.replace(/\/$/, '') ??
-    (ownHost ? `https://${ownHost}` : serverEnv.APP_URL.replace(/\/$/, ''));
-  const url = `${baseUrl}/api/payments/create`;
+  // Self-call должен идти в ТОТ ЖЕ deployment; приоритеты и почему они такие —
+  // в `selfCallBaseUrl()` (lib/deployment-url.ts, единый источник правды о
+  // «своём базовом URL»).
+  const url = `${selfCallBaseUrl()}/api/payments/create`;
 
   log.info({ event: 'tool.confirm_order.start', orderId: input.orderId });
 
@@ -170,6 +205,9 @@ export async function confirmOrder(input: {
       }
       if (resp.status === 409 && errorCode === 'order_expired') {
         throw new OrderExpiredError();
+      }
+      if (resp.status === 422 && errorCode === 'above_max_amount') {
+        throw new OrderAboveMaxAmountError(parseMaxAmountRub(respText));
       }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }

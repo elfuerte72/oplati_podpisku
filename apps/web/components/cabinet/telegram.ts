@@ -16,6 +16,8 @@ export type TelegramWebApp = {
   expand: () => void;
   openLink: (url: string, options?: { try_instant_view?: boolean }) => void;
   openTelegramLink?: (url: string) => void;
+  /** Закрыть Mini App — возвращает пользователя в чат бота (там работает /support). */
+  close?: () => void;
   /** Цвет фона мини-аппа (chrome) — выставляем под фирменный noir/paper. */
   setBackgroundColor?: (color: string) => void;
   /** Цвет шапки Telegram над мини-аппом. */

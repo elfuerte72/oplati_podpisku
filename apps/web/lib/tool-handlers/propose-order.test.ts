@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 describe('proposeOrder — service-aware потолок суммы', () => {
-  describe('высоколимитные сервисы (airbnb/booking/steam) — до $5000', () => {
+  describe('высоколимитные сервисы (airbnb/booking/steam) — до $1200', () => {
     it('Airbnb $610 (>$500) → заказ создаётся, расчёт по курсу+комиссии', async () => {
       const r = await proposeOrder(catalogInput('airbnb', 61_000));
       expect(r.orderId).toBe('order-1');
@@ -73,13 +73,15 @@ describe('proposeOrder — service-aware потолок суммы', () => {
       );
     });
 
-    it('Booking ровно $5000 → ок (граница включительно)', async () => {
-      const r = await proposeOrder(catalogInput('booking', 500_000));
+    // Потолок опущен с $5000 до $1200 (2026-07-28): лимит операции Freekassa —
+    // 150 000 ₽, в него $5000 не влезали ни при каком курсе.
+    it('Booking ровно $1200 → ок (граница включительно)', async () => {
+      const r = await proposeOrder(catalogInput('booking', 120_000));
       expect(r.orderId).toBe('order-1');
     });
 
-    it('Steam $5001 (>$5000) → throws, заказ НЕ создаётся', async () => {
-      await expect(proposeOrder(catalogInput('steam', 500_100))).rejects.toBeInstanceOf(
+    it('Steam $1201 (>$1200) → throws, заказ НЕ создаётся', async () => {
+      await expect(proposeOrder(catalogInput('steam', 120_100))).rejects.toBeInstanceOf(
         OrderAmountOutOfBoundsError,
       );
       expect(h.createDraftOrderMock).not.toHaveBeenCalled();

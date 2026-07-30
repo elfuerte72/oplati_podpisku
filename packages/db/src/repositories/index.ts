@@ -53,7 +53,9 @@ export {
   type AiUsageTotals,
 } from './ai-usage.ts';
 
-export { pingDb } from './health.ts';
+export { getAppliedMigrations, pingDb, type AppliedMigrations } from './health.ts';
+
+export { nextFreekassaNonce } from './freekassa.ts';
 
 export {
   generateReferralCode,
@@ -112,12 +114,10 @@ export {
   findActiveByUserId,
   findCardsByUserIdForCabinet,
   findCardByIdForUser,
-  findRecyclableCard,
   markIdle,
   markRecycled,
   updateBalance,
   syncCardBalance,
-  idleAgedActiveCards,
   findCardsToRecycle,
   type Card,
   type CreateCardInput,
@@ -137,6 +137,7 @@ export {
   findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
   appendOrderEvent,
+  claimRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
   hasPurchasedOrders,
@@ -153,6 +154,9 @@ export {
   claimPaymentTerminal,
   findPendingPaymentsForPoll,
   findPaymentByProviderRef,
+  findPaymentByProviderInvoiceNumber,
+  countInvoiceConversion,
+  type InvoiceConversion,
   findPendingPaymentByOrderId,
   stripOldPaymentPayloads,
   findPaymentsByOrderId,

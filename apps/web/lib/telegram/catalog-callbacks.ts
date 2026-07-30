@@ -15,7 +15,12 @@ import { findCatalogService, loadCatalog } from '@/lib/catalog/load';
 import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
-import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
+import { currentBuyerFeePercent } from '@/lib/payments/gateway';
+import {
+  aboveMaxAmountText,
+  confirmOrder,
+  OrderAboveMaxAmountError,
+} from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
 import { getBot } from './bot';
@@ -30,6 +35,7 @@ import {
   catalogCustomAmountPrompt,
   catalogTierButtonLabel,
   catalogTierPrompt,
+  buildBuyerFeeLine,
   orderCardText,
 } from './templates';
 
@@ -363,6 +369,12 @@ export async function handleOrderActionCallback(
         tags: { source: 'telegram.callback', step: 'confirm' },
         extra: { orderId },
       });
+      // Лимит операции шлюза — не сбой провайдера: ретрай не поможет, и
+      // оператора эта ветка не зовёт (звала бы неправду).
+      if (err instanceof OrderAboveMaxAmountError) {
+        await sendSafely(chatId, aboveMaxAmountText(err.maxAmountRub), updateId);
+        return;
+      }
       await sendSafely(
         chatId,
         'Не получилось создать счёт прямо сейчас — техническая проблема на стороне платёжного провайдера. Я уже подключил оператора, он напишет в ближайшее время.',
@@ -375,6 +387,10 @@ export async function handleOrderActionCallback(
     if (confirmResult.qrPayload) {
       replyParts.push('Или отсканируй QR-код в приложении банка по СБП.');
     }
+    // Надбавку платёжной системы клиент увидит на её странице — предупреждаем
+    // здесь, вместе со ссылкой, а не постфактум.
+    const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());
+    if (feeLine) replyParts.push(feeLine);
     replyParts.push(`Счёт действует до ${formatExpires(confirmResult.expiresAt)}.`);
     const reply = replyParts.join('\n\n');
 
