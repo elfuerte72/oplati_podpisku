@@ -38,6 +38,49 @@ describe('loveAndPayWebhookEventSchema', () => {
     expect(parsed.data.currency).toBe('RUB');
   });
 
+  /**
+   * Новая платформа (кабинет → Вебхуки, 2026-07-29) шлёт рядом с `amount` ещё
+   * `amountKopecks`/`amountRub` и предупреждает, что сам `amount` неоднозначен:
+   * копейки в `invoice.created`, рубли в остальных событиях. Недоплата у нас
+   * терминальна, поэтому сверка обязана опираться на однозначное поле.
+   */
+  it('берёт копейки из amountKopecks, когда провайдер их прислал', () => {
+    const parsed = loveAndPayWebhookEventSchema.parse({
+      ...realPaidPayload,
+      data: { ...realPaidPayload.data, amount: 4318.19, amountKopecks: 431819, amountRub: 4318.19 },
+    });
+    expect(parsed.data.amountKopecks).toBe(431819);
+  });
+
+  it('считает копейки из amountRub, если целого поля нет', () => {
+    const parsed = loveAndPayWebhookEventSchema.parse({
+      ...realPaidPayload,
+      data: { ...realPaidPayload.data, amount: 4318.19, amountRub: 4318.19 },
+    });
+    expect(parsed.data.amountKopecks).toBe(431819);
+  });
+
+  it.each([
+    ['ноль копеек', { amountKopecks: 0 }],
+    ['отрицательные копейки', { amountKopecks: -100 }],
+    ['дробные копейки', { amountKopecks: 12.5 }],
+    ['рубли, округляющиеся в ноль', { amountRub: 0.004 }],
+    ['отрицательные рубли', { amountRub: -10 }],
+  ])('не выдаёт мусор за точную сумму: %s', (_name, patch) => {
+    const parsed = loveAndPayWebhookEventSchema.parse({
+      ...realPaidPayload,
+      data: { ...realPaidPayload.data, ...patch },
+    });
+    // Фальшивый ноль опаснее отсутствия: гейт недоплаты пропускает нулевую сверку.
+    expect(parsed.data.amountKopecks).toBeUndefined();
+  });
+
+  it('оставляет amountKopecks пустым на легаси-теле — потребитель падает на amount', () => {
+    const parsed = loveAndPayWebhookEventSchema.parse(realPaidPayload);
+    expect(parsed.data.amountKopecks).toBeUndefined();
+    expect(parsed.data.amount).toBe(2090);
+  });
+
   it('нормализует тестовый формат панели (INVOICE_PAID / invoiceId / без currency)', () => {
     const parsed = loveAndPayWebhookEventSchema.parse({
       event: 'INVOICE_PAID',

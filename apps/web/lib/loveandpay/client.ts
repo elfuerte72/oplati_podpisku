@@ -11,7 +11,9 @@ import { LoveAndPayApiError, LoveAndPayContractError } from './errors.ts';
 import { signRequest } from './sign.ts';
 
 /**
- * HTTP-клиент Love & Pay (https://loveandpay.io/api/v2).
+ * HTTP-клиент Love & Pay (https://api.prod.loveandpay.io/api/v2; хост сменился
+ * 2026-07-29, старый `loveandpay.io` гасится после 2026-08-01 — путь `/api/v2` при
+ * этом сохранён, проверено живым вызовом).
  *
  * - HMAC v2 подпись исходящих (см. `./sign.ts`).
  * - `fetch` всегда с `AbortController` (timeout 30s — L&P медленный).
@@ -45,7 +47,7 @@ export type LoveAndPayClientOptions = {
 export class LoveAndPayClient {
   private readonly apiKey: string;
   private readonly secretKey: string;
-  /** Origin без path (https://loveandpay.io) — для конструирования URL. */
+  /** Origin без path (https://api.prod.loveandpay.io) — для конструирования URL. */
   private readonly origin: string;
   /**
    * Полный API-path с префиксом версии (`/api/v2`), без trailing slash.

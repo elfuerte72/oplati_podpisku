@@ -69,13 +69,15 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     return { kind: 'not_found', providerRef: data.id };
   }
 
-  // Сверка суммы оплаты с суммой заказа. L&P шлёт `amount` в РУБЛЯХ (не копейках);
-  // наш `payment.amountRub` — копейки. В webhook-пути `amount` опционален и может
+  // Сверка суммы оплаты с суммой заказа. Обе величины — копейки: `amountKopecks`
+  // нормализуется схемой (см. `loveAndPayWebhookData` — сам `amount` у провайдера
+  // неоднозначен: копейки в invoice.created, рубли в остальных событиях), наш
+  // `payment.amountRub` тоже в копейках. В webhook-пути сумма опциональна и может
   // прийти как 0 — тогда сверку пропускаем (нечего сравнивать). При polling-пути
   // (getInvoice) сумма всегда реальная. Если оплачено заметно МЕНЬШЕ выставленного
   // (допуск 1 копейка на округление) — НЕ фулфилим: иначе выпустим карту на полную
   // сумму, получив неполную оплату (прямой убыток). Деньги-вопрос → разбирает оператор.
-  const gotKopecks = Math.round(data.amount * 100);
+  const gotKopecks = data.amountKopecks ?? Math.round(data.amount * 100);
   if (gotKopecks > 0 && gotKopecks < payment.amountRub - 1) {
     log.error({
       event: 'loveandpay.handlers.amount_mismatch',
