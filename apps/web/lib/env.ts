@@ -14,6 +14,21 @@ import { z } from 'zod';
  * Sprint-1 опциональные: Telegram/Upstash — помечены `.optional()`.
  */
 
+/**
+ * Base URL API Love&Pay по умолчанию.
+ *
+ * ⚠️ Суффикс `/api/v2` — ОБЯЗАТЕЛЬНАЯ часть значения, а не украшение: клиент берёт
+ * `pathname` из этого URL и подписывает им HMAC (`signPath` в `lib/loveandpay/client.ts`).
+ *
+ * Письмо провайдера от 2026-07-29 называет новым base URL голый
+ * `https://api.prod.loveandpay.io` — записать его буквально нельзя. Живая проба с
+ * прод-VPS: `POST /api/v2/invoices` → `401 MISSING_HEADERS` (путь верный, ждёт
+ * заголовки), `POST /invoices` → `404 Not found`. То есть хост сменился, а префикс
+ * версии сохранён. Старый `https://loveandpay.io/api/v2` провайдер гасит после
+ * 2026-08-01.
+ */
+export const LOVEANDPAY_DEFAULT_BASE_URL = 'https://api.prod.loveandpay.io/api/v2';
+
 // -------------------------------------------------------------------------
 // Хелперы для опциональных env-переменных
 // -------------------------------------------------------------------------
@@ -142,7 +157,7 @@ const serverEnvSchema = z.object({
   LOVEANDPAY_API_KEY: optionalEnvString(),
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
   LOVEANDPAY_WEBHOOK_SECRET: optionalEnvString(),
-  LOVEANDPAY_BASE_URL: z.string().url().default('https://loveandpay.io/api/v2'),
+  LOVEANDPAY_BASE_URL: z.string().url().default(LOVEANDPAY_DEFAULT_BASE_URL),
   // Исходящий CONNECT-прокси для запросов к L&P (верификация доступа по IP, 2026-07-15:
   // L&P принимает запросы только с задекларированных IP; у Vercel egress динамический).
   // Формат: http://user:pass@host:port (VPS с фиксированным IP). TLS идёт насквозь —
