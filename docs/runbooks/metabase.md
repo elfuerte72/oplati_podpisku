@@ -75,6 +75,16 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 - Компонент подключён к `dokploy-network` (она `attachable`) — иначе не виден ни
   боевой Postgres (`oplatishka-db-ry3smb:5432`), ни Traefik.
 
+## Поведенческая аналитика: дашборд «Путь пользователя»
+
+**Дашборд уже собран** (2026-07-30): после ssh-туннеля открывается по
+`http://localhost:3001/dashboard/2`. Шесть карточек — воронка, путь конкретного
+клиента (фильтр «Telegram ID клиента» вверху дашборда), гейт привязки Telegram,
+активность по дням, «бот промолчал», что смотрят в каталоге. Все вопросы
+нативные (SQL), лежат в коллекции по умолчанию и пересобираются идемпотентно.
+
+Ниже — тот же SQL текстом, если понадобится завести вопрос заново.
+
 ## Поведенческая аналитика: доступ и готовые вопросы
 
 Таблицы `analytics_events` / `analytics_event_types` и вьюхи
@@ -175,10 +185,14 @@ WHERE occurred_at > now() - interval '30 days';
 SELECT date_trunc('day', occurred_at)::date AS "день",
        count(*)                              AS "случаев",
        count(DISTINCT telegram_id)           AS "человек"
-FROM analytics_events
+FROM analytics_timeline
 WHERE name = 'bot_text_ignored'
 GROUP BY 1 ORDER BY 1 DESC;
 ```
+
+⚠️ Именно `analytics_timeline`, а не `analytics_events`: гранта на сырую
+таблицу у `metabase_ro` нет и не будет (там `web_session_id`). Запрос к ней
+из Metabase падает с `permission denied` — проверено при сборке дашборда.
 
 ### Чего в аналитике нет
 
