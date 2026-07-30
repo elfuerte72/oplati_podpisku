@@ -108,6 +108,10 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Точечно шире глобального `contents: read` — нужно шагу выравнивания dev,
+    # который двигает ref ветки. Остальные job'ы остаются на чтении.
+    permissions:
+      contents: write
     steps:
       # Значения из github.* — ТОЛЬКО через env, без прямой подстановки ${{ }} в
       # тело скрипта: `github.ref_name` приходит извне, и ветка с кавычками или
@@ -344,6 +348,40 @@ jobs:
               echo "::error::/api/ready отвечает не 'ok' (причины: ${reasons:-неизвестны})." ;;
           esac
           exit 1
+
+      # Squash-мерж схлопывает коммиты PR в один, поэтому после каждого релиза
+      # `dev` перестаёт быть предком `main`: git видит ветки как расходящиеся,
+      # хотя содержимое одинаковое. 2026-07-30 это стоило разбора на ровном
+      # месте — `git merge main` в dev дал конфликт add/add в файле, который в
+      # обеих ветках появился одним и тем же PR. Дальше расхождение только
+      # копится, и однажды стенд поедет не с тем кодом, что прод.
+      #
+      # ⚠️ Ветку двигаем ТОЛЬКО когда содержимое уже совпадает (API `compare`
+      # не видит ни одного изменённого файла). Если в dev лежит незалитая
+      # работа — шаг её не тронет и предупредит: автосинк не должен молча
+      # уничтожать чужие коммиты.
+      - name: Выровнять dev по main после релиза
+        if: github.ref_name == 'main' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MAIN_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          diff_files=$(gh api "repos/$REPO/compare/dev...main" --jq '.files | length' 2>/dev/null || echo 'error')
+          if [ "$diff_files" = "error" ]; then
+            echo "::warning::Не удалось сравнить dev и main — ветки не выровнены, сделать вручную."
+            exit 0
+          fi
+          if [ "$diff_files" != "0" ]; then
+            echo "::warning::В dev есть изменения, которых нет в main ($diff_files файлов) — ветка НЕ тронута. Влейте их через PR."
+            exit 0
+          fi
+          if gh api -X PATCH "repos/$REPO/git/refs/heads/dev" -f "sha=$MAIN_SHA" -F force=true >/dev/null; then
+            echo "dev выровнена по main ($MAIN_SHA): содержимое совпадало, обновлена только история."
+          else
+            echo "::warning::Не удалось обновить dev (нет прав или ветка защищена) — сделать вручную."
+          fi
 
       # Провал деплоя раньше был виден только тому, кто зайдёт в Actions: оба
       # падения 2026-07-25 заметили постфактум, по расхождению кода на проде.
