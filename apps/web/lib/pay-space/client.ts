@@ -104,8 +104,21 @@ export type TopupCardResult = {
   cardId: string;
   requestId: string;
   status: PaySpaceAsyncOpStatus;
-  /** Баланс карты после пополнения (из topup/check); null если ещё pending. */
-  balanceUsdCents: number | null;
+  /**
+   * Поле `total_amt` из `/vcc/card/topup/check/`. `null` — не только когда
+   * операция pending: `tryReadTopupTotal` отдаёт `null` и когда ответ прочитать
+   * не удалось, так что отсутствие значения НЕ означает незавершённый топап
+   * (статус смотреть по `status`).
+   *
+   * ⚠️ Это НЕ баланс карты, хотя раньше поле так и называлось. Наблюдение
+   * 2026-07-30 (заказ ORD-9NAGJ): `total_amt` вернул 17310 при фактическом
+   * балансе карты 1929 центов — на неверное имя купился разбор платежа. Что
+   * именно провайдер сюда кладёт (накопленный итог пополнений? остаток
+   * VCC-субаккаунта?), докой не подтверждено, поэтому имя описывает источник,
+   * а не смысл. Используется ТОЛЬКО для логов; баланс карты в БД ведётся
+   * дельтой через `updateBalance`, а живой — через `getCardInfo` (`cardBal`).
+   */
+  topupCheckTotalUsdCents: number | null;
 };
 
 export type WithdrawCardInput = {
@@ -254,18 +267,18 @@ export class PaySpaceClient {
     }
 
     let status: PaySpaceAsyncOpStatus = submit.status;
-    let balanceUsdCents: number | null = null;
+    let topupCheckTotalUsdCents: number | null = null;
 
     if (status === 'completed') {
-      balanceUsdCents = await this.tryReadTopupBalance(input.cardId, submit.request_id);
+      topupCheckTotalUsdCents = await this.tryReadTopupTotal(input.cardId, submit.request_id);
     } else {
       // pending: поллим check; первый успешный ответ = деньги зачислены.
       for (let i = 0; i < this.topupPollAttempts; i++) {
         await this.sleepImpl(this.topupPollDelayMs);
-        const bal = await this.tryReadTopupBalance(input.cardId, submit.request_id);
-        if (bal !== null) {
+        const total = await this.tryReadTopupTotal(input.cardId, submit.request_id);
+        if (total !== null) {
           status = 'completed';
-          balanceUsdCents = bal;
+          topupCheckTotalUsdCents = total;
           break;
         }
       }
@@ -276,9 +289,9 @@ export class PaySpaceClient {
       cardId: input.cardId,
       requestId: submit.request_id,
       status,
-      balanceUsdCents,
+      topupCheckTotalUsdCents,
     });
-    return { cardId: input.cardId, requestId: submit.request_id, status, balanceUsdCents };
+    return { cardId: input.cardId, requestId: submit.request_id, status, topupCheckTotalUsdCents };
   }
 
   /** Вывод средств с карты на VCC-баланс (POST /vcc/card/withdraw/). */
@@ -366,8 +379,15 @@ export class PaySpaceClient {
 
   // ─── низкоуровневое ─────────────────────────────────────────────────────
 
-  /** topup/check: вернуть баланс карты (центы), либо null если ещё не зачислено. */
-  private async tryReadTopupBalance(cardId: string, requestId: string): Promise<number | null> {
+  /**
+   * Читает `total_amt` из `/vcc/card/topup/check/`. Успешный ответ = операция
+   * завершена; само значение — см. предупреждение у `TopupCardResult`, это НЕ
+   * баланс карты.
+   *
+   * `null` — операция ещё не подтверждена ИЛИ ответ прочитать не удалось
+   * (404/ошибка сети). Дрейф контракта пробрасывается исключением, а не глушится.
+   */
+  private async tryReadTopupTotal(cardId: string, requestId: string): Promise<number | null> {
     try {
       const data = await this.request({
         method: 'GET',

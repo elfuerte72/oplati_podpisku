@@ -186,7 +186,10 @@ export async function issueCard(orderId: string): Promise<void> {
         log.info({
           event: 'job.issue_card.topup_ok',
           cardId: card.id,
-          balanceUsdCents: topup.balanceUsdCents,
+          // Не баланс карты — сырое `total_amt` провайдера, см. TopupCardResult.
+          topupCheckTotalUsdCents: topup.topupCheckTotalUsdCents,
+          // Фактическая прибавка к карте: ровно её мы записали в БД.
+          creditedUsdCents: amountUsdCents,
         });
         // Повторная оплата: карта пополнена, новых реквизитов нет — шлём короткое
         // подтверждение с ценой и кнопкой-инструкцией (раньше не уходило ничего).

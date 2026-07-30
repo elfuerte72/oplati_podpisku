@@ -72,16 +72,28 @@ function mapOrderSummary(order: OrderRow, serviceName: string | null): OrderSumm
 }
 
 /**
- * «Действует до» карты. Приоритет — реальный `exp_date` самой карты (MM/YY из
- * PaySpace `getCardInfo`, L-10 аудита): показываем конец указанного месяца.
- * Fallback (карта без live-ответа / кривой формат) — расчётные
- * дата выпуска + CARD_LIFETIME_DAYS (180 дней — ТЗ §2, совпадает с порогом
- * release в cron `recycle-cards`).
+ * «Действует до» карты — РАНЬШАЯ из двух дат, потому что карта умирает от любой:
+ *
+ *  1. `exp_date` самой карты (MM/YY из PaySpace `getCardInfo`, L-10 аудита) —
+ *     дальше её не примет платёжная сеть;
+ *  2. дата выпуска + `CARD_LIFETIME_DAYS` (180 дней) — на этом сроке карту
+ *     закрывает наш cron `recycle-cards`, а выборки кабинета перестают её
+ *     показывать и отдавать по ней реквизиты (см. `findCardsByUserIdForCabinet`).
+ *
+ * Раньше приоритет был безусловно за `exp_date`, и витрина обещала срок
+ * платёжной сети: у карты, выпущенной 25.06.2026 с `exp_date=06/30`, кабинет
+ * показывал «30 июня 2030» при фактическом закрытии 22.12.2026 — разрыв в
+ * 3,5 года (найдено владельцем 2026-07-30). Обещание денежное: текст рядом
+ * сообщает, что после этой даты выпуск новой карты добавится к сумме заказа.
+ *
+ * Fallback (нет live-ответа / кривой формат) — наш срок: он единственный,
+ * который мы можем гарантировать сами.
  */
 export function cardValidUntil(createdAt: Date, liveExpDate?: string): string {
-  const parsed = liveExpDate ? parseExpDate(liveExpDate) : null;
-  if (parsed) return parsed;
-  return new Date(createdAt.getTime() + CARD_LIFETIME_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const ourDeadlineMs = createdAt.getTime() + CARD_LIFETIME_DAYS * 24 * 60 * 60 * 1000;
+  const networkExpiry = liveExpDate ? parseExpDate(liveExpDate) : null;
+  if (!networkExpiry) return new Date(ourDeadlineMs).toISOString();
+  return new Date(Math.min(new Date(networkExpiry).getTime(), ourDeadlineMs)).toISOString();
 }
 
 /**
