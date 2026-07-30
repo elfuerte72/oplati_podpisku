@@ -33,15 +33,61 @@ export function formatUsd(cents: number): string {
   }).format(abs)}`;
 }
 
-/** ISO-дата → «до 14:30, 9 июня» (МСК). Для срока действия счёта/заказа. */
+/**
+ * Битую дату возвращаем вызывающему как `null`.
+ *
+ * ⚠️ Одного `try/catch` вокруг `toLocaleString` НЕ хватает: на `new Date('мусор')`
+ * он не бросает, а отдаёт строку «Invalid Date» — и она уезжала бы в интерфейс
+ * вместо срока (найдено тестом 2026-07-30).
+ */
+function parseIsoOrNull(iso: string): Date | null {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * ISO-дата → «до 14:30, 9 июня» (МСК). Для срока действия счёта/заказа.
+ *
+ * Года намеренно нет: счёт живёт час, фиксация цены — два, и год в такой
+ * подписи только шумит. Для дат за пределами ближайших суток —
+ * `formatDeadlineWithYear`.
+ */
 export function formatExpires(iso: string): string {
+  const date = parseIsoOrNull(iso);
+  if (!date) return iso;
   try {
-    return new Date(iso).toLocaleString('ru-RU', {
+    return date.toLocaleString('ru-RU', {
       timeZone: 'Europe/Moscow',
       hour: '2-digit',
       minute: '2-digit',
       day: '2-digit',
       month: 'long',
+    });
+  } catch {
+    return iso;
+  }
+}
+
+/**
+ * ISO-дата → «22 декабря 2026, 23:59» (МСК). Для сроков, до которых месяцы:
+ * «Действует до» карты и подобных.
+ *
+ * Год обязателен. Без него «Действует до 30 июня» у карты со сроком в 2030-м
+ * читается как дата месячной давности — именно так и выглядел кабинет до
+ * 2026-07-30, когда владелец заметил «карта действует до 30 июня, а сейчас
+ * 30 июля».
+ */
+export function formatDeadlineWithYear(iso: string): string {
+  const date = parseIsoOrNull(iso);
+  if (!date) return iso;
+  try {
+    return date.toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      year: 'numeric',
+      month: 'long',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
     });
   } catch {
     return iso;

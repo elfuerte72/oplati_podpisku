@@ -255,7 +255,7 @@ describe('PaySpaceClient.topupCard', () => {
     const c = makeClient(fetchMock);
     const res = await c.topupCard({ cardId: 'c1', amountUsdCents: 5000, requestId: 'r1' });
     expect(res.status).toBe('completed');
-    expect(res.balanceUsdCents).toBe(6000);
+    expect(res.topupCheckTotalUsdCents).toBe(6000);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -282,7 +282,7 @@ describe('PaySpaceClient.topupCard', () => {
     const c = makeClient(fetchMock);
     const res = await c.topupCard({ cardId: 'c1', amountUsdCents: 5000, requestId: 'r1' });
     expect(res.status).toBe('completed');
-    expect(res.balanceUsdCents).toBe(5000);
+    expect(res.topupCheckTotalUsdCents).toBe(5000);
   });
 
   it('status:failed → PaySpaceApiError', async () => {
@@ -303,7 +303,7 @@ describe('PaySpaceClient.topupCard', () => {
     const c = makeClient(fetchMock);
     const res = await c.topupCard({ cardId: 'c1', amountUsdCents: 5000, requestId: 'r1' });
     expect(res.status).toBe('pending');
-    expect(res.balanceUsdCents).toBeNull();
+    expect(res.topupCheckTotalUsdCents).toBeNull();
   });
 });
 

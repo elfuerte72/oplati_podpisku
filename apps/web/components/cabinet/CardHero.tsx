@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-import { formatExpires, formatUsd } from '@/components/comic/format';
+import { formatDeadlineWithYear, formatUsd } from '@/components/comic/format';
 import { IconCheck } from '@/components/comic/icons';
 import type { CardView } from './cabinet-api';
 
@@ -163,7 +163,7 @@ export function CardHero({
           )}
           <div className="flex justify-between gap-4 font-body text-sm">
             <dt className="text-[var(--text-muted)]">Действует до</dt>
-            <dd className="text-[var(--text)]">{formatExpires(card.validUntil)}</dd>
+            <dd className="text-[var(--text)]">{formatDeadlineWithYear(card.validUntil)}</dd>
           </div>
         </dl>
 
