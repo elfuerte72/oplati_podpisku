@@ -9,16 +9,41 @@
 | Compose-сервис Dokploy | `metabase` (`composeId` `fQYQ_GBdk-g7eMnAAPJLz`, appName `oplatishka-metabase-8mi7hv`) |
 | Контейнеры | `…-metabase-1` (образ `metabase/metabase:v0.63.1.8`), `…-postgres-1` (`postgres:17-alpine`) |
 | Свои метаданные | БД `metabaseappdb` в собственном Postgres, том `metabase-appdb` |
-| Публичный домен | **нет** (решение владельца 2026-07-28) |
-| Вход | ssh-туннель на `127.0.0.1:3001` VPS |
+| Публичный домен | `metabase.oplatishka.com` за basic-auth (2026-07-31) |
+| Вход | домен (основной) либо ssh-туннель на `127.0.0.1:3001` |
 | Роль в боевой БД | `metabase_ro` — только `SELECT`, см. ниже |
 
 ## Как зайти
 
+**Основной путь — `https://metabase.oplatishka.com`** (работает с телефона).
+Два независимых барьера: basic-auth Traefik (пользователь `metabase`) и
+собственный логин Metabase. Дашборд аналитики — `/dashboard/2`.
+
+Запасной путь, если Traefik или сертификат лягут:
+
 ```bash
-ssh -L 3001:127.0.0.1:3001 root@187.124.172.104
+ssh -N -o ServerAliveInterval=20 -L 3001:127.0.0.1:3001 root@187.124.172.104
 # в браузере: http://localhost:3001
 ```
+
+⚠️ Порт 3001 наружу по-прежнему закрыт firewall'ом Hostinger — снаружи Metabase
+доступен ТОЛЬКО через 443/Traefik. Роутер описан файлом
+`/etc/dokploy/traefik/dynamic/metabase.yml` (по образцу `dokploy-panel.yml`),
+Dokploy его не перегенерирует. Сертификат — ACME HTTP-01 (`certResolver:
+letsencrypt`), A-запись `metabase` в Cloudflare, **серое облако** (`proxied:
+false`): при оранжевом HTTP-01 не пройдёт.
+
+⚠️ **Хэш пароля в файле Traefik пишется с ОДИНАРНЫМИ `$`.** Удвоение (`$$`)
+нужно только в docker-compose, где `$` интерполируется; в динамическом файле
+удвоенный хэш даёт вечный `401` даже с верным паролем — на этом я потерял один
+заход при настройке. Смена пароля:
+
+```bash
+htpasswd -nbB metabase '<новый>'   # строку целиком вписать в users:
+```
+
+Ротация или отзыв доступа — правка того же файла, Traefik подхватывает её сам
+за несколько секунд, перезапуск не нужен.
 
 Порт 3001 опубликован **только на loopback** VPS (`127.0.0.1:3001:3000` в
 compose), снаружи он не слушается и дополнительно закрыт firewall'ом Hostinger.
