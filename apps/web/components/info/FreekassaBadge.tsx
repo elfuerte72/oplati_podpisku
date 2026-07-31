@@ -19,10 +19,20 @@
  * регистрации указывает `cdn.freekassa.net/banners/medium_1.png` — этот путь
  * отдаёт **404** (проверено с двух IP, с `Referer` и браузерным UA, так что дело
  * не в hotlink-защите; корень CDN 403, соседние пути тоже 404 — похоже, файлы
- * переехали при ребрендинге в DUCKGO, а форма отдаёт старый URL). Рабочий путь —
- * `images/logos/banners/medium_1.png` (200, image/png, 180x70). НЕ «исправлять»
- * его назад на путь из сниппета: вернётся битая картинка.
- * Домен тот же, поэтому правка CSP не потребовалась.
+ * переехали при ребрендинге в DUCKGO, а форма отдаёт старый URL). Рабочий
+ * префикс — `images/logos/banners/`. НЕ «исправлять» его назад на путь из
+ * сниппета: вернётся битая картинка. Домен тот же, поэтому правка CSP не
+ * потребовалась.
+ *
+ * Размер — `small_1.png` (98x41), а не `medium_1.png` (180x70), который стоял до
+ * 2026-07-31: тёмный прямоугольник в 180 пикселей ломал комикс-футер. Это
+ * ИМЕННО их ассет с их CDN и их ссылка — баннер остаётся на месте, просто
+ * мелкий и обесцвеченный до наведения. Прятать его `display:none`/выносом за
+ * экран нельзя: проверку это обманывает, а пользы даёт ноль — если решим не
+ * показывать, компонент удаляется целиком.
+ * Доступные размеры на CDN (проверено запросами 2026-07-31): `small_1` 98x41,
+ * `medium_1` / `medium_2` 180x70, `big_1` 270x72; `mini_1` и одиночные имена
+ * вроде `1.png` — 404.
  *
  * ВАЖНО: домен `cdn.freekassa.net` добавлен в `img-src` CSP (`next.config.ts`).
  * Без этого при переводе CSP из Report-Only в enforce (задача в BACKLOG) картинка
@@ -34,19 +44,19 @@ export function FreekassaBadge({ className = '' }: { className?: string }) {
       href="https://freekassa.net"
       target="_blank"
       rel="noopener noreferrer"
-      className={`inline-block opacity-70 transition-opacity hover:opacity-100 ${className}`}
+      className={`inline-block opacity-50 grayscale transition duration-200 hover:opacity-100 hover:grayscale-0 ${className}`}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- см. докстринг:
           next/image переписывает src, а провайдер проверяет свой литеральный URL. */}
       <img
-        src="https://cdn.freekassa.net/images/logos/banners/medium_1.png"
+        src="https://cdn.freekassa.net/images/logos/banners/small_1.png"
         title="Прием платежей на сайте для физических лиц и т.д."
         alt="Freekassa — приём платежей"
         loading="lazy"
         decoding="async"
-        width={180}
-        height={70}
-        className="h-auto w-[180px] max-w-full"
+        width={98}
+        height={41}
+        className="h-auto w-[98px] max-w-full"
       />
     </a>
   );
