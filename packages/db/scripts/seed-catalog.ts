@@ -20,11 +20,11 @@
  *
  * Цены — справочные на момент ресёрча; владелец сверяет перед production.
  *
- * Сервисы «пополнения» (App Store, архивный Steam) уникальны: pricing_policy.tiers
- * содержит dummy-tier с originalAmount=1 (≤ 1 цента — маркер «индивидуальная
- * цена», см. lib/catalog/build.ts). Кнопочный флоу для таких сервисов запрашивает
- * сумму у клиента; фактическая стоимость заполняется в orders.amount_rub под
- * каждый заказ.
+ * Сервисы с индивидуальной ценой (Hostinger, «пополнения» App Store и архивный
+ * Steam) уникальны: pricing_policy.tiers содержит dummy-tier с originalAmount=1
+ * (≤ 1 цента — маркер «индивидуальная цена», см. lib/catalog/build.ts).
+ * Кнопочный флоу для таких сервисов запрашивает сумму у клиента; фактическая
+ * стоимость заполняется в orders.amount_rub под каждый заказ.
  *
  * Убранные из витрины сервисы живут в ARCHIVED_CATALOG (is_active=false) —
  * записи сохранены для быстрого восстановления.
@@ -92,7 +92,7 @@ function usd(
   };
 }
 
-/** dummy-tier для сервисов с индивидуальной ценой (Airbnb): сумму вводит клиент. */
+/** dummy-tier для сервисов с индивидуальной ценой (Hostinger, Airbnb): сумму вводит клиент. */
 const CUSTOM_AMOUNT_TIER: ServiceTier = {
   name: 'Booking',
   period: 'month',
@@ -249,6 +249,30 @@ const CATALOG: readonly CatalogEntry[] = [
     pricingPolicy: policy([usd('Creator', 29), usd('Pro', 49)]),
     paymentInstructions: usInstructions('https://www.heygen.com/pricing'),
   },
+  {
+    slug: 'elevenlabs',
+    name: 'ElevenLabs',
+    description: 'AI-озвучка, синтез речи и дубляж',
+    category: 'ai',
+    requiresKyc: false,
+    // Сверено по elevenlabs.io/pricing 2026-07-31. Берём МЕСЯЧНЫЕ цены: годовые
+    // (10 месяцев вместо 12) списываются сразу за год — тот же принцип, что у
+    // Higgsfield и HeyGen.
+    //   Free ($0) — продавать нечего.
+    //   Creator на сайте рекламируется как «$11 первый месяц (−50%)»; в витрину
+    //     берём обычную цену $22, иначе со второго месяца клиент увидит списание
+    //     вдвое больше обещанного, а карта будет выпущена на половину суммы.
+    //   Business ($990/мес, 10 мест) НЕ берём: выше серверного потолка заказа
+    //     ($500), propose_order отклонил бы такой заказ уже после выбора тарифа.
+    //   Enterprise — цена по запросу, витрине не подходит.
+    pricingPolicy: policy([
+      usd('Starter', 6),
+      usd('Creator', 22),
+      usd('Pro', 99),
+      usd('Scale', 299),
+    ]),
+    paymentInstructions: usInstructions('https://elevenlabs.io/pricing'),
+  },
 
   // ─── Streaming ─────────────────────────────────────────────────────────────
   // Netflix / Spotify / YouTube Premium выведены из витрины 2026-07-07 (решение
@@ -304,6 +328,27 @@ const CATALOG: readonly CatalogEntry[] = [
       usd('Collab seat', 3),
     ]),
     paymentInstructions: usInstructions('https://www.figma.com/pricing/'),
+  },
+  {
+    slug: 'hostinger',
+    name: 'Hostinger (оплата счёта)',
+    description: 'Хостинг, VPS и домены — сумму вводит клиент',
+    category: 'productivity',
+    requiresKyc: false,
+    // Подписки в нашем смысле у Hostinger нет: тариф оплачивается РАЗОВО за весь
+    // срок (12/24/48 месяцев), цена зависит от срока, действующего промо и
+    // допуслуг в корзине (домен, почта, SSL, лицензии). Фиксированного тарифа,
+    // который можно показать кнопкой, не существует — отсюда custom-amount:
+    // клиент вводит итог из корзины. Потолок остаётся общий, $500 (решение
+    // владельца 2026-07-31): в него влезают все тарифы хостинга (Cloud на 48
+    // месяцев — самый дорогой, ~$384) и VPS до KVM 4; редкий крупный VPS
+    // (KVM 8 на 24 месяца, ~$624) уходит через оператора. Поднять потолок =
+    // добавить slug в HIGH_VALUE_SERVICE_SLUGS (и три его зеркала).
+    pricingPolicy: policy([CUSTOM_AMOUNT_TIER]),
+    paymentInstructions: usInstructions(
+      'https://www.hostinger.com/pricing',
+      'Оплата разовая за весь срок (12/24/48 месяцев) — укажи ИТОГ из корзины Hostinger, а не цену за месяц. Домен, почта и другие допуслуги должны входить в эту же сумму. Оплачивай в веб-версии, не в приложении.',
+    ),
   },
 
   // ─── Social ──────────────────────────────────────────────────────────────────

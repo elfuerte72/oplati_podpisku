@@ -18,10 +18,12 @@ const SERVICE_PRICING_URLS: Readonly<Record<string, string>> = {
   suno: 'https://suno.com/pricing',
   higgsfield: 'https://higgsfield.ai/pricing',
   heygen: 'https://www.heygen.com/pricing',
+  elevenlabs: 'https://elevenlabs.io/pricing',
   'apple-music': 'https://www.apple.com/apple-music/',
   'apple-app-store': 'https://support.apple.com/en-us/118297',
   'icloud-plus-200gb': 'https://support.apple.com/en-us/108047',
   'figma-professional': 'https://www.figma.com/pricing/',
+  hostinger: 'https://www.hostinger.com/pricing',
   'telegram-premium': telegramBotLink('premiumbot'),
 };
 

@@ -9,6 +9,8 @@ import {
   siClaude,
   siCursor,
   siDiscord,
+  siElevenlabs,
+  siHostinger,
   siIcloud,
   siNetflix,
   siNotion,
@@ -65,6 +67,12 @@ const LOGOS: Record<string, ServiceIcon> = {
   airbnb: siAirbnb,
   'youtube-premium': siYoutube,
   'discord-nitro': siDiscord,
+  // Фирменные глифы из simple-icons: ElevenLabs — два столбика (#000, как у
+  // Apple/Notion — рассчитано на светлую плашку), Hostinger — фиолетовая «H»
+  // (#673DE6). Присланные владельцем файлы (jpeg с шахматкой и SVG-леттеринг
+  // 920×620) в 24-пиксельный слот витрины не годятся.
+  elevenlabs: siElevenlabs,
+  hostinger: siHostinger,
   'apple-one': siApple,
   'apple-app-store': siAppstore,
   'icloud-plus-200gb': siIcloud,
