@@ -31,14 +31,18 @@ function row(overrides: Partial<Parameters<typeof buildCatalogService>[0]> = {})
 describe('computeTotalKopecks', () => {
   it('повторяет формулу propose_order: округление subtotal и комиссии раздельно', () => {
     // $20 × 95.5 = 1910.00 RUB → 191000 коп; комиссия 10% → 19100; итог 210100
+    // (уже целые рубли — округлять вверх нечего).
     expect(computeTotalKopecks(2000, RATE, COMMISSION)).toBe(210_100);
   });
 
-  it('округляет дробные копейки до integer', () => {
-    // 1099 × 95.5 = 104954.5 → 104955 (round даёт integer уже на subtotal)
+  it('цена без копеек: итог округляется ВВЕРХ до целого рубля', () => {
+    // 1099 × 95.5 = 104954.5 → subtotal 104955; комиссия 10% → 10496;
+    // сумма 115451 коп. (1154,51 ₽) → вверх до 115500 коп. (1155 ₽).
     const total = computeTotalKopecks(1099, RATE, COMMISSION);
-    expect(Number.isInteger(total)).toBe(true);
-    expect(total).toBe(104_955 + Math.round(104_955 / 10));
+    expect(total).toBe(115_500);
+    expect(total % 100).toBe(0);
+    // Округление именно в нашу сторону — итог не меньше сырой суммы.
+    expect(total).toBeGreaterThanOrEqual(104_955 + 10_496);
   });
 });
 
@@ -68,7 +72,8 @@ describe('buildCatalogService', () => {
     );
 
     expect(svc?.tiers).toEqual([
-      { name: 'Essential', period: 'quarter', usdCents: 2799, totalKopecks: 294_036 },
+      // 2799 × 95.5 = 267 305 (round) + 10% = 294 036 → вверх до 294 100 (2941 ₽).
+      { name: 'Essential', period: 'quarter', usdCents: 2799, totalKopecks: 294_100 },
     ]);
   });
 

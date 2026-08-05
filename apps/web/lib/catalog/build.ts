@@ -4,6 +4,8 @@ import {
   type ServicePaymentInstructions,
 } from '@oplati/types';
 
+import { roundUpToWholeRubles } from '@/lib/pricing';
+
 /**
  * Сборка кнопочного каталога веб-чата из строк `services` (решение владельца
  * 2026-06-12: happy path «сервис → тариф → оплата» идёт без AI, источник
@@ -11,7 +13,8 @@ import {
  *
  * Формула рублёвой цены тарифа — та же, что в `propose_order`
  * (см. lib/tool-handlers/propose-order.ts): subtotal = round(usdCents × rate),
- * commission = round(subtotal × percent / 100), total = subtotal + commission.
+ * commission = round(subtotal × percent / 100),
+ * total = ceilToRubles(subtotal + commission).
  * Здесь она даёт ОЦЕНКУ для витрины; юридически значимая сумма фиксируется
  * заново в момент создания заказа.
  */
@@ -63,7 +66,9 @@ export function computeTotalKopecks(
 ): number {
   const subtotalKopecks = Math.round(usdCents * rate);
   const commissionKopecks = Math.round((subtotalKopecks * commissionPercent) / 100);
-  return subtotalKopecks + commissionKopecks;
+  // Цену показываем без копеек, округление вверх — та же функция, что фиксирует
+  // сумму заказа в `propose_order` (иначе витрина и заказ разъедутся на рубль).
+  return roundUpToWholeRubles(subtotalKopecks + commissionKopecks);
 }
 
 /**

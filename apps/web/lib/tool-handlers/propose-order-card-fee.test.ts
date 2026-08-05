@@ -51,10 +51,10 @@ function netflixInput() {
   return { ...BASE, serviceId: 'svc-1', amountUsdCents: 2000 };
 }
 
-const SUBTOTAL = 160_240;
-const COMMISSION = 48_072;
-// Надбавка за выпуск карты: round($4 × 80.12) = 32 048 копеек (320.48 ₽).
-const CARD_FEE = 32_048;
+// Цена клиента — без копеек, вверх: 160 240 + 48 072 = 208 312 → 208 400 (2084 ₽).
+const SUBSCRIPTION = 208_400;
+// Надбавка за выпуск карты: $4 × 80.12 = 320,48 ₽ → вверх до 321 ₽ = 32 100 копеек.
+const CARD_FEE = 32_100;
 
 beforeEach(() => {
   h.state.service = null;
@@ -70,16 +70,28 @@ describe('proposeOrder — разовая надбавка за выпуск к�
     const r = await proposeOrder(netflixInput());
 
     expect(r.orderId).toBe('order-1');
-    // total = subtotal + commission + fee = 160240 + 48072 + 32048 = 240 360.
-    expect(r.totalRubKopecks).toBe(SUBTOTAL + COMMISSION + CARD_FEE);
+    // total = подписка + fee = 208 400 + 32 100 = 240 500 (2405 ₽, без копеек).
+    expect(r.totalRubKopecks).toBe(SUBSCRIPTION + CARD_FEE);
+    expect(r.totalRubKopecks % 100).toBe(0);
     expect(h.createDraftOrderMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        amountRub: SUBTOTAL + COMMISSION + CARD_FEE,
+        amountRub: SUBSCRIPTION + CARD_FEE,
         cardIssueFeeKopecks: CARD_FEE,
       }),
       expect.anything(),
     );
+  });
+
+  it('обе строки чека целые: total − fee (строка «Подписка») тоже без копеек', async () => {
+    h.findActiveByUserIdMock.mockResolvedValueOnce(null);
+
+    const r = await proposeOrder(netflixInput());
+
+    // Экран заказа рисует «Подписка» как total − cardIssueFeeKopecks — она
+    // обязана быть целой, иначе разбивка выглядит рванее итога.
+    expect((r.totalRubKopecks - CARD_FEE) % 100).toBe(0);
+    expect(r.totalRubKopecks - CARD_FEE).toBe(SUBSCRIPTION);
   });
 
   it('есть активная карта → надбавки нет (топап без issue-fee), снимок = 0', async () => {
@@ -87,12 +99,12 @@ describe('proposeOrder — разовая надбавка за выпуск к�
 
     const r = await proposeOrder(netflixInput());
 
-    // total = subtotal + commission = 208 312 (без fee).
-    expect(r.totalRubKopecks).toBe(SUBTOTAL + COMMISSION);
+    // total = только подписка, 208 400 (без fee).
+    expect(r.totalRubKopecks).toBe(SUBSCRIPTION);
     expect(h.createDraftOrderMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        amountRub: SUBTOTAL + COMMISSION,
+        amountRub: SUBSCRIPTION,
         cardIssueFeeKopecks: 0,
       }),
       expect.anything(),
