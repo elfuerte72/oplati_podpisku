@@ -13,6 +13,7 @@ import type { ProposeOrderResult } from '@oplati/agent';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import { roundUpToWholeRubles } from '../pricing.ts';
 import { resolveUsdtRubRate } from '../rapira/rates.ts';
 
 /**
@@ -20,7 +21,8 @@ import { resolveUsdtRubRate } from '../rapira/rates.ts';
  *   1. Получает текущий курс USDT→RUB (Rapira `askPrice`).
  *   2. subtotal = round(amountUsdCents/100 * rate * 100)  // копейки RUB
  *   3. commission = round(subtotal * COMMISSION_PERCENT / 100)
- *   4. total = subtotal + commission
+ *   4. подписка = ceilToRubles(subtotal + commission)  // цена без копеек, вверх
+ *   5. total = подписка + ceilToRubles(надбавка за выпуск карты)
  *
  * Поддерживает два режима:
  *  - **Каталог:** `serviceId` указан → lookup в `services`, `requiresKyc` берётся
@@ -232,7 +234,16 @@ export async function proposeOrder(input: {
   // amountUsdCents / 100 = USD. USD * rate = RUB. RUB * 100 = копейки.
   // Перемножаем как (amountUsdCents * rate) и округляем до integer (копеек).
   const subtotalKopecks = Math.round(amountUsdCents * rate);
-  const commissionKopecks = Math.round((subtotalKopecks * commissionPercent) / 100);
+  const rawCommissionKopecks = Math.round((subtotalKopecks * commissionPercent) / 100);
+
+  // Цена клиента — без копеек, округление ВВЕРХ (решение владельца 2026-08-05).
+  // Округляем ровно ту величину, которую показывает витрина каталога
+  // (subtotal + commission, см. lib/catalog/build.ts), иначе «≈ 868 ₽» в списке
+  // тарифов и сумма заказа разошлись бы на рубль. Разницу относим на комиссию:
+  // она наша, а разбивка «Подписка / Выпуск карты / Итого» на экране заказа
+  // обязана сходиться в копейку.
+  const subscriptionKopecks = roundUpToWholeRubles(subtotalKopecks + rawCommissionKopecks);
+  const commissionKopecks = subscriptionKopecks - subtotalKopecks;
 
   // Разовая надбавка за выпуск карты: клиент оплачивает $4 issue-fee ТОЛЬКО когда
   // у него нет активной карты (issue-card выпустит новую → PaySpace спишет fee).
@@ -244,10 +255,16 @@ export async function proposeOrder(input: {
   const cardIssueFeeUsdCents = serverEnv.CARD_ISSUE_FEE_USD_CENTS;
   const hasActiveCard =
     cardIssueFeeUsdCents > 0 ? (await findActiveByUserId(db, userId)) !== null : true;
+  // Надбавку тоже округляем вверх до рубля — она отдельной строкой в чеке,
+  // и «+ 320,48 ₽» рядом с целой ценой подписки выглядело бы недоделкой.
+  // `Math.round` перед этим не декоративен: произведение центов на курс — float,
+  // и хвост вида 32000.000000000004 поднял бы цену на лишний рубль.
   const cardIssueFeeKopecks =
-    cardIssueFeeUsdCents > 0 && !hasActiveCard ? Math.round(cardIssueFeeUsdCents * rate) : 0;
+    cardIssueFeeUsdCents > 0 && !hasActiveCard
+      ? roundUpToWholeRubles(Math.round(cardIssueFeeUsdCents * rate))
+      : 0;
 
-  const totalKopecks = subtotalKopecks + commissionKopecks + cardIssueFeeKopecks;
+  const totalKopecks = subscriptionKopecks + cardIssueFeeKopecks;
 
   // Пол платёжного терминала L&P: заказ дешевле минимума всё равно не оплатить
   // (`/api/payments/create` вернёт `below_min_amount`). Ловим ЗДЕСЬ, до создания
