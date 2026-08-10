@@ -38,6 +38,26 @@ const log = childLogger('loveandpay-webhook');
 const ok = (extra: Record<string, unknown> = {}) =>
   NextResponse.json({ ok: true, ...extra }, { status: 200 });
 
+/**
+ * Дедуп алёрта «секрет вебхука не задан»: 10 минут на процесс. Состояние в
+ * памяти — этого достаточно, потому что задача не «посчитать все случаи», а
+ * «сказать один раз и не задушить квоту».
+ */
+const NOT_CONFIGURED_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
+let lastNotConfiguredAlertAt = 0;
+
+function shouldAlertNotConfigured(): boolean {
+  const now = Date.now();
+  if (now - lastNotConfiguredAlertAt < NOT_CONFIGURED_ALERT_COOLDOWN_MS) return false;
+  lastNotConfiguredAlertAt = now;
+  return true;
+}
+
+/** Сброс дедупа между тестами (в проде не зовётся). */
+export function resetWebhookAlertDedupForTests(): void {
+  lastNotConfiguredAlertAt = 0;
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   // rawBody читаем СРАЗУ и один раз — он нужен для HMAC (подпись считается по
   // байт-в-байт телу до JSON.parse).
@@ -52,7 +72,22 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const webhookSecret = serverEnv.LOVEANDPAY_WEBHOOK_SECRET;
   if (!webhookSecret) {
-    log.warn({ event: 'loveandpay.webhook.disabled', missing: 'LOVEANDPAY_WEBHOOK_SECRET' });
+    // Проверить подпись нечем — событие об оплате приходится проглотить, и
+    // провайдер сочтёт доставку успешной (ответ 200 по инварианту 6, ретраев не
+    // будет). Молчать здесь нельзя: до 2026-08-10 был только `log.warn`, то есть
+    // потеря платёжного события выглядела как штатная работа. Симметрично
+    // Freekassa (`freekassa/route.ts`), где такой же кейс уже алёртится.
+    log.error({ event: 'loveandpay.webhook.disabled', missing: 'LOVEANDPAY_WEBHOOK_SECRET' });
+    // Дедуп: роут публичный и без rate-limit, а конфиг-ошибка одинакова для
+    // всех запросов. Без него любой POST'ер (или ретраи самого провайдера)
+    // выел бы квоту событий Sentry, и настоящие платёжные алёрты — недоплата,
+    // сбой выпуска карты — начали бы отбрасываться (находка ревью).
+    if (shouldAlertNotConfigured()) {
+      Sentry.captureMessage('L&P webhook пришёл, но LOVEANDPAY_WEBHOOK_SECRET не задан', {
+        level: 'error',
+        tags: { source: 'loveandpay.webhook' },
+      });
+    }
     return ok({ skipped: 'not_configured' });
   }
 

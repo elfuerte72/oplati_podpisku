@@ -122,3 +122,65 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(headers['user-agent']).toBe('Mozilla/5.0');
   });
 });
+
+/**
+ * `contexts` и `tags` тоже скрабятся (аудит 2026-08-10, LOW): комментарий
+ * функции обещал «Extra / contexts», а код чистил только `extra`. Контекст
+ * Sentry заполняется не только нами — SDK и интеграции складывают туда свои
+ * структуры, поэтому денилист обязан покрывать и его.
+ */
+describe('beforeSend: contexts и tags', () => {
+  it('РЕГРЕСС: pan/cvc внутри contexts редактируются', () => {
+    const event = beforeSend({
+      contexts: {
+        order: { pan: '4111111111111111', cvc: '123', amount: 2490 },
+      },
+    } as unknown as SentryEvent) as unknown as {
+      contexts: { order: Record<string, unknown> };
+    };
+
+    expect(event.contexts.order.pan).toBe('[REDACTED]');
+    expect(event.contexts.order.cvc).toBe('[REDACTED]');
+    expect(event.contexts.order.amount).toBe(2490);
+  });
+
+  it('РЕГРЕСС: секрет в tags редактируется', () => {
+    const event = beforeSend({
+      tags: { token: 'secret-token', source: 'cron.poll-payment' },
+    } as unknown as SentryEvent) as unknown as { tags: Record<string, unknown> };
+
+    expect(event.tags.token).toBe('[REDACTED]');
+    expect(event.tags.source).toBe('cron.poll-payment');
+  });
+});
+
+/**
+ * Свободный текст события — единственный канал, который денилист по ключам не
+ * закрывает, а именно туда клиенты шлюзов кладут сырое тело ответа
+ * (`message: respText.slice(0, 500)`). Находка ревью 2026-08-11.
+ */
+describe('beforeSend: свободный текст message и exception', () => {
+  it('РЕГРЕСС: PAN в тексте исключения маскируется', () => {
+    const event = beforeSend({
+      exception: {
+        values: [{ type: 'FreekassaContractError', value: 'drift: {"pan":"4111 1111 1111 1111"}' }],
+      },
+    } as unknown as SentryEvent) as unknown as {
+      exception: { values: { value: string }[] };
+    };
+
+    const text = event.exception.values[0]?.value ?? '';
+    expect(text).not.toContain('4111 1111 1111 1111');
+    expect(text).toContain('**** 1111');
+  });
+
+  it('РЕГРЕСС: PAN и Bearer-токен в message маскируются', () => {
+    const event = beforeSend({
+      message: 'gateway said 5592680100101726, auth Bearer abc.def-123',
+    } as unknown as SentryEvent) as unknown as { message: string };
+
+    expect(event.message).not.toContain('5592680100101726');
+    expect(event.message).toContain('**** 1726');
+    expect(event.message).toContain('Bearer [REDACTED]');
+  });
+});

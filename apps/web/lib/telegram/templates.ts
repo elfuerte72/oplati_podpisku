@@ -3,6 +3,8 @@ import 'server-only';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
 import { PAYMENT_ISSUE_LABELS, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import { isValidLuhn } from '@oplati/types';
+
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 // Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
 // панели и `serverEnv`, а здесь нужна чистая функция сравнения дат.
@@ -376,18 +378,39 @@ export function buildSupportOperatorMessage(params: {
     0,
     Math.min(SUPPORT_MESSAGE_MAX_LEN, TELEGRAM_MESSAGE_LIMIT - header.length - 1),
   );
-  return header + truncateEscapedHtml(escapeHtml(params.description), bodyBudget);
+  // PAN-подобные последовательности маскируются и здесь (аудит 2026-08-10):
+  // клиент, у которого «не проходит оплата», пишет номер карты в поддержку так
+  // же охотно, как в форму «Не проходит оплата?» — а тот путь маскировал, этот
+  // нет. Политика «полный PAN не уходит никуда, включая DM оператору» не должна
+  // зависеть от того, через какую кнопку пришёл текст.
+  const safeDescription = redactCardNumbers(params.description);
+  return header + truncateEscapedHtml(escapeHtml(safeDescription), bodyBudget);
 }
 
 /**
- * Маскирует последовательности, похожие на номер карты (12–19 цифр, допустимы
- * пробелы/дефисы между группами), в свободном тексте клиента: полный PAN не
- * должен попадать даже в DM оператору (политика «PAN/CVC не логируются
- * никогда»). Оставляем последние 4 цифры — оператору хватает для сверки.
+ * Маскирует последовательности, похожие на номер карты, в свободном тексте
+ * клиента: полный PAN не должен попадать ни в БД, ни в DM оператору (политика
+ * «PAN/CVC не логируются никогда»). Оставляем последние 4 цифры — оператору
+ * хватает для сверки.
+ *
+ * Что изменилось после ревью 2026-08-11:
+ *
+ *  - **Разделители.** Было только `[ -]`, и номер, вставленный через точки или
+ *    слэши (обычное дело при копировании), уезжал целиком. Теперь разделителем
+ *    считается любой из ` .-/` и перевод строки — люди пишут группы и с новой
+ *    строки.
+ *  - **Контрольная сумма Луна вместо «12+ цифр подряд».** Прежнее правило
+ *    съедало любую длинную группу цифр: «оплатил 10 08 2026 12 30 45» целиком
+ *    превращалось в `**** 3045`, и оператор терял дату и референс СБП — а это
+ *    единственный канал связи с клиентом. Луна отсеивает такие строки почти
+ *    всегда (шанс случайного совпадения 1 к 10). Ровно 16 цифр маскируем и без
+ *    Луна: это самая частая длина PAN, и опечатка клиента в номере не должна
+ *    отменять маскирование.
  */
 export function redactCardNumbers(text: string): string {
-  return text.replace(/(?:\d[ -]?){11,18}\d/g, (match) => {
+  return text.replace(/\d(?:[ .\-/\n]?\d){11,18}/g, (match) => {
     const digits = match.replace(/\D/g, '');
+    if (digits.length !== 16 && !isValidLuhn(digits)) return match;
     return `**** ${digits.slice(-4)}`;
   });
 }
