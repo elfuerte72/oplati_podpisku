@@ -6,6 +6,7 @@ import { getDb, listActiveServices } from '@oplati/db';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+import { orderFloorRub } from '@/lib/payments/gateway';
 import { resolveUsdtRubRate } from '@/lib/rapira/rates';
 
 import { buildCatalogService, sortCatalog, type CatalogService } from './build';
@@ -100,7 +101,12 @@ async function loadFromSources(): Promise<CatalogService[]> {
   const db = getDb();
   const [rows, rate] = await Promise.all([listActiveServices(db), resolveUsdtRubRate()]);
   const commissionPercent = serverEnv.COMMISSION_PERCENT;
-  const minOrderKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
+  // Пол — `orderFloorRub()` (аудит 2026-08-10): максимум из продуктового
+  // порога и минимума АКТИВНОГО шлюза. Зашитый `LOVEANDPAY_MIN_AMOUNT_RUB`
+  // означал бы кнопки-тупики после переключения шлюза, а один лишь минимум
+  // шлюза — возврат заведомо убыточных тарифов, если его обнулят аварийным
+  // выключателем.
+  const minOrderKopecks = orderFloorRub() * 100;
 
   const services: CatalogService[] = [];
   for (const r of rows) {

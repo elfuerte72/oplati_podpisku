@@ -99,4 +99,48 @@ describe('resolveUsdtRubRate', () => {
 
     await expect(resolveUsdtRubRate()).resolves.toBe(77);
   });
+
+  /**
+   * Границы правдоподобия (аудит 2026-08-10). Курс фиксируется в заказе на 2
+   * часа, поэтому сдвиг порядка величины у провайдера (копейки вместо рублей,
+   * смена котируемой валюты) молча продавал бы подписки за бесценок или
+   * останавливал продажи — и то и другое без единого сигнала.
+   */
+  describe('санити-границы курса', () => {
+    function withRate(rate: number) {
+      return response(200, {
+        ...SUCCESS_RESPONSE,
+        data: [{ ...SUCCESS_RESPONSE.data[1], askPrice: rate }],
+      });
+    }
+
+    it('РЕГРЕСС: курс приехал в копейках — fallback + алёрт', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(withRate(0.8012)));
+
+      await expect(resolveUsdtRubRate()).resolves.toBe(77);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'USDT/RUB rate fallback used',
+        expect.objectContaining({ tags: { source: 'rapira.usdt_rub' } }),
+      );
+    });
+
+    it('РЕГРЕСС: курс ×100 подрезается по ВЕРХНЕЙ границе, а не откатывается к fallback', async () => {
+      // Откат к 81 при завышенном курсе продавал бы подписки ниже
+      // себестоимости — деградация обязана быть в нашу сторону.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(withRate(8012)));
+
+      await expect(resolveUsdtRubRate()).resolves.toBe(400);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('подрезан'),
+        expect.objectContaining({ level: 'error' }),
+      );
+    });
+
+    it('реальное движение рынка (120 ₽/$) принимается без алёрта', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(withRate(120.5)));
+
+      await expect(resolveUsdtRubRate()).resolves.toBe(120.5);
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
 });

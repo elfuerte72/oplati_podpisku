@@ -6,6 +6,7 @@ import { getDb, getUserTelegramId, type OrderRow } from '@oplati/db';
 import {
   FREEKASSA_METHOD_CARD_RUB,
   FREEKASSA_METHOD_SBP,
+  paymentGateway,
   type PaymentGateway,
 } from '@oplati/types';
 
@@ -74,6 +75,30 @@ export function minAmountRubFor(gateway: PaymentGateway): number {
 }
 
 /**
+ * ПРОДУКТОВЫЙ пол заказа в рублях — не про лимиты шлюза, а про экономику: на
+ * заказе дешевле этого порога разовая надбавка за выпуск карты (~320 ₽)
+ * сопоставима с ценой самой подписки, поэтому такие тарифы витрина не
+ * показывает (месячный Telegram Premium скрыт именно поэтому).
+ *
+ * Раньше эту роль неявно играл `LOVEANDPAY_MIN_AMOUNT_RUB` — его схема
+ * зажата `.min(500)`, то есть опустить пол витрины было физически нельзя. У
+ * `FREEKASSA_MIN_AMOUNT_RUB` такого клампа нет (0 задокументирован как
+ * аварийный выключатель гейта), и без явной константы этот выключатель заодно
+ * вернул бы на витрину заведомо убыточные тарифы (находка ревью).
+ */
+const PRODUCT_MIN_ORDER_RUB = 500;
+
+/**
+ * Пол суммы заказа для ВИТРИНЫ и `propose_order`: максимум из продуктового
+ * порога и минимума активного шлюза. Гейт `payments/create` продолжает считать
+ * по одному лишь шлюзу (`minAmountRubFor`) — там смысл другой: «провайдер это
+ * не примет».
+ */
+export function orderFloorRub(): number {
+  return Math.max(PRODUCT_MIN_ORDER_RUB, minAmountRubFor(primaryPaymentGateway()));
+}
+
+/**
  * Максимальная принимаемая сумма шлюза в рублях (0 = потолка нет).
  * У Freekassa лимит операции 150 000 ₽ по обоим API-методам (СБП и карты РФ),
  * у L&P потолок не объявлен — выдумывать его нельзя.
@@ -100,6 +125,32 @@ export function buyerFeePercentFor(gateway: PaymentGateway): number {
 /** Комиссия текущего шлюза — то, что уходит в UI и тексты бота. */
 export function currentBuyerFeePercent(): number {
   return buyerFeePercentFor(primaryPaymentGateway());
+}
+
+/**
+ * Комиссия плательщика для КОНКРЕТНОГО заказа — по шлюзу, который выставил его
+ * счёт, а не по текущему `PAYMENT_PRIMARY_PROVIDER` (аудит 2026-08-10).
+ *
+ * Переключение шлюза не меняет условия по уже созданному счёту: клиент уходит
+ * по ссылке того провайдера, который его выпустил, а в истории заказа цифра
+ * должна остаться той, по которой он реально платил. Взяв текущий шлюз, кабинет
+ * рассказывал бы про надбавку, которой в этом заказе не было (или молчал о той,
+ * что была) — ровно то враньё о цене, ради устранения которого заведён модуль
+ * `buyer-fee`.
+ *
+ * Счёта нет вовсе (черновик) — комиссия текущего шлюза: он его и выставит.
+ * Живой `pending` приоритетнее исторических: по нему клиент платит прямо сейчас.
+ */
+export function buyerFeePercentForOrder(
+  payments: readonly { provider: string; status: string; createdAt: Date }[],
+): number {
+  const pending = payments.find((p) => p.status === 'pending');
+  const latest = [...payments].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  )[0];
+  const source = pending ?? latest;
+  const parsed = source ? paymentGateway.safeParse(source.provider) : null;
+  return parsed?.success ? buyerFeePercentFor(parsed.data) : currentBuyerFeePercent();
 }
 
 export type CreateInvoiceInput = {

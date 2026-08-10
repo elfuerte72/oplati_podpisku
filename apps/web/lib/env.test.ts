@@ -118,3 +118,53 @@ describe('дефолты Freekassa', () => {
     );
   });
 });
+
+/**
+ * `KEY=` в env читается как «ещё не заполнил», а не как значение (аудит
+ * 2026-08-10). До фикса пустая строка обходила дефолты числовых схем:
+ * `z.coerce.number()` превращает '' в 0, а `.default()` срабатывает только на
+ * `undefined`. Цена ошибки денежная: `COMMISSION_PERCENT=` — работа с нулевой
+ * наценкой, `FREEKASSA_MAX_AMOUNT_RUB=` — снятый потолок суммы. Сигнала нет
+ * никакого, а правка env через API Dokploy перезаписывает его ЦЕЛИКОМ, то есть
+ * опечатка ровно такого вида и вероятна.
+ */
+describe('пустая строка в env = «не задано»', () => {
+  it('РЕГРЕСС: COMMISSION_PERCENT= не обнуляет наценку', async () => {
+    const env = await loadEnv({ COMMISSION_PERCENT: '' });
+    expect(env.COMMISSION_PERCENT).toBe(10);
+  });
+
+  it('РЕГРЕСС: FREEKASSA_MAX_AMOUNT_RUB= не снимает потолок суммы', async () => {
+    const env = await loadEnv({ FREEKASSA_MAX_AMOUNT_RUB: '' });
+    expect(env.FREEKASSA_MAX_AMOUNT_RUB).toBe(140_000);
+  });
+
+  it('дефолты числовых денежных env переживают пустую строку', async () => {
+    const env = await loadEnv({
+      CARD_ISSUE_FEE_USD_CENTS: '',
+      RATE_FALLBACK_USDT_RUB: '',
+      LOVEANDPAY_MIN_AMOUNT_RUB: '',
+      FREEKASSA_MIN_AMOUNT_RUB: '',
+      FREEKASSA_BUYER_FEE_PERCENT: '',
+      PAYSPACE_CARD_BUFFER_PERCENT: '',
+    });
+    expect(env.CARD_ISSUE_FEE_USD_CENTS).toBe(0);
+    expect(env.RATE_FALLBACK_USDT_RUB).toBe(81);
+    expect(env.LOVEANDPAY_MIN_AMOUNT_RUB).toBe(500);
+    expect(env.FREEKASSA_MIN_AMOUNT_RUB).toBe(500);
+    expect(env.FREEKASSA_BUYER_FEE_PERCENT).toBe(6);
+    expect(env.PAYSPACE_CARD_BUFFER_PERCENT).toBe(0);
+  });
+
+  it('пустая строка не ломает enum-переменные с дефолтом', async () => {
+    // PAYMENT_PRIMARY_PROVIDER своим тестом покрыт выше — здесь второй enum,
+    // у которого неверный дефолт означает обход per-IP лимита (инвариант 9).
+    const env = await loadEnv({ CLIENT_IP_MODE: '' });
+    expect(env.CLIENT_IP_MODE).toBe('traefik');
+  });
+
+  it('заданное значение по-прежнему сильнее дефолта', async () => {
+    const env = await loadEnv({ COMMISSION_PERCENT: '30' });
+    expect(env.COMMISSION_PERCENT).toBe(30);
+  });
+});

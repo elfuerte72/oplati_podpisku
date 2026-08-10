@@ -303,7 +303,10 @@ export async function runAgent(
   ctx: AgentContext,
 ): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  // `||`, а не `??`: `KEY=` в env — это «не задано» (см. withoutEmptyValues в
+  // apps/web/lib/env.ts). С `??` пустая строка уходила бы в Messages API как
+  // имя модели, и КАЖДЫЙ ответ падал бы с 400 при зелёной валидации env.
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
   const { temperature, maxTokens } = getModelParams();
 
   // Агентский цикл: модель может запросить tools, мы исполняем, возвращаем
@@ -409,7 +412,8 @@ export async function runAgentNoTools(
   history: AgentMessage[],
 ): Promise<{ text: string; usage: Anthropic.Usage }> {
   const client = getClient();
-  const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+  // `||` — по той же причине, что в runAgent: пустая строка = «не задано».
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
   const { temperature, maxTokens } = getModelParams();
 
   const messages: Anthropic.MessageParam[] = history.map((m) => ({

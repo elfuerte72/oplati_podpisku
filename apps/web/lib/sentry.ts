@@ -92,7 +92,7 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
 }
 
 export function resolveEnvironment(): 'development' | 'preview' | 'production' | string {
-  return process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'development';
+  return process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
 }
 
 /** Экспорт для явного импорта в sentry.*.config.ts. */

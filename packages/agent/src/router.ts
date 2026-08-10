@@ -90,7 +90,9 @@ export async function classifyMessage(
   if (!isRouterEnabled()) return { route: 'agent', usage: null };
 
   const client = getClient();
-  const model = process.env.ANTHROPIC_ROUTER_MODEL ?? ROUTER_DEFAULT_MODEL;
+  // `||`, а не `??`: пустая строка в env означает «не задано» (см. модель
+  // агента в index.ts — там та же причина).
+  const model = process.env.ANTHROPIC_ROUTER_MODEL || ROUTER_DEFAULT_MODEL;
 
   const transcript = history
     .slice(-ROUTER_MAX_HISTORY)

@@ -10,7 +10,7 @@ import {
 
 const RATE = 95.5; // RUB за USDT
 const COMMISSION = 10; // %
-const MIN_KOPECKS = 50_000; // пол 500 ₽ (LOVEANDPAY_MIN_AMOUNT_RUB × 100)
+const MIN_KOPECKS = 50_000; // пол 500 ₽ (orderFloorRub() × 100)
 
 function row(overrides: Partial<Parameters<typeof buildCatalogService>[0]> = {}) {
   return {
