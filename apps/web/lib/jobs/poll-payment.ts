@@ -84,14 +84,6 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-/** Разбивает список надвое по предикату: `[совпавшие, остальные]`. */
-function partition<T>(items: readonly T[], pred: (item: T) => boolean): [T[], T[]] {
-  const yes: T[] = [];
-  const no: T[] = [];
-  for (const item of items) (pred(item) ? yes : no).push(item);
-  return [yes, no];
-}
-
 export async function pollPayments(): Promise<{
   processed: number;
   recovered: number;
@@ -110,21 +102,19 @@ export async function pollPayments(): Promise<{
   // в шаг крона, и часть платежей просто не опрашивалась — а это единственная
   // страховка потерянных вебхуков.
   //
-  // ⚠️ Freekassa опрашивается СТРОГО ПОСЛЕДОВАТЕЛЬНО (находка ревью). Её API
-  // требует `nonce`, который «должен всегда быть больше предыдущего»
-  // (docs/reference/freekassa-api.md §6). Последовательность Postgres даёт
-  // монотонную ВЫДАЧУ, но не порядок ПРИБЫТИЯ: четыре одновременных запроса
-  // уходят с nonce N…N+3 и приходят к провайдеру как попало, а запрос с меньшим
-  // номером после большего отвергается. Прежний цикл держал порядок самим фактом
-  // `await`, и терять это ради скорости в денежном пути нельзя — тем более что
-  // живым вызовом контракт проверен только на одиночных запросах.
+  // Требование Freekassa к порядку nonce (docs/reference/freekassa-api.md §6)
+  // держит теперь сам клиент — очередь `serialized` внутри `FreekassaClient`
+  // (аудит 2026-08-10: потребителей API стало двое, `expire-payments` тоже
+  // опрашивает шлюз перед захоронением счёта). Раньше порядок обеспечивался
+  // здесь: freekassa-платежи отделялись и гнались с `concurrency=1`.
   //
-  // У Love&Pay nonce нет, там параллелизм безопасен и даёт весь выигрыш.
-  const [ordered, parallel] = partition(pending, (p) => p.provider === 'freekassa');
-  const outcomes = [
-    ...(await runWithConcurrency(ordered, 1, pollPaymentOnce)),
-    ...(await runWithConcurrency(parallel, POLL_CONCURRENCY, pollPaymentOnce)),
-  ];
+  // Разделение снято намеренно (находка ревью). Оно перестало быть нужным и
+  // при этом вредило: две очереди шли ПОСЛЕДОВАТЕЛЬНО, поэтому бэклог медленных
+  // freekassa-опросов задерживал восстановление платежей Love&Pay — ровно тот
+  // отказ, ради которого пул и появился. Держать один инвариант двумя
+  // механизмами тоже плохо: правка в клиенте молча оставила бы здесь мёртвый
+  // код, который выглядит как гарантия.
+  const outcomes = await runWithConcurrency(pending, POLL_CONCURRENCY, pollPaymentOnce);
   const recovered = outcomes.filter((o) => o === 'recovered').length;
   let errors = outcomes.filter((o) => o === 'error').length;
 

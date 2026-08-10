@@ -81,28 +81,30 @@ export class FreekassaClient {
 
   /** `POST /orders/create` — создание заказа и получение ссылки на оплату. */
   async createOrder(input: CreateOrderInput): Promise<FreekassaCreateOrderResponse> {
-    const nonce = await this.nonceProvider();
+    return await this.serialized(async () => {
+      const nonce = await this.nonceProvider();
 
-    // Zod и на исходящем теле (инвариант 5): мусорный email или нулевая сумма
-    // должны падать у нас, а не превращаться в непрозрачный отказ провайдера.
-    const params = freekassaCreateOrderParamsSchema.parse({
-      shopId: this.shopId,
-      nonce,
-      paymentId: input.paymentId,
-      i: input.methodId,
-      email: input.email,
-      ip: input.ip,
-      amount: kopecksToRubleAmount(input.amountKopecks),
-      currency: input.currency ?? 'RUB',
-    });
+      // Zod и на исходящем теле (инвариант 5): мусорный email или нулевая сумма
+      // должны падать у нас, а не превращаться в непрозрачный отказ провайдера.
+      const params = freekassaCreateOrderParamsSchema.parse({
+        shopId: this.shopId,
+        nonce,
+        paymentId: input.paymentId,
+        i: input.methodId,
+        email: input.email,
+        ip: input.ip,
+        amount: kopecksToRubleAmount(input.amountKopecks),
+        currency: input.currency ?? 'RUB',
+      });
 
-    // signature считается по params БЕЗ самого поля signature и добавляется
-    // после — порядок как в PHP-эталоне доки.
-    const body = { ...params, signature: signApiRequest(params, this.apiKey) };
+      // signature считается по params БЕЗ самого поля signature и добавляется
+      // после — порядок как в PHP-эталоне доки.
+      const body = { ...params, signature: signApiRequest(params, this.apiKey) };
 
-    return await this.requestJson('/orders/create', body, (raw) =>
-      freekassaCreateOrderResponseSchema.parse(raw),
-    );
+      return await this.requestJson('/orders/create', body, (raw) =>
+        freekassaCreateOrderResponseSchema.parse(raw),
+      );
+    }, FreekassaClient.QUEUE_WAIT_INTERACTIVE_MS);
   }
 
   /**
@@ -119,16 +121,18 @@ export class FreekassaClient {
    * Возвращает `null`, если заказа у провайдера нет (пустой список).
    */
   async findOrderByPaymentId(paymentId: string): Promise<FreekassaOrder | null> {
-    const params = {
-      shopId: this.shopId,
-      nonce: await this.nonceProvider(),
-      paymentId,
-    };
-    const body = { ...params, signature: signApiRequest(params, this.apiKey) };
+    const resp = await this.serialized(async () => {
+      const params = {
+        shopId: this.shopId,
+        nonce: await this.nonceProvider(),
+        paymentId,
+      };
+      const body = { ...params, signature: signApiRequest(params, this.apiKey) };
 
-    const resp = await this.requestJson('/orders', body, (raw) =>
-      freekassaOrdersResponseSchema.parse(raw),
-    );
+      return await this.requestJson('/orders', body, (raw) =>
+        freekassaOrdersResponseSchema.parse(raw),
+      );
+    }, FreekassaClient.QUEUE_WAIT_BACKGROUND_MS);
     // Фильтр по paymentId — на случай, если провайдер проигнорирует параметр и
     // отдаст первую страницу всех заказов: обработать чужой платёж как свой
     // было бы хуже, чем не обработать никакой.
@@ -136,6 +140,77 @@ export class FreekassaClient {
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────
+
+  /**
+   * Сколько ждём своей очереди, прежде чем сдаться.
+   *
+   * Интерактивный путь (`createOrder` из `payments/create`) отличается от
+   * фонового: клиент стоит перед кнопкой «Оплатить», а самовызов
+   * `confirm_order` обрывается на 45 с. Дождаться очереди дольше этого —
+   * значит превратить ожидание в непонятный таймаут И оставить запрос
+   * висеть: он выстрелит ПОСЛЕ обрыва и создаст у провайдера реальный
+   * платёжный счёт без нашей строки `payments` (ровно тот призрак, ради
+   * которого `createOrder` намеренно не ретраится). Поэтому ожидание
+   * прерывается ДО отправки: nonce не тратится, запрос не уходит, клиент
+   * получает штатное «технический сбой шлюза».
+   */
+  private static readonly QUEUE_WAIT_INTERACTIVE_MS = 10_000;
+  /** Фоновым опросам (cron) спешить некуда — им важнее не потерять оплату. */
+  private static readonly QUEUE_WAIT_BACKGROUND_MS = 60_000;
+
+  /**
+   * Очередь запросов к Freekassa: выдача nonce и отправка запроса — одна
+   * критическая секция (аудит 2026-08-10).
+   *
+   * Провайдер требует nonce «всегда больше предыдущего»
+   * (docs/reference/freekassa-api.md §6). Последовательность Postgres даёт
+   * монотонную ВЫДАЧУ, но не порядок ПРИБЫТИЯ: два конкурентных запроса берут
+   * N и N+1 и приезжают как попало — тот, что с меньшим номером, отвергается.
+   * Раньше порядок держался тем, что единственный опрашивающий (`poll-payment`)
+   * гнал Freekassa строго последовательно; с появлением второго потребителя
+   * (`expire-payments`, чьё расписание совпадает с ним на :00/:15/:30/:45)
+   * это перестало быть правдой.
+   *
+   * Очередь — на уровне клиента, а он lazy-синглтон процесса, поэтому её
+   * достаточно при одной реплике (текущий контур: один контейнер Dokploy).
+   * ⚠️ При масштабировании на две реплики понадобится межпроцессный замок
+   * (`pg_advisory_lock`) — здесь он не взят намеренно: держать соединение из
+   * пула на 10 подключений всё время HTTP-запроса к внешнему шлюзу опаснее,
+   * чем сам разъезд nonce.
+   */
+  private chain: Promise<unknown> = Promise.resolve();
+
+  private serialized<T>(fn: () => Promise<T>, waitMs: number): Promise<T> {
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+    }, waitMs);
+
+    const start = async (): Promise<T> => {
+      clearTimeout(timer);
+      if (expired) {
+        // 503-семантика: шлюз (или очередь к нему) не отвечает вовремя.
+        // Классифицируется `isFreekassaUnavailable` как транспортный сбой,
+        // поэтому все каналы покажут «технический сбой, заказ сохранён».
+        throw new FreekassaApiError({
+          code: 'QUEUE_TIMEOUT',
+          httpStatus: 503,
+          message: `Freekassa: очередь запросов не освободилась за ${waitMs} мс`,
+        });
+      }
+      return await fn();
+    };
+
+    // `then(start, start)` — очередь не должна вставать из-за упавшего
+    // предыдущего запроса: его ошибку получает ЕГО вызывающий, следующий идёт
+    // своим ходом.
+    const run = this.chain.then(start, start);
+    this.chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   private async requestJson<T>(
     path: string,
