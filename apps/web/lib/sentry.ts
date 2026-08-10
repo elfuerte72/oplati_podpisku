@@ -31,6 +31,26 @@ function scrubPii(value: unknown, depth = 0): unknown {
   return value;
 }
 
+/**
+ * Скраббер СВОБОДНОГО ТЕКСТА: заголовок события и текст исключения.
+ *
+ * Денилист по ключам их не покрывает — там нет ключей, только строка. А именно
+ * туда сырое тело ответа платёжного шлюза и попадает: клиенты Freekassa и L&P
+ * кладут в `message` ошибки `respText.slice(0, 500)` при дрейфе контракта. То
+ * есть закрыв `rawBody` (неперечисляемое свойство), мы оставили бы открытым
+ * соседний канал — заголовок issue в Sentry (находка ревью 2026-08-11).
+ *
+ * Маскируем PAN-подобные последовательности (13–19 цифр с любыми обычными
+ * разделителями) и `Bearer`-токены. Здесь без контрольной суммы Луна: это
+ * машинный текст, а не сообщение клиента, и потерять точность цифр в отладочной
+ * строке дешевле, чем отправить номер карты в внешний сервис.
+ */
+function scrubText(text: string): string {
+  return text
+    .replace(/\d(?:[ .\-/]?\d){12,18}/g, (match) => `**** ${match.replace(/\D/g, '').slice(-4)}`)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED]');
+}
+
 export type SentryEvent = SentryTypes.ErrorEvent;
 export type SentryHint = SentryTypes.EventHint;
 
@@ -83,16 +103,37 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
     }
   }
 
-  // Extra / contexts
+  // Extra / contexts / tags
   if (event.extra) {
     event.extra = scrubPii(event.extra) as typeof event.extra;
+  }
+  // `contexts` и `tags` чистились не всегда, хотя комментарий обещал обратное
+  // (аудит 2026-08-10). Они наполняются не только нашим кодом: SDK и интеграции
+  // складывают туда свои структуры, а `Sentry.captureException(err, { extra })`
+  // соседствует с `setContext`/`setTag` из тех же денежных путей.
+  if (event.contexts) {
+    event.contexts = scrubPii(event.contexts) as typeof event.contexts;
+  }
+  if (event.tags) {
+    event.tags = scrubPii(event.tags) as typeof event.tags;
+  }
+
+  // Свободный текст: заголовок события и текст исключения. Именно сюда клиенты
+  // платёжных шлюзов кладут сырое тело ответа при дрейфе контракта.
+  if (typeof event.message === 'string') {
+    event.message = scrubText(event.message);
+  }
+  if (event.exception?.values) {
+    for (const value of event.exception.values) {
+      if (typeof value.value === 'string') value.value = scrubText(value.value);
+    }
   }
 
   return event;
 }
 
 export function resolveEnvironment(): 'development' | 'preview' | 'production' | string {
-  return process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'development';
+  return process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
 }
 
 /** Экспорт для явного импорта в sentry.*.config.ts. */

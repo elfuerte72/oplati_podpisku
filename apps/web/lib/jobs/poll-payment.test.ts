@@ -17,6 +17,7 @@ type Pay = {
 const h = vi.hoisted(() => ({
   pending: [] as Pay[],
   freekassaConfigured: true,
+  loveAndPayConfigured: { value: true },
   paySpaceConfigured: false,
   getInvoiceMock: vi.fn(),
   findOrderMock: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('../freekassa/handlers.ts', () => ({
 
 vi.mock('../loveandpay/index.ts', () => ({
   getLoveAndPayClient: () => ({ getInvoice: h.getInvoiceMock }),
+  isLoveAndPayConfigured: () => h.loveAndPayConfigured.value,
 }));
 
 vi.mock('../loveandpay/handlers.ts', () => ({
@@ -98,6 +100,7 @@ describe('pollPayments — добор по провайдерам', () => {
     vi.clearAllMocks();
     h.pending = [];
     h.freekassaConfigured = true;
+    h.loveAndPayConfigured.value = true;
     h.paySpaceConfigured = false;
     h.getInvoiceMock.mockResolvedValue({
       id: 'inv-1',
@@ -229,6 +232,20 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(h.lnpTerminalMock.mock.calls[0]?.[0]).toMatchObject({ reason: 'expired' });
   });
 
+  it('РЕГРЕСС: ключей L&P нет — «опрашивать нечем», а не ошибка на каждый платёж', async () => {
+    // Гейт симметричен isFreekassaConfigured. Без него getLoveAndPayClient()
+    // бросал, и для expire-payments это означало «статус неизвестен» → заказ
+    // не хоронится никогда (находка ревью).
+    h.pending = [LNP_PAYMENT];
+    h.loveAndPayConfigured.value = false;
+
+    const res = await pollPayments();
+
+    expect(res.errors).toBe(0);
+    expect(res.recovered).toBe(0);
+    expect(h.getInvoiceMock).not.toHaveBeenCalled();
+  });
+
   it('провайдеры без добора (manual) просто пропускаются', async () => {
     h.pending = [{ id: 'pay-m', provider: 'manual', providerRef: 'x', providerInvoiceNumber: null }];
 
@@ -238,31 +255,58 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(h.getInvoiceMock).not.toHaveBeenCalled();
     expect(h.findOrderMock).not.toHaveBeenCalled();
   });
-  it('Freekassa опрашивается СТРОГО последовательно — порядок nonce', async () => {
-    // Находка ревью: nextval даёт монотонную ВЫДАЧУ, но не порядок ПРИБЫТИЯ.
-    // Параллельные запросы уходят с nonce N…N+3 и приходят как попало, а
-    // провайдер требует «всегда больше предыдущего» и отвергает опоздавший.
+  it('порядок nonce делегирован клиенту — крон гонит все платежи одним пулом', async () => {
+    // Раньше freekassa-платежи отделялись и гнались с concurrency=1: очередь
+    // жила здесь. Теперь очередь внутри FreekassaClient (`serialized`), потому
+    // что потребителей API стало двое. Здесь остаётся проверить, что ни один
+    // платёж не потерян, а порядок nonce покрыт тестом клиента.
     h.pending = Array.from({ length: 8 }, (_, i) => ({
       id: `pay-${i}`,
       provider: 'freekassa' as const,
       providerRef: String(i),
       providerInvoiceNumber: `ORD-${i}`,
     }));
+    h.findOrderMock.mockResolvedValue(null);
 
-    let inFlight = 0;
-    let peak = 0;
+    const res = await pollPayments();
+
+    expect(h.findOrderMock).toHaveBeenCalledTimes(8);
+    expect(res.processed).toBe(8);
+    expect(res.errors).toBe(0);
+  });
+
+  it('РЕГРЕСС: медленные freekassa-опросы не задерживают добор Love&Pay', async () => {
+    // Две последовательные очереди означали, что бэклог одного шлюза съедает
+    // шаг крона другого — ровно тот отказ, ради которого пул и появился.
+    h.pending = [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        id: `pay-fk-${i}`,
+        provider: 'freekassa' as const,
+        providerRef: String(i),
+        providerInvoiceNumber: `ORD-${i}`,
+      })),
+      {
+        id: 'pay-lnp',
+        provider: 'loveandpay' as const,
+        providerRef: 'inv-1',
+        providerInvoiceNumber: null,
+      },
+    ];
+    let lnpStartedAt = Number.POSITIVE_INFINITY;
+    const startedAt = Date.now();
     h.findOrderMock.mockImplementation(async () => {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 3));
-      inFlight--;
+      await new Promise((resolve) => setTimeout(resolve, 30));
       return null;
+    });
+    h.getInvoiceMock.mockImplementation(async () => {
+      lnpStartedAt = Date.now();
+      return { id: 'inv-1', invoiceNumber: 'INV-1', amount: 100, currency: 'RUB', status: 'NEW' };
     });
 
     await pollPayments();
 
-    expect(h.findOrderMock).toHaveBeenCalledTimes(8);
-    expect(peak).toBe(1);
+    // L&P стартовал, не дожидаясь всей пачки freekassa (4 × 30 мс).
+    expect(lnpStartedAt - startedAt).toBeLessThan(60);
   });
 
   it('Love&Pay опрашивается параллельно, но не более POLL_CONCURRENCY разом', async () => {

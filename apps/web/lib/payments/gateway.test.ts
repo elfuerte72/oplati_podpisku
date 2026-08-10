@@ -65,6 +65,7 @@ import {
   buyerFeePercentFor,
   maxAmountRubFor,
   minAmountRubFor,
+  orderFloorRub,
   primaryPaymentGateway,
   resetFallbackAlertDedupForTests,
 } from './gateway.ts';
@@ -112,6 +113,24 @@ describe('переключатель провайдера', () => {
 
     h.env.FREEKASSA_MIN_AMOUNT_RUB = 0;
     expect(minAmountRubFor('freekassa')).toBe(0);
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 500;
+  });
+
+  it('РЕГРЕСС: аварийное обнуление минимума шлюза не роняет пол витрины', () => {
+    // `FREEKASSA_MIN_AMOUNT_RUB=0` задокументирован как выключатель ГЕЙТА
+    // оплаты. Пол витрины и propose'а держит `orderFloorRub`: на заказе дешевле
+    // 500 ₽ одна надбавка за выпуск карты (~320 ₽) съедает цену подписки.
+    h.env.PAYMENT_PRIMARY_PROVIDER = 'freekassa';
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 0;
+    expect(minAmountRubFor('freekassa')).toBe(0);
+    expect(orderFloorRub()).toBe(500);
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 500;
+  });
+
+  it('пол заказа поднимается вслед за минимумом активного шлюза', () => {
+    h.env.PAYMENT_PRIMARY_PROVIDER = 'freekassa';
+    h.env.FREEKASSA_MIN_AMOUNT_RUB = 3000;
+    expect(orderFloorRub()).toBe(3000);
     h.env.FREEKASSA_MIN_AMOUNT_RUB = 500;
   });
 

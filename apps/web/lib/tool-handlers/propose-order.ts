@@ -13,6 +13,7 @@ import type { ProposeOrderResult } from '@oplati/agent';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import { orderFloorRub } from '../payments/gateway.ts';
 import { roundUpToWholeRubles } from '../pricing.ts';
 import { resolveUsdtRubRate } from '../rapira/rates.ts';
 
@@ -57,7 +58,7 @@ const TTL_HOURS = 2;
  */
 export class OrderAmountOutOfBoundsError extends Error {}
 export class OrderCapExceededError extends Error {}
-/** Итоговая сумма в RUB ниже пола платёжного терминала L&P (`LOVEANDPAY_MIN_AMOUNT_RUB`). */
+/** Итоговая сумма в RUB ниже пола заказа (`orderFloorRub`: продуктовый порог + минимум активного шлюза). */
 export class OrderBelowMinimumError extends Error {}
 
 /**
@@ -266,10 +267,17 @@ export async function proposeOrder(input: {
 
   const totalKopecks = subscriptionKopecks + cardIssueFeeKopecks;
 
-  // Пол платёжного терминала L&P: заказ дешевле минимума всё равно не оплатить
+  // Пол платёжного терминала: заказ дешевле минимума всё равно не оплатить
   // (`/api/payments/create` вернёт `below_min_amount`). Ловим ЗДЕСЬ, до создания
   // draft-заказа, чтобы не плодить неоплатимые черновики и дать понятный ответ.
-  const minOrderKopecks = serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB * 100;
+  //
+  // Минимум — `orderFloorRub()`, а не зашитый на L&P (аудит 2026-08-10): гейт в
+  // `payments/create` считает по АКТИВНОМУ шлюзу, и при разъезде env заказ
+  // создавался, а оплатить его было нельзя — да ещё и текст называл клиенту
+  // чужую цифру. Тот же пол держит витрина (`catalog/load.ts`), иначе клиент
+  // выбирал бы тариф, который заказом стать не может.
+  const minAmountRub = orderFloorRub();
+  const minOrderKopecks = minAmountRub * 100;
   if (totalKopecks < minOrderKopecks) {
     log.warn({
       event: 'tool.propose_order.below_minimum',
@@ -279,7 +287,7 @@ export async function proposeOrder(input: {
     });
     throw new OrderBelowMinimumError(
       `propose_order: сумма заказа ${Math.round(totalKopecks / 100)} ₽ ниже минимума ` +
-        `${serverEnv.LOVEANDPAY_MIN_AMOUNT_RUB} ₽ (ограничение платёжного терминала). ` +
+        `${minAmountRub} ₽ (ограничение платёжного терминала). ` +
         'Не создавай заказ и не подгоняй сумму под лимит; предложи пользователю тариф ' +
         'подороже или оплату нескольких подписок одним заказом (либо оператора, request_human).',
     );

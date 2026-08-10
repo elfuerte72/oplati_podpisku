@@ -12,7 +12,9 @@ import pino, { type Logger, type LoggerOptions } from 'pino';
  */
 
 const isDev = process.env.NODE_ENV !== 'production';
-const defaultLevel = process.env.LOG_LEVEL ?? (isDev ? 'debug' : 'info');
+// `||`, а не `??`: `LOG_LEVEL=` — это «не задано», а пустая строка уронила бы
+// pino на старте (валидный уровень он требует строго).
+const defaultLevel = process.env.LOG_LEVEL || (isDev ? 'debug' : 'info');
 
 /**
  * Экспортируется ради canary-теста: список путей — это защита от утечки PII,
@@ -89,7 +91,7 @@ const baseOptions: LoggerOptions = {
   level: defaultLevel,
   base: {
     service: 'oplati-web',
-    env: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'development',
+    env: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
   },
   timestamp: pino.stdTimeFunctions.isoTime,
   redact: {

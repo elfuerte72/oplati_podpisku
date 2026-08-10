@@ -225,3 +225,64 @@ describe('FreekassaClient.findOrderByPaymentId (добор потерянных 
     expect(await client.findOrderByPaymentId('ORD-S3MGS-a1b2c3')).toBeNull();
   });
 });
+
+/**
+ * Провайдер требует nonce «всегда больше предыдущего»: важен порядок ПРИБЫТИЯ,
+ * а последовательность Postgres гарантирует только порядок ВЫДАЧИ. Пока
+ * потребитель был один (`poll-payment`, строго последовательный), инвариант
+ * держался сам; со вторым (`expire-payments`, расписания совпадают на
+ * :00/:15/:30/:45) — уже нет (аудит 2026-08-10).
+ */
+describe('сериализация запросов (порядок nonce)', () => {
+  it('РЕГРЕСС: конкурентные вызовы уходят строго по возрастанию nonce', async () => {
+    let issued = 2_000_000_000;
+    const sentNonces: number[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const body = JSON.parse(String(init.body)) as { nonce: number };
+      // Разное время ответа: без очереди медленный первый запрос приехал бы
+      // к провайдеру после быстрого второго — с меньшим nonce.
+      await new Promise((r) => setTimeout(r, sentNonces.length === 0 ? 20 : 1));
+      sentNonces.push(body.nonce);
+      inFlight--;
+      return String(url).endsWith('/orders')
+        ? jsonResponse({ type: 'success', pages: 0, orders: [] })
+        : jsonResponse(SUCCESS_BODY);
+    });
+
+    const client = makeClient({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      nonceProvider: async () => ++issued,
+    });
+
+    await Promise.all([
+      client.createOrder(INPUT),
+      client.createOrder({ ...INPUT, paymentId: 'ORD-S3MGS-b2c3d4' }),
+      client.findOrderByPaymentId('ORD-S3MGS-a1b2c3'),
+    ]);
+
+    expect(maxInFlight).toBe(1);
+    expect(sentNonces).toEqual([...sentNonces].sort((a, b) => a - b));
+    expect(sentNonces).toHaveLength(3);
+  });
+
+  it('упавший запрос не блокирует очередь', async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call++;
+      if (call === 1) throw new Error('сеть отвалилась');
+      return jsonResponse(SUCCESS_BODY);
+    });
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const first = client.createOrder(INPUT).catch((e: Error) => e.message);
+    const second = client.createOrder({ ...INPUT, paymentId: 'ORD-NEXT' });
+
+    expect(await first).toContain('сеть');
+    await expect(second).resolves.toMatchObject({ orderId: '123' });
+  });
+});

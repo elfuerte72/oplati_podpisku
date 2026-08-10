@@ -13,6 +13,8 @@ import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from '@op
 
 import { childLogger } from '@/lib/logger';
 
+import { redactCardNumbers } from './templates';
+
 /**
  * Персист входящих Telegram-апдейтов: upsert user/conversation + запись строк
  * диалога (выделено из handle-update.ts при распиле M-10, поведение 1:1).
@@ -122,7 +124,13 @@ export async function safeAppendMessage(
       {
         conversationId: ctx.conversationId,
         role,
-        content,
+        // PAN-подобные последовательности маскируются НА ГРАНИЦЕ ЗАПИСИ
+        // (находка ревью 2026-08-11). Маскировать только в DM оператору было
+        // недостаточно: тот же текст клиента попадал в `messages.content`
+        // целиком — а это 90 дней хранения, бэкапы в R2 и подмешивание
+        // в историю запроса к Anthropic. Номер карты не нужен ни одному
+        // потребителю этой таблицы.
+        content: redactCardNumbers(content),
         meta,
       },
       dbLog,

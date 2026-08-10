@@ -45,6 +45,7 @@ import {
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
 import {
+  findActiveByUserId,
   findCardByIdForUser,
   findCardsByUserIdForCabinet,
   findCardsToRecycle,
@@ -849,6 +850,34 @@ describe('срок жизни карты 180 дней (S-9)', () => {
 
     expect(await findCardByIdForUser(db, expired.id, user.id)).toBeNull();
     expect(await findCardByIdForUser(db, alive.id, user.id)).not.toBeNull();
+  });
+
+  it('РЕГРЕСС (HIGH): просроченную карту findActiveByUserId больше не отдаёт под долив', async () => {
+    const user = await makeUser();
+    // До фикса эта выборка была единственной без возрастного условия: карта
+    // любого возраста доливалась деньгами клиента, а recycle-cards закрывал её
+    // и возвращал остаток на наш VCC.
+    await makeCard({ userId: user.id, status: 'active', ageDays: 200 });
+
+    expect(await findActiveByUserId(db, user.id)).toBeNull();
+  });
+
+  it('граница реюза совпадает с витринной: 179.5 дня видят и кабинет, и заказ', async () => {
+    const user = await makeUser();
+    const dying = await makeCard({ userId: user.id, status: 'active', ageDays: 179.5 });
+
+    // Разъезд этих двух выборок означал бы «кабинет показывает карту рабочей,
+    // а заказ берёт $4 за выпуск новой». Запас перед доливом — в issue-card.
+    expect((await findActiveByUserId(db, user.id))?.id).toBe(dying.id);
+    expect((await findCardsByUserIdForCabinet(db, user.id)).map((c) => c.id)).toContain(dying.id);
+  });
+
+  it('свежую активную карту findActiveByUserId по-прежнему отдаёт (самую новую)', async () => {
+    const user = await makeUser();
+    await makeCard({ userId: user.id, status: 'active', ageDays: 100 });
+    const newest = await makeCard({ userId: user.id, status: 'active', ageDays: 2 });
+
+    expect((await findActiveByUserId(db, user.id))?.id).toBe(newest.id);
   });
 });
 

@@ -225,6 +225,52 @@ describe('processFreekassaPaid', () => {
     expect(dispatchIssueCard).not.toHaveBeenCalled();
   });
 
+  it('РЕГРЕСС: intid указал на ЧУЖОЙ платёж — подписанный номер заказа не совпал, не кредитуем', async () => {
+    // Поиск идёт по `intid`, а он в MD5-подпись НЕ входит: подписаны только
+    // MERCHANT_ID:AMOUNT:секрет:MERCHANT_ORDER_ID. Без сверки найденного платежа
+    // с подписанным номером уведомление кредитовало бы чужой заказ.
+    (db as unknown as MockedDb).__setPayment({
+      ...PAYMENT,
+      providerInvoiceNumber: 'ORD-OTHER-999999',
+    });
+    // По подписанному номеру заказа не находится ничего — то есть уведомление
+    // указывает на платёж, которому оно не принадлежит.
+    vi.mocked(db.findPaymentByProviderInvoiceNumber).mockResolvedValueOnce(null);
+
+    const res = await processFreekassaPaid(paidInput());
+
+    expect(res.kind).toBe('ref_mismatch');
+    expect(db.claimPaymentSucceeded).not.toHaveBeenCalled();
+    expect(db.transitionOrder).not.toHaveBeenCalled();
+    expect(dispatchIssueCard).not.toHaveBeenCalled();
+  });
+
+  it('при расхождении intid побеждает ПОДПИСАННЫЙ номер заказа', async () => {
+    // Нашлись оба: по intid — чужой платёж, по подписанному номеру — свой.
+    // Доверяем подписанному полю, а не тому, что подделывается.
+    const state = db as unknown as MockedDb;
+    state.__setPayment({ ...PAYMENT }, { onlyByInvoiceNumber: true });
+    vi.mocked(db.findPaymentByProviderRef).mockResolvedValueOnce({
+      ...PAYMENT,
+      id: 'pay-foreign',
+      orderId: 'order-foreign',
+      providerInvoiceNumber: 'ORD-OTHER-999999',
+    } as never);
+
+    const res = await processFreekassaPaid(paidInput());
+
+    expect(res).toMatchObject({ kind: 'processed', paymentId: 'pay-1', orderId: 'order-1' });
+  });
+
+  it('легаси-платёж без сохранённого номера заказа сверку проходит', async () => {
+    // Колонка появилась позже части платежей; ломать по ним оплату нельзя.
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT, providerInvoiceNumber: null });
+
+    const res = await processFreekassaPaid(paidInput());
+
+    expect(res.kind).toBe('processed');
+  });
+
   it('intid не совпал с сохранённым orderId — платёж находится по MERCHANT_ORDER_ID', async () => {
     // Открытый вопрос контракта: равенство intid и orderId докой не обещано.
     // Запасной путь спасает оплату вместо «платёж не найден».

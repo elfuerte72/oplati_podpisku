@@ -20,15 +20,27 @@ export class LoveAndPayApiError extends Error {
   }
 }
 
-/** Ошибка контракта — Zod-парсинг ответа провалился (контракт-дрифт). */
+/**
+ * Ошибка контракта — Zod-парсинг ответа провалился (контракт-дрифт).
+ *
+ * `rawBody` — НЕПЕРЕЧИСЛЯЕМОЕ свойство (аудит 2026-08-10, как у
+ * `PaySpaceContractError`): сырое тело ответа шлюза при дрейфе контракта может
+ * содержать реквизиты плательщика, а ошибки сериализуются в pino и Sentry
+ * обходом собственных полей. Читается как обычно (`err.rawBody`).
+ */
 export class LoveAndPayContractError extends Error {
   readonly httpStatus: number;
-  readonly rawBody: string;
+  readonly rawBody!: string;
 
   constructor(httpStatus: number, message: string, rawBody: string) {
     super(message);
     this.name = 'LoveAndPayContractError';
     this.httpStatus = httpStatus;
-    this.rawBody = rawBody;
+    Object.defineProperty(this, 'rawBody', {
+      value: rawBody,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
   }
 }

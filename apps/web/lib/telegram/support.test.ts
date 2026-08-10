@@ -56,3 +56,31 @@ describe('buildSupportOperatorMessage', () => {
     expect(body.replace(/&amp;/g, '').replace(/…$/, '')).not.toContain('&');
   });
 });
+
+/**
+ * Канарейка PAN (аудит 2026-08-10): клиент, у которого «не проходит оплата»,
+ * пишет номер карты в поддержку так же охотно, как в форму «Не проходит
+ * оплата?». Тот путь маскировал, этот — нет.
+ */
+describe('buildSupportOperatorMessage — маскирование PAN', () => {
+  it('РЕГРЕСС: полный номер карты не доходит до оператора', () => {
+    const msg = buildSupportOperatorMessage({
+      telegramId: 379000111,
+      description: 'моя карта 5592 6801 0010 1726 не проходит',
+    });
+
+    expect(msg).not.toContain('5592 6801 0010 1726');
+    expect(msg).not.toContain('5592680100101726');
+    expect(msg).toContain('**** 1726');
+  });
+
+  it('телефон и суммы не трогаются', () => {
+    const msg = buildSupportOperatorMessage({
+      telegramId: 379000111,
+      description: 'списалось 2490 руб, звоните +7 999 123-45-67',
+    });
+
+    expect(msg).toContain('2490');
+    expect(msg).toContain('+7 999 123-45-67');
+  });
+});

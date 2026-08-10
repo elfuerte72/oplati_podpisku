@@ -42,9 +42,42 @@ export const LOVEANDPAY_DEFAULT_BASE_URL = 'https://api.prod.loveandpay.io/api/v
 // так, как ожидается. Подробности — см. patch 2026-04-22-23.xx.md.
 //
 // Этот хелпер — единственный правильный способ объявить опциональный env-string в проекте.
+//
+// ⚠️ Само правило «пустая строка = не задано» с 2026-08-10 применяется ГЛОБАЛЬНО,
+// один раз для всего объекта (`withoutEmptyValues` ниже) — хелпер закрывал только
+// строковые переменные, а числовые и enum'ы с дефолтом оставались дырявыми.
+// Новую env-переменную объявлять по обычным правилам Zod: пустую строку она уже
+// не увидит. Per-field preprocess'ы оставлены как есть — они безвредны и делают
+// схему самодостаточной, если её когда-нибудь применят к другому источнику.
 
 function optionalEnvString(inner: z.ZodTypeAny = z.string().min(1)): z.ZodType {
   return z.preprocess((v) => (v === '' ? undefined : v), inner.optional());
+}
+
+/**
+ * `KEY=` (пустая строка) — это «ещё не заполнил», а не значение. Отсекаем такие
+ * ключи ДО схемы, один раз для всего объекта: `optionalEnvString` закрывал
+ * только строковые переменные, а числовые и enum'ы с дефолтом оставались
+ * дырявыми (аудит 2026-08-10).
+ *
+ * Дыра была денежной: `z.coerce.number()` превращает `''` в **0**, а
+ * `.default()` срабатывает только на `undefined`. То есть `COMMISSION_PERCENT=`
+ * означало работу с нулевой наценкой, а `FREEKASSA_MAX_AMOUNT_RUB=` — снятый
+ * потолок суммы платежа. Ни валидация, ни логи об этом не сообщали. Правка env
+ * через API Dokploy перезаписывает его ЦЕЛИКОМ, поэтому опечатка именно такого
+ * вида и вероятна.
+ *
+ * Поведение переменных, у которых пустая строка что-то значила бы, не меняется:
+ * булевы флаги читаются как `v === '1' || v === 'true'` (пустая строка и так
+ * давала `false`, теперь даёт дефолт `false`), а строковые уже проходили через
+ * `optionalEnvString`.
+ */
+function withoutEmptyValues(source: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const cleaned: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== '') cleaned[key] = value;
+  }
+  return cleaned;
 }
 
 const optionalUrl = () => optionalEnvString(z.string().url());
@@ -510,7 +543,7 @@ function formatIssues(issues: z.ZodIssue[]): string {
 export function getServerEnv(): ServerEnv {
   if (cachedServerEnv) return cachedServerEnv;
 
-  const parsed = serverEnvSchema.safeParse(process.env);
+  const parsed = serverEnvSchema.safeParse(withoutEmptyValues(process.env));
   if (!parsed.success) {
     const msg = `Invalid server env:\n${formatIssues(parsed.error.issues)}`;
     // Не pino (L-8): env валидируется на bootstrap ДО инициализации логгера —

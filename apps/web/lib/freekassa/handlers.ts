@@ -70,6 +70,8 @@ export type FreekassaHandlerResult =
   | { kind: 'idempotent_skip'; paymentId: string; reason: string }
   | { kind: 'amount_mismatch'; paymentId: string; expectedKopecks: number; gotKopecks: number }
   | { kind: 'invalid_amount'; providerRef: string; rawAmount: string }
+  /** `intid` указал на платёж с другим подписанным номером заказа — не кредитуем. */
+  | { kind: 'ref_mismatch'; providerRef: string; merchantOrderId: string }
   | { kind: 'not_found'; providerRef: string };
 
 /**
@@ -83,21 +85,82 @@ export type FreekassaHandlerResult =
  * сохранён в `provider_invoice_number`). Срабатывание запасного пути алертится:
  * это ответ на открытый вопрос контракта, его нужно занести в
  * docs/reference/freekassa-api.md, а не оставлять «просто работающим».
+ *
+ * ⚠️ **Найденный по `intid` платёж СВЕРЯЕТСЯ с подписанным номером заказа**
+ * (аудит 2026-08-10). В MD5-подпись уведомления входят только
+ * `MERCHANT_ID:AMOUNT:секрет:MERCHANT_ORDER_ID` — `intid` не подписан вовсе.
+ * Без сверки уведомление, чей `intid` совпал с `provider_ref` ДРУГОГО платежа,
+ * кредитовало бы чужой заказ. При расхождении побеждает подписанное поле:
+ * `intid` подделывается, `MERCHANT_ORDER_ID` — нет.
+ *
+ * `'conflict'` — по `intid` нашёлся чужой платёж, а по подписанному номеру не
+ * нашлось ничего: состояние аномальное, кредитовать нельзя (вызывающий просит
+ * провайдера повторить).
  */
 async function findPaymentForNotification(ref: {
   intid: string;
   merchantOrderId: string;
-}): Promise<PaymentRow | null> {
+}): Promise<PaymentRow | 'conflict' | null> {
   const db = getDb();
 
   const byRef = await findPaymentByProviderRef(db, 'freekassa', ref.intid);
-  if (byRef) return byRef;
+  if (byRef && byRef.providerInvoiceNumber === ref.merchantOrderId) return byRef;
+
+  // Легаси-строка без сохранённого номера заказа. Для freekassa-платежей это
+  // невозможно (колонка появилась миграцией 0004, сам провайдер — 0025), но
+  // если такая строка когда-нибудь появится (ручная правка, восстановленный
+  // бэкап), сверять нечем — принимаем по `intid` и оставляем след, иначе
+  // защита тихо выключилась бы именно на той строке, где нужна.
+  if (byRef && byRef.providerInvoiceNumber === null) {
+    log.warn({
+      event: 'freekassa.handlers.legacy_payment_without_invoice_number',
+      intid: ref.intid,
+      merchantOrderId: ref.merchantOrderId,
+      paymentId: byRef.id,
+    });
+    return byRef;
+  }
 
   const byOurId = await findPaymentByProviderInvoiceNumber(
     db,
     'freekassa',
     ref.merchantOrderId,
   );
+
+  // РОВНО ОДИН алёрт на аномалию (находка ревью): раньше расхождение по
+  // `intid` зажигало и error-алёрт сверки, и старый warning «найден по
+  // MERCHANT_ORDER_ID», который задокументирован как сигнал занести вывод о
+  // контракте провайдера в docs/reference/freekassa-api.md. Две трактовки
+  // одного события — прямой путь к неверному выводу о контракте.
+  if (byRef) {
+    const resolved = byOurId
+      ? 'платёж найден по подписанному номеру'
+      : 'по подписанному номеру не найдено ничего';
+    log.error({
+      event: 'freekassa.handlers.merchant_order_id_mismatch',
+      intid: ref.intid,
+      merchantOrderId: ref.merchantOrderId,
+      matchedByRefPaymentId: byRef.id,
+      matchedByRefInvoiceNumber: byRef.providerInvoiceNumber,
+      resolvedPaymentId: byOurId?.id ?? null,
+    });
+    Sentry.captureMessage(
+      `Freekassa: intid указал на платёж с ДРУГИМ номером заказа — ${resolved}`,
+      {
+        level: 'error',
+        tags: { source: 'freekassa.handlers', alert: 'merchant_order_id_mismatch' },
+        extra: {
+          intid: ref.intid,
+          merchantOrderId: ref.merchantOrderId,
+          matchedByRefPaymentId: byRef.id,
+          matchedByRefInvoiceNumber: byRef.providerInvoiceNumber,
+          resolvedPaymentId: byOurId?.id ?? null,
+        },
+      },
+    );
+    return byOurId ?? 'conflict';
+  }
+
   if (!byOurId) return null;
 
   log.warn({
@@ -125,7 +188,13 @@ export async function processFreekassaPaid(
   const { intid, merchantOrderId, amountRaw, rawPayload, recoveredViaPolling = false } = input;
   const db = getDb();
 
-  const payment = await findPaymentForNotification({ intid, merchantOrderId });
+  const matched = await findPaymentForNotification({ intid, merchantOrderId });
+  if (matched === 'conflict') {
+    // Алёрт уже отправлен внутри поиска. Просим повторить: доставка не
+    // считается успешной, а деньги, если они реальны, добьёт cron poll-payment.
+    return { kind: 'ref_mismatch', providerRef: intid, merchantOrderId };
+  }
+  const payment = matched;
   if (!payment) {
     log.warn({
       event: 'freekassa.handlers.payment_not_found',
@@ -364,7 +433,13 @@ export async function processFreekassaTerminal(
   const { intid, merchantOrderId, reason, providerStatus } = input;
   const db = getDb();
 
-  const payment = await findPaymentForNotification({ intid, merchantOrderId });
+  const matched = await findPaymentForNotification({ intid, merchantOrderId });
+  if (matched === 'conflict') {
+    // Хоронить платёж, в принадлежности которого мы не уверены, нельзя тем
+    // более: терминальный переход необратим. Алёрт уже отправлен в поиске.
+    return { kind: 'ref_mismatch', providerRef: intid, merchantOrderId };
+  }
+  const payment = matched;
   if (!payment) {
     log.warn({ event: 'freekassa.handlers.terminal_payment_not_found', intid, merchantOrderId });
     return { kind: 'not_found', providerRef: intid };

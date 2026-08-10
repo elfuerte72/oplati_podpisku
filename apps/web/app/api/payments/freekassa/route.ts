@@ -163,6 +163,10 @@ export async function POST(req: Request): Promise<Response> {
     // но заказ уже заалерчен, а «YES» на непонятную сумму скрыл бы проблему.
     if (result.kind === 'not_found') return rejected('payment_not_found');
     if (result.kind === 'invalid_amount') return rejected('invalid_amount');
+    // `intid` указал на платёж с ДРУГИМ подписанным номером заказа: кредитовать
+    // нельзя, «принято» отвечать нельзя тем более — состояние аномальное и
+    // должно остаться видимым (алёрт уже ушёл из обработчика).
+    if (result.kind === 'ref_mismatch') return rejected('merchant_order_id_mismatch');
     return accepted();
   } catch (err) {
     log.error({ event: 'freekassa.webhook.unexpected_error', intid: notification.intid, err });
