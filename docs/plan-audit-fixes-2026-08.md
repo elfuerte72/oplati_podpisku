@@ -30,10 +30,10 @@ web 695 / types 171 / db 60.
 
 | Пачка | Тема | Статус | PR |
 |---|---|---|---|
-| 1 | Тихая потеря денег (HIGH) | коммит `c04162a` в `fix/audit-2026-08` | — |
-| 2 | Цена и конфиг денег | коммит `a0d30a9` в `fix/audit-2026-08` | — |
-| 3 | Контракт Freekassa и nonce | коммит `5401579` в `fix/audit-2026-08` | — |
-| 4 | Секреты и PII | коммит `de0f534` в `fix/audit-2026-08` | — |
+| 1 | Тихая потеря денег (HIGH) | коммит `c04162a` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 2 | Цена и конфиг денег | коммит `a0d30a9` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 3 | Контракт Freekassa и nonce | коммит `5401579` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 4 | Секреты и PII | коммит `de0f534` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
 | 5 | Rate-limit и анти-абьюз | не начата | — |
 | 6 | Устойчивость клиентов провайдеров | не начата | — |
 | 7 | Бот: дедуп и деградация | не начата | — |
