@@ -84,12 +84,32 @@ export async function createCard(
  * Активная карта пользователя — для переиспользования в новом заказе (top-up
  * вместо выпуска новой). Если у пользователя несколько активных, возвращаем
  * самую свежую (LIFO — последняя выпущенная).
+ *
+ * Отсечка по возрасту — та же, что у выборок кабинета (аудит 2026-08-10, HIGH).
+ * Без неё эта функция была ЕДИНСТВЕННОЙ card-выборкой без возрастного условия:
+ * карта любого возраста — 200, 300 дней — возвращалась как активная и
+ * доливалась деньгами клиента, а `recycle-cards` закрывал её необратимым
+ * `release`, возвращая остаток на наш VCC.
+ *
+ * Граница РОВНО `CARD_LIFETIME_DAYS`, без собственного запаса: те же 180 дней
+ * видит кабинет (`findCardsByUserIdForCabinet`, `findCardByIdForUser`,
+ * «Действует до») и `propose-order`, решая, брать ли надбавку за выпуск. Своя
+ * укороченная граница здесь означала бы сутки, в которые кабинет показывает
+ * карту рабочей и отдаёт по ней реквизиты, а заказ втихую берёт $4 за выпуск
+ * новой. Запас перед самой денежной операцией живёт в `issue-card`
+ * (`isCardTopupSafe`), где ему и место.
  */
 export async function findActiveByUserId(db: DB, userId: string): Promise<Card | null> {
   const rows = await db
     .select()
     .from(cards)
-    .where(and(eq(cards.userId, userId), eq(cards.status, 'active')))
+    .where(
+      and(
+        eq(cards.userId, userId),
+        eq(cards.status, 'active'),
+        sql`${cards.createdAt} >= now() - make_interval(days => ${CARD_LIFETIME_DAYS})`,
+      ),
+    )
     .orderBy(sql`${cards.createdAt} DESC`)
     .limit(1);
 

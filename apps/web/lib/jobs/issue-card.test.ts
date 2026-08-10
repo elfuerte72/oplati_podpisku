@@ -283,6 +283,39 @@ describe('issueCard', () => {
     );
   });
 
+  it('РЕГРЕСС (HIGH): карту в последние сутки жизни НЕ доливаем — выпускаем новую', async () => {
+    // Долив на исходе срока — тихая потеря денег клиента: recycle-cards (03:30)
+    // закроет карту через release и вернёт остаток на наш VCC.
+    const dayMs = 24 * 60 * 60 * 1000;
+    h.dbState.activeCard = { ...activeCard, createdAt: new Date(Date.now() - 179.5 * dayMs) };
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+
+    await issueCard('order-1');
+
+    expect(h.topupMock).not.toHaveBeenCalled();
+    expect(h.createCardMock).toHaveBeenCalledTimes(1);
+    // Карту не идлим: она рабочая до конца срока, её закроет cron по возрасту.
+    expect(db.markIdle).not.toHaveBeenCalled();
+  });
+
+  it('карта моложе порога — обычный долив', async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    h.dbState.activeCard = { ...activeCard, createdAt: new Date(Date.now() - 100 * dayMs) };
+
+    await issueCard('order-1');
+
+    expect(h.topupMock).toHaveBeenCalledTimes(1);
+    expect(h.createCardMock).not.toHaveBeenCalled();
+  });
+
   it('падение ВСТАВКИ в cards — тот самый сценарий алёрта — тоже спасает реквизиты', async () => {
     // Находка ревью: раньше pendingCredentials заполнялись ПОСЛЕ этой вставки,
     // поэтому спасение не покрывало собственный заявленный сценарий — PAN

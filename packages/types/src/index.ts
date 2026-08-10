@@ -112,7 +112,11 @@ export {
 
 // ─── Жизненный цикл виртуальной карты ─────────────────────────────────────
 
-export { CARD_LIFETIME_DAYS } from './card-lifecycle.ts';
+export {
+  CARD_LIFETIME_DAYS,
+  CARD_TOPUP_SAFETY_DAYS,
+  isCardTopupSafe,
+} from './card-lifecycle.ts';
 
 // ─── Ответы инструментов агента (карточки веб-чата) ───────────────────────
 

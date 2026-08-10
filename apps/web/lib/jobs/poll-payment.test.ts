@@ -17,6 +17,7 @@ type Pay = {
 const h = vi.hoisted(() => ({
   pending: [] as Pay[],
   freekassaConfigured: true,
+  loveAndPayConfigured: { value: true },
   paySpaceConfigured: false,
   getInvoiceMock: vi.fn(),
   findOrderMock: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('../freekassa/handlers.ts', () => ({
 
 vi.mock('../loveandpay/index.ts', () => ({
   getLoveAndPayClient: () => ({ getInvoice: h.getInvoiceMock }),
+  isLoveAndPayConfigured: () => h.loveAndPayConfigured.value,
 }));
 
 vi.mock('../loveandpay/handlers.ts', () => ({
@@ -98,6 +100,7 @@ describe('pollPayments — добор по провайдерам', () => {
     vi.clearAllMocks();
     h.pending = [];
     h.freekassaConfigured = true;
+    h.loveAndPayConfigured.value = true;
     h.paySpaceConfigured = false;
     h.getInvoiceMock.mockResolvedValue({
       id: 'inv-1',
@@ -227,6 +230,20 @@ describe('pollPayments — добор по провайдерам', () => {
     });
     await pollPayments();
     expect(h.lnpTerminalMock.mock.calls[0]?.[0]).toMatchObject({ reason: 'expired' });
+  });
+
+  it('РЕГРЕСС: ключей L&P нет — «опрашивать нечем», а не ошибка на каждый платёж', async () => {
+    // Гейт симметричен isFreekassaConfigured. Без него getLoveAndPayClient()
+    // бросал, и для expire-payments это означало «статус неизвестен» → заказ
+    // не хоронится никогда (находка ревью).
+    h.pending = [LNP_PAYMENT];
+    h.loveAndPayConfigured.value = false;
+
+    const res = await pollPayments();
+
+    expect(res.errors).toBe(0);
+    expect(res.recovered).toBe(0);
+    expect(h.getInvoiceMock).not.toHaveBeenCalled();
   });
 
   it('провайдеры без добора (manual) просто пропускаются', async () => {

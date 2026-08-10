@@ -18,6 +18,8 @@ import {
   updateBalance,
 } from '@oplati/db';
 
+import { isCardTopupSafe } from '@oplati/types';
+
 import { notifyOps } from '../alerts/notify-ops.ts';
 import {
   formatBillingAddressLines,
@@ -170,6 +172,21 @@ export async function issueCard(orderId: string): Promise<void> {
     //    карта может принадлежать другому PaySpace-аккаунту), выводим её из реюза и
     //    падаем на выпуск НОВОЙ, а не валим оплаченный заказ в failed.
     let card = await findActiveByUserId(db, order.userId);
+    // Карта доживает последние сутки — доливать НЕЛЬЗЯ (аудит 2026-08-10, HIGH):
+    // `recycle-cards` закроет её ближайшей ночью необратимым `release`, и
+    // деньги клиента вернутся на наш VCC. Выпускаем новую; надбавку за выпуск
+    // мы с этого заказа не взяли (`propose-order` видел карту живой) — $4 нашей
+    // маржи дешевле свёрнутой подписки клиента. Карту не идлим: она рабочая,
+    // кабинет показывает её до конца срока, закроет её cron по возрасту.
+    if (card && !isCardTopupSafe(card.createdAt)) {
+      log.info({
+        event: 'job.issue_card.reuse_skipped_near_expiry',
+        orderId,
+        cardId: card.id,
+        cardCreatedAt: card.createdAt.toISOString(),
+      });
+      card = null;
+    }
     if (card) {
       try {
         log.info({ event: 'job.issue_card.reusing_active', orderId, cardId: card.id });

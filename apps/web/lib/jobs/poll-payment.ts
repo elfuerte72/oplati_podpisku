@@ -7,24 +7,12 @@ import {
   findStuckInFulfillmentOrders,
   findStuckPaidOrders,
   getDb,
-  type PaymentRow,
 } from '@oplati/db';
-import { freekassaTerminalReason, FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { isPaySpaceConfigured } from '../pay-space/index.ts';
-import { getFreekassaClient, isFreekassaConfigured } from '../freekassa/index.ts';
-import {
-  processFreekassaPaid,
-  processFreekassaTerminal,
-} from '../freekassa/handlers.ts';
-import { getLoveAndPayClient } from '../loveandpay/index.ts';
-import {
-  loveAndPayTerminalReason,
-  processInvoicePaid,
-  processInvoiceTerminal,
-} from '../loveandpay/handlers.ts';
 import { issueCard } from './issue-card.ts';
+import { pollPaymentOnce } from './poll-payment-one.ts';
 import { alertOnZeroPaymentConversion } from './payment-conversion.ts';
 import { alertOnLoveAndPayProxyDown } from './proxy-health.ts';
 import { alertOnLowVccBalance } from './vcc-balance.ts';
@@ -55,110 +43,6 @@ const STUCK_PAID_THRESHOLD_MS = 10 * 60 * 1000;
 const STUCK_IN_FULFILLMENT_THRESHOLD_MS = 30 * 60 * 1000;
 
 /**
- * Добор одного платежа L&P. Возвращает true, если оплата была восстановлена
- * (webhook потерялся).
- */
-async function pollLoveAndPayPayment(payment: PaymentRow): Promise<boolean> {
-  const invoice = await getLoveAndPayClient().getInvoice(payment.providerRef);
-  const data = {
-    id: invoice.id,
-    invoiceNumber: invoice.invoiceNumber,
-    amount: invoice.amount,
-    currency: invoice.currency,
-    status: invoice.status,
-  };
-
-  if (invoice.status === 'PAID') {
-    await processInvoicePaid({
-      data,
-      rawPayload: invoice as unknown as Record<string, unknown>,
-      recoveredViaPolling: true,
-    });
-    Sentry.captureMessage('L&P payment recovered via polling — webhook потерян', {
-      level: 'warning',
-      tags: { source: 'cron.poll-payment' },
-      extra: { paymentId: payment.id, invoiceId: invoice.id },
-    });
-    return true;
-  }
-
-  const reason = loveAndPayTerminalReason(invoice.status);
-  if (reason) await processInvoiceTerminal({ data, reason });
-  return false;
-}
-
-/**
- * Добор одного платежа Freekassa.
- *
- * Отличие от L&P: уведомление провайдер шлёт ТОЛЬКО об успешной оплате, о
- * неуспехе не сообщает вовсе — поэтому опрос закрывает не только потерянные
- * уведомления, но и единственный способ узнать про отменённый счёт.
- *
- * Ищем по НАШЕМУ `paymentId` (он в `provider_invoice_number`): свой
- * идентификатор мы породили и в нём уверены. Если его нет — платёж создан до
- * появления этой колонки или запись битая; падать не на чем, просто пропускаем.
- */
-async function pollFreekassaPayment(payment: PaymentRow): Promise<boolean> {
-  const paymentId = payment.providerInvoiceNumber;
-  if (!paymentId) {
-    log.warn({
-      event: 'cron.poll_payment.freekassa_no_payment_id',
-      paymentId: payment.id,
-    });
-    return false;
-  }
-
-  const order = await getFreekassaClient().findOrderByPaymentId(paymentId);
-  if (!order) {
-    // Заказа у провайдера нет: наш счёт создан, но до их системы не дошёл, либо
-    // они его уже удалили. Не терминальное состояние — cron expire-payments
-    // похоронит по сроку.
-    log.info({ event: 'cron.poll_payment.freekassa_order_absent', paymentId: payment.id });
-    return false;
-  }
-
-  // Бонус опроса: ответ содержит `fk_order_id`, и здесь видно, совпадает ли он
-  // с тем, что мы сохранили при создании (открытый вопрос контракта — равен ли
-  // `intid` возвращённому `orderId`).
-  if (order.fk_order_id !== payment.providerRef) {
-    log.warn({
-      event: 'cron.poll_payment.freekassa_ref_mismatch',
-      paymentId: payment.id,
-      storedProviderRef: payment.providerRef,
-      fkOrderId: order.fk_order_id,
-    });
-  }
-
-  if (order.status === FREEKASSA_ORDER_STATUS.PAID) {
-    await processFreekassaPaid({
-      intid: order.fk_order_id,
-      merchantOrderId: order.merchant_order_id,
-      amountRaw: order.amount,
-      // `order` уже без PAN: поле `account` не объявлено в схеме и отброшено Zod.
-      rawPayload: { order } as unknown as Record<string, unknown>,
-      recoveredViaPolling: true,
-    });
-    Sentry.captureMessage('Freekassa payment recovered via polling — уведомление потеряно', {
-      level: 'warning',
-      tags: { source: 'cron.poll-payment' },
-      extra: { paymentId: payment.id, fkOrderId: order.fk_order_id },
-    });
-    return true;
-  }
-
-  const reason = freekassaTerminalReason(order.status);
-  if (reason) {
-    await processFreekassaTerminal({
-      intid: order.fk_order_id,
-      merchantOrderId: order.merchant_order_id,
-      reason,
-      providerStatus: order.status,
-    });
-  }
-  return false;
-}
-
-/**
  * Сколько платежей опрашиваем одновременно.
  *
  * Ограничение осознанное, а не «побольше»: каждый опрос — сетевой вызов к шлюзу
@@ -168,43 +52,6 @@ async function pollFreekassaPayment(payment: PaymentRow): Promise<boolean> {
  * приложения, которые ходят в ту же БД.
  */
 const POLL_CONCURRENCY = 4;
-
-type PollOutcome = 'recovered' | 'skipped' | 'error';
-
-/**
- * Опрос одного платежа. НЕ бросает: ошибка изолируется здесь, иначе она убила
- * бы воркер пула вместе с остальными платежами его очереди.
- *
- * Цикл провайдер-агностичен (этап 4 ТЗ Freekassa): раньше здесь стоял
- * `if (payment.provider !== 'loveandpay') continue`, и платежи второго шлюза
- * молча оставались без страховки — потерянное уведомление никто не дожимал.
- */
-async function pollOne(payment: PaymentRow): Promise<PollOutcome> {
-  try {
-    if (payment.provider === 'loveandpay') {
-      return (await pollLoveAndPayPayment(payment)) ? 'recovered' : 'skipped';
-    }
-    if (payment.provider === 'freekassa') {
-      // Ключей нет (dev-стенд) — опрашивать нечем; это не ошибка.
-      if (!isFreekassaConfigured()) return 'skipped';
-      return (await pollFreekassaPayment(payment)) ? 'recovered' : 'skipped';
-    }
-    // Прочие провайдеры (manual и исторические) добора не имеют.
-    return 'skipped';
-  } catch (err) {
-    log.error({
-      event: 'cron.poll_payment.error',
-      paymentId: payment.id,
-      provider: payment.provider,
-      err,
-    });
-    Sentry.captureException(err, {
-      tags: { source: 'cron.poll-payment', provider: payment.provider },
-      extra: { paymentId: payment.id, providerRef: payment.providerRef },
-    });
-    return 'error';
-  }
-}
 
 /**
  * Пул фиксированного размера: `limit` воркеров разбирают общую очередь, пока
@@ -275,8 +122,8 @@ export async function pollPayments(): Promise<{
   // У Love&Pay nonce нет, там параллелизм безопасен и даёт весь выигрыш.
   const [ordered, parallel] = partition(pending, (p) => p.provider === 'freekassa');
   const outcomes = [
-    ...(await runWithConcurrency(ordered, 1, pollOne)),
-    ...(await runWithConcurrency(parallel, POLL_CONCURRENCY, pollOne)),
+    ...(await runWithConcurrency(ordered, 1, pollPaymentOnce)),
+    ...(await runWithConcurrency(parallel, POLL_CONCURRENCY, pollPaymentOnce)),
   ];
   const recovered = outcomes.filter((o) => o === 'recovered').length;
   let errors = outcomes.filter((o) => o === 'error').length;
