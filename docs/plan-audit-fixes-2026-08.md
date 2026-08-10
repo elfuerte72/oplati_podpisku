@@ -18,8 +18,11 @@ web 695 / types 171 / db 60.
 берущая новую пачку, сначала читает эту таблицу; если она разошлась с
 реальностью — сверить по `docs/CHANGELOG.md` и `git log --oneline -20`.
 
-**Как ведётся этот цикл (сессия 2026-08-11).** Всё в ОДНОЙ ветке
-`fix/audit-2026-08`, по коммиту на пачку (PR ещё не открывался). На каждую
+**Как ведётся этот цикл.** Пачки 1–4 сделаны 2026-08-10 одной веткой
+`fix/audit-2026-08`, по коммиту на пачку, и уехали на прод одним PR #153
+(squash → `9c034b4`, деплой подтверждён `startedAt` в `/api/health`). Ехали
+вместе намеренно: пачка 1 создаёт второго потребителя API Freekassa, а пачка 3
+сериализует его nonce — разделять их нельзя. Дальше по тому же образцу. На каждую
 пачку: сначала падающий регресс-тест, потом фикс, затем
 `pnpm typecheck` + `pnpm --filter web test` + `pnpm --filter @oplati/types test`
 + `pnpm --filter @oplati/db test` + `pnpm lint`, затем `/code-review high` на
@@ -30,10 +33,10 @@ web 695 / types 171 / db 60.
 
 | Пачка | Тема | Статус | PR |
 |---|---|---|---|
-| 1 | Тихая потеря денег (HIGH) | коммит `c04162a` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
-| 2 | Цена и конфиг денег | коммит `a0d30a9` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
-| 3 | Контракт Freekassa и nonce | коммит `5401579` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
-| 4 | Секреты и PII | коммит `de0f534` | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 1 | Тихая потеря денег (HIGH) | НА ПРОДЕ (`9c034b4`) | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 2 | Цена и конфиг денег | НА ПРОДЕ (`9c034b4`) | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 3 | Контракт Freekassa и nonce | НА ПРОДЕ (`9c034b4`) | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
+| 4 | Секреты и PII | НА ПРОДЕ (`9c034b4`) | [#153](https://github.com/elfuerte72/oplati_podpisku/pull/153) |
 | 5 | Rate-limit и анти-абьюз | не начата | — |
 | 6 | Устойчивость клиентов провайдеров | не начата | — |
 | 7 | Бот: дедуп и деградация | не начата | — |
