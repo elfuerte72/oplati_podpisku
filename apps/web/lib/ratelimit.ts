@@ -8,6 +8,7 @@ import { Redis } from '@upstash/redis';
 
 import { serverEnv } from './env.server.ts';
 import { childLogger } from './logger.ts';
+import { redisCredentialsFromEnv } from './redis.ts';
 import { timingSafeEqualStr } from './security/timing-safe.ts';
 
 /**
@@ -252,11 +253,9 @@ function isDisabled(): boolean {
 /** Ленивая инициализация Redis-клиента; null — если env не сконфигурирован. */
 function getRedis(): Redis | null {
   if (cachedRedis) return cachedRedis;
-  // Приоритет ручной конвенции UPSTASH_*, фолбэк на KV_REST_API_* от интеграции Vercel.
-  const url = serverEnv.UPSTASH_REDIS_REST_URL ?? serverEnv.KV_REST_API_URL;
-  const token = serverEnv.UPSTASH_REDIS_REST_TOKEN ?? serverEnv.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  cachedRedis = new Redis({ url, token });
+  const creds = redisCredentialsFromEnv();
+  if (!creds) return null;
+  cachedRedis = new Redis(creds);
   return cachedRedis;
 }
 

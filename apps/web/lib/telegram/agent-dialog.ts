@@ -40,26 +40,77 @@ import { sendSafely, splitForTelegram, TELEGRAM_MESSAGE_LIMIT, withTypingIndicat
 const log = childLogger('telegram-bot');
 const dbLog = childLogger('db');
 
+/**
+ * Текст, когда AI недоступен.
+ *
+ * Намеренно НЕ копия веб-чатовского (`/api/chat`): тот зовёт написать
+ * «оператор», а в боте это слово не обрабатывает ничто — текстовый путь знает
+ * только `/start`, `/support`, pending-флоу и подписи кнопок, так что совет
+ * возвращал бы клиента в тот же сломанный AI-путь по кругу (ревью 2026-08-11).
+ * Здесь называем ровно ту дверь к человеку, которая работает без AI.
+ */
+const AI_DOWN_TEXT =
+  'Сейчас не получается ответить — что-то на нашей стороне. Попробуй ещё раз через минуту, ' +
+  'а если нужен человек — напиши /support, и я передам обращение оператору.';
+
+/** Взведён ли уже алёрт о пропавшем ключе — один раз на процесс. */
+let missingKeyAlerted = false;
+
+/**
+ * Отправить заготовленный ответ И записать его в историю.
+ *
+ * Запись обязательна (ревью 2026-08-11): входящие сообщения пишутся всегда, и
+ * ветка, ответившая без записи, оставляет в диалоге подряд идущие `user`-строки.
+ * `toAgentHistory` схлопывает их в ОДИН ход, и после восстановления AI агент
+ * отвечает на слипшийся комок старых намерений — вплоть до `propose_order` на
+ * сервис, о котором спрашивали три сообщения назад.
+ */
+async function replyAndRemember(
+  update: TelegramUpdate,
+  chatId: number,
+  ctx: PersistContext | null,
+  text: string,
+  source: string,
+): Promise<void> {
+  if (ctx) {
+    await safeAppendMessage(ctx, 'assistant', text, { source }, update.update_id);
+  }
+  await sendSafely(chatId, text, update.update_id);
+}
+
 export async function runAgentDialog(
   update: TelegramUpdate,
   chatId: number,
   text: string,
   ctx: PersistContext | null,
 ): Promise<void> {
+  // Нет ключа Anthropic — деградируем ЗДЕСЬ, на AI-пути, а не выключением
+  // всего бота в роуте (аудит 2026-08-10): кнопочные и платёжные флоу к
+  // Anthropic отношения не имеют. Без этого гейта каждое сообщение уходило бы
+  // в `getClient()`, падало исключением и сыпало Sentry — при том же тексте
+  // клиенту. Зеркалит гейт `/api/chat`.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    log.error({ event: 'telegram.ai_disabled', reason: 'no_anthropic_key', chatId });
+    // Алёрт, а не только лог: раньше пропажу ключа было видно сразу (бот
+    // замолкал целиком), теперь бот работает и молчит об этом только AI-путь —
+    // конфиг мог бы протухать незамеченным (ревью 2026-08-11). Один раз на
+    // процесс: смысл в факте, а не в количестве.
+    if (!missingKeyAlerted) {
+      missingKeyAlerted = true;
+      Sentry.captureMessage('Bot AI enabled, but ANTHROPIC_API_KEY is not set', {
+        level: 'error',
+        tags: { source: 'telegram.bot' },
+      });
+    }
+    await replyAndRemember(update, chatId, ctx, AI_DOWN_TEXT, 'ai_unavailable');
+    return;
+  }
+
   // Дневной глобальный токен-бюджет (как в /api/chat): при превышении —
   // заготовленный ответ без единого вызова Anthropic.
   if (await isAiBudgetExceeded()) {
     log.warn({ event: 'telegram.budget_exceeded', updateId: update.update_id, chatId });
-    if (ctx) {
-      await safeAppendMessage(
-        ctx,
-        'assistant',
-        BUDGET_EXCEEDED_TEXT,
-        { source: 'budget_guard' },
-        update.update_id,
-      );
-    }
-    await sendSafely(chatId, BUDGET_EXCEEDED_TEXT, update.update_id);
+    await replyAndRemember(update, chatId, ctx, BUDGET_EXCEEDED_TEXT, 'budget_guard');
     return;
   }
 
@@ -130,11 +181,7 @@ export async function runAgentDialog(
       err,
     });
     Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
-    await sendSafely(
-      chatId,
-      'Сейчас не получается ответить — что-то на нашей стороне. Попробуй ещё раз через минуту или напиши «оператор», и я подключу человека.',
-      update.update_id,
-    );
+    await replyAndRemember(update, chatId, ctx, AI_DOWN_TEXT, 'ai_unavailable');
     return;
   }
 
