@@ -78,13 +78,23 @@ type MockedDb = typeof db & {
 };
 const m = db as unknown as MockedDb;
 
-const profile = (over: Partial<Profile>): Profile => ({
-  circle: 0,
-  lockedRateL1Bps: 400,
-  boostBps: 0,
-  suspended: false,
-  ...over,
-});
+/**
+ * Профиль партнёра. `lockedRateL1Bps` по умолчанию согласован с `circle` —
+ * так его и ведёт `planMonthlyProgression` (храповик двигает оба поля разом).
+ * Разъезд задаётся явно: с 2026-08-11 главная — ЗАФИКСИРОВАННАЯ ставка
+ * (решение владельца), и тест на это есть ниже.
+ */
+const RATE_BY_CIRCLE = [400, 400, 600, 700];
+const profile = (over: Partial<Profile>): Profile => {
+  const circle = over.circle ?? 0;
+  return {
+    circle,
+    lockedRateL1Bps: RATE_BY_CIRCLE[circle] ?? 400,
+    boostBps: 0,
+    suspended: false,
+    ...over,
+  };
+};
 
 describe('accrueReferralForPayment', () => {
   beforeEach(() => {
@@ -195,5 +205,42 @@ describe('accrueReferralForPayment', () => {
 
     expect(m.__insertCalls()).toHaveLength(0);
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Ставка бралась из ДВУХ источников: начисление считало по текущему статусу
+ * (`circle` → таблица), кабинет показывал зафиксированную `locked_rate_l1_bps`.
+ * При разъезде партнёр видел одну цифру, а получал другую (аудит 2026-08-10).
+ * Решение владельца 2026-08-11: главная — зафиксированная, «процент не падает».
+ */
+describe('accrueReferralForPayment — один источник ставки', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.__reset();
+  });
+
+  it('при разъезде платится ЗАФИКСИРОВАННАЯ ставка, а не ставка статуса', async () => {
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    // Статус просел до 0 (4%), но партнёру зафиксировано 6% — платим 6%.
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 600 }));
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()[0]?.rows).toEqual([
+      { beneficiaryUserId: 'l1', level: 1, rateBps: 600, amountUsdCents: 120 },
+    ]);
+  });
+
+  it('без профиля — базовая ставка первого статуса', async () => {
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()[0]?.rows).toEqual([
+      { beneficiaryUserId: 'l1', level: 1, rateBps: 400, amountUsdCents: 80 },
+    ]);
   });
 });

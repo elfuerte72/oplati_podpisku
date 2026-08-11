@@ -429,7 +429,7 @@ export class PaySpaceClient {
     let lastError: unknown;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      let timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
       this.log.debug({ event: 'paypace.request', method: opts.method, path: opts.path, attempt });
 
       try {
@@ -454,9 +454,20 @@ export class PaySpaceClient {
           body: opts.method === 'GET' ? undefined : bodyText,
           signal: controller.signal,
         });
+        // Чтение тела — под СВОИМ таймаутом (аудит 2026-08-10). Заголовки
+        // приходят рано, тело идёт потоком, и провайдер, отдавший 200 и
+        // замолчавший на теле, подвешивал выпуск карты навсегда — уже ПОСЛЕ
+        // того, как рубли клиента приняты. Таймер перевзводится, а не тянется
+        // остатком от бюджета соединения: иначе медленный, но живой ответ
+        // обрывался бы тем сильнее, чем дольше провайдер думал над заголовками,
+        // а для `createCard` (без ретрая) это карта-призрак — выпущена и
+        // профинансирована, но её PAN мы выбросили. Обрыв прилетит как
+        // AbortError и разберётся общим catch ниже.
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+        const respText = await resp.text();
         clearTimeout(timeoutId);
 
-        const respText = await resp.text();
         let raw: unknown;
         try {
           raw = JSON.parse(respText);
@@ -471,6 +482,16 @@ export class PaySpaceClient {
 
         const env = envelopeSchema.safeParse(raw);
         if (!env.success) {
+          // Решение о повторе принимает HTTP-статус, а не форма конверта (аудит
+          // 2026-08-10). Балансировщик или WAF перед провайдером отвечает своим
+          // JSON (`{"error":"upstream"}`), в котором нашего `success` нет, — и
+          // до фикса это была мгновенная контракт-ошибка без единого повтора,
+          // хотя 503/429 у идемпотентной операции повторять безопасно и нужно.
+          // Неидемпотентный `createCard` сюда не доходит: у него maxAttempts=1.
+          if (isRetryableStatus(resp.status) && attempt < maxAttempts - 1) {
+            await this.backoff(attempt, opts, resp.status);
+            continue;
+          }
           throw new PaySpaceContractError(
             resp.status,
             `Нет поля success в ответе: ${env.error.message}`,
@@ -514,7 +535,10 @@ export class PaySpaceClient {
       } catch (err) {
         clearTimeout(timeoutId);
         const isAbort = err instanceof Error && err.name === 'AbortError';
-        const isNetwork = err instanceof TypeError && /fetch/i.test(err.message);
+        // `terminated` — обрыв сокета уже ПОСЛЕ заголовков, то есть на чтении
+        // тела, которое теперь под таймаутом. Предикат `/fetch/i` его не ловил.
+        const isNetwork =
+          err instanceof TypeError && /fetch failed|terminated|network|socket/i.test(err.message);
         const isContract = err instanceof PaySpaceContractError;
         if (!isContract && (isAbort || isNetwork) && attempt < maxAttempts - 1) {
           this.log.warn({

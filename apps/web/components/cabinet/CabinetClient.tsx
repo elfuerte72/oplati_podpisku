@@ -34,27 +34,11 @@ import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
+import { errorTextFor } from './error-text';
 import { CatalogView } from './CatalogView';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
 type Phase = 'loading' | 'no-telegram' | 'error' | 'ready';
-
-/** Человекочитаемый текст для технических кодов ошибок авторизации/загрузки. */
-function errorTextFor(error: string): string {
-  switch (error) {
-    case 'expired':
-      return 'Сессия устарела. Закрой кабинет и открой заново из бота.';
-    case 'bad_signature':
-    case 'missing_hash':
-    case 'missing_user':
-    case 'malformed':
-      return 'Не удалось подтвердить вход из Telegram. Открой кабинет заново из бота.';
-    case 'misconfigured':
-      return 'Кабинет временно не настроен. Загляни немного позже.';
-    default:
-      return 'Не удалось загрузить данные. Попробуй обновить страницу.';
-  }
-}
 
 /**
  * Копирование в буфер с fallback под Telegram WebView, где `navigator.clipboard`
@@ -223,7 +207,11 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       track('card_details_view');
       setCardDetails({ number: res.number, exp: res.exp, cvc: res.cvc });
     } else {
-      setNotice('Не удалось показать реквизиты. Попробуй ещё раз.');
+      setNotice(
+        res.error === 'network_error'
+          ? 'Не удалось показать реквизиты. Попробуй ещё раз.'
+          : errorTextFor(res.error),
+      );
     }
   }, []);
 
@@ -256,7 +244,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       setDetail(res.data);
     } else {
       setView('list');
-      setNotice('Не удалось открыть заказ. Попробуй ещё раз.');
+      // Текст по коду, а не единый «попробуй ещё раз»: на 429 повтор только
+      // добивает окно, на протухшей подписи — не помогает вовсе (ревью 2026-08-11).
+      setNotice(errorTextFor(res.error));
     }
   }, []);
 

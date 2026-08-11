@@ -124,7 +124,7 @@ export class LoveAndPayClient {
       const { timestamp, signature } = signRequest(method, signPath, bodyText, this.secretKey);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      let timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
       this.log.debug({
         event: 'loveandpay.request',
@@ -149,9 +149,16 @@ export class LoveAndPayClient {
           signal: controller.signal,
         });
 
+        // Чтение тела — под СВОИМ таймаутом (аудит 2026-08-10). Заголовки
+        // приходят рано, тело идёт потоком, и шлюз, отдавший 200 и замолчавший
+        // на теле, подвешивал выставление счёта на всю `maxDuration` роута.
+        // Таймер перевзводится, а не тянется остатком бюджета соединения: у
+        // `POST /invoices` ретрая нет, и оборванное на теле тело означает
+        // выставленный у L&P счёт, ссылку на который мы выбросили.
         clearTimeout(timeoutId);
-
+        timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
         const respText = await resp.text();
+        clearTimeout(timeoutId);
 
         // 2xx — парсим успех.
         if (resp.ok) {
@@ -267,11 +274,7 @@ export class LoveAndPayClient {
         // ответ получен и разобран, повтор даст ту же ошибку.
         const isAbort = err instanceof Error && err.name === 'AbortError';
         const isContract = err instanceof LoveAndPayContractError;
-        if (
-          !isContract &&
-          (isAbort || (err instanceof TypeError && /fetch/i.test(err.message))) &&
-          attempt < maxAttempts - 1
-        ) {
+        if (!isContract && (isAbort || isNetworkTypeError(err)) && attempt < maxAttempts - 1) {
           const backoffMs = 500 * Math.pow(2, attempt);
           this.log.warn({
             event: 'loveandpay.retry',
@@ -291,6 +294,19 @@ export class LoveAndPayClient {
 
     throw lastError ?? new Error('loveandpay: retries exhausted');
   }
+}
+
+/**
+ * Сетевой сбой транспорта, а не наша ошибка типов.
+ *
+ * undici бросает `TypeError('fetch failed')`, когда соединение не установилось,
+ * и `TypeError('terminated')`, когда сокет умер УЖЕ ПОСЛЕ заголовков — то есть
+ * ровно на чтении тела, которое этот клиент теперь тоже держит под таймаутом.
+ * Прежний предикат `/fetch/i` второй случай не ловил: обрыв на теле не
+ * ретраился и не считался недоступностью провайдера (находка ревью 2026-08-11).
+ */
+export function isNetworkTypeError(err: unknown): boolean {
+  return err instanceof TypeError && /fetch failed|terminated|network|socket/i.test(err.message);
 }
 
 function sleep(ms: number): Promise<void> {

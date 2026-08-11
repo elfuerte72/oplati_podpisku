@@ -536,6 +536,77 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
 });
 
 describe('consumeLinkToken (merge пользователей)', () => {
+  it('самореферал гасится при merge компенсирующей строкой', async () => {
+    // Аудит 2026-08-10 (HIGH). Человек открыл СВОЮ ЖЕ реф-ссылку в боте:
+    // web-строка W стала реферером telegram-строки T, и покупки T начисляли
+    // комиссию W. Гейт `referrerId !== userId` это не ловит — строки разные,
+    // человек один. После merge такая строка становится (beneficiary=T,
+    // source=T), то есть «заработал сам с себя».
+    const webSessionId = `ws-self-${++seq}`;
+    const webUser = await makeUser({ telegramId: null, webSessionId });
+    const telegramUser = await makeUser({ referredBy: webUser.id, referredBySetAt: new Date() });
+
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: telegramUser.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: telegramUser.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: webUser.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    const res = await consumeLinkToken(db, {
+      token,
+      telegramId: telegramUser.telegramId ?? '',
+    });
+    expect(res).toMatchObject({ ok: true, merged: true });
+
+    const rows = await db
+      .select()
+      .from(schema.referralAccruals)
+      .where(eq(schema.referralAccruals.beneficiaryUserId, telegramUser.id));
+
+    // Ledger append-only: исходная строка остаётся, гашение — НОВАЯ строка.
+    expect(rows.filter((r) => r.status === 'accrued')).toHaveLength(1);
+    const reversed = rows.filter((r) => r.status === 'reversed');
+    expect(reversed).toHaveLength(1);
+    expect(reversed[0]?.amountUsdCents).toBe(100);
+    // `created_at` копируется из исходной строки: месячные агрегаты кабинета
+    // считают «начислено за месяц − реверснуто за месяц» по этой колонке, и
+    // гашение старой строки сегодняшним числом рисовало бы партнёру
+    // отрицательный доход за текущий месяц (ревью 2026-08-11).
+    const original = rows.find((r) => r.status === 'accrued');
+    expect(reversed[0]?.createdAt.getTime()).toBe(original?.createdAt.getTime());
+  });
+
+  it('честное начисление merge не гасит', async () => {
+    // Контроль на переусердствование: реферер и плательщик — разные люди.
+    const webSessionId = `ws-honest-${++seq}`;
+    const webUser = await makeUser({ telegramId: null, webSessionId });
+    const telegramUser = await makeUser();
+    const buyer = await makeUser({ referredBy: webUser.id, referredBySetAt: new Date() });
+
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: webUser.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+
+    const rows = await db
+      .select()
+      .from(schema.referralAccruals)
+      .where(eq(schema.referralAccruals.beneficiaryUserId, telegramUser.id));
+    expect(rows.filter((r) => r.status === 'reversed')).toHaveLength(0);
+    expect(rows.filter((r) => r.status === 'accrued')).toHaveLength(1);
+  });
+
   it('полный merge: children, ledger, выплаты, месячная статистика и храповик круга переезжают', async () => {
     const referrer = await makeUser();
     const telegramUser = await makeUser();

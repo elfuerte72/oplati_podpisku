@@ -133,6 +133,42 @@ describe('POST /api/analytics', () => {
     expect(rows[0]?.telegramId).toBe('379336096');
   });
 
+  it('клиентский channel=miniapp без подписи понижается до web', async () => {
+    // Иначе любой curl с cookie сайта дописывает себе события «из Mini App» —
+    // роут заявляет в собственной шапке, что личности из тела не доверяет,
+    // а канал брал именно оттуда (аудит 2026-08-10).
+    h.state.webSessionId = 'sess-1';
+    h.state.telegramId = null;
+    await POST(makeRequest({ events: [event({ channel: 'miniapp' })] }));
+    const rows = h.insertMock.mock.calls[0]?.[1] as { channel: string }[];
+    expect(rows[0]?.channel).toBe('web');
+  });
+
+  it('channel=miniapp принимается при валидной initData', async () => {
+    h.state.webSessionId = null;
+    h.state.telegramId = '379336096';
+    await POST(
+      makeRequest({ events: [event({ channel: 'miniapp' })] }, {
+        'x-telegram-init-data': 'query_id=AAA&user=%7B%22id%22%3A379336096%7D&hash=deadbeef',
+      }),
+    );
+    const rows = h.insertMock.mock.calls[0]?.[1] as { channel: string }[];
+    expect(rows[0]?.channel).toBe('miniapp');
+  });
+
+  it('собственный канал события подписью не подменяется', async () => {
+    // `cabinet_open` живёт в Mini App по словарю — клиентское `web` его не сносит.
+    h.state.webSessionId = null;
+    h.state.telegramId = '379336096';
+    await POST(
+      makeRequest({ events: [event({ name: 'cabinet_open', channel: 'web' })] }, {
+        'x-telegram-init-data': 'query_id=AAA&user=%7B%22id%22%3A379336096%7D&hash=deadbeef',
+      }),
+    );
+    const rows = h.insertMock.mock.calls[0]?.[1] as { channel: string }[];
+    expect(rows[0]?.channel).toBe('miniapp');
+  });
+
   it('без identity ничего не пишет, но и не ругается', async () => {
     h.state.webSessionId = null;
     h.state.telegramId = null;

@@ -81,6 +81,13 @@ export function referralAmountUsdCents(baseUsdCents: number, rateBps: number): n
 export const REFERRAL_MAX_CHAIN_BPS =
   REFERRAL_RATE_TABLE[REFERRAL_RATE_TABLE.length - 1]!.l1Bps;
 
+/**
+ * Потолок спринт-буста (bps). Дублировать значение из
+ * `referral-progression.ts` нельзя (циклический импорт), поэтому здесь именно
+ * ПОТОЛОК: он ограничивает ставку сверху, а не задаёт её.
+ */
+const MAX_BOOST_BPS = 100;
+
 // ─── Расчёт начислений (чистая логика, экономическое ядро) ─────────────────
 
 /** Параметры одного beneficiary для расчёта commission-начисления. */
@@ -88,8 +95,18 @@ export type AccrualBeneficiary = {
   readonly userId: string;
   /** Уровень сети относительно плательщика (в одноуровневой программе всегда 1). */
   readonly level: number;
-  /** Круг партнёра (0..3); 0 если профиля referral_partners ещё нет. */
-  readonly circle: number;
+  /**
+   * Зафиксированная ставка партнёра (bps) — ЕДИНСТВЕННЫЙ источник процента
+   * (решение владельца 2026-08-11).
+   *
+   * До этого начисление считалось по текущему статусу (`circle` →
+   * `REFERRAL_RATE_TABLE`), а кабинет показывал `locked_rate_l1_bps` — два
+   * источника, которые расходятся при любом рассинхроне, и тогда в кабинете
+   * одна цифра, а платится другая. Выбрана зафиксированная: «процент не
+   * падает» — это то, что партнёру обещано на экране, а храповик ставки уже
+   * ведёт `planMonthlyProgression`.
+   */
+  readonly lockedRateL1Bps: number;
   /** Временный +1% к ставке на текущий месяц (Этап C); 0 если нет. */
   readonly boostBps: number;
 };
@@ -114,10 +131,13 @@ export function planCommissionAccruals(
 ): PlannedAccrual[] {
   const out: PlannedAccrual[] = [];
   for (const b of beneficiaries) {
-    let rateBps = referralRateBps(b.circle, b.level);
-    if (b.level === 1 && b.boostBps > 0) {
-      rateBps += b.boostBps;
-    }
+    // Один источник ставки на расчёт и на витрину: обе стороны зовут
+    // `effectiveReferralRates`. Уровни ≥2 в одноуровневой программе не
+    // появляются (`REFERRAL_MAX_LEVEL=1`), исторические строки ledger'а валидны.
+    const rateBps =
+      b.level === 1
+        ? effectiveReferralRates({ lockedRateL1Bps: b.lockedRateL1Bps, boostBps: b.boostBps }).l1Bps
+        : 0;
     const amountUsdCents = referralAmountUsdCents(baseUsdCents, rateBps);
     if (amountUsdCents <= 0) continue;
     out.push({ beneficiaryUserId: b.userId, level: b.level, rateBps, amountUsdCents });
@@ -133,16 +153,24 @@ export type EffectiveReferralRates = {
 };
 
 /**
- * Ставка, по которой СЕЙЧАС считается начисление beneficiary — повторяет логику
- * `planCommissionAccruals` (храповик из профиля + буст), но как чистая функция
- * для кабинета. Держим здесь, чтобы витрина и расчёт не разъезжались (один
- * источник правды).
+ * Ставка, по которой СЕЙЧАС считается начисление beneficiary.
+ *
+ * ЕДИНСТВЕННЫЙ источник процента: её зовут и расчёт (`planCommissionAccruals`),
+ * и кабинет. До 2026-08-11 расчёт брал ставку из таблицы по текущему статусу, а
+ * кабинет — зафиксированную; разъезд означал бы, что партнёр видит одну цифру, а
+ * получает другую.
  */
 export function effectiveReferralRates(input: {
   lockedRateL1Bps: number;
   boostBps: number;
 }): EffectiveReferralRates {
-  return { l1Bps: input.lockedRateL1Bps + (input.boostBps > 0 ? input.boostBps : 0) };
+  // Потолок обязателен. Раньше ставка приходила из таблицы по кругу, и она
+  // физически не могла превысить максимум; теперь источник — колонка БД, а
+  // кривое значение (мисконфиг, ручная правка, будущий баг прогрессии) платило
+  // бы из маржи заказа без ограничения (ревью 2026-08-11). Буст (+1%) — часть
+  // ставки, поэтому кламп общий: максимум таблицы плюс буст.
+  const raw = input.lockedRateL1Bps + (input.boostBps > 0 ? input.boostBps : 0);
+  return { l1Bps: Math.max(0, Math.min(raw, REFERRAL_MAX_CHAIN_BPS + MAX_BOOST_BPS)) };
 }
 
 // ─── Реферальный код и deep-link ──────────────────────────────────────────

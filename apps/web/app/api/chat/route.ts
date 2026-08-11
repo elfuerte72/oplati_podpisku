@@ -11,6 +11,7 @@ import {
   type MessageHistoryItem,
 } from '@oplati/db';
 import {
+  AgentLoopError,
   classifyMessage,
   runAgent,
   runAgentNoTools,
@@ -196,7 +197,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     text: string;
     toolCalls: unknown[];
     usage?: AgentUsageLike | null;
+    /** Модель не довела ход до конца — текст служебный, действий к нему не клеим. */
+    incomplete?: boolean;
   };
+  // Объявлено ВНЕ try: при сбое агента токены роутера уже потрачены, и catch
+  // должен их видеть, чтобы записать в дневной бюджет.
+  let routerUsage: AgentUsageLike | null = null;
   try {
     let agentHistory: AgentMessage[] = [{ role: 'user', content: text }];
     if (ctx) {
@@ -218,6 +224,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       log.warn({ event: 'web-chat.router_failed', err });
       Sentry.captureException(err, { tags: { source: 'web-chat.router' } });
     }
+    routerUsage = route.usage;
 
     if (route.route !== 'agent') {
       routedAs = route.route;
@@ -233,14 +240,47 @@ export async function POST(req: Request): Promise<NextResponse> {
         channel: 'web',
         toolHandlers,
       });
-      result = { text: r.text, toolCalls: r.toolCalls, usage: mergeUsage(route.usage, r.usage) };
+      result = {
+        text: r.text,
+        toolCalls: r.toolCalls,
+        usage: mergeUsage(route.usage, r.usage),
+        incomplete: r.incomplete,
+      };
     } else {
       const r = await runAgentNoTools(agentHistory);
-      result = { text: r.text, toolCalls: [], usage: mergeUsage(route.usage, r.usage) };
+      result = {
+        text: r.text,
+        toolCalls: [],
+        usage: mergeUsage(route.usage, r.usage),
+        incomplete: r.incomplete,
+      };
     }
   } catch (err) {
     log.error({ event: 'web-chat.agent.failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat' } });
+    // Токены, потраченные до сбоя, всё равно списаны провайдером — записываем
+    // их в дневной бюджет (аудит 2026-08-10). Без этого самые дорогие запросы
+    // (несколько итераций tool-loop, упавших на последней) стоили бюджету ноль,
+    // и защита расходов слепла ровно на том, от чего защищает.
+    if (err instanceof AgentLoopError) {
+      await recordAgentUsage(mergeUsage(routerUsage, err.usage));
+      // Что цикл успел сделать до сбоя — факты о деньгах (созданный заказ,
+      // выставленный счёт). Молча выбросить их нельзя.
+      const succeeded = err.toolCalls.filter((c) => !c.isError).map((c) => c.name);
+      if (succeeded.length > 0) {
+        log.error({ event: 'web-chat.tool_calls_abandoned', reason: err.reason, toolCalls: succeeded });
+        Sentry.captureMessage('Agent loop failed after side effects', {
+          level: 'error',
+          tags: { source: 'web-chat' },
+          extra: { reason: err.reason, toolCalls: succeeded },
+        });
+      }
+    }
+    // Заглушку пишем в историю так же, как обычный ответ (ревью 2026-08-11):
+    // сообщение пользователя уже записано, и ветка без записи копит подряд
+    // идущие user-строки — `toAgentHistory` схлопывает их в ОДИН ход, и агент
+    // потом отвечает на слипшийся комок старых намерений.
+    if (ctx) await safeAppend(ctx, 'assistant', AI_DOWN_TEXT, { channel: 'web', source: 'ai_unavailable' });
     return NextResponse.json({ ok: false, error: 'ai_unavailable', text: AI_DOWN_TEXT }, { status: 200 });
   }
 
@@ -264,5 +304,10 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   if (ctx && replyText) await safeAppend(ctx, 'assistant', replyText, { channel: 'web' });
 
-  return NextResponse.json({ ok: true, text: replyText, toolCalls: result.toolCalls }, { status: 200 });
+  // Карточки заказа — только к ЗАВЕРШЁННОМУ ответу: у них есть кнопка оплаты, а
+  // в служебном тексте оборванного ответа суммы нет (ревью 2026-08-11).
+  return NextResponse.json(
+    { ok: true, text: replyText, toolCalls: result.incomplete ? [] : result.toolCalls },
+    { status: 200 },
+  );
 }

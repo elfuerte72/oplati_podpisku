@@ -57,6 +57,11 @@ const log = childLogger('telegram-bot');
  * Определяет тип медиа-вложения для шаблонного ответа.
  * Возвращает `null`, если медиа не найдено (например, edited_message без текста).
  */
+/** `/start` с любым deep-link payload'ом (`ref_`, `link_`, `cabinet`). */
+function isStartCommand(text: string): boolean {
+  return text === '/start' || text.startsWith('/start ');
+}
+
 function detectMediaKind(message: TelegramMessage): MediaKind | null {
   if (message.photo) return 'photo';
   if (message.voice) return 'voice';
@@ -93,6 +98,40 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       : typeof message.caption === 'string' && message.caption.trim().length > 0
         ? message.caption
         : null;
+
+  // Per-identity rate-limit — ДО любой ветки (аудит 2026-08-10). Раньше он
+  // стоял ниже, и `/start` (включая `ref_`/`link_`), `/menu` и медиа шли мимо:
+  // обходной путь был дороже лимитируемого — `/start` upsert'ит `users` и
+  // `conversations` и пишет ДВЕ строки в `messages`.
+  //
+  // Бакета ТРИ, и это принципиально: у каждого входа свой кошелёк, поэтому один
+  // не может уморить другой голодом.
+  //   - `telegram-start` — `/start`. `/start link_<token>` это обязательный шаг
+  //     оплаты для пришедшего с сайта (без `telegram_id` `confirm_order`
+  //     платёжную ссылку не выдаёт), его нельзя ронять чужим трафиком;
+  //   - `telegram-media` — фото/видео/голос. Telegram шлёт по апдейту на КАЖДОЕ
+  //     фото альбома, так что общий бакет альбом бы и выел — вместе с кнопкой
+  //     «Поддержка», которая платит из того же кошелька;
+  //   - `telegram` — текст и callback-кнопки, как и было до аудита.
+  const kind = rawText === null ? 'media' : isStartCommand(rawText) ? 'start' : 'text';
+  const bucket =
+    kind === 'start' ? 'telegram-start' : kind === 'media' ? 'telegram-media' : 'telegram';
+  const rlIdentity = String(telegramUserId ?? chatId);
+  const rl = await checkRateLimit(bucket, rlIdentity);
+  if (!rl.allowed) {
+    log.warn({ event: 'telegram.rate_limited', updateId: update.update_id, chatId, kind });
+    // Отвечаем ТОЛЬКО на текст. На медиа бот и в норме молчит (при выключенном
+    // BOT_AI_ENABLED — по контракту), а альбом из десяти фото сверх лимита иначе
+    // вернулся бы десятью одинаковыми окриками.
+    if (rawText !== null) {
+      await sendSafely(
+        chatId,
+        'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.',
+        update.update_id,
+      );
+    }
+    return;
+  }
 
   if (rawText === null) {
     const mediaKind = detectMediaKind(message);
@@ -140,13 +179,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     });
   }
 
-  if (text === '/start' || text.startsWith('/start ')) {
+  if (isStartCommand(text)) {
     await handleStartCommand(update, message, chatId, text);
     return;
   }
 
   // /menu — открыть кнопочный каталог в любой момент (зеркало кнопки «Выбрать
-  // сервис» на сайте). Навигация без AI — обрабатываем до rate-limit/агента.
+  // сервис» на сайте). Навигация без AI — обрабатываем до роутера/агента.
   // Сюда же попадает нажатие постоянной reply-кнопки «Выбрать сервис» (она шлёт
   // свой лейбл обычным текстом) — так меню открывается одинаково из команды и кнопки.
   if (
@@ -172,22 +211,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     return;
   }
 
-  // Per-identity rate-limit ДО persist/роутера/агента: режет DoS-на-бюджет от
-  // одного пользователя. `/start` и привязка обрабатываются выше и не затронуты.
-  const rlIdentity = String(telegramUserId ?? chatId);
-  const rl = await checkRateLimit('telegram', rlIdentity);
-  if (!rl.allowed) {
-    log.warn({ event: 'telegram.rate_limited', updateId: update.update_id, chatId });
-    await sendSafely(
-      chatId,
-      'Слишком много сообщений подряд. Подожди минутку и напиши снова — я никуда не денусь.',
-      update.update_id,
-    );
-    return;
-  }
-
-  // /support — обращение в поддержку (interim-handoff оператору). ПОСЛЕ
-  // rate-limit: inline-форма `/support <текст>` сразу шлёт человеку, спам недопустим.
+  // /support — обращение в поддержку (interim-handoff оператору). Как и всё
+  // остальное — под лимитом, взятым в начале функции: inline-форма
+  // `/support <текст>` сразу шлёт человеку, спам недопустим.
   // Нажатие постоянной reply-кнопки «Написать в поддержку» шлёт свой лейбл текстом
   // без префикса — extractSupportInline вернёт null, и handleSupportCommand уйдёт в
   // двухшаговый флоу (попросит описать проблему), а не отправит пустое обращение.

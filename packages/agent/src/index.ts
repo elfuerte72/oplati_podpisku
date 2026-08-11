@@ -293,6 +293,78 @@ function getModelParams(): { temperature: number; maxTokens: number } {
 }
 
 /**
+ * Сбой tool-loop, НЕСУЩИЙ уже потраченный usage.
+ *
+ * Дневной токен-бюджет считается по тому, что вернул `runAgent`, поэтому голый
+ * `throw` списывал ноль токенов за самые дорогие запросы: шесть итераций Sonnet,
+ * упавших на седьмой, не стоили бюджету ничего, и защита расходов слепла ровно
+ * на том, от чего защищает (аудит 2026-08-10, HIGH). Call-site обязан в `catch`
+ * записать `err.usage`.
+ */
+export class AgentLoopError extends Error {
+  /** Сумма по всем состоявшимся итерациям; `null` — не успели ни одной. */
+  readonly usage: Anthropic.Usage | null;
+  readonly reason: 'api_error' | 'max_iterations';
+  /**
+   * Tools, которые цикл УЖЕ ВЫПОЛНИЛ до сбоя.
+   *
+   * Не диагностика, а факты о деньгах: среди них может быть успешный
+   * `propose_order` (заказ в БД) или `confirm_order` (счёт у шлюза и живая
+   * платёжная ссылка). Выбросить их вместе с ошибкой значит сказать клиенту
+   * «AI недоступен», пока против его заказа висит выставленный счёт
+   * (ревью 2026-08-11).
+   */
+  readonly toolCalls: ToolCallLog[];
+
+  constructor(opts: {
+    message: string;
+    usage: Anthropic.Usage | null;
+    reason: 'api_error' | 'max_iterations';
+    toolCalls: ToolCallLog[];
+    cause?: unknown;
+  }) {
+    super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
+    this.name = 'AgentLoopError';
+    this.usage = opts.usage;
+    this.reason = opts.reason;
+    this.toolCalls = opts.toolCalls;
+  }
+}
+
+/**
+ * Что дописываем, когда модель упёрлась в `max_tokens`.
+ *
+ * Обрыв на полуслове без пометки читается как законченная мысль — клиент верит
+ * половине ответа. А пустой ответ (модель истратила лимит на рассуждение, текста
+ * не осталось) в боте выглядит просто молчанием.
+ */
+/** Сколько раз подряд соглашаемся продолжить приостановленный ход. */
+const MAX_PAUSE_CONTINUATIONS = 3;
+
+const TRUNCATED_NOTE = '\n\n(Ответ получился длинным и оборвался. Спроси про нужную часть — договорю.)';
+const TRUNCATED_EMPTY =
+  'Ответ получился слишком длинным и не поместился. Задай вопрос поконкретнее — отвечу коротко.';
+
+/**
+ * Когда текста нет вообще, а причина — не `max_tokens`.
+ *
+ * Сюда попадает `refusal` (сработал классификатор отказа) и любой будущий
+ * `stop_reason`, о котором мы ещё не знаем. Перечислять причины по одной
+ * бессмысленно: важен факт «сказать нечего», а молчание бота выглядит поломкой
+ * (ревью 2026-08-11).
+ */
+const NO_ANSWER_TEXT =
+  'Не получилось составить ответ на это сообщение. Переформулируй, пожалуйста, — или напиши /support, и подключу человека.';
+
+/** Ответ, склеенный из всех text-блоков. */
+function collectText(content: Anthropic.ContentBlock[]): string {
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+}
+
+/**
  * Один круг разговора с AI.
  * Возвращает финальный текст для отправки пользователю + usage, просуммированный
  * по ВСЕМ итерациям tool-loop (для учёта расходов), + лог вызовов tools.
@@ -301,7 +373,21 @@ function getModelParams(): { temperature: number; maxTokens: number } {
 export async function runAgent(
   history: AgentMessage[],
   ctx: AgentContext,
-): Promise<{ text: string; usage: Anthropic.Usage; toolCalls: ToolCallLog[] }> {
+): Promise<{
+  text: string;
+  usage: Anthropic.Usage;
+  toolCalls: ToolCallLog[];
+  /**
+   * Модель НЕ довела ход до конца: упёрлась в `max_tokens`, отказалась или
+   * вернула неизвестный `stop_reason`. Текст в этом случае частично или целиком
+   * наш, служебный.
+   *
+   * Call-site обязан не приклеивать к такому ответу действия над заказом
+   * (кнопку «Подтвердить», карточку заказа): пользователь увидел бы призыв
+   * оплатить сумму, которой в сообщении нет (ревью 2026-08-11).
+   */
+  incomplete: boolean;
+}> {
   const client = getClient();
   // `||`, а не `??`: `KEY=` в env — это «не задано» (см. withoutEmptyValues в
   // apps/web/lib/env.ts). С `??` пустая строка уходила бы в Messages API как
@@ -317,26 +403,59 @@ export async function runAgent(
 
   const toolCalls: ToolCallLog[] = [];
   let totalUsage: Anthropic.Usage | null = null;
+  /**
+   * Текст, сказанный моделью ДО паузы хода. Без накопления он терялся: ответ
+   * собирался только из последнего сообщения, и клиент получал «Итого 1 350 ₽»
+   * без строки, объясняющей, откуда сумма (ревью 2026-08-11).
+   */
+  const textSoFar: string[] = [];
+  /** Продолжений приостановленного хода — свой бюджет, не из шести итераций. */
+  let pauseContinuations = 0;
+  /** Идёт ли сейчас продолжение приостановленного хода. */
+  let continuingPausedTurn = false;
   // Сквозной потолок web_search на ОДИН runAgent. `max_uses: 2` в tools.ts —
   // это лимит на один вызов API, а tool-loop делает до 6 итераций, поэтому без
   // этого счётчика дорогой web_search мог бы сработать до 12 раз за разговор.
   // По достижении лимита убираем web_search из набора tools на следующих шагах.
   let webSearchUsed = 0;
 
+  const finish = (text: string, incomplete: boolean) => ({
+    text,
+    usage: totalUsage as Anthropic.Usage,
+    toolCalls,
+    incomplete,
+  });
+
   // Максимум 6 итераций tool use (план MVP, раздел 5.3).
   for (let step = 0; step < 6; step++) {
+    // Продолжение приостановленного хода обязано идти с тем же набором tools:
+    // в истории уже лежат блоки `server_tool_use`/`web_search_tool_result`, и
+    // отправить их без объявленного `web_search` — верный 400 от API.
     const toolsForStep =
-      webSearchUsed >= MAX_WEB_SEARCH_PER_RUN
+      webSearchUsed >= MAX_WEB_SEARCH_PER_RUN && !continuingPausedTurn
         ? tools.filter((t) => t.name !== 'web_search')
         : tools;
-    const response = await client.messages.create({
-      model,
-      max_tokens: maxTokens,
-      temperature,
-      system: CACHED_SYSTEM,
-      tools: toolsForStep,
-      messages: withHistoryCacheBreakpoint(messages),
-    });
+    let response: Anthropic.Message;
+    try {
+      response = await client.messages.create({
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        system: CACHED_SYSTEM,
+        tools: toolsForStep,
+        messages: withHistoryCacheBreakpoint(messages),
+      });
+    } catch (err) {
+      // Токены предыдущих итераций уже потрачены — отдаём их наверх вместе с
+      // ошибкой, иначе бюджет их не увидит никогда.
+      throw new AgentLoopError({
+        message: err instanceof Error ? err.message : String(err),
+        usage: totalUsage,
+        reason: 'api_error',
+        toolCalls,
+        cause: err,
+      });
+    }
     totalUsage = addUsage(totalUsage, response.usage);
     webSearchUsed += response.usage.server_tool_use?.web_search_requests ?? 0;
 
@@ -384,16 +503,49 @@ export async function runAgent(
       continue;
     }
 
-    // stop_reason === 'end_turn' — возвращаем текст
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
+    // `pause_turn` — серверный tool (web_search) просит продолжить ход, а не
+    // финал. Раньше он проваливался в ветку end_turn и отдавался как готовый
+    // ответ: обычно пустой, то есть молчание бота на самом дорогом запросе.
+    // Контракт продолжения — вернуть содержимое ответа обратно как assistant.
+    if (response.stop_reason === 'pause_turn') {
+      const said = collectText(response.content);
+      if (said.trim()) textSoFar.push(said);
+      messages.push({ role: 'assistant', content: response.content });
+      // Паузы НЕ едят бюджет tool-итераций: иначе разговор с несколькими
+      // поисками упирался бы в потолок вместо ответа. Свой потолок нужен —
+      // без него сервер мог бы паузить бесконечно.
+      pauseContinuations += 1;
+      if (pauseContinuations > MAX_PAUSE_CONTINUATIONS) {
+        return finish(textSoFar.join('\n'), true);
+      }
+      step -= 1;
+      continuingPausedTurn = true;
+      continue;
+    }
+    continuingPausedTurn = false;
+
+    const text = [...textSoFar, collectText(response.content)]
+      .filter((part) => part.trim())
       .join('\n');
 
-    return { text, usage: totalUsage, toolCalls };
+    // `max_tokens` — ответ ОБОРВАН. Молчать нельзя, выдавать обрывок за
+    // законченную мысль — тоже.
+    if (response.stop_reason === 'max_tokens') {
+      return finish(text.trim() ? `${text}${TRUNCATED_NOTE}` : TRUNCATED_EMPTY, true);
+    }
+
+    // `end_turn` и всё остальное (`refusal`, `stop_sequence`, будущие коды):
+    // важен не код, а есть ли что сказать. Пустой ответ — это молчание бота,
+    // которое читается как поломка.
+    return text.trim() ? finish(text, false) : finish(NO_ANSWER_TEXT, true);
   }
 
-  throw new Error('Agent tool-use loop exceeded 6 iterations');
+  throw new AgentLoopError({
+    message: 'Agent tool-use loop exceeded 6 iterations',
+    usage: totalUsage,
+    reason: 'max_iterations',
+    toolCalls,
+  });
 }
 
 /**
@@ -410,7 +562,7 @@ export async function runAgent(
  */
 export async function runAgentNoTools(
   history: AgentMessage[],
-): Promise<{ text: string; usage: Anthropic.Usage }> {
+): Promise<{ text: string; usage: Anthropic.Usage; incomplete: boolean }> {
   const client = getClient();
   // `||` — по той же причине, что в runAgent: пустая строка = «не задано».
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
@@ -429,10 +581,22 @@ export async function runAgentNoTools(
     messages,
   });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  const text = collectText(response.content);
 
-  return { text, usage: response.usage };
+  // Те же правила, что в runAgent (ревью 2026-08-11). Этот путь — деградация
+  // при недоступной БД, то есть режим, где ошибиться дороже всего: обрывок на
+  // полуслове там читается как законченная мысль («…с комиссией получается
+  // 1 3»), а пустой ответ — как молчание бота.
+  if (response.stop_reason === 'max_tokens') {
+    return {
+      text: text.trim() ? `${text}${TRUNCATED_NOTE}` : TRUNCATED_EMPTY,
+      usage: response.usage,
+      incomplete: true,
+    };
+  }
+  if (!text.trim()) {
+    return { text: NO_ANSWER_TEXT, usage: response.usage, incomplete: true };
+  }
+
+  return { text, usage: response.usage, incomplete: false };
 }

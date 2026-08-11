@@ -16,11 +16,16 @@ import {
   type ReferralAncestor,
 } from './referral.ts';
 
-const benef = (over: Partial<AccrualBeneficiary> & Pick<AccrualBeneficiary, 'userId' | 'level'>): AccrualBeneficiary => ({
-  circle: 0,
+const benef = (
+  over: Partial<AccrualBeneficiary> & Pick<AccrualBeneficiary, 'userId' | 'level'>,
+): AccrualBeneficiary => ({
+  lockedRateL1Bps: REFERRAL_RATE_TABLE[0]?.l1Bps ?? 400,
   boostBps: 0,
   ...over,
 });
+
+/** Ставка круга — для тестов, которые раньше задавали `circle`. */
+const rateOfCircle = (circle: number): number => REFERRAL_RATE_TABLE[circle]?.l1Bps ?? 400;
 
 describe('REFERRAL_RATE_TABLE — воспроизводит worked-примеры правил и мокапа', () => {
   // Док: «клиент оплатил Netflix $15.99 — партнёр-Клиент получает $0.64,
@@ -106,7 +111,7 @@ describe('parseReferralCode', () => {
 
 describe('planCommissionAccruals — расчёт начислений (один уровень)', () => {
   it('Топ-партнёр (круг 3), база $20 → 7%', () => {
-    const rows = planCommissionAccruals(2000, [benef({ userId: 'l1', level: 1, circle: 3 })]);
+    const rows = planCommissionAccruals(2000, [benef({ userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(3) })]);
     expect(rows).toEqual<PlannedAccrual[]>([
       { beneficiaryUserId: 'l1', level: 1, rateBps: 700, amountUsdCents: 140 },
     ]);
@@ -114,9 +119,9 @@ describe('planCommissionAccruals — расчёт начислений (один
 
   it('уровни 2–3 не начисляются (ставка 0 → строки нет)', () => {
     const rows = planCommissionAccruals(2000, [
-      benef({ userId: 'l1', level: 1, circle: 3 }),
-      benef({ userId: 'l2', level: 2, circle: 3 }),
-      benef({ userId: 'l3', level: 3, circle: 3 }),
+      benef({ userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(3) }),
+      benef({ userId: 'l2', level: 2, lockedRateL1Bps: rateOfCircle(3) }),
+      benef({ userId: 'l3', level: 3, lockedRateL1Bps: rateOfCircle(3) }),
     ]);
     expect(rows).toEqual<PlannedAccrual[]>([
       { beneficiaryUserId: 'l1', level: 1, rateBps: 700, amountUsdCents: 140 },
@@ -125,14 +130,14 @@ describe('planCommissionAccruals — расчёт начислений (один
 
   it('временный буст +1% применяется к прямому рефереру', () => {
     const rows = planCommissionAccruals(2000, [
-      benef({ userId: 'l1', level: 1, circle: 2, boostBps: 100 }),
+      benef({ userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(2), boostBps: 100 }),
     ]);
     expect(rows[0]?.rateBps).toBe(700); // 6% + 1% буст
   });
 
   it('начисление, схлопнувшееся в 0 после floor, отбрасывается', () => {
     // База 1 цент × 4% = 0.04 цента → floor 0 → нет строки.
-    const rows = planCommissionAccruals(1, [benef({ userId: 'l1', level: 1, circle: 0 })]);
+    const rows = planCommissionAccruals(1, [benef({ userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(0) })]);
     expect(rows).toEqual([]);
   });
 
@@ -141,7 +146,7 @@ describe('planCommissionAccruals — расчёт начислений (один
   });
 
   it('инвариант: максимальная базовая ставка = 7% (без модификаторов)', () => {
-    const rows = planCommissionAccruals(100_000, [benef({ userId: 'l1', level: 1, circle: 3 })]);
+    const rows = planCommissionAccruals(100_000, [benef({ userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(3) })]);
     const totalBps = rows.reduce((s, r) => s + r.rateBps, 0);
     expect(totalBps).toBe(REFERRAL_MAX_CHAIN_BPS); // 700 = 7%
   });
@@ -231,8 +236,36 @@ describe('effectiveReferralRates — ставка кабинета = ставк�
     // Конфиг: круг 2, буст +1%. База $100.
     const rates = effectiveReferralRates({ lockedRateL1Bps: 600, boostBps: 100 });
     const planned = planCommissionAccruals(10_000, [
-      { userId: 'l1', level: 1, circle: 2, boostBps: 100 },
+      { userId: 'l1', level: 1, lockedRateL1Bps: rateOfCircle(2), boostBps: 100 },
     ]);
     expect(planned.map((p) => p.rateBps)).toEqual([rates.l1Bps]);
+  });
+});
+
+/**
+ * Ставка теперь приходит из колонки БД, а не из таблицы по кругу, — значит
+ * потолка «по построению» больше нет. Кривое значение (мисконфиг, ручная
+ * правка, будущий баг прогрессии) платило бы из маржи заказа без ограничения
+ * (ревью 2026-08-11).
+ */
+describe('effectiveReferralRates — потолок ставки', () => {
+  it('зафиксированная ставка выше максимума срезается', () => {
+    const rates = effectiveReferralRates({ lockedRateL1Bps: 5000, boostBps: 0 });
+    expect(rates.l1Bps).toBe(REFERRAL_MAX_CHAIN_BPS + 100);
+  });
+
+  it('отрицательная ставка не даёт отрицательного начисления', () => {
+    expect(effectiveReferralRates({ lockedRateL1Bps: -100, boostBps: 0 }).l1Bps).toBe(0);
+  });
+
+  it('нормальная ставка с бустом не трогается', () => {
+    expect(effectiveReferralRates({ lockedRateL1Bps: 600, boostBps: 100 }).l1Bps).toBe(700);
+  });
+
+  it('расчёт начисления уважает тот же потолок', () => {
+    const rows = planCommissionAccruals(10_000, [
+      benef({ userId: 'l1', level: 1, lockedRateL1Bps: 5000 }),
+    ]);
+    expect(rows[0]?.rateBps).toBe(REFERRAL_MAX_CHAIN_BPS + 100);
   });
 });

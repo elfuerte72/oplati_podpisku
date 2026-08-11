@@ -8,6 +8,9 @@ import {
 } from '@oplati/types';
 
 import { serverEnv } from '../env.server.ts';
+import { after } from 'next/server';
+
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { childLogger } from '../logger.ts';
 
 const log = childLogger('referral-payout');
@@ -50,6 +53,11 @@ export type RequestPayoutResult =
  * транзакции). Поэтому две параллельные заявки не «перевыведут»: вторая ждёт
  * коммита первой и видит уменьшенный баланс. Исполнение заявки — Этап E.
  */
+/** USD-центы → `$X.XX` для текста алёрта. */
+function fmtUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export async function requestReferralPayout(params: {
   userId: string;
   telegramLinked: boolean;
@@ -111,5 +119,24 @@ export async function requestReferralPayout(params: {
     method: destination?.method ?? null,
     payoutId: result.payoutId,
   });
+
+  // Заявка ничем не исполняется автоматически: `settlePayout` пока mock и нигде
+  // не вызывается (Этап E2 не сделан). До аудита 2026-08-10 это означало, что
+  // баланс партнёра молча замораживался навсегда — заявка создавалась, и о ней
+  // не узнавал никто. Решение владельца 2026-08-11: кнопку оставляем, но
+  // заявка ЗОВЁТ человека. Реквизиты в текст не кладём (в них PAN) — только
+  // сумма и идентификатор заявки.
+  // notifyOps сам не бросает и логирует свои сбои, но ЖДАТЬ его здесь нельзя:
+  // заявка уже зафиксирована в БД, и медленный Telegram задерживал бы ответ
+  // партнёру (ревью 2026-08-11). Отправляем после ответа через `after()`.
+  after(() =>
+    notifyOps(
+      `Партнёрская выплата: новая заявка ${result.payoutId} на ${fmtUsd(netUsdCents)} ` +
+        `(брутто ${fmtUsd(amountUsdCents)}, удержание ${fmtUsd(feeUsdCents)}). ` +
+        `⚠️ Реквизиты форма не собирает — уточнить у партнёра в Telegram. ` +
+        `Исполняется вручную, автовыплат пока нет.`,
+    ),
+  );
+
   return { ok: true, payoutId: result.payoutId, amountUsdCents, feeUsdCents, netUsdCents };
 }

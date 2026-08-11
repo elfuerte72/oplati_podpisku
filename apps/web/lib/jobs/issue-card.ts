@@ -69,6 +69,26 @@ import { servicePricingUrl } from '../catalog/pricing-links.ts';
 
 const log = childLogger('job.issue-card');
 
+/**
+ * Транспортный сбой провайдера, а не доменный отказ.
+ *
+ * `PaySpaceApiError` прилетает и на «карта заблокирована» (4xx с доменным
+ * кодом), и на 429/5xx, переживший оба ретрая клиента. Различать обязательно:
+ * первое — приговор карте, второе про неё не говорит ничего.
+ *
+ * Смотрим НА ДВА признака сразу, а не на один статус. Клиент подставляет
+ * `code = HTTP_<status>` только когда тело ошибки не разобралось: значит
+ * доменного кода провайдер не прислал вовсе — это инфраструктура перед ним
+ * (балансировщик, WAF, 502/503). Если же код настоящий (`topup_failed` и т.п.),
+ * это отказ по существу, даже если приехал с HTTP 500, — и карту надо выводить
+ * из реюза, иначе мёртвая карта останется активной навсегда и КАЖДЫЙ следующий
+ * заказ этого клиента будет падать одинаково (находка ревью 2026-08-11).
+ */
+function isTransientProviderFailure(err: PaySpaceApiError): boolean {
+  const infraStatus = err.httpStatus >= 500 || err.httpStatus === 429;
+  return infraStatus && err.code === `HTTP_${err.httpStatus}`;
+}
+
 export async function issueCard(orderId: string): Promise<void> {
   log.info({ event: 'job.issue_card.start', orderId });
 
@@ -227,6 +247,33 @@ export async function issueCard(orderId: string): Promise<void> {
         // при неизвестном исходе значило бы выпустить вторую карту и списать
         // с VCC ещё раз, возможно поверх уже прошедшего топапа.
         if (!(err instanceof PaySpaceApiError)) throw err;
+
+        // ...и точно так же НЕ трогаем карту на транспортном сбое (аудит
+        // 2026-08-10). `PaySpaceApiError` несёт и доменный отказ («карта
+        // протухла/заблокирована»), и 5xx/429 от инфраструктуры перед
+        // провайдером — а это «шлюз недоступен», про карту оно не говорит
+        // ничего. Ошибочный вывод стоил дважды: живая карта уходила из реюза
+        // (клиенту на следующем заказе дописывались $4 за выпуск новой), а
+        // новую мы пытались выпустить ровно в тот момент, когда провайдер и
+        // так лежит. Заказ уходит в failed общим catch — но алёрт отдельный:
+        // повтор топапа идемпотентен по request_id, поэтому ручной разбор
+        // здесь безопасен, и оператор должен это знать.
+        if (isTransientProviderFailure(err)) {
+          log.warn({
+            event: 'job.issue_card.topup_transport_failure',
+            orderId,
+            cardId: card.id,
+            httpStatus: err.httpStatus,
+            code: err.code,
+          });
+          await notifyOps(
+            `Заказ ${order.shortId}: топап PaySpace не прошёл из-за недоступности провайдера ` +
+              `(HTTP ${err.httpStatus}). Карта клиента ЖИВА и осталась активной. Повтор топапа ` +
+              `идемпотентен по request_id — операцию можно безопасно повторить руками, когда ` +
+              `провайдер ответит.`,
+          );
+          throw err;
+        }
 
         // Диагностика причины отказа: реальный статус карты в PaySpace
         // (2 Frozen / 3 Expired / 4 Locked / 0 Deactivated / 9 Inactivated)

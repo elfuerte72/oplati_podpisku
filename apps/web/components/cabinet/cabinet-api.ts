@@ -6,6 +6,8 @@ import { servicePaymentInstructions } from '@oplati/types';
 import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
 import { fetchWithTimeout } from '@/lib/http';
 
+import { errorTextFor } from './error-text';
+
 /**
  * Клиент `/api/cabinet`: на каждый запрос шлём `initData` (подпись Telegram) +
  * action. Ответы парсим Zod-схемами (как ChatClient), чтобы не доверять форме
@@ -103,7 +105,7 @@ const payResultSchema = z.discriminatedUnion('ok', [
     qrPayload: z.string().nullable(),
     expiresAt: z.string().nullable(),
   }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
 ]);
 
 /** Результат создания заказа из каталога Mini App (`doPropose`). */
@@ -116,7 +118,7 @@ const orderCreationResultSchema = z.discriminatedUnion('ok', [
     totalKopecks: z.number(),
     expiresAt: z.string(),
   }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
 ]);
 
 export type OrderSummary = z.infer<typeof orderSummarySchema>;
@@ -127,14 +129,37 @@ export type OrderEventView = z.infer<typeof eventViewSchema>;
 export type CabinetProfile = z.infer<typeof profileSchema>;
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export type OrderDetail = z.infer<typeof orderDetailSchema>;
-export type PayResult = z.infer<typeof payResultSchema>;
-export type OrderCreationResult = z.infer<typeof orderCreationResultSchema>;
+export type PayResult = Extract<z.infer<typeof payResultSchema>, { ok: true }> | CabinetFailure;
+export type OrderCreationResult =
+  | Extract<z.infer<typeof orderCreationResultSchema>, { ok: true }>
+  | CabinetFailure;
 
 export type ApiError = { ok: false; status: number; error: string };
 export type ApiOk<T> = { ok: true; data: T };
 export type ApiResult<T> = ApiOk<T> | ApiError;
 
 const GENERIC_ERROR = 'network_error';
+
+/** Общая форма отказа действия: код для логики + всегда готовый текст для UI. */
+export type CabinetFailure = { ok: false; error: string; message: string };
+const NETWORK_ERROR_TEXT = 'Сеть недоступна. Попробуй ещё раз.';
+
+/**
+ * Достраивает `message` там, где сервер прислал только код.
+ *
+ * Роут отвечает `{ok:false, error}` без текста на 401 (протухшая/битая подпись),
+ * 429 и 503 — а схемы действий раньше требовали `message` и на таких ответах
+ * просто не парсились, из-за чего кнопка «Оплатить» показывала «Сеть
+ * недоступна» при живой сети (ревью 2026-08-11). Тексты берём из общей карты
+ * `errorTextFor`, чтобы они не разъезжались с экранами загрузки.
+ */
+function withMessage<T extends { ok: true }>(
+  result: T | { ok: false; error: string; message?: string },
+): T | CabinetFailure {
+  if (result.ok) return result;
+  return { ok: false, error: result.error, message: result.message ?? errorTextFor(result.error) };
+}
+
 
 /**
  * Таймаут запросов кабинета. Щедрый, потому что `pay` под капотом создаёт счёт
@@ -203,8 +228,8 @@ export async function fetchCardDetails(initData: string, cardId: string): Promis
 export async function doPay(initData: string, orderId: string): Promise<PayResult> {
   const resp = await callCabinet({ action: 'pay', initData, orderId });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
+  if (parsed?.success) return withMessage(parsed.data);
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
 }
 
 /** Заказ из кнопочного каталога Mini App (форма результата — как у repeat). */
@@ -218,18 +243,20 @@ export type ProposePayload = {
 export async function doPropose(initData: string, payload: ProposePayload): Promise<OrderCreationResult> {
   const resp = await callCabinet({ action: 'propose', initData, ...payload });
   const parsed = resp ? orderCreationResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
-  return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
+  if (parsed?.success) return withMessage(parsed.data);
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
 }
 
 // ─── Пост-выпускные действия (ТЗ «клиентский путь» §6) ─────────────────────
 
 const paymentIssueResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), duplicate: z.boolean() }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
 ]);
 
-export type PaymentIssueResult = z.infer<typeof paymentIssueResultSchema>;
+export type PaymentIssueResult =
+  | Extract<z.infer<typeof paymentIssueResultSchema>, { ok: true }>
+  | CabinetFailure;
 
 /** «Не проходит оплата?»: тип проблемы + контекст заказа уходят оператору. */
 export async function doReportPaymentIssue(
@@ -246,7 +273,7 @@ export async function doReportPaymentIssue(
     ...(comment ? { comment } : {}),
   });
   const parsed = resp ? paymentIssueResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
+  if (parsed?.success) return withMessage(parsed.data);
   // Ответ пришёл, но не наш контракт (401 протухшей сессии, 429 и т.п.) — это
   // не «нет сети», честнее позвать переоткрыть кабинет.
   if (resp) {
@@ -257,10 +284,12 @@ export async function doReportPaymentIssue(
 
 const subscriptionPaidResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true) }),
-  z.object({ ok: z.literal(false), error: z.string(), message: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
 ]);
 
-export type SubscriptionPaidResult = z.infer<typeof subscriptionPaidResultSchema>;
+export type SubscriptionPaidResult =
+  | Extract<z.infer<typeof subscriptionPaidResultSchema>, { ok: true }>
+  | CabinetFailure;
 
 /** «Подписка оплачена» — клиент подтвердил успех на сайте сервиса. */
 export async function doMarkSubscriptionPaid(
@@ -269,7 +298,7 @@ export async function doMarkSubscriptionPaid(
 ): Promise<SubscriptionPaidResult> {
   const resp = await callCabinet({ action: 'subscription-paid', initData, orderId });
   const parsed = resp ? subscriptionPaidResultSchema.safeParse(resp.json) : null;
-  if (parsed?.success) return parsed.data;
+  if (parsed?.success) return withMessage(parsed.data);
   if (resp) {
     return { ok: false, error: 'unexpected', message: 'Не получилось. Переоткрой кабинет и попробуй ещё раз.' };
   }
