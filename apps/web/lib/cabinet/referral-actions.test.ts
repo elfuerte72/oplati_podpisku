@@ -11,6 +11,11 @@ vi.mock('../logger.ts', () => ({
 }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn() }));
 
+const notifyOps = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps }));
+// `after()` в тестах выполняем сразу — иначе алёрт не успевал бы отработать.
+vi.mock('next/server', () => ({ after: (fn: () => unknown) => void fn() }));
+
 type Profile = { suspended: boolean } | null;
 type CreatedPayout = {
   userId: string;
@@ -200,5 +205,61 @@ describe('requestReferralPayout — реквизиты и комиссия вы�
       address: 'TQ5Rk8m9WcNvY2p3aBcDeFgHiJkLmNoPqR',
       network: 'trc20',
     });
+  });
+});
+
+/**
+ * Заявка на вывод ничем не исполняется автоматически (`settlePayout` — mock,
+ * нигде не вызывается): до аудита 2026-08-10 баланс партнёра молча
+ * замораживался навсегда, о заявке не узнавал никто. Решение владельца
+ * 2026-08-11 — кнопку оставить, но заявку сделать громкой.
+ */
+describe('requestReferralPayout — заявка зовёт человека', () => {
+  beforeEach(() => {
+    hoisted.env.REFERRAL_ENABLED = true;
+    notifyOps.mockClear();
+  });
+
+  it('успешная заявка уведомляет владельца', async () => {
+    const res = await requestReferralPayout({
+      userId: 'u1',
+      telegramLinked: true,
+      amountUsdCents: 5000,
+    });
+
+    expect(res).toMatchObject({ ok: true });
+    expect(notifyOps).toHaveBeenCalledOnce();
+    const text = String(notifyOps.mock.calls[0]?.[0] ?? '');
+    expect(text).toContain('вручную');
+  });
+
+  it('в текст алёрта не попадают реквизиты', async () => {
+    // Ассерт «нет PAN» проходит и при НЕвызванном алёрте, поэтому сначала
+    // фиксируем, что он вообще был (ревью 2026-08-11).
+    // В destination лежит маска PAN — но в чат оператора не уходит и она:
+    // алёрту хватает суммы и номера заявки.
+    await requestReferralPayout({
+      userId: 'u1',
+      telegramLinked: true,
+      amountUsdCents: 5000,
+      destination: { method: 'card_rub', pan: '4242 4242 4242 4242', holderName: 'IVAN IVANOV' },
+    });
+
+    expect(notifyOps).toHaveBeenCalledOnce();
+    const text = String(notifyOps.mock.calls[0]?.[0] ?? '');
+    expect(text).not.toContain('4242');
+    expect(text).not.toContain('IVAN');
+    // Оператор обязан знать, что реквизитов у него нет.
+    expect(text).toContain('Реквизиты');
+  });
+
+  it('отклонённая заявка никого не будит', async () => {
+    const res = await requestReferralPayout({
+      userId: 'u1',
+      telegramLinked: false,
+      amountUsdCents: 5000,
+    });
+    expect(res).toMatchObject({ ok: false });
+    expect(notifyOps).not.toHaveBeenCalled();
   });
 });

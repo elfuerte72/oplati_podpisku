@@ -166,6 +166,62 @@ export async function consumeLinkToken(
           // стала бы self-accrual (T заработал с собственной покупки — находка ревью).
           // FK source_user_id = ON DELETE set null → при DELETE W станет NULL («источник
           // неизвестен»), что безопасно и не создаёт самоначисление.
+
+          // ⚠️ Самореферал (аудит 2026-08-10, HIGH). Человек мог открыть СВОЮ ЖЕ
+          // реф-ссылку в боте: web-строка W становится реферером telegram-строки
+          // T, и покупки T начисляли комиссию W. Гейт `referrerId !== userId` это
+          // не ловит — строки разные, человек один. После переноса beneficiary
+          // W→T такие строки становятся (beneficiary=T, source=T), то есть
+          // «заработал сам с себя».
+          //
+          // Гасим их по контракту ledger'а: строки append-only, поэтому не
+          // удаляем и не правим, а дописываем компенсирующую с status='reversed'
+          // и той же суммой (баланс считает accrued − reversed).
+          //
+          // `created_at` копируется из исходной строки НАМЕРЕННО: месячные
+          // агрегаты кабинета считают «начислено за месяц − реверснуто за
+          // месяц» по этой колонке, и гашение июльской строки августовским
+          // числом рисовало бы партнёру отрицательный доход за август
+          // (ревью 2026-08-11).
+          //
+          // ⚠️ Закрывается ОДИН случай — тот, что нашёл аудит: покупатель и
+          // выгодоприобретатель схлопнулись в одного человека при merge.
+          // Мультиаккаунт (свою же ссылку открыли с аккаунта A, а web-строку
+          // привязали к аккаунту B) отсюда неотличим от честной реферальной
+          // пары: для БД это разные люди. Это территория антифрода (Этап E3),
+          // см. `docs/BACKLOG.md`.
+          const reversedSelf = await tx.execute<{ id: string }>(sql`
+            INSERT INTO referral_accruals
+              (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind, rate_bps, amount_usd_cents, status, created_at)
+            SELECT beneficiary_user_id, source_user_id, order_id, payment_id, level, kind, rate_bps, amount_usd_cents, 'reversed', created_at
+            FROM referral_accruals a
+            WHERE a.beneficiary_user_id = ${byTelegram.id}
+              AND a.source_user_id = ${byTelegram.id}
+              AND a.status = 'accrued'
+              AND NOT EXISTS (
+                SELECT 1 FROM referral_accruals r
+                WHERE r.status = 'reversed'
+                  AND r.beneficiary_user_id = a.beneficiary_user_id
+                  AND r.level = a.level
+                  AND r.amount_usd_cents = a.amount_usd_cents
+                  AND r.created_at = a.created_at
+                  AND r.payment_id IS NOT DISTINCT FROM a.payment_id
+              )
+            RETURNING id
+          `);
+          if (reversedSelf.length > 0) {
+            // Деньги вернули, а СТАТУС, купленный этим же оборотом, — нет:
+            // храповик `locked_rate_l1_bps` только растёт, а с 2026-08-11 он
+            // единственный источник платимого процента. Разматывать прогрессию
+            // автоматически нельзя (неизвестно, какая доля оборота была
+            // самореферальной) — зовём человека.
+            log.warn({
+              event: 'db.referral.self_accrual_reversed',
+              userId: byTelegram.id,
+              reversed: reversedSelf.length,
+            });
+          }
+
           await tx.execute(
             sql`UPDATE referral_payouts SET user_id = ${byTelegram.id} WHERE user_id = ${byWebSession.id}`,
           );

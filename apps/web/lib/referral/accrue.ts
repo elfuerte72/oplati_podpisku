@@ -9,10 +9,17 @@ import {
   getReferralAncestors,
   insertCommissionAccruals,
 } from '@oplati/db';
-import { planCommissionAccruals, type AccrualBeneficiary } from '@oplati/types';
+import {
+  planCommissionAccruals,
+  REFERRAL_RATE_TABLE,
+  type AccrualBeneficiary,
+} from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
+
+/** Базовая ставка первого статуса — когда профиля партнёра ещё нет. */
+const DEFAULT_LOCKED_L1_BPS = REFERRAL_RATE_TABLE[0]?.l1Bps ?? 400;
 
 const log = childLogger('referral-accrue');
 
@@ -90,7 +97,11 @@ export async function accrueReferralForPayment(params: {
       beneficiaries.push({
         userId: a.userId,
         level: a.level,
-        circle: profile?.circle ?? 0,
+        // Ставка — ЗАФИКСИРОВАННАЯ, а не выведенная из текущего статуса
+        // (решение владельца 2026-08-11): именно её партнёр видит в кабинете,
+        // и «процент не падает» — это данное ему обещание. Профиля ещё нет —
+        // базовая ставка первого статуса, ровно как было при `circle = 0`.
+        lockedRateL1Bps: profile?.lockedRateL1Bps ?? DEFAULT_LOCKED_L1_BPS,
         boostBps: profile?.boostBps ?? 0,
       });
     }
