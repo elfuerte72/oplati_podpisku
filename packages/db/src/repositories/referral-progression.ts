@@ -61,6 +61,22 @@ export type MonthlyRollupInput = {
  *  - новые активные — прямые рефералы, привязанные в этом месяце и активные
  *    (для спринта «10 новых активных»).
  */
+/**
+ * Последний месяц, за который прогрессия уже посчитана (`'YYYY-MM-01'`), или
+ * `null`, если её не считали ни разу.
+ *
+ * Нужен крону для ДОБОРА пропущенных запусков: крон стоит на 1-е число месяца, и
+ * простой машины в это окно терял месяц навсегда — следующий запуск считает
+ * только предыдущий месяц (аудит 2026-08-10). Повторная обработка безопасна:
+ * идемпотентность держит `PK(user_id, month)`.
+ */
+export async function getLatestRolledUpMonth(db: DB): Promise<string | null> {
+  const rows = await db.execute<{ month: string }>(sql`
+    SELECT to_char(max(month), 'YYYY-MM-DD') AS month FROM referral_monthly_stats
+  `);
+  return rows[0]?.month ?? null;
+}
+
 export async function getMonthlyRollupInput(
   db: DB,
   userId: string,

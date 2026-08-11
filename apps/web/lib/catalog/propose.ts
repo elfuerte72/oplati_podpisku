@@ -152,13 +152,23 @@ export async function proposeFromCatalog(
       }
       orderUsdCents = amountUsdCents;
     } else {
-      const tier = tiers.find(
+      const matches = tiers.filter(
         (t) =>
           t.name === tierName &&
           (!tierPeriod || t.period === tierPeriod) &&
           t.currency === 'USD' &&
           (t.originalAmount ?? 0) > CUSTOM_AMOUNT_THRESHOLD_USD_CENTS,
       );
+      // Совпадений больше одного — значит `tierPeriod` не прислали, а имя тарифа
+      // в каталоге не уникально («Premium» месячный и годовой). Брать ПЕРВЫЙ
+      // нельзя: клиент выбрал годовой за $49.99, а заказ оформился бы на
+      // месячный за $6.49 (ревью 2026-08-11). Отказ честнее молчаливой подмены
+      // цены; свои клиенты период присылают всегда, без него ходит только
+      // устаревший бандл или чужой скрипт.
+      if (matches.length > 1) {
+        return fail('tier_not_found');
+      }
+      const tier = matches[0];
       if (!tier || tier.originalAmount === undefined) {
         return fail('tier_not_found');
       }

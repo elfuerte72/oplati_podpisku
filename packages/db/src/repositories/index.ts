@@ -101,6 +101,7 @@ export {
 
 export {
   listReferralRollupCandidates,
+  getLatestRolledUpMonth,
   getMonthlyRollupInput,
   getPriorConsecutiveMetMonths,
   applyMonthlyProgression,

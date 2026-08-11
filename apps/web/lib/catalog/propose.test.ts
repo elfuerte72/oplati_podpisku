@@ -123,6 +123,35 @@ describe('proposeFromCatalog', () => {
     );
   });
 
+  it('одно имя на несколько периодов без tierPeriod → отказ, а не первый попавшийся', async () => {
+    // Клиент выбрал годовой Essential за $79.99, а `find` по имени вернул бы
+    // месячный за $10.99 — заказ на чужую цену (ревью 2026-08-11). Период
+    // присылают все наши клиенты; без него ходит устаревший бандл или скрипт.
+    h.service = multiPeriodService;
+    const res = await proposeFromCatalog({
+      ...base,
+      slug: 'playstation-plus',
+      tierName: 'Essential',
+    });
+    expect(res).toMatchObject({ ok: false, error: 'tier_not_found' });
+    expect(h.proposeImpl).not.toHaveBeenCalled();
+  });
+
+  it('тот же тариф с периодом резолвится однозначно', async () => {
+    h.service = multiPeriodService;
+    h.proposeImpl.mockResolvedValue(okResult);
+    const res = await proposeFromCatalog({
+      ...base,
+      slug: 'playstation-plus',
+      tierName: 'Essential',
+      tierPeriod: 'year',
+    });
+    expect(res.ok).toBe(true);
+    expect(h.proposeImpl).toHaveBeenCalledWith(
+      expect.objectContaining({ amountUsdCents: 7999 }),
+    );
+  });
+
   it('тарифный сервис: неизвестный тариф → tier_not_found', async () => {
     h.service = tierService;
     const res = await proposeFromCatalog({ ...base, slug: 'claude-pro', tierName: 'NoSuch' });

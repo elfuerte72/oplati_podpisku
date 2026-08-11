@@ -260,6 +260,43 @@ export const pricingPolicy = z.object({
 export type PricingPolicy = z.infer<typeof pricingPolicy>;
 
 /**
+ * Проверка, что тарифы сервиса различимы ОБОИМИ ключами, по которым их ищут.
+ *
+ * Ключей два, и они разные:
+ *   - `(period, originalAmount)` — стабильный ключ inline-кнопки Telegram
+ *     (`tier:<slug>:<period>:<usdCents>`, L-20). Дубль пары даёт кнопке ДРУГОЙ
+ *     тариф при верной цене;
+ *   - `(name, period)` — по нему матчит `proposeFromCatalog` (веб и Mini App).
+ *     Дубль пары означает, что `find` возьмёт ПЕРВЫЙ подходящий, и клиент
+ *     оформит заказ по чужой цене (аудит 2026-08-10). Сид проверял только
+ *     первый ключ, поэтому такой дубль проходил насквозь.
+ *
+ * Бросает при первом дубле: seed обязан падать, а не завозить в прод каталог,
+ * где кнопка и цена расходятся.
+ */
+export function assertUniqueTierKeys(slug: string, tiers: readonly ServiceTier[]): void {
+  const byButtonKey = new Set<string>();
+  const byMatchKey = new Set<string>();
+  for (const t of tiers) {
+    const buttonKey = `${t.period}:${t.originalAmount ?? 0}`;
+    if (byButtonKey.has(buttonKey)) {
+      throw new Error(
+        `seed: у сервиса ${slug} два тарифа с одинаковым (period, originalAmount)=${buttonKey} — ключ кнопки Telegram неоднозначен (L-20)`,
+      );
+    }
+    byButtonKey.add(buttonKey);
+
+    const matchKey = `${t.name}:${t.period}`;
+    if (byMatchKey.has(matchKey)) {
+      throw new Error(
+        `seed: у сервиса ${slug} два тарифа с одинаковым (name, period)=${matchKey} — по этому ключу заказ ищет тариф в вебе и Mini App, и клиент получит цену первого совпавшего`,
+      );
+    }
+    byMatchKey.add(matchKey);
+  }
+}
+
+/**
  * Пер-сервисные правила оплаты на сайте сервиса (ТЗ «клиентский путь» 2026-07):
  * VPN нельзя показывать общим советом — для каждого сервиса храним отдельные
  * требования. Лежат в `services.payment_instructions` (jsonb, nullable —

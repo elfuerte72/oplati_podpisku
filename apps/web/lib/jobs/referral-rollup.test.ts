@@ -9,6 +9,9 @@ vi.mock('../logger.ts', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+const notifyOps = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps }));
+
 type RollupInput = { networkTurnoverUsdCents: number; newActiveReferrals: number };
 type Profile = { circle: number; lockedRateL1Bps: number; boostBps: number; suspended: boolean };
 const dbState = vi.hoisted(() => ({
@@ -18,15 +21,19 @@ const dbState = vi.hoisted(() => ({
   telegramId: null as string | null,
   applied: true,
   throwInputFor: new Set<string>(),
+  latestRolledUpMonth: null as string | null,
+  processedMonths: [] as string[],
 }));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
   listReferralRollupCandidates: vi.fn(async () => dbState.candidates),
-  getMonthlyRollupInput: vi.fn(async (_db: unknown, userId: string) => {
+  getMonthlyRollupInput: vi.fn(async (_db: unknown, userId: string, monthKey: string) => {
+    dbState.processedMonths.push(monthKey);
     if (dbState.throwInputFor.has(userId)) throw new Error('boom');
     return dbState.input[userId] ?? { networkTurnoverUsdCents: 0, newActiveReferrals: 0 };
   }),
+  getLatestRolledUpMonth: vi.fn(async () => dbState.latestRolledUpMonth),
   getPartnerProfile: vi.fn(async () => dbState.profile),
   getPriorConsecutiveMetMonths: vi.fn(async () => 0),
   applyMonthlyProgression: vi.fn(async () =>
@@ -74,7 +81,14 @@ describe('rollupReferralMonth', () => {
   it('REFERRAL_ENABLED=false → не сканирует БД', async () => {
     hoisted.env.REFERRAL_ENABLED = false;
     const res = await rollupReferralMonth({ now });
-    expect(res).toEqual({ scanned: 0, applied: 0, bonuses: 0, upgrades: 0, errors: 0 });
+    expect(res).toEqual({
+      scanned: 0,
+      applied: 0,
+      bonuses: 0,
+      upgrades: 0,
+      errors: 0,
+      missedMonths: [],
+    });
     expect(db.listReferralRollupCandidates).not.toHaveBeenCalled();
   });
 
@@ -142,5 +156,70 @@ describe('rollupReferralMonth', () => {
     expect(res.scanned).toBe(3);
     expect(res.applied).toBe(2);
     expect(res.errors).toBe(1);
+  });
+});
+
+/**
+ * Крон стоит на 1-е число месяца в 02:00 UTC. Простой VPS в это окно (рестарт,
+ * сеть, обновление) терял месяц прогрессии МОЛЧА: следующий запуск считает
+ * только предыдущий месяц, а про дыру не узнаёт никто (аудит 2026-08-10).
+ *
+ * Считать пропущенный месяц автоматически НЕЛЬЗЯ (ревью 2026-08-11): счётчик
+ * «новых активных рефералов» не ограничен сверху по времени, поэтому старый
+ * месяц получил бы сегодняшние покупки и спринт-бонус, которого тогда не
+ * заработали, — а ledger append-only. Поэтому крон только находит дыру и громко
+ * зовёт человека.
+ */
+describe('rollupReferralMonth: пропущенные месяцы', () => {
+  beforeEach(() => {
+    dbState.candidates = [];
+    dbState.input = {};
+    dbState.profile = null;
+    dbState.applied = true;
+    dbState.throwInputFor = new Set();
+    dbState.latestRolledUpMonth = null;
+    dbState.processedMonths = [];
+    notifyOps.mockClear();
+    hoisted.env.REFERRAL_ENABLED = true;
+  });
+
+  it('дыра находится и уходит алёртом владельцу', async () => {
+    // Последняя обработка — январь; запуск 1 мая. Февраль и март потеряны.
+    dbState.latestRolledUpMonth = '2026-01-01';
+    const res = await rollupReferralMonth({ now: new Date('2026-05-01T02:00:00Z') });
+
+    expect(res.missedMonths).toEqual(['2026-02-01', '2026-03-01']);
+    expect(notifyOps).toHaveBeenCalledOnce();
+    expect(String(notifyOps.mock.calls[0]?.[0] ?? '')).toContain('2026-02-01');
+  });
+
+  it('пропущенные месяцы НЕ считаются автоматически', async () => {
+    // Иначе спринт-бонус выдался бы задним числом по сегодняшним данным.
+    dbState.latestRolledUpMonth = '2026-01-01';
+    dbState.candidates = ['u1'];
+    await rollupReferralMonth({ now: new Date('2026-05-01T02:00:00Z') });
+
+    expect(dbState.processedMonths).toEqual(['2026-04-01']);
+  });
+
+  it('без пропусков алёрта нет', async () => {
+    dbState.latestRolledUpMonth = '2026-03-01';
+    const res = await rollupReferralMonth({ now: new Date('2026-05-01T02:00:00Z') });
+    expect(res.missedMonths).toEqual([]);
+    expect(notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('пустая история пропуском не считается', async () => {
+    // Первый запуск программы: истории нет по определению, звать некого.
+    dbState.latestRolledUpMonth = null;
+    const res = await rollupReferralMonth({ now: new Date('2026-05-01T02:00:00Z') });
+    expect(res.missedMonths).toEqual([]);
+    expect(notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('повторный запуск того же месяца дырой не считается', async () => {
+    dbState.latestRolledUpMonth = '2026-04-01';
+    const res = await rollupReferralMonth({ now: new Date('2026-05-01T02:00:00Z') });
+    expect(res.missedMonths).toEqual([]);
   });
 });
