@@ -90,9 +90,14 @@ export function createRemnawaveClient(options: RemnawaveClientOptions): Remnawav
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const startedAt = Date.now();
-    let res: Response;
+    let json: unknown;
+    let durationMs: number;
+    // Таймаут держим до КОНЦА чтения тела, а не до возврата заголовков (аудит
+    // 2026-08-10): панель, ответившая 200 и замолчавшая на теле, иначе вешала
+    // бы выдачу VPN-ссылки навсегда — `clearTimeout` снимал единственную защиту
+    // ровно перед самой долгой операцией.
     try {
-      res = await fetchImpl(`${base}${path}`, {
+      const res = await fetchImpl(`${base}${path}`, {
         method,
         headers: {
           Authorization: `Bearer ${token}`,
@@ -101,23 +106,29 @@ export function createRemnawaveClient(options: RemnawaveClientOptions): Remnawav
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: controller.signal,
       });
+
+      durationMs = Date.now() - startedAt;
+      if (!res.ok) {
+        // Тело ошибки не логируем целиком (может содержать ссылки-подписки) —
+        // статуса и пути достаточно для диагностики.
+        logger.warn({ event: 'remnawave.api_error', method, path, status: res.status, durationMs });
+        throw new RemnawaveApiError(`Remnawave ${method} ${path} → HTTP ${res.status}`, res.status);
+      }
+
+      try {
+        json = await res.json();
+      } catch (err) {
+        // «Ответ не JSON» — это ТОЛЬКО синтаксическая ошибка разбора. Обрыв по
+        // таймауту и смерть сокета на теле — транспорт, и переклеивать на них
+        // ярлык дрейфа контракта нельзя: диагноз получится ложный, а исходная
+        // ошибка теряется (ревью 2026-08-11).
+        if (!(err instanceof SyntaxError)) throw err;
+        throw new RemnawaveContractError(`Remnawave ${method} ${path}: ответ не JSON`, {
+          cause: err,
+        });
+      }
     } finally {
       clearTimeout(timer);
-    }
-
-    const durationMs = Date.now() - startedAt;
-    if (!res.ok) {
-      // Тело ошибки не логируем целиком (может содержать ссылки-подписки) —
-      // статуса и пути достаточно для диагностики.
-      logger.warn({ event: 'remnawave.api_error', method, path, status: res.status, durationMs });
-      throw new RemnawaveApiError(`Remnawave ${method} ${path} → HTTP ${res.status}`, res.status);
-    }
-
-    let json: unknown;
-    try {
-      json = await res.json();
-    } catch {
-      throw new RemnawaveContractError(`Remnawave ${method} ${path}: ответ не JSON`);
     }
 
     const parsed = schema.safeParse(json);

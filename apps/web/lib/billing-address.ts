@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { fetchWithTimeout } from './http.ts';
+import { fetchJsonWithTimeout } from './http.ts';
 import { childLogger } from './logger.ts';
 
 const log = childLogger('billing-address');
@@ -127,22 +127,20 @@ const FALLBACK_US_ADDRESSES: readonly [BillingAddress, ...BillingAddress[]] = [
  */
 export async function getRandomUsBillingAddress(): Promise<BillingAddress> {
   try {
-    const resp = await fetchWithTimeout(
+    // fetchJsonWithTimeout, а не fetchWithTimeout: второй снимает таймаут ещё
+    // до чтения тела, и сторонний сервис, отдавший заголовки и замолчавший,
+    // вешал бы выпуск карты — уже после приёма рублей (ревью 2026-08-11).
+    const data = await fetchJsonWithTimeout(
       RANDOM_USER_URL,
       { headers: { Accept: 'application/json' } },
+      randomUserLocationSchema,
       RANDOM_USER_TIMEOUT_MS,
     );
-    if (!resp.ok) {
-      throw new Error(`randomuser status=${resp.status}`);
+    if (!data) {
+      throw new Error('randomuser: ответ недоступен или не соответствует контракту');
     }
 
-    const raw: unknown = await resp.json();
-    const parsed = randomUserLocationSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new Error(`randomuser contract drift: ${parsed.error.message}`);
-    }
-
-    const first = parsed.data.results[0];
+    const first = data.results[0];
     if (!first) {
       throw new Error('randomuser returned no results');
     }

@@ -16,8 +16,8 @@ export class RemnawaveApiError extends Error {
 }
 
 export class RemnawaveContractError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'RemnawaveContractError';
   }
 }

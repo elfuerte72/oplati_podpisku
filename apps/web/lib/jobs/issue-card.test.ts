@@ -26,10 +26,14 @@ const h = vi.hoisted(() => {
   // что экспортит мок '../pay-space/index.ts' ниже.
   class PaySpaceApiError extends Error {
     code: string;
-    constructor(opts: { code: string; message: string }) {
+    httpStatus: number;
+    constructor(opts: { code: string; message: string; httpStatus?: number }) {
       super(opts.message);
       this.name = 'PaySpaceApiError';
       this.code = opts.code;
+      // 400 по умолчанию: доменный отказ провайдера. Транспортные сбои (429/5xx)
+      // тесты задают явно — от статуса зависит, идлить карту или нет.
+      this.httpStatus = opts.httpStatus ?? 400;
     }
   }
   return {
@@ -532,5 +536,50 @@ describe('issueCard', () => {
       expect.anything(),
       expect.objectContaining({ toStatus: 'completed' }),
     );
+  });
+
+  it.each([429, 500, 503])(
+    'сбой инфраструктуры провайдера (%i без доменного кода) НЕ уводит карту в idle',
+    async (httpStatus) => {
+      // 429/5xx после ретраев — это «провайдер недоступен», а не «карта мертва».
+      // Уведя её в idle, мы лишали клиента реюза и дописывали ему $4 за выпуск
+      // новой карты на следующем заказе — а новую выпускали бы ровно в тот
+      // момент, когда провайдер и так не отвечает (аудит 2026-08-10).
+      h.topupMock.mockRejectedValue(
+        new h.PaySpaceApiError({ code: `HTTP_${httpStatus}`, message: 'upstream', httpStatus }),
+      );
+
+      await issueCard('order-1');
+
+      expect(db.markIdle).not.toHaveBeenCalled();
+      expect(h.createCardMock).not.toHaveBeenCalled();
+      expect(db.transitionOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ toStatus: 'failed' }),
+      );
+    },
+  );
+
+  it('доменный код при HTTP 500 — всё равно отказ по существу: карта в idle', async () => {
+    // Иначе мёртвая карта осталась бы активной навсегда (`markIdle` — её
+    // единственный выход из реюза), и КАЖДЫЙ следующий заказ клиента падал бы
+    // одинаково до конца срока жизни карты (ревью 2026-08-11).
+    h.topupMock.mockRejectedValue(
+      new h.PaySpaceApiError({ code: 'topup_failed', message: 'rejected', httpStatus: 500 }),
+    );
+    h.createCardMock.mockResolvedValue({
+      cardId: 'pc-new',
+      panMasked: '****1234',
+      pan: '4111111111111234',
+      expMonth: 12,
+      expYear: 2030,
+      cvc: '123',
+      balanceUsdCents: 2400,
+    });
+
+    await issueCard('order-1');
+
+    expect(db.markIdle).toHaveBeenCalledTimes(1);
+    expect(h.createCardMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,3 +1,4 @@
+import { isNetworkTypeError } from './client.ts';
 import { LoveAndPayApiError } from './errors.ts';
 
 /**
@@ -7,7 +8,9 @@ import { LoveAndPayApiError } from './errors.ts';
  *
  * Недоступность — это только транспорт/инфраструктура:
  *   - сетевой сбой fetch (лежит squid-прокси, DNS, соединение) — undici бросает
- *     `TypeError('fetch failed')`, клиент L&P после ретраев отдаёт его как есть;
+ *     `TypeError('fetch failed')`, а на обрыве сокета уже ПОСЛЕ заголовков —
+ *     `TypeError('terminated')`; оба ловит `isNetworkTypeError`, клиент L&P
+ *     после ретраев отдаёт их как есть;
  *   - таймаут (`AbortError` от AbortController);
  *   - 5xx/429 от самого L&P после ретраев.
  *
@@ -18,7 +21,7 @@ export function isPaymentProviderUnavailable(err: unknown): boolean {
   if (err instanceof LoveAndPayApiError) {
     return err.httpStatus >= 500 || err.httpStatus === 429;
   }
-  if (err instanceof TypeError && /fetch/i.test(err.message)) return true;
+  if (isNetworkTypeError(err)) return true;
   if (err instanceof Error && err.name === 'AbortError') return true;
   return false;
 }
