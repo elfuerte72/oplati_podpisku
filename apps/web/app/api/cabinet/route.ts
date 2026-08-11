@@ -4,10 +4,10 @@ import { z } from 'zod';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
-import { checkRateLimit } from '@/lib/ratelimit';
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
-import { resolveCabinetUser } from '@/lib/cabinet/auth';
+import { upsertCabinetUser, verifyCabinetInitData } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
 import { getReferralLinkForCabinet } from '@/lib/cabinet/referral-read';
 import {
@@ -24,8 +24,10 @@ import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
  *
  * Контракт: тело `{ action, initData, ... }`. `initData` (подпись Telegram)
  * проверяется на КАЖДЫЙ запрос — это единственная авторизация кабинета
- * (см. lib/cabinet/auth.ts). После валидации — per-identity rate-limit по
- * telegram_id, затем диспатч действия.
+ * (см. lib/cabinet/auth.ts). Порядок: разбор тела → проверка подписи (без БД) →
+ * rate-limit (по IP для отказов подписи, по telegram_id для опознанных) →
+ * upsert пользователя → диспатч действия. Ни один шаг с записью в БД не идёт
+ * раньше лимита — инвариант 9.
  *
  * Это НЕ webhook (вызывает наш же клиент), поэтому отвечаем настоящими
  * статус-кодами: 401 — плохая/протухшая подпись, 429 — rate-limit, 404 —
@@ -82,38 +84,106 @@ const requestSchema = z.discriminatedUnion('action', [
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
 
+/**
+ * 429 в формате, который РАЗБИРАЕТ клиент кабинета: поле `message` заполнено.
+ * Схемы действий (`payResultSchema`, `orderCreationResultSchema`) без него
+ * раньше не парсились, и Mini App показывал «Сеть недоступна» — то есть звал
+ * долбить кнопку ровно там, где надо переждать (ревью 2026-08-11).
+ */
+function rateLimitedResponse(): NextResponse {
+  return NextResponse.json(
+    { ok: false, error: 'rate_limited', message: RATE_LIMITED_TEXT },
+    { status: 429 },
+  );
+}
+
+/**
+ * Причины отказа подписи, ПОХОЖИЕ на подделку. Только они кормят IP-бакет.
+ *
+ * `expired` сюда не входит осознанно: протухшая `initData` — штатный конец
+ * жизни сессии (TTL 24 ч), у живого клиента это происходит само. Считать её
+ * атакой значит подменять понятный текст «открой кабинет заново из бота»
+ * бесполезным «подожди минутку» — и делать это сразу всем, кто сидит за общим
+ * адресом (CGNAT, наш же VPN). `misconfigured` тоже не входит: это НАША
+ * авария конфига (нет `TELEGRAM_BOT_TOKEN`), 500 не должен прятаться за 429.
+ */
+const FORGED_SIGNATURE_REASONS = new Set([
+  'bad_signature',
+  'malformed',
+  'missing_hash',
+  'missing_user',
+]);
+
+/**
+ * 400 на нераспознанное тело + расход IP-бакета отказов.
+ *
+ * Наш клиент таких тел не шлёт вовсе, поэтому поток мусора — это чужой скрипт.
+ * Без расхода бакета он оставался бы САМЫМ дешёвым способом дёргать роут:
+ * разбор тела идёт до проверки подписи, и мимо `cabinet-auth` он проходил
+ * целиком (ревью 2026-08-11).
+ */
+async function badRequest(req: Request, error: 'invalid_json' | 'invalid_body'): Promise<NextResponse> {
+  const rl = await checkRateLimit('cabinet-auth', getClientIp(req));
+  if (!rl.allowed) {
+    log.warn({ event: 'cabinet.auth_flood', reason: error });
+    return rateLimitedResponse();
+  }
+  return NextResponse.json({ ok: false, error }, { status: 400 });
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   let raw: unknown;
   try {
     raw = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
+    return badRequest(req, 'invalid_json');
   }
 
   const parsed = requestSchema.safeParse(raw);
   if (!parsed.success) {
-    return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
+    return badRequest(req, 'invalid_body');
   }
   const body = parsed.data;
 
-  // 1. Авторизация: проверка подписи initData + резолв userId.
-  const auth = await resolveCabinetUser(body.initData);
+  // 1. Подпись Telegram — ЧИСТАЯ проверка, без единого запроса в БД.
+  const verified = verifyCabinetInitData(body.initData);
+  if (!verified.ok) {
+    // Барьер для НЕаутентифицированного потока (инвариант 9, аудит 2026-08-10):
+    // считаем ТОЛЬКО похожие на подделку отказы и только по IP. Успешные
+    // запросы бакет не трогают намеренно — на роуте, где каждый запрос
+    // криптографически опознан, общий IP-ключ резал бы живых плательщиков за
+    // чужой флуд: за CGNAT мобильных операторов и за собственным VPN Оплатишки
+    // все сидят под одним адресом. Тот же приём, что у `alert-webhook-auth`.
+    if (FORGED_SIGNATURE_REASONS.has(verified.error)) {
+      const authRl = await checkRateLimit('cabinet-auth', getClientIp(req));
+      if (!authRl.allowed) {
+        log.warn({ event: 'cabinet.auth_flood', action: body.action, reason: verified.error });
+        return rateLimitedResponse();
+      }
+    }
+    return NextResponse.json({ ok: false, error: verified.error }, { status: verified.status });
+  }
+  const { telegramId } = verified.identity;
+
+  // 2. Per-identity rate-limit по подтверждённому telegram_id — ДО upsert'а
+  //    (аудит 2026-08-10). Раньше он стоял после `resolveCabinetUser`, то есть
+  //    держатель одной валидной initData оплачивал записью в `users` и
+  //    реферальным захватом каждый свой запрос, сколько бы их ни было. Бакет
+  //    свой, не общий с ботом: просмотр кабинета не должен выедать лимит бота.
+  const rl = await checkRateLimit('cabinet', telegramId);
+  if (!rl.allowed) {
+    log.warn({ event: 'cabinet.rate_limited', action: body.action });
+    return rateLimitedResponse();
+  }
+
+  // 3. Только теперь — запись: upsert `users` + реферальный захват.
+  const auth = await upsertCabinetUser(verified.identity);
   if (!auth.ok) {
     return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   }
-  const { userId, telegramId } = auth.user;
+  const { userId } = auth.user;
 
-  // 2. Per-identity rate-limit по telegram_id (как в боте). Fail-open без Upstash.
-  const rl = await checkRateLimit('telegram', telegramId);
-  if (!rl.allowed) {
-    log.warn({ event: 'cabinet.rate_limited', action: body.action });
-    return NextResponse.json(
-      { ok: false, error: 'rate_limited', text: RATE_LIMITED_TEXT },
-      { status: 429 },
-    );
-  }
-
-  // 3. Диспатч действия.
+  // 4. Диспатч действия.
   try {
     switch (body.action) {
       case 'snapshot': {

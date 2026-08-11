@@ -92,11 +92,18 @@ export async function POST(req: Request): Promise<NextResponse> {
       continue;
     }
     // Канал берём из словаря, а не из тела: клиент не решает, чем он является.
+    // Единственное исключение — события, общие для сайта и Mini App
+    // (`pay_link_click`): там уточнение «я из Mini App» принимаем, но ТОЛЬКО
+    // подтверждённое подписью Telegram. Без неё заявка понижается до словарного
+    // канала — иначе curl с cookie сайта дорисовывал бы себе долю Mini App в
+    // отчёте, а роут в собственной шапке обещает не верить телу про личность
+    // (аудит 2026-08-10).
     const spec = ANALYTICS_EVENTS[event.name];
+    const miniAppClaimVerified = event.channel === 'miniapp' && telegramId !== null;
     rows.push({
       eventKey: event.eventKey,
       name: event.name,
-      channel: event.channel === 'miniapp' && spec.channel === 'web' ? 'miniapp' : spec.channel,
+      channel: miniAppClaimVerified && spec.channel === 'web' ? 'miniapp' : spec.channel,
       origin: 'client',
       webSessionId: webSessionId ?? null,
       telegramId: telegramId ?? null,
