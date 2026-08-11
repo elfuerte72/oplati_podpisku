@@ -20,6 +20,18 @@ const h = vi.hoisted(() => ({
     usage: { input_tokens: 1, output_tokens: 1 },
   })),
   appendMock: vi.fn(async () => ({ id: 'm1' })),
+  recordUsage: vi.fn(async (..._args: unknown[]) => undefined),
+  AgentLoopError: class AgentLoopError extends Error {
+    usage: unknown;
+    reason = 'api_error';
+    toolCalls: { name: string; isError: boolean }[];
+    constructor(usage: unknown, toolCalls: { name: string; isError: boolean }[] = []) {
+      super('loop failed');
+      this.name = 'AgentLoopError';
+      this.usage = usage;
+      this.toolCalls = toolCalls;
+    }
+  },
 }));
 
 vi.mock('@/lib/env.server', () => ({ serverEnv: h.env }));
@@ -33,6 +45,9 @@ vi.mock('@oplati/db', () => ({
 }));
 
 vi.mock('@oplati/agent', () => ({
+  // Реальный класс роут использует как ЗНАЧЕНИЕ (`err instanceof`): мок без
+  // него оставлял бы веб-половину учёта usage непроверенной (ревью 2026-08-11).
+  AgentLoopError: h.AgentLoopError,
   classifyMessage: h.classifyMock,
   runAgent: h.runAgentMock,
   runAgentNoTools: h.runAgentNoToolsMock,
@@ -42,7 +57,7 @@ vi.mock('@/lib/ai/budget', () => ({
   BUDGET_EXCEEDED_TEXT: 'budget-exceeded',
   isAiBudgetExceeded: vi.fn(async () => false),
   mergeUsage: (_a: unknown, b: unknown) => b,
-  recordAgentUsage: vi.fn(async () => {}),
+  recordAgentUsage: h.recordUsage,
 }));
 
 vi.mock('@/lib/ratelimit', () => ({
@@ -107,5 +122,32 @@ describe('POST /api/chat — флаг WEB_AI_ENABLED', () => {
     expect(body.ok).toBe(true);
     expect(body.text).toBe('ответ агента');
     expect(h.runAgentMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Дневной токен-бюджет считается по usage, который отдаёт агент. При `throw` он
+ * терялся целиком — самые дорогие запросы записывались как ноль токенов (аудит
+ * 2026-08-10, HIGH). Веб-половина этого фикса до ревью не проверялась вовсе:
+ * мок `@oplati/agent` не отдавал класс ошибки.
+ */
+describe('POST /api/chat — сбой агента', () => {
+  beforeEach(() => {
+    h.env.WEB_AI_ENABLED = true;
+    h.recordUsage.mockClear();
+    h.appendMock.mockClear();
+    h.runAgentMock.mockClear();
+  });
+
+  it('потраченные до сбоя токены попадают в бюджет', async () => {
+    h.runAgentMock.mockRejectedValueOnce(
+      new h.AgentLoopError({ input_tokens: 700, output_tokens: 90 }),
+    );
+
+    const res = await POST(makeRequest({ message: 'привет' }));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ ok: false, error: 'ai_unavailable' });
+    expect(h.recordUsage).toHaveBeenCalledWith({ input_tokens: 700, output_tokens: 90 });
   });
 });

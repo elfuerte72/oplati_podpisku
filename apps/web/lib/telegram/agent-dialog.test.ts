@@ -14,10 +14,23 @@ const h = vi.hoisted(() => ({
   })),
   classify: vi.fn(async () => ({ route: 'agent' as const, usage: null })),
   budgetExceeded: vi.fn(async () => false),
+  AgentLoopError: class AgentLoopError extends Error {
+    usage: unknown;
+    reason = 'api_error';
+    toolCalls: { name: string; isError: boolean; output?: unknown }[];
+    constructor(usage: unknown, toolCalls: { name: string; isError: boolean; output?: unknown }[] = []) {
+      super('loop failed');
+      this.name = 'AgentLoopError';
+      this.usage = usage;
+      this.toolCalls = toolCalls;
+    }
+  },
+  record: vi.fn(async (..._args: unknown[]) => undefined),
   append: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 
 vi.mock('@oplati/agent', () => ({
+  AgentLoopError: h.AgentLoopError,
   classifyMessage: h.classify,
   runAgent: h.runAgent,
   runAgentNoTools: h.runAgent,
@@ -29,8 +42,8 @@ vi.mock('@oplati/db', () => ({
 vi.mock('@/lib/ai/budget', () => ({
   BUDGET_EXCEEDED_TEXT: 'бюджет',
   isAiBudgetExceeded: h.budgetExceeded,
-  mergeUsage: () => null,
-  recordAgentUsage: vi.fn(async () => {}),
+  mergeUsage: (_a: unknown, b: unknown) => b,
+  recordAgentUsage: h.record,
 }));
 vi.mock('@/lib/tool-handlers', () => ({ createToolHandlers: () => ({}) }));
 vi.mock('./send', () => ({
@@ -93,5 +106,51 @@ describe('runAgentDialog без ключа Anthropic', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-test';
     await runAgentDialog(update, 555, 'привет', null);
     expect(h.runAgent).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * Дневной токен-бюджет считается по usage, который отдаёт агент. При `throw` он
+ * терялся целиком — самые дорогие запросы записывались как ноль (аудит
+ * 2026-08-10, HIGH).
+ */
+describe('учёт usage при сбое tool-loop', () => {
+  beforeEach(() => {
+    h.send.mockClear();
+    h.runAgent.mockClear();
+    h.record.mockClear();
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+  });
+
+  it('потраченные до сбоя токены попадают в бюджет', async () => {
+    h.runAgent.mockRejectedValueOnce(
+      new h.AgentLoopError({ input_tokens: 900, output_tokens: 120 }),
+    );
+
+    await runAgentDialog(update, 555, 'привет', null);
+
+    expect(h.record).toHaveBeenCalledWith({ input_tokens: 900, output_tokens: 120 });
+    expect(h.send).toHaveBeenCalledOnce();
+  });
+
+  it('обычная ошибка без usage бюджет не трогает', async () => {
+    h.runAgent.mockRejectedValueOnce(new Error('boom'));
+    await runAgentDialog(update, 555, 'привет', null);
+    expect(h.record).not.toHaveBeenCalled();
+  });
+
+  it('выставленный до сбоя счёт доезжает до клиента ссылкой', async () => {
+    // Иначе клиент получает «AI недоступен», пока против его заказа висит
+    // живой инвойс, который протухнет через час (ревью 2026-08-11).
+    h.runAgent.mockRejectedValueOnce(
+      new h.AgentLoopError({ input_tokens: 1, output_tokens: 1 }, [
+        { name: 'confirm_order', isError: false, output: { paymentUrl: 'https://pay.test/inv-1' } },
+      ]),
+    );
+
+    await runAgentDialog(update, 555, 'оплати', null);
+
+    const texts = h.send.mock.calls.map((c) => String(c[1] ?? ''));
+    expect(texts.some((t) => t.includes('https://pay.test/inv-1'))).toBe(true);
   });
 });

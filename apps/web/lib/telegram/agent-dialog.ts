@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/nextjs';
 
 import { getDb, loadRecentMessages, type MessageHistoryItem } from '@oplati/db';
 import {
+  AgentLoopError,
   classifyMessage,
   runAgent,
   runAgentNoTools,
@@ -155,7 +156,7 @@ export async function runAgentDialog(
         routedAs = route.route;
         // usage роутера уйдёт в счётчик как result.usage — не учитывать дважды
         routerUsage = null;
-        return { text: route.cannedText, usage: route.usage, toolCalls: [] };
+        return { text: route.cannedText, usage: route.usage, toolCalls: [], incomplete: false };
       }
 
       if (ctx) {
@@ -181,6 +182,17 @@ export async function runAgentDialog(
       err,
     });
     Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
+    // Токены, потраченные до сбоя, уже списаны провайдером — записываем их в
+    // дневной бюджет (аудит 2026-08-10). Иначе самые дорогие запросы (несколько
+    // итераций tool-loop, упавших на последней) стоили бюджету ноль, и защита
+    // расходов слепла ровно на том, от чего защищает.
+    if (err instanceof AgentLoopError) {
+      await recordAgentUsage(mergeUsage(routerUsage, err.usage));
+      // Что цикл успел сделать до сбоя — это факты о деньгах: среди них может
+      // быть созданный заказ или выставленный счёт. Молча выбросить их нельзя,
+      // иначе против заказа клиента висит инвойс, о котором никто не знает.
+      await reportAbandonedToolCalls(err, update.update_id, chatId);
+    }
     await replyAndRemember(update, chatId, ctx, AI_DOWN_TEXT, 'ai_unavailable');
     return;
   }
@@ -236,7 +248,12 @@ export async function runAgentDialog(
 
   // Если последним tool'ом был успешный propose_order — приклеиваем к ответу
   // кнопки «Подтвердить»/«Отменить» вместо текстового вопроса.
-  const proposeResult = extractProposeOrderResult(result.toolCalls);
+  //
+  // ⚠️ Только к ЗАВЕРШЁННОМУ ответу. Когда модель оборвалась на `max_tokens`
+  // или отказалась, текст служебный и суммы в нём нет — кнопка «Подтвердить»
+  // под таким сообщением выставляет реальный счёт на цену, которую клиент не
+  // видел (ревью 2026-08-11).
+  const proposeResult = result.incomplete ? null : extractProposeOrderResult(result.toolCalls);
   const chunks = splitForTelegram(replyText, TELEGRAM_MESSAGE_LIMIT);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i] ?? '';
@@ -247,6 +264,63 @@ export async function runAgentDialog(
       await sendSafely(chatId, chunk, update.update_id);
     }
   }
+}
+
+/**
+ * Сообщает наружу о побочных действиях, оставшихся после сбоя tool-loop.
+ *
+ * Успешный `confirm_order` означает выставленный счёт с живой платёжной
+ * ссылкой: клиенту она нужна, иначе он получит «AI недоступен», а через час
+ * инвойс протухнет. Успешный `propose_order` (без confirm) денег не двигает —
+ * его достаточно зафиксировать в наблюдаемости.
+ */
+async function reportAbandonedToolCalls(
+  err: AgentLoopError,
+  updateId: number,
+  chatId: number,
+): Promise<void> {
+  const succeeded = err.toolCalls.filter((c) => !c.isError).map((c) => c.name);
+  if (succeeded.length === 0) return;
+
+  log.error({
+    event: 'telegram.agent.tool_calls_abandoned',
+    updateId,
+    chatId,
+    reason: err.reason,
+    toolCalls: succeeded,
+  });
+  Sentry.captureMessage('Agent loop failed after side effects', {
+    level: 'error',
+    tags: { source: 'telegram.bot' },
+    extra: { updateId, reason: err.reason, toolCalls: succeeded },
+  });
+
+  const confirmed = extractConfirmOrderResult(err.toolCalls);
+  if (confirmed) {
+    await sendSafely(
+      chatId,
+      `Счёт уже выставлен — ссылка на оплату: ${confirmed.paymentUrl}`,
+      updateId,
+    );
+  }
+}
+
+/** Последний успешный `confirm_order` из лога вызовов. */
+function extractConfirmOrderResult(toolCalls: ToolCallLog[]): { paymentUrl: string } | null {
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (!call || call.name !== 'confirm_order' || call.isError) continue;
+    const out = call.output;
+    if (
+      typeof out === 'object' &&
+      out !== null &&
+      'paymentUrl' in out &&
+      typeof (out as { paymentUrl: unknown }).paymentUrl === 'string'
+    ) {
+      return { paymentUrl: (out as { paymentUrl: string }).paymentUrl };
+    }
+  }
+  return null;
 }
 
 /**
