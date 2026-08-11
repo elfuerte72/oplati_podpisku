@@ -59,6 +59,9 @@ import { runAgentDialog } from './agent-dialog';
 
 const update = { update_id: 1, message: { message_id: 1, chat: { id: 555, type: 'private' as const } } };
 
+/** Ссылка оплаты из выставленного счёта — та, что обязана доехать до клиента. */
+const PAYMENT_LINK = 'https://pay.test/inv-1';
+
 /**
  * Отсутствие `ANTHROPIC_API_KEY` выключало ВЕСЬ бот в роуте (аудит 2026-08-10).
  * Гейт переехал сюда, на AI-путь: кнопочные и платёжные флоу к Anthropic
@@ -144,13 +147,17 @@ describe('учёт usage при сбое tool-loop', () => {
     // живой инвойс, который протухнет через час (ревью 2026-08-11).
     h.runAgent.mockRejectedValueOnce(
       new h.AgentLoopError({ input_tokens: 1, output_tokens: 1 }, [
-        { name: 'confirm_order', isError: false, output: { paymentUrl: 'https://pay.test/inv-1' } },
+        { name: 'confirm_order', isError: false, output: { paymentUrl: PAYMENT_LINK } },
       ]),
     );
 
     await runAgentDialog(update, 555, 'оплати', null);
 
-    const texts = h.send.mock.calls.map((c) => String(c[1] ?? ''));
-    expect(texts.some((t) => t.includes('https://pay.test/inv-1'))).toBe(true);
+    // `toContain` по склеенному тексту, а не `t.includes(<url>)`: CodeQL
+    // считает второе «неполной санитизацией URL» (js/incomplete-url-substring-
+    // sanitization) и роняет чек. Здесь это ассерт, а не проверка адреса, но
+    // спорить с правилом дороже, чем написать то же самое иначе.
+    const texts = h.send.mock.calls.map((c) => String(c[1] ?? '')).join('\n');
+    expect(texts).toContain(PAYMENT_LINK);
   });
 });
