@@ -16,10 +16,13 @@ import { proposeFromCatalog } from '@/lib/catalog/propose';
 import { formatExpires } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import { currentBuyerFeePercent } from '@/lib/payments/gateway';
+import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   aboveMaxAmountText,
   confirmOrder,
   OrderAboveMaxAmountError,
+  OrderExpiredError,
+  PaymentProviderUnavailableError,
 } from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
@@ -375,9 +378,29 @@ export async function handleOrderActionCallback(
         await sendSafely(chatId, aboveMaxAmountText(err.maxAmountRub), updateId);
         return;
       }
+      // Фиксация цены протухла (H-2): заказ захоронен сервером, повтор
+      // бессмысленен. Раньше этот кейс попадал в generic-ветку ниже и клиент
+      // ждал оператора вместо того, чтобы оформить заказ заново (ревью 2026-08-12).
+      if (err instanceof OrderExpiredError) {
+        await sendSafely(
+          chatId,
+          'Срок фиксации цены истёк — оформи заказ заново, сумма пересчитается по свежему курсу.',
+          updateId,
+        );
+        return;
+      }
+      // Транспорт до шлюза лежит: заказ жив, помогает именно повтор позже.
+      // Веб и кабинет говорят это же одним общим текстом.
+      if (err instanceof PaymentProviderUnavailableError) {
+        await sendSafely(chatId, PROVIDER_UNAVAILABLE_TEXT, updateId);
+        return;
+      }
+      // Generic-ветка. Оператора здесь никто не зовёт (в коде только Sentry),
+      // поэтому и обещать его нельзя — обещание контакта, которого не будет,
+      // хуже честного «попробуй ещё раз».
       await sendSafely(
         chatId,
-        'Не получилось создать счёт прямо сейчас — техническая проблема на стороне платёжного провайдера. Я уже подключил оператора, он напишет в ближайшее время.',
+        'Не получилось создать счёт прямо сейчас — техническая проблема. Попробуй ещё раз через минуту, а если не выйдет — напиши /support.',
         updateId,
       );
       return;
