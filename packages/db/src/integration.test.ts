@@ -99,6 +99,8 @@ function normalizeExecute<T extends object>(target: T): T {
 }
 
 let db: DB;
+/** Сырой клиент — нужен для запросов ПОД РОЛЬЮ (`SET ROLE`), мимо drizzle. */
+let pg: PGlite;
 let seq = 0;
 
 function firstOf<T>(rows: readonly T[], what: string): T {
@@ -171,6 +173,7 @@ beforeAll(async () => {
   for (const file of files) {
     await client.exec(readFileSync(join(dir, file), 'utf8'));
   }
+  pg = client;
   const raw = drizzle(client, { schema });
   // У PGlite-драйвера другой HKT в типах, но runtime-API совпадает с
   // postgres-js — обоснованное сужение для тестовой обвязки.
@@ -1646,5 +1649,132 @@ describe('analytics_timeline / analytics_user_path', () => {
     expect(firstOf(funnel, 'step 1').name).toBe('page_view');
     // Привязка обязательна только для веб-пути — как шаг она ломала монотонность.
     expect(funnel.map((r) => r.name)).not.toContain('telegram_linked');
+  });
+});
+
+/**
+ * Инварианты 7 и 8 CLAUDE.md — ПОВЕДЕНЧЕСКИ, под реальными ролями.
+ *
+ * До 2026-08-12 ни один тест не работал под `anon`: RLS проверялся только тем,
+ * что миграции применились. То есть снятая политика или лишний GRANT (одна
+ * строка в новой миграции) оставляли CI зелёным, а браузерный ключ получал
+ * доступ к клиентским данным. Здесь мы реально переключаем роль.
+ *
+ * Проверка сформулирована как «доступа НЕТ», без различения способа отказа:
+ * при включённом RLS без политик Postgres отвечает либо ошибкой прав (нет
+ * GRANT), либо пустой выборкой (GRANT есть, политики нет) — для инварианта
+ * важно ровно то, что данные не видны.
+ */
+describe('RLS: инварианты 7 и 8 под ролью anon', () => {
+  type RoleResult = { rows: unknown[] } | { error: string };
+
+  async function asRole(role: string, query: string): Promise<RoleResult> {
+    await pg.exec(`SET ROLE ${role}`);
+    try {
+      const res = await pg.query(query);
+      return { rows: res.rows };
+    } catch (err) {
+      return { error: (err as Error).message };
+    } finally {
+      await pg.exec('RESET ROLE');
+    }
+  }
+
+  function denied(res: RoleResult): boolean {
+    return 'error' in res || res.rows.length === 0;
+  }
+
+  const USER_TABLES = [
+    'users',
+    'orders',
+    'order_events',
+    'payments',
+    'cards',
+    'messages',
+    'conversations',
+    'link_tokens',
+    'referral_partners',
+    'referral_accruals',
+    'referral_payouts',
+    'vpn_subscriptions',
+  ];
+
+  beforeAll(async () => {
+    // Каталог: одна активная запись и одна скрытая.
+    await db.execute(sql`
+      INSERT INTO services (slug, name, category, is_active)
+      VALUES ('rls-active', 'Видимый', 'streaming', true),
+             ('rls-hidden', 'Скрытый', 'streaming', false)
+      ON CONFLICT (slug) DO NOTHING
+    `);
+    await makeUser({ telegramId: 'tg-rls-probe' });
+  });
+
+  it('инвариант 7: anon читает ТОЛЬКО активный каталог', async () => {
+    const res = await asRole('anon', `SELECT slug FROM services ORDER BY slug`);
+    expect('error' in res).toBe(false);
+    const slugs = (res as { rows: { slug: string }[] }).rows.map((r) => r.slug);
+    expect(slugs).toContain('rls-active');
+    expect(slugs).not.toContain('rls-hidden');
+  });
+
+  it('инвариант 7: каталог не public-write — INSERT/UPDATE/DELETE под anon отбиты', async () => {
+    const insert = await asRole(
+      'anon',
+      `INSERT INTO services (slug, name, category, is_active) VALUES ('rls-evil','Взлом','streaming',true)`,
+    );
+    const update = await asRole('anon', `UPDATE services SET name = 'Подмена' WHERE slug = 'rls-active'`);
+    const del = await asRole('anon', `DELETE FROM services WHERE slug = 'rls-active'`);
+    expect('error' in insert).toBe(true);
+    expect('error' in update).toBe(true);
+    expect('error' in del).toBe(true);
+
+    // И ничего не изменилось на самом деле.
+    const rows = await db.execute<{ name: string }>(
+      sql`SELECT name FROM services WHERE slug = 'rls-active'`,
+    );
+    expect(firstOf(rows, 'services row').name).toBe('Видимый');
+    const evil = await db.execute(sql`SELECT 1 FROM services WHERE slug = 'rls-evil'`);
+    expect(evil).toHaveLength(0);
+  });
+
+  it.each(USER_TABLES)('инвариант 8: anon не читает %s', async (table) => {
+    expect(denied(await asRole('anon', `SELECT * FROM ${table} LIMIT 1`))).toBe(true);
+  });
+
+  it.each(USER_TABLES)('инвариант 8: authenticated тоже не читает %s', async (table) => {
+    // `authenticated` — та же браузерная поверхность (Supabase-совместимость):
+    // позитивных политик под неё нет, поэтому доступа быть не должно.
+    expect(denied(await asRole('authenticated', `SELECT * FROM ${table} LIMIT 1`))).toBe(true);
+  });
+
+  it('anon не пишет в user-таблицы', async () => {
+    const ins = await asRole('anon', `INSERT INTO users (telegram_id) VALUES ('tg-rls-evil')`);
+    expect('error' in ins).toBe(true);
+    const rows = await db.execute(sql`SELECT 1 FROM users WHERE telegram_id = 'tg-rls-evil'`);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('у service_role есть BYPASSRLS — без него серверная роль читала бы ноль строк', async () => {
+    // Табличных GRANT'ов этой роли наш контур не выдаёт (сервер ходит под
+    // владельцем БД), поэтому проверяем именно атрибут: он — причина, по
+    // которой deny-by-default RLS не гасит серверный доступ (E-9).
+    const rows = await db.execute<{ rolbypassrls: boolean }>(
+      sql`SELECT rolbypassrls FROM pg_roles WHERE rolname = 'service_role'`,
+    );
+    expect(firstOf(rows, 'service_role').rolbypassrls).toBe(true);
+  });
+
+  it('anon и authenticated под RLS — BYPASSRLS у них быть не должно', async () => {
+    const rows = await db.execute<{ rolname: string; rolbypassrls: boolean }>(
+      sql`SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname IN ('anon','authenticated')`,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.rolbypassrls === false)).toBe(true);
+  });
+
+  it('серверное подключение видит и скрытый каталог (seed идёт мимо public-read policy)', async () => {
+    const rows = await db.execute(sql`SELECT 1 FROM services WHERE slug = 'rls-hidden'`);
+    expect(rows).toHaveLength(1);
   });
 });
