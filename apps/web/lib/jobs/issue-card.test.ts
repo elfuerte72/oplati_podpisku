@@ -41,6 +41,7 @@ const h = vi.hoisted(() => {
     createCardMock: vi.fn(),
     getCardInfoMock: vi.fn(),
     sendMessageMock: vi.fn(),
+    reverseAccrualsMock: vi.fn(async () => 0),
     PaySpaceApiError,
     paySpaceConfigured: { value: true },
     dbState: {
@@ -110,7 +111,13 @@ vi.mock('@sentry/nextjs', () => ({
   captureMessage: vi.fn(),
 }));
 
+// Реферальный реверс (R-1): по контракту graceful — сам никогда не бросает.
+vi.mock('../referral/reverse.ts', () => ({
+  reverseReferralAccrualsForFailedOrder: h.reverseAccrualsMock,
+}));
+
 import * as db from '@oplati/db';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { issueCard } from './issue-card.ts';
 
 const baseOrder: OrderLike = {
@@ -268,6 +275,36 @@ describe('issueCard', () => {
 
     const texts = h.sendMessageMock.mock.calls.map((c) => String(c[1]));
     expect(texts.some((t) => t.includes('topup_order-1_card-1'))).toBe(true);
+  });
+
+  it('провал фулфилмента гасит реферальное начисление заказа (R-1)', async () => {
+    // Иначе комиссия за неисполненный заказ остаётся у партнёра навсегда:
+    // recovery её уже не досчитывает, а витрина и оборот такой заказ не видят —
+    // ledger был единственным местом, где failed продолжал приносить деньги.
+    h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+    h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+
+    await issueCard('order-1');
+
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'failed' }),
+    );
+    expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith('order-1');
+  });
+
+  it('успешный заказ начисление НЕ трогает', async () => {
+    h.topupMock.mockResolvedValue({
+      cardId: 'pc-1',
+      requestId: 'topup_order-1_card-1',
+      status: 'completed',
+      balanceUsdCents: 2000,
+    });
+    h.dbState.activeCard = activeCard;
+
+    await issueCard('order-1');
+
+    expect(reverseReferralAccrualsForFailedOrder).not.toHaveBeenCalled();
   });
 
   it('прочий статус топапа (failed) — обычная ошибка, событие topup_pending НЕ пишется', async () => {

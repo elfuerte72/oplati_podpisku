@@ -30,6 +30,7 @@ import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { getBot } from '../telegram/bot.ts';
 import {
   CARD_HOWTO_BUTTON,
@@ -529,6 +530,11 @@ async function markOrderFailed(orderId: string, reason: string, shortId?: string
       tags: { source: 'job.issue-card', step: 'mark_failed' },
     });
   }
+
+  // Реферальная комиссия за неисполненный заказ партнёру не причитается (R-1):
+  // деньги клиенту возвращаются, маржи нет. Зовётся ПОСЛЕ перехода и никогда не
+  // бросает (graceful внутри) — ledger не может помешать заказу стать failed.
+  await reverseReferralAccrualsForFailedOrder(orderId);
 
   // Прямой алерт владельцу: деньги приняты, карта не доехала — это нельзя
   // пропустить. Канал не зависит от Sentry alert rules (см. notifyOps).
