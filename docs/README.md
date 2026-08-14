@@ -19,13 +19,23 @@
 | [`CHANGELOG.md`](CHANGELOG.md) | хронология изменений и фич | нужно понять, когда и зачем что-то появилось |
 | [`incidents.md`](incidents.md) | журнал инцидентов и отложенных рисков | случился инцидент — записать сюда; или проверить, не было ли похожего |
 
+## [`agents/`](agents/) — конфигурация инженерных скиллов
+
+Читают скиллы `mattpocock-skills`, человеку открывать редко.
+
+| Файл | Что внутри |
+|---|---|
+| [`agents/issue-tracker.md`](agents/issue-tracker.md) | где скиллы заводят тикеты (`.scratch/`, в `.gitignore`) и чем это отличается от `BACKLOG.md` |
+| [`agents/triage-labels.md`](agents/triage-labels.md) | пять ролей триажа; `ready-for-agent` на денежных путях ставит только владелец |
+| [`agents/domain.md`](agents/domain.md) | что читать перед изучением кода, раскладка `CONTEXT.md` + `adr/`, правило конфликта с ADR |
+
 ## Рунбуки — операционные процедуры
 
 | Файл | Что внутри |
 |---|---|
 | [`runbooks/deploy.md`](runbooks/deploy.md) | как деплоится prod и dev, контракт deploy-вебхука Dokploy, смоук после деплоя |
 | [`runbooks/backup-restore.md`](runbooks/backup-restore.md) | бэкапы в R2, учение по восстановлению, реальное восстановление прода |
-| [`runbooks/rollback.md`](runbooks/rollback.md) | откат (код / полный на Vercel+Supabase) и порядок гашения резерва |
+| [`runbooks/rollback.md`](runbooks/rollback.md) | откат кода и порядок гашения резервов. ⚠️ ветка «полный откат на Vercel+Supabase» мертва — резервы гасятся, см. `BACKLOG.md` |
 | [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki, Sentry, Better Stack |
 | [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 | [`runbooks/server-migration.md`](runbooks/server-migration.md) | переезд контура на другой VPS (Dokploy → Dokploy): что чем переносится, порядок окна, грабли |
@@ -35,9 +45,16 @@
 
 | Файл | Что внутри |
 |---|---|
-| [`reference/remnawave-api.md`](reference/remnawave-api.md) | API панели VPN, контракт подтверждён живыми вызовами |
+| [`reference/payment-gateways.md`](reference/payment-gateways.md) | приём рублей целиком: Love&Pay и Freekassa, кто выставляет счёт, вебхуки, потолки, поведение при отказе шлюза |
+| [`reference/referral-program.md`](reference/referral-program.md) | партнёрская программа: захват реферера, ledger начислений, прогрессия статусов, выплаты (реальных денег ещё нет) |
+| [`reference/client-path.md`](reference/client-path.md) | путь клиента от первого экрана до оплаченной подписки + Mini App-кабинет |
+| [`reference/analytics.md`](reference/analytics.md) | поведенческая аналитика: словарь событий, приём, что НЕЛЬЗЯ дублировать телеметрией |
+| [`reference/testing.md`](reference/testing.md) | тестовый ландшафт: что покрыто и какой инцидент породил каждый регресс |
+| [`reference/virtual-cards.md`](reference/virtual-cards.md) | виртуальные карты PaySpace: выпуск, буфер под VAT/FX, префандинг, рециклинг |
+| [`reference/infrastructure.md`](reference/infrastructure.md) | VPS и Dokploy: стенды, панель, hardening, контракт deploy-вебхука, работа с dev-БД |
+| [`reference/remnawave-api.md`](reference/remnawave-api.md) | API панели VPN (контракт подтверждён живыми вызовами) + продуктовый флоу кнопки «VPN» |
 | [`reference/loveandpay-api-access.md`](reference/loveandpay-api-access.md) | доступ к API L&P: подтверждение домена, allowlist IP |
-| [`reference/freekassa-api.md`](reference/freekassa-api.md) | контракт Freekassa (второй шлюз рублей). ⚠️ взят из доки, живым вызовом ещё не подтверждён |
+| [`reference/freekassa-api.md`](reference/freekassa-api.md) | контракт Freekassa — **подтверждён живым платежом 2026-07-28** (ORD-ZPP17), хронология прогона внутри |
 | [`reference/env-vars.md`](reference/env-vars.md) | **все переменные окружения**: что делает каждая, обязательна ли, что будет если не задать |
 | [`reference/ai-cost-protection.md`](reference/ai-cost-protection.md) | слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов |
 | [`reference/database.html`](reference/database.html) | как работает БД. ⚠️ написано в эпоху Supabase (2026-06), общая часть верна, инфраструктурная — нет |
@@ -50,6 +67,10 @@
 
 Ключевое из архива:
 
+- `vercel-era.md` — как контур работал на Vercel и как сайт открывали из РФ через
+  реверс-прокси Timeweb. Выделено из `CLAUDE.md` 2026-08-14: оба раздела пережили
+  переезд нетронутыми и описывали несуществующую схему как действующую. Внутри —
+  таблица «тогда / сейчас» и список веток кода, которые живы, но обесточены отсутствием env;
 - `dokploy-cutover-report.md` — переезд с Vercel+Supabase на Dokploy: верификация,
   код-ревью по 5 осям, все находки со статусами, смоук-чек-лист денежного пути
   (раздел 12 — им ещё пользуются);
@@ -86,3 +107,12 @@
    осознанное решение от забытого.
 7. **Устаревшую запись удалять, а не оставлять.** Неверная документация опаснее
    отсутствующей: агент действует по ней уверенно.
+8. **`CLAUDE.md` тратит контекст на каждом ходу — это его бюджет.** Инлайн остаётся
+   то, что нужно ЛЮБОЙ работе (инварианты, гейты, «чем обернётся нарушение»);
+   подробности подсистемы, нужные только своей ветке, уезжают в `reference/` и
+   вызываются оттуда одной строкой-указателем. Проверка простая: если абзац читают
+   лишь когда трогают эту подсистему — ему место в справочнике.
+9. **Называть повторяющуюся механику одним словом.** «Зеркало» (два значения,
+   обязанные совпадать без автосверки) заменило три абзаца-объяснения и стало
+   меткой, которую видно в коде и в доках. Слово из общего языка работает лучше
+   выдуманного термина.

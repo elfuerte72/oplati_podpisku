@@ -35,3 +35,12 @@ skills-lock.json
 
 # Локальный webhook-URL Sentry-алертов (содержит секрет, не коммитить)
 .sentry-webhook.local.txt
+
+# Тикеты/спеки скиллов (mattpocock-skills, локальный трекер).
+# Репозиторий публичный, тикеты несут рабочие детали контура оплаты — наружу не пускаем.
+# Обоснование и как отменить — docs/agents/issue-tracker.md
+.scratch/
+
+# Локальные настройки Claude Code — внутри env-секреты (DOKPLOY_API_KEY и пр.).
+# Глобальный ~/.config/git/ignore их тоже ловит, но он не переезжает с репозиторием.
+.claude/settings.local.json

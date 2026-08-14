@@ -320,3 +320,12 @@ async function getVpnConfigs(subscriptionUrl: string): Promise<string[]> {
 - Один `telegramId` = один юзер панели: перед созданием всегда проверяй `by-telegram-id`.
 - Всё server-side. Токен — только в env бэкенда.
 - Инфраструктура (ноды, whitelist, цепочка) уже готова и живёт в панели — бэкенду достаточно CRUD по юзерам.
+
+---
+
+## Продуктовая часть: кнопка «VPN» в боте
+
+Перенесено из `CLAUDE.md` 2026-08-14 — выше по файлу контракт панели, здесь то, как он
+используется в боте.
+
+**кнопка «🛡 VPN» в /start-меню бота (Remnawave, 2026-07-21).** Callback `vpn` выдаёт персональную ссылку-подписку из панели `panel.mxpkn8ns.ru` (клиент `lib/remnawave/`: Bearer `REMNAWAVE_API_TOKEN` — ТОЛЬКО server-side/env, timeout 10s, без ретраев; Zod-контракт `@oplati/types` подтверждён живыми вызовами 2026-07-21, справочник — [`docs/reference/remnawave-api.md`](docs/reference/remnawave-api.md)). Один telegramId = один юзер панели: username `tg_<id>`, срок +1 календарный месяц (`addOneMonthUtc`, кламп конца месяца), squad `REMNAWAVE_SQUAD_UUID` (Default-Squad — оба сервера: Литва + «При белых списках»), трафик `REMNAWAVE_TRAFFIC_LIMIT_GB` (дефолт 200 ГБ/мес, 0 = безлимит; легаси-юзерам панели лимит подтягивается best-effort при adopt/обновлении — `syncTrafficLimit` через `PATCH /users`). Снимок — таблица `vpn_subscriptions` (миграция 0024; unique по `user_id`/`telegram_id`/`remnawave_uuid`; хранить `response.uuid`, НЕ `vlessUuid`). **Повторное нажатие возвращает ту же ссылку** (идемпотентность: БД → `by-telegram-id` (200+пустой массив = нет юзера, не 404) → создание). **«Обновить ссылку»** (callback `vpn:refresh`) — `POST …/actions/revoke`: `shortUuid`/ссылка меняются (старая умирает сразу), `expireAt` осознанно НЕ продлевается (иначе кнопка = бесплатное продление); юзера панели удалили вручную (404) → выпуск заново. Сообщение — HTML (`<code>`-ссылка копируется тапом) + url-кнопки сторов Happ + «Обновить ссылку»; перед КАЖДЫМ сообщением со ссылкой — альбом скриншотов `public/vpn/happ-step-*.jpg` (решение владельца 2026-07-21; с текущего деплоя, сбой альбома не блокирует выдачу). Не задан токен / лежит БД или панель → понятный текст, не молчание (флоу `lib/telegram/vpn-flow.ts`, тексты в templates.ts). Продление по оплате (L&P) и отключение по истечению панель делает сама по `expireAt` — интеграция с оплатой не реализована (следующий этап).
