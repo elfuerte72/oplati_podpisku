@@ -2,17 +2,12 @@
 version: 0.1.1
 name: oplatishka-design
 description: >
-  Design system and brand rules for the "Оплатишка" website — a comic-companion
-  chat UI (pop-art / halftone, living mascot host). Use when building or styling
-  ANY part of apps/web: chat bubbles, mascot states, service cards, order panel,
-  the "ОПЛАЧЕНО" stamp, quick-reply chips, buttons, layout, themes, colors,
-  typography, motion; OR when generating on-brand assets (mascot poses/emotions,
-  backgrounds, card frames, favicon/OG) via Higgsfield. Triggers on: "стиль сайта",
-  "дизайн чата", "брендовые цвета/токены", "оживить маскота", "комикс-карточки",
-  "сгенерировать ассет Оплатишки", "halftone", "speech bubble". NOT for: backend
-  contracts / anti-abuse (see apps/web/app/api/chat/ + CLAUDE.md), AI prompt
-  behavior (packages/agent/src/prompts.ts), or generic Higgsfield jobs unrelated
-  to this brand.
+  Дизайн-система и брендовые правила сайта «Оплатишка» — комикс-компаньон
+  (pop-art, halftone, живой маскот). Use when: стилизуешь ЛЮБУЮ часть apps/web
+  (чат, карточки сервисов, панель заказа, штамп «ОПЛАЧЕНО», кнопки, темы,
+  типографика, движение) ИЛИ генерируешь брендовые ассеты через Higgsfield.
+  NOT for: контракты и анти-абьюз бэкенда, поведение AI (prompts.ts),
+  Higgsfield-задачи вне этого бренда.
 argument-hint: "[what to design or generate] (e.g. 'order card', 'mascot thinking pose')"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
