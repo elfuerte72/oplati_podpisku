@@ -40,6 +40,7 @@ import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
   reverseAccrualsForOrder,
+  findOrdersWithUnreversedAccruals,
 } from './repositories/referral-accruals.ts';
 import {
   createReferralPayout,
@@ -897,6 +898,50 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     await reverseAccrualsForOrder(db, order.id);
 
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(300);
+  });
+});
+
+describe('findOrdersWithUnreversedAccruals (бэкстоп сверки ledger, R-1.7)', () => {
+  async function makeAccruedOrder(status: 'paid' | 'failed' | 'completed') {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+    // Статус выставляем напрямую: путь до failed идёт через фулфилмент, а тесту
+    // важно лишь состояние, в котором заказ застаёт крон.
+    await db.execute(sql`UPDATE orders SET status = ${status} WHERE id = ${order.id}`);
+    return { partner, order };
+  }
+
+  it('находит failed-заказ с непогашенным начислением', async () => {
+    const { order } = await makeAccruedOrder('failed');
+
+    const found = await findOrdersWithUnreversedAccruals(db, 50);
+
+    expect(found).toContain(order.id);
+  });
+
+  it('после отмены заказ из выборки уходит — крон не крутит его вечно', async () => {
+    const { order } = await makeAccruedOrder('failed');
+    await reverseAccrualsForOrder(db, order.id);
+
+    expect(await findOrdersWithUnreversedAccruals(db, 50)).not.toContain(order.id);
+  });
+
+  it('живые заказы не трогает: paid и completed остаются с начислениями', async () => {
+    const paid = await makeAccruedOrder('paid');
+    const completed = await makeAccruedOrder('completed');
+
+    const found = await findOrdersWithUnreversedAccruals(db, 50);
+
+    expect(found).not.toContain(paid.order.id);
+    expect(found).not.toContain(completed.order.id);
   });
 });
 

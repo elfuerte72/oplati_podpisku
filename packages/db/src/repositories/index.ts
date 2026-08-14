@@ -72,6 +72,7 @@ export {
   getReferralBalanceUsdCents,
   orderHasAccruals,
   reverseAccrualsForOrder,
+  findOrdersWithUnreversedAccruals,
   findOrdersMissingReferralAccruals,
   type PartnerProfile,
   type CommissionAccrualInsert,

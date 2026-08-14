@@ -2,11 +2,16 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { findOrdersMissingReferralAccruals, getDb } from '@oplati/db';
+import {
+  findOrdersMissingReferralAccruals,
+  findOrdersWithUnreversedAccruals,
+  getDb,
+} from '@oplati/db';
 
 import { serverEnv } from '../env.ts';
 import { childLogger } from '../logger.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 
 const log = childLogger('cron.referral-recovery');
 
@@ -24,10 +29,11 @@ export async function recoverReferralAccruals(): Promise<{
   scanned: number;
   processed: number;
   errors: number;
+  reversed: number;
 }> {
   if (!serverEnv.REFERRAL_ENABLED) {
     log.info({ event: 'cron.referral_recovery.skipped_disabled' });
-    return { scanned: 0, processed: 0, errors: 0 };
+    return { scanned: 0, processed: 0, errors: 0, reversed: 0 };
   }
 
   log.info({ event: 'cron.referral_recovery.start' });
@@ -49,6 +55,35 @@ export async function recoverReferralAccruals(): Promise<{
     }
   }
 
-  log.info({ event: 'cron.referral_recovery.done', scanned: orders.length, processed, errors });
-  return { scanned: orders.length, processed, errors };
+  // Вторая половина сверки (R-1.7): расхождение в обратную сторону — заказ
+  // провалился, а начисление по нему живо. Inline-вызовов отмены несколько
+  // (фулфилмент, недоплата у обоих шлюзов), и забытая точка перехода в `failed`
+  // означала бы молча завышенный баланс партнёра — тот же баг, только в новом
+  // месте. Считается отдельно от `processed`: это не добор, а гашение.
+  let reversed = 0;
+  const stale = await findOrdersWithUnreversedAccruals(db, RECOVERY_LIMIT);
+  for (const orderId of stale) {
+    try {
+      // Обёртка graceful внутри, но один битый заказ не должен валить прогон.
+      reversed += await reverseReferralAccrualsForFailedOrder(orderId);
+    } catch (err) {
+      errors++;
+      log.error({ event: 'cron.referral_recovery.reverse_error', orderId, err });
+      Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
+    }
+  }
+  if (stale.length > 0) {
+    // Не рутина: в норме inline-путь гасит сам, и сюда попадает только то, что
+    // он пропустил. Видимость важнее тишины — иначе дыра живёт незамеченной.
+    log.warn({ event: 'cron.referral_recovery.stale_accruals', orders: stale.length, reversed });
+  }
+
+  log.info({
+    event: 'cron.referral_recovery.done',
+    scanned: orders.length,
+    processed,
+    errors,
+    reversed,
+  });
+  return { scanned: orders.length, processed, errors, reversed };
 }

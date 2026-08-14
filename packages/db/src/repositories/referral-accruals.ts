@@ -196,6 +196,41 @@ export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Prom
 }
 
 /**
+ * Заказы в `failed` с ЖИВЫМИ (непогашенными) начислениями — расхождение ledger'а
+ * для бэкстопа cron `referral-recovery` (R-1.7).
+ *
+ * Inline-вызовов отмены сегодня два (провал фулфилмента и недоплата), завтра их
+ * может стать больше, и забытая точка означает молча завышенный баланс партнёра
+ * — то есть ровно исходный баг, только в новом месте. Тот же двухслойный
+ * приём, что и у начисления: inline + сверка кроном.
+ *
+ * Без временного окна (в отличие от `findOrdersMissingReferralAccruals`):
+ * расхождений в норме НЕТ вообще, выборка идёт по узкому набору `failed`-заказов
+ * с начислениями, и старое расхождение молча похоронить нельзя — это деньги.
+ */
+export async function findOrdersWithUnreversedAccruals(
+  db: DBLike,
+  limit: number,
+): Promise<string[]> {
+  const rows = await db.execute<{ order_id: string }>(sql`
+    SELECT DISTINCT a.order_id
+    FROM referral_accruals a
+    JOIN orders o ON o.id = a.order_id AND o.status = 'failed'
+    WHERE a.status = 'accrued'
+      AND NOT EXISTS (
+        SELECT 1 FROM referral_accruals r
+        WHERE r.status = 'reversed'
+          AND r.order_id = a.order_id
+          AND r.beneficiary_user_id = a.beneficiary_user_id
+          AND r.level = a.level
+          AND r.kind = a.kind
+      )
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => r.order_id);
+}
+
+/**
  * Есть ли у заказа хоть одна строка начисления (любого kind) — для recovery-крона
  * (Этап B ч.2): заказ paid+ с реферером, но без начислений = пропуск, досчитать.
  */
