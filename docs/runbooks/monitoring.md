@@ -102,8 +102,8 @@ Grafana шлёт уведомления на chat id владельца (`379336
 Grafana → Synthetic Monitoring, или SM API
 `synthetic-monitoring-api-eu-west-2.grafana.net`.
 
-Ловит «сайт недоступен пользователю» по любой причине (лёг Timeweb-прокси, лёг
-Vercel, сеть). Better Stack НЕ используется — у него нет Telegram-канала.
+Ловит «сайт недоступен пользователю» по любой причине (лёг контейнер, лёг VPS,
+сеть). Better Stack НЕ используется — у него нет Telegram-канала.
 
 ## Слой 2 — Ошибки (что сломалось)
 

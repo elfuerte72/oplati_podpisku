@@ -259,7 +259,7 @@ ssh root@187.124.172.104 'curl -s -H "x-api-key: <ключ>" http://127.0.0.1:30
 ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
   psql -U oplatishka -d oplatishka -c "select count(*) from orders"'
 ```
-Резерв Supabase (`nyxijwpuvctmvemaemqn`, данные на момент cutover) при необходимости смотреть через его дашборд — см. [`docs/runbooks/rollback.md`](docs/runbooks/rollback.md). Миграции — только через Drizzle, ни через MCP, ни руками.
+Миграции — только через Drizzle, ни через MCP, ни руками.
 
 ## Agent skills
 

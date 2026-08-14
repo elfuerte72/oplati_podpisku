@@ -152,6 +152,7 @@ rm -f /tmp/restore.sql.gz
 
 ## Резервная копия эпохи Supabase
 
-Прод-Supabase `nyxijwpuvctmvemaemqn` жив и содержит данные на момент cutover
-(2026-07-24). Держим ≥ месяц как страховку. Порядок гашения —
-[`rollback.md`](rollback.md).
+Прод-Supabase `nyxijwpuvctmvemaemqn` содержит данные на момент cutover (2026-07-24) и
+**гасится** — владелец подтвердил 2026-08-14, что контур живёт на одном Dokploy + PostgreSQL.
+⚠️ Перед удалением снять финальный дамп: после этого единственная копия данных той эпохи —
+он. Порядок — [`rollback.md`](rollback.md).

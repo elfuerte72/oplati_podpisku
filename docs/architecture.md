@@ -8,21 +8,21 @@
 
 ## Архитектурный паттерн: Modular Monolith
 
-Один деплой (Next.js на Vercel, регион `fra1`) + три библиотечных пакета в монорепе. Никаких микросервисов: масштаб (~50 заказов/день) не оправдывает распределённость, а границы между модулями обеспечиваются правилами импортов, а не сетью.
+Один деплой (Next.js в Docker под Dokploy, VPS во Франкфурте) + три библиотечных пакета в монорепе. Никаких микросервисов: масштаб (~50 заказов/день) не оправдывает распределённость, а границы между модулями обеспечиваются правилами импортов, а не сетью.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  apps/web (Next.js 16, Vercel fra1)                     │
+│  apps/web (Next.js 16, Docker/Dokploy, Франкфурт)       │
 │                                                         │
 │  Telegram ──→ /api/bot ──┐                              │
 │  Браузер  ──→ /api/chat ─┤──→ runAgent() ──→ Anthropic  │
 │                          │        │                     │
 │                          │     tools (5)                │
 │                          │        │                     │
-│                          │   ToolHandlers ──→ Supabase  │
+│                          │   ToolHandlers ──→ Postgres  │
 │                          │                              │
-│  Love&Pay ──→ /api/payments/loveandpay (webhook)        │
-│  Vercel Cron ──→ /api/cron/* (7 джобов)                 │
+│  Freekassa/L&P ──→ /api/payments/* (webhook'и)           │
+│  systemd crontab ──→ /api/cron/* (8 джобов)              │
 └─────────────────────────────────────────────────────────┘
          │                    │                  │
    @oplati/agent         @oplati/db        @oplati/types
@@ -40,7 +40,7 @@
 | `pnpm-workspace.yaml` | workspaces: `apps/*`, `packages/*` |
 | `turbo.json` | конфигурация задач Turborepo |
 | `tsconfig.base.json` | общие строгие TS-опции (`strict`, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`) |
-| `apps/web/vercel.json` | расписание Vercel Cron |
+| `infra/crontab.example` | расписание cron → `/etc/cron.d/oplatishka` на VPS |
 | `.mcp.json` | MCP-серверы для AI-инструментов |
 | `CLAUDE.md` | правила разработки, инварианты, деплой, секреты |
 
@@ -50,7 +50,7 @@
 
 ### `packages/db` — данные
 
-Drizzle ORM поверх Supabase Postgres (подключение через pooler, `prepare: false`).
+Drizzle ORM поверх self-host Postgres 17 на том же VPS (переезд с Supabase 2026-07-24).
 
 - `src/schema.ts` — вся схема: 16 таблиц + enum'ы. RLS включён везде, кроме публичного каталога `services` (public-read активных записей; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
 - `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert), `cards`, `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
@@ -135,17 +135,17 @@ draft → clarifying → kyc_required ⇄ clarifying
 
 Терминальные (`failed`, `cancelled`, `refunded`, `expired`) — без выходов: заказ не переоткрывается, заводится новый. Каждый переход = строка в append-only `order_events` в той же транзакции. Append-only форсит триггер БД `order_events_append_only` (UPDATE/DELETE → exception), а не только конвенция кода.
 
-### 4. Фоновые задачи (Vercel Cron)
+### 4. Фоновые задачи (системный crontab)
 
-`vercel.json` → `GET /api/cron/<job>` (авторизация по `CRON_SECRET`) → `lib/jobs/<job>.ts`. Работают **только на production-деплое**.
+`/etc/cron.d/oplatishka` на VPS (шаблон — `infra/crontab.example`) → `GET /api/cron/<job>` с `Authorization: Bearer <CRON_SECRET>` → `lib/jobs/<job>.ts`.
 
 | Job | Расписание | Что делает |
 |---|---|---|
-| `poll-payment` | каждые 5 мин | сверка зависших платежей с L&P |
+| `poll-payment` | каждые 5 мин | сверка зависших платежей со шлюзом + recovery застрявших в `paid` |
 | `expire-payments` | каждые 15 мин | `pending_payment → expired` по таймауту |
 | `renewal-reminder` | 07:00 UTC | напоминания о продлении подписки |
-| `recycle-cards` | 03:30 UTC | карты: 90 дней простоя → `idle`, 180 → `recycled` |
-| `keepalive` | каждые 6 ч | `SELECT 1` — анти-автопауза Supabase free tier |
+| `recycle-cards` | 03:30 UTC | карты старше `CARD_LIFETIME_DAYS` (180 д) → `release` + `recycled` |
+| `retention` | 04:15 UTC | чистка `messages` (90 д) и `payments.raw_payload` (180 д) |
 | `referral-recovery` | каждый час | добор пропущенных реферальных начислений (бэкстоп) |
 | `referral-rollup` | 1-е число, 02:00 UTC | месячная прогрессия статусов партнёров (гейт `REFERRAL_ENABLED`) |
 
@@ -173,15 +173,24 @@ draft → clarifying → kyc_required ⇄ clarifying
 
 ## Окружения и деплой
 
-| | Production | Preview |
+| | Production | Dev |
 |---|---|---|
-| URL | `www.oplatishka.com` (custom-домен, env `APP_URL`; `oplati-podpisku-web.vercel.app` тоже обслуживает) | `oplati-podpisku-web-git-<branch>-<team>.vercel.app` |
-| Telegram-бот | `@oplatishkaa_bot` (до 2026-07-03 — `@test_prodipsa_bot`) | `@dev_test_podpiska_bot` |
-| БД (Supabase) | `nyxijwpuvctmvemaemqn` | dev-проект `oqwofyipeuzgezdplixn` (отдельный аккаунт; с 2026-07-18, туда же смотрит локальная разработка) |
-| Модель агента | `claude-sonnet-4-6` | `claude-haiku-4-5-20251001` (дешевле для smoke) |
-| Триггер деплоя | squash-merge PR в `main` (прямой push запрещён ruleset'ом: required-чеки Tests/Type Check/Lint) | push в feature-ветку |
+| Где | Dokploy на VPS `187.124.172.104` (Hostinger, Франкфурт) | там же, приложение `oplatishka-web-dev` |
+| URL | `www.oplatishka.com` + apex, бот-webhook на `new.oplatishka.com` | `dev.oplatishka.com` (за Basic Auth) |
+| Telegram-бот | `@oplatishkaa_bot` | `@dev_test_podpiska_bot` |
+| БД | self-host Postgres 17 `oplatishka-db` | `oplatishka-db-dev` (структура = prod, без клиентских данных) |
+| Модель агента | `claude-sonnet-4-6` | Haiku (дешевле для smoke) |
+| Триггер деплоя | squash-merge PR в `main` → workflow `Deploy` | push в `dev` |
 
-Боты раздельные, потому что webhook у бота один. Deployment Protection выключена (иначе Telegram получает `401` до нашего кода) — защита на уровне эндпоинтов: secret-token, подпись L&P, `X-Internal-Token`, RLS. После мержа в `main` проверять появление Production-деплоя (2026-07-18 вебхук GitHub→Vercel потерял событие — см. [`incidents.md`](incidents.md)). Детали и карта секретов — в [`CLAUDE.md`](../CLAUDE.md).
+Боты раздельные, потому что webhook у бота один. Прямой push в `main` запрещён ruleset'ом:
+только PR с зелёными `Tests`/`Type Check`/`Lint`/`Build`/`Secret Scan`/`Dependency Review`.
+⚠️ **Деплой не применяет миграции** — их применяют вручную, а расхождение ловит `GET /api/ready`
+и красит деплой. Устройство VPS и контракт deploy-вебхука —
+[`reference/infrastructure.md`](reference/infrastructure.md), процедуры —
+[`runbooks/deploy.md`](runbooks/deploy.md).
+
+Эпоха Vercel + Supabase (и реверс-прокси для доступа из РФ) закончилась 2026-07-24; описание
+того контура — [`history/vercel-era.md`](history/vercel-era.md), как история, не как ТЗ.
 
 ## Наблюдаемость
 
