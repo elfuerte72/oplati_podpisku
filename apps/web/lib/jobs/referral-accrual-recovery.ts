@@ -81,8 +81,12 @@ export async function recoverReferralAccruals(): Promise<{
   const stale = await findOrdersWithUnreversedAccruals(db, RECOVERY_LIMIT);
   for (const orderId of stale) {
     try {
-      reversed += await reverseAccrualsForOrder(db, orderId);
-      reversedOrders++;
+      const rows = await reverseAccrualsForOrder(db, orderId);
+      reversed += rows;
+      // Считаем заказ погашенным только если строки реально записаны: ноль
+      // означает проигрыш гонки inline-пути (ON CONFLICT DO NOTHING), и
+      // «reversedOrders: 5, reversedRows: 0» читалось бы как пять отмен.
+      if (rows > 0) reversedOrders++;
     } catch (err) {
       errors++;
       log.error({ event: 'cron.referral_recovery.reverse_error', orderId, err });

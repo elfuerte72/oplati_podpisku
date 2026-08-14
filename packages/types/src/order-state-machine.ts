@@ -57,12 +57,17 @@ export const PURCHASED_ORDER_STATUSES: readonly OrderStatus[] = [
  * ⚠️ `failed` НЕ терминален (`failed → refund_requested → refunded|completed`),
  * поэтому привязывать отмену только к нему нельзя: если inline-отмена не
  * отработала, а оператор за это время увёл заказ в возврат, комиссия осталась
- * бы у партнёра по заказу, деньги за который вернули клиенту (находка ревью).
- * `cancelled`/`expired` сюда не входят — до оплаты, начислений там не бывает.
+ * бы у партнёра по заказу, деньги за который вернули клиенту.
+ *
+ * ⚠️ `refund_requested` сюда НЕ входит намеренно: это ЗАПРОС возврата, который
+ * ещё могут отклонить (`refund_requested → completed`), а гашение необратимо —
+ * досчитать начисление заново нечем (recovery видит только заказы без строк
+ * ledger'а, повторная вставка упирается в частичный UNIQUE). Ждём разрешения:
+ * станет `refunded` — погасим тогда. `cancelled`/`expired` не входят по другой
+ * причине — они до оплаты, начислений там не бывает.
  */
 export const REFUND_OR_FAILED_ORDER_STATUSES: readonly OrderStatus[] = [
   'failed',
-  'refund_requested',
   'refunded',
 ] as const;
 

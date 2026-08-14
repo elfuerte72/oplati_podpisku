@@ -813,18 +813,26 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     return { partner, buyer, order, payment };
   }
 
-  it('возврат после провала тоже гасится: failed не терминален', async () => {
+  it('состоявшийся возврат гасится: failed не терминален', async () => {
     // `failed → refund_requested → refunded` — легальный путь ручного возврата.
     // Если inline-отмена не отработала (транзиентный сбой БД), а оператор за
     // это время увёл заказ в возврат, привязка строго к `failed` означала бы,
     // что комиссия остаётся у партнёра по заказу, деньги за который вернули
     // клиенту, — и подобрать её уже нечем (находка ревью).
-    for (const status of ['refund_requested', 'refunded'] as const) {
-      const { partner, order } = await makeAccruedOrder(200, status);
+    const { partner, order } = await makeAccruedOrder(200, 'refunded');
 
-      expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
-      expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
-    }
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+  });
+
+  it('ЗАПРОШЕННЫЙ возврат не гасится: его ещё могут отклонить', async () => {
+    // `refund_requested → completed` разрешён (возврат отклонили, заказ
+    // исполнен). Гашение необратимо — досчитать начисление заново нечем, —
+    // поэтому ждём разрешения: деньги клиенту ещё не вернули (находка ревью).
+    const { partner, order } = await makeAccruedOrder(200, 'refund_requested');
+
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(0);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(200);
   });
 
   it('бэкстоп видит и возвратные статусы, а не только failed', async () => {
