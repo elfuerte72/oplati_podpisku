@@ -557,6 +557,15 @@ export const referralAccruals = pgTable(
       .where(sql`${t.status} = 'accrued'`),
     // Recovery/orderHasAccruals пробят по order_id — индекс (находка код-ревью, перф).
     orderIdx: index('referral_accruals_order_id_idx').on(t.orderId),
+    // Идемпотентность ОТМЕНЫ (R-1): одна компенсирующая строка на
+    // (заказ, получатель, уровень, вид). `NOT EXISTS` в SQL отмены сам по себе
+    // гарантии не даёт — в READ COMMITTED два параллельных вызова (inline-путь
+    // провала заказа и бэкстоп-крон) не видят чужую незакоммиченную строку и
+    // вставляют обе, уводя баланс партнёра в минус. Частичный (только
+    // 'reversed'), чтобы не мешать самим начислениям.
+    orderReversalIdx: uniqueIndex('referral_accruals_order_reversal_idx')
+      .on(t.orderId, t.beneficiaryUserId, t.level, t.kind)
+      .where(sql`${t.status} = 'reversed'`),
     // Покрытие FK source_user_id (аудит 2026-07-11 F-10): ON DELETE SET NULL
     // при удалении user без индекса сканирует весь ledger.
     sourceUserIdx: index('referral_accruals_source_user_id_idx').on(t.sourceUserId),

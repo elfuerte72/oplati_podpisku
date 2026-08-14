@@ -584,6 +584,40 @@ describe('consumeLinkToken (merge пользователей)', () => {
     expect(reversed[0]?.createdAt.getTime()).toBe(original?.createdAt.getTime());
   });
 
+  it('уже отменённое начисление (провал заказа) merge НЕ гасит второй раз', async () => {
+    // Два писателя reversal с разными ключами дедупа: отмена провалившегося
+    // заказа (R-1) ставит created_at = now(), а самореферальное гашение ищет
+    // строку с created_at РАВНЫМ исходному. Без общего ключа merge не узнаёт
+    // чужую отмену и пишет вторую — баланс партнёра уменьшается дважды за одну
+    // и ту же комиссию (находка ревью).
+    const webSessionId = `ws-double-${++seq}`;
+    const webUser = await makeUser({ telegramId: null, webSessionId });
+    const telegramUser = await makeUser({ referredBy: webUser.id, referredBySetAt: new Date() });
+
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: telegramUser.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: telegramUser.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: webUser.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+
+    // Заказ провалился ПОСЛЕ оплаты — начисление уже погашено.
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    expect(await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' }))
+      .toMatchObject({ ok: true, merged: true });
+
+    const rows = await db
+      .select()
+      .from(schema.referralAccruals)
+      .where(eq(schema.referralAccruals.beneficiaryUserId, telegramUser.id));
+    expect(rows.filter((r) => r.status === 'reversed')).toHaveLength(1);
+    expect(await getReferralBalanceUsdCents(db, telegramUser.id)).toBe(0);
+  });
+
   it('честное начисление merge не гасит', async () => {
     // Контроль на переусердствование: реферер и плательщик — разные люди.
     const webSessionId = `ws-honest-${++seq}`;
@@ -797,6 +831,13 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
 
   it('append-only: исходная строка остаётся accrued, а created_at отмены — момент отмены', async () => {
     const { order } = await makeAccruedOrder();
+    // Отодвигаем начисление в прошлый месяц: иначе копия created_at и «сейчас»
+    // неотличимы (обе строки создаются в один момент), и тест пропустил бы
+    // регресс на поведение consumeLinkToken, где created_at копируется.
+    await db.execute(sql`
+      UPDATE referral_accruals SET created_at = now() - interval '40 days'
+      WHERE order_id = ${order.id} AND status = 'accrued'
+    `);
     const before = await db.execute<{ created_at: Date }>(sql`
       SELECT created_at FROM referral_accruals WHERE order_id = ${order.id} AND status = 'accrued'
     `);
@@ -813,8 +854,31 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     expect(rows[0]?.amount_usd_cents).toBe(rows[1]?.amount_usd_cents);
     // created_at отмены — НЕ копия исходного (иначе отмена попадёт в месячный
     // агрегат прошлого месяца и задним числом изменит показанную цифру).
+    // Строго больше: `>=` проходил бы и для точной копии, то есть регресс на
+    // поведение `consumeLinkToken` тест бы не поймал (находка ревью).
     const reversedAt = firstOf(rows.filter((r) => r.status === 'reversed'), 'отмена').created_at;
-    expect(new Date(reversedAt).getTime()).toBeGreaterThanOrEqual(new Date(accruedAt).getTime());
+    expect(new Date(reversedAt).getTime()).toBeGreaterThan(new Date(accruedAt).getTime());
+  });
+
+  it('гонка двух вызовов: вторая отмена не проходит даже в обход NOT EXISTS', async () => {
+    // NOT EXISTS сам по себе не защищает: в READ COMMITTED два параллельных
+    // вызова (inline-путь issue-card и бэкстоп-крон) видят снапшот без чужой
+    // незакоммиченной строки и вставляют обе — баланс уходит в минус. Гарантию
+    // даёт частичный UNIQUE на reversed; здесь проверяем именно его, вставляя
+    // дубль напрямую, минуя проверку функции.
+    const { partner, buyer, order, payment } = await makeAccruedOrder();
+    await reverseAccrualsForOrder(db, order.id);
+
+    await expect(
+      db.execute(sql`
+        INSERT INTO referral_accruals
+          (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind,
+           rate_bps, amount_usd_cents, status)
+        VALUES (${partner.id}, ${buyer.id}, ${order.id}, ${payment.id}, 1, 'commission', 400, 200, 'reversed')
+      `),
+    ).rejects.toSatisfy((err: unknown) => pgErrorMatches(err, /duplicate key|unique/i));
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
   });
 
   it('гасит все строки заказа, не задевая начисления других заказов', async () => {

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "referral_accruals_order_reversal_idx" ON "referral_accruals" USING btree ("order_id","beneficiary_user_id","level","kind") WHERE "referral_accruals"."status" = 'reversed';
