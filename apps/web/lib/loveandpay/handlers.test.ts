@@ -7,6 +7,9 @@ vi.mock('../jobs/dispatcher.ts', () => ({
 }));
 // Реферальные начисления тестируются отдельно (referral/accrue.test.ts) — здесь
 // no-op, чтобы тест webhook оставался сфокусированным на платёжном пути.
+vi.mock('../referral/reverse.ts', () => ({
+  reverseReferralAccrualsForFailedOrder: vi.fn(async () => 0),
+}));
 vi.mock('../referral/accrue.ts', () => ({
   accrueReferralForPayment: vi.fn(),
 }));
@@ -87,6 +90,7 @@ import { processInvoicePaid, processInvoiceTerminal } from './handlers.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 
 type MockedDb = typeof db & {
   __setPayment: (p: Pay | null) => void;
@@ -271,6 +275,25 @@ describe('processInvoicePaid', () => {
     );
     expect(notifyOps).toHaveBeenCalledTimes(1);
     expect(dispatchIssueCard).not.toHaveBeenCalled();
+    // Заказ ушёл в failed — реферальные начисления по нему гасятся (R-1).
+    // Сегодня их тут не бывает (недоплата не доходит до succeeded), но путь
+    // обязан быть симметричен фулфилменту: любой переход в failed чистит ledger.
+    expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith('order-1');
+  });
+
+  it('повтор amount_mismatch (claim null) отмену не повторяет — заказ уже failed чужим вызовом', async () => {
+    (db as unknown as MockedDb).__setPayment({
+      id: 'pay-1',
+      orderId: 'order-1',
+      status: 'pending',
+      provider: 'loveandpay',
+      amountRub: 10000,
+    });
+    (db as unknown as MockedDb).__forceTerminalClaimNull();
+
+    await processInvoicePaid({ data: { ...data, amount: 80 }, rawPayload: {} });
+
+    expect(reverseReferralAccrualsForFailedOrder).not.toHaveBeenCalled();
   });
 
   it('повтор webhook после amount_mismatch → терминальный claim null → DM не дублируется', async () => {

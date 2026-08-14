@@ -21,6 +21,7 @@ import { notifyOps } from '../alerts/notify-ops.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { childLogger } from '../logger.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 
 /**
  * Обработка уведомления Freekassa об оплате.
@@ -290,6 +291,10 @@ export async function processFreekassaPaid(
     });
 
     if (mismatchClaimed) {
+      // Заказ ушёл в failed — реферальные начисления по нему гасим (R-1),
+      // симметрично L&P и фулфилменту.
+      await reverseReferralAccrualsForFailedOrder(payment.orderId);
+
       // Вне транзакции: DM не должен держать соединение и откатываться с ней.
       await notifyOps(
         `Недоплата по заказу (Freekassa): выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (операция ${intid}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,

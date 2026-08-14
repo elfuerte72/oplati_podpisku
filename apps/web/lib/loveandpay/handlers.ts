@@ -19,6 +19,7 @@ import { childLogger } from '../logger.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 
 /**
  * Общие хендлеры обработки L&P-событий (как из webhook, так и из cron poll-payment).
@@ -142,6 +143,12 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     });
 
     if (mismatchClaimed) {
+      // Заказ ушёл в failed — реферальные начисления по нему гасим (R-1).
+      // Сегодня их здесь не бывает (недоплата не доходит до succeeded, а значит
+      // и до accrue), но симметрия обязательна: единственная точка перехода в
+      // failed без отмены и есть тот баг, который чинит эта спека.
+      await reverseReferralAccrualsForFailedOrder(payment.orderId);
+
       // Вне транзакции: DM не должен держать соединение/откатываться вместе с ней.
       await notifyOps(
         `Недоплата по заказу: выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (инвойс ${data.invoiceNumber ?? data.id}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,

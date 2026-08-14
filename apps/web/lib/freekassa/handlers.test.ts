@@ -8,6 +8,9 @@ vi.mock('../jobs/dispatcher.ts', () => ({
 vi.mock('../referral/accrue.ts', () => ({
   accrueReferralForPayment: vi.fn(),
 }));
+vi.mock('../referral/reverse.ts', () => ({
+  reverseReferralAccrualsForFailedOrder: vi.fn(async () => 0),
+}));
 vi.mock('../alerts/notify-ops.ts', () => ({
   notifyOps: vi.fn(async () => {}),
 }));
@@ -80,6 +83,7 @@ import * as db from '@oplati/db';
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
+import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { processFreekassaPaid, processFreekassaTerminal } from './handlers.ts';
 
 type MockedDb = typeof db & {
@@ -182,6 +186,8 @@ describe('processFreekassaPaid', () => {
     });
     expect(notifyOps).toHaveBeenCalledTimes(1);
     expect(dispatchIssueCard).not.toHaveBeenCalled();
+    // Заказ в failed — начисления по нему гасим (R-1), как и на пути L&P.
+    expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith(PAYMENT.orderId);
   });
 
   it('повтор недоплаты не шлёт второй DM (дедуп атомарным claim)', async () => {
