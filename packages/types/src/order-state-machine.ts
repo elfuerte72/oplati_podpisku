@@ -48,6 +48,25 @@ export const PURCHASED_ORDER_STATUSES: readonly OrderStatus[] = [
 ] as const;
 
 /**
+ * Статусы оплаченного заказа, при которых деньги клиенту НЕ остаются у нас:
+ * фулфилмент провалился или оформляется/сделан возврат.
+ *
+ * Пара к `PURCHASED_ORDER_STATUSES`: реферальная комиссия платится из маржи
+ * состоявшейся покупки, поэтому по этим статусам начисления гасятся (R-1).
+ *
+ * ⚠️ `failed` НЕ терминален (`failed → refund_requested → refunded|completed`),
+ * поэтому привязывать отмену только к нему нельзя: если inline-отмена не
+ * отработала, а оператор за это время увёл заказ в возврат, комиссия осталась
+ * бы у партнёра по заказу, деньги за который вернули клиенту (находка ревью).
+ * `cancelled`/`expired` сюда не входят — до оплаты, начислений там не бывает.
+ */
+export const REFUND_OR_FAILED_ORDER_STATUSES: readonly OrderStatus[] = [
+  'failed',
+  'refund_requested',
+  'refunded',
+] as const;
+
+/**
  * Допустимые переходы. Любой переход, не указанный здесь, считается багом и
  * `transitionOrder()` бросит `OrderTransitionError`.
  *

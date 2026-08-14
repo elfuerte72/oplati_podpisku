@@ -107,6 +107,7 @@ export {
   type OrderStatus,
   allowedTransitions,
   PURCHASED_ORDER_STATUSES,
+  REFUND_OR_FAILED_ORDER_STATUSES,
   isAllowedTransition,
   OrderTransitionError,
 } from './order-state-machine.ts';

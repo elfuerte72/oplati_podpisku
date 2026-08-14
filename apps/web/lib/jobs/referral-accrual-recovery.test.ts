@@ -11,15 +11,14 @@ vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi
 
 type Missing = { orderId: string; paymentId: string };
 const dbState = vi.hoisted(() => ({ missing: [] as Missing[], unreversed: [] as string[] }));
+const reverseState = vi.hoisted(() => ({ throwOn: new Set<string>() }));
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
   findOrdersMissingReferralAccruals: vi.fn(async () => dbState.missing),
   findOrdersWithUnreversedAccruals: vi.fn(async () => dbState.unreversed),
-}));
-
-const reverseState = vi.hoisted(() => ({ throwOn: new Set<string>() }));
-vi.mock('../referral/reverse.ts', () => ({
-  reverseReferralAccrualsForFailedOrder: vi.fn(async (orderId: string) => {
+  // Репозиторий зовётся напрямую: он БРОСАЕТ при сбое БД, и крон обязан это
+  // увидеть (graceful-обёртка вернула бы 0 и спрятала аварию).
+  reverseAccrualsForOrder: vi.fn(async (_db: unknown, orderId: string) => {
     if (reverseState.throwOn.has(orderId)) throw new Error('boom');
     return 1;
   }),
@@ -35,7 +34,6 @@ vi.mock('../referral/accrue.ts', () => ({
 import { recoverReferralAccruals } from './referral-accrual-recovery.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 import * as db from '@oplati/db';
-import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 
 describe('recoverReferralAccruals', () => {
   beforeEach(() => {
@@ -69,13 +67,28 @@ describe('recoverReferralAccruals', () => {
     expect(res).toEqual({ scanned: 3, processed: 2, errors: 1, reversed: 0 });
   });
 
-  it('REFERRAL_ENABLED=false → не сканирует БД', async () => {
+  it('REFERRAL_ENABLED=false → добор выключен, но сверка отмен идёт', async () => {
+    // Флаг — аварийный выключатель ПРОГРАММЫ. Начисления, записанные при
+    // включённом, обязаны гаситься и после выключения, иначе они висят на
+    // балансе по провалившимся заказам вечно (находка ревью).
     hoisted.env.REFERRAL_ENABLED = false;
+    dbState.unreversed = ['stale-1'];
+
     const res = await recoverReferralAccruals();
-    expect(res).toEqual({ scanned: 0, processed: 0, errors: 0, reversed: 0 });
+
+    expect(res).toEqual({ scanned: 0, processed: 0, errors: 0, reversed: 1 });
     expect(db.findOrdersMissingReferralAccruals).not.toHaveBeenCalled();
-    expect(db.findOrdersWithUnreversedAccruals).not.toHaveBeenCalled();
     expect(accrueReferralForPayment).not.toHaveBeenCalled();
+    expect(db.findOrdersWithUnreversedAccruals).toHaveBeenCalled();
+  });
+
+  it('сбой БД при сверке виден в errors, а не маскируется нулём', async () => {
+    dbState.unreversed = ['bad-1'];
+    reverseState.throwOn = new Set(['bad-1']);
+
+    const res = await recoverReferralAccruals();
+
+    expect(res).toEqual({ scanned: 0, processed: 0, errors: 1, reversed: 0 });
   });
 
   it('нет кандидатов → пустой прогон', async () => {
@@ -92,8 +105,8 @@ describe('recoverReferralAccruals', () => {
     const res = await recoverReferralAccruals();
 
     expect(res.reversed).toBe(2);
-    expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith('stale-1');
-    expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith('stale-2');
+    expect(db.reverseAccrualsForOrder).toHaveBeenCalledWith(expect.anything(), 'stale-1');
+    expect(db.reverseAccrualsForOrder).toHaveBeenCalledWith(expect.anything(), 'stale-2');
   });
 
   it('сбой отмены одного заказа не валит прогон и считается в errors', async () => {

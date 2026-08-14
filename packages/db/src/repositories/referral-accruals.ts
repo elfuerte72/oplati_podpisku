@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import type { DB, DBLike } from '../index.ts';
-import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
+import { PURCHASED_STATUSES_SQL, REFUND_OR_FAILED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Ledger начислений (Этап B). Append-only: только INSERT, никогда UPDATE/DELETE.
@@ -188,7 +188,7 @@ export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Prom
     SELECT a.beneficiary_user_id, a.source_user_id, a.order_id, a.payment_id, a.level,
            a.kind, a.rate_bps, a.amount_usd_cents, 'reversed'
     FROM referral_accruals a
-    JOIN orders o ON o.id = a.order_id AND o.status = 'failed'
+    JOIN orders o ON o.id = a.order_id AND o.status IN ${REFUND_OR_FAILED_STATUSES_SQL}
     WHERE a.order_id = ${orderId}
       AND a.status = 'accrued'
       AND NOT EXISTS (
@@ -225,7 +225,7 @@ export async function findOrdersWithUnreversedAccruals(
   const rows = await db.execute<{ order_id: string }>(sql`
     SELECT DISTINCT a.order_id
     FROM referral_accruals a
-    JOIN orders o ON o.id = a.order_id AND o.status = 'failed'
+    JOIN orders o ON o.id = a.order_id AND o.status IN ${REFUND_OR_FAILED_STATUSES_SQL}
     WHERE a.status = 'accrued'
       AND NOT EXISTS (
         SELECT 1 FROM referral_accruals r

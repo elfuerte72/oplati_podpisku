@@ -798,7 +798,7 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
    * Статус выставляется напрямую: путь до `failed` идёт через фулфилмент, а
    * функции важно лишь состояние, в котором заказ её застаёт.
    */
-  async function makeAccruedOrder(amountUsdCents = 200, status = 'failed') {
+  async function makeAccruedOrder(amountUsdCents = 200, status: string = 'failed') {
     const partner = await makeUser();
     const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
     const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
@@ -812,6 +812,26 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     await db.execute(sql`UPDATE orders SET status = ${status} WHERE id = ${order.id}`);
     return { partner, buyer, order, payment };
   }
+
+  it('возврат после провала тоже гасится: failed не терминален', async () => {
+    // `failed → refund_requested → refunded` — легальный путь ручного возврата.
+    // Если inline-отмена не отработала (транзиентный сбой БД), а оператор за
+    // это время увёл заказ в возврат, привязка строго к `failed` означала бы,
+    // что комиссия остаётся у партнёра по заказу, деньги за который вернули
+    // клиенту, — и подобрать её уже нечем (находка ревью).
+    for (const status of ['refund_requested', 'refunded'] as const) {
+      const { partner, order } = await makeAccruedOrder(200, status);
+
+      expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+      expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+    }
+  });
+
+  it('бэкстоп видит и возвратные статусы, а не только failed', async () => {
+    const { order } = await makeAccruedOrder(200, 'refunded');
+
+    expect(await findOrdersWithUnreversedAccruals(db, 50)).toContain(order.id);
+  });
 
   it('заказ НЕ в failed не гасится: отмена привязана к статусу, а не к месту вызова', async () => {
     // markOrderFailed глотает запрещённый переход (например, заказ уже
