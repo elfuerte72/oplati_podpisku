@@ -36,10 +36,14 @@ describe('reverseReferralAccrualsForFailedOrder', () => {
     expect(db.reverseAccrualsForOrder).toHaveBeenCalledWith(expect.anything(), 'order-1');
   });
 
-  it('REFERRAL_ENABLED=false → в БД не ходит', async () => {
+  it('гасит и при выключенном REFERRAL_ENABLED', async () => {
+    // Флаг — аварийный выключатель программы, а отмена только уменьшает наши
+    // обязательства. С гейтом выключение флага означало бы, что уже записанные
+    // начисления продолжают оплачиваться по провалившимся заказам (находка ревью).
     hoisted.env.REFERRAL_ENABLED = false;
-    expect(await reverseReferralAccrualsForFailedOrder('order-1')).toBe(0);
-    expect(db.reverseAccrualsForOrder).not.toHaveBeenCalled();
+
+    expect(await reverseReferralAccrualsForFailedOrder('order-1')).toBe(1);
+    expect(db.reverseAccrualsForOrder).toHaveBeenCalled();
   });
 
   it('сбой БД не пробрасывается наружу — иначе он сорвал бы перевод заказа в failed', async () => {

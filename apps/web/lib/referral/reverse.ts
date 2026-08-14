@@ -4,7 +4,6 @@ import * as Sentry from '@sentry/nextjs';
 
 import { getDb, reverseAccrualsForOrder } from '@oplati/db';
 
-import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 
 const log = childLogger('referral-reverse');
@@ -20,13 +19,24 @@ const log = childLogger('referral-reverse');
  * основной путь. Здесь цена ошибки даже выше — вызов стоит в `markOrderFailed`,
  * и проброшенное исключение оставило бы заказ в `paid`/`in_fulfillment`, то есть
  * в статусе, из которого его уже никто не заберёт. Бэкстоп на пропуски —
- * сверка в cron `referral-recovery` (T-4).
+ * сверка в cron `referral-recovery`.
+ *
+ * ⚠️ Гейта `REFERRAL_ENABLED` здесь НЕТ намеренно (находка ревью), в отличие от
+ * начисления. Флаг — аварийный выключатель программы, а отмена только УМЕНЬШАЕТ
+ * наши обязательства: с гейтом выключение флага означало бы, что начисления,
+ * записанные при включённом, продолжают оплачиваться по провалившимся заказам.
+ * Гасить безопасно всегда; когда программа выключена, гасить обычно нечего.
+ *
+ * ⚠️ Отмена ложится в месяц, когда произошла. Если заказ оплачен 31-го, а
+ * провалился 1-го, месячный доход партнёра за новый месяц уйдёт в минус — это
+ * честное отражение возврата, но в кабинете выглядит как отрицательная точка
+ * графика. Альтернатива (копировать `created_at`, как делает гашение
+ * самореферала) хуже: она задним числом меняет уже показанную партнёру цифру за
+ * закрытый месяц.
  *
  * @returns сколько строк погашено (0 — гасить было нечего или сбой)
  */
 export async function reverseReferralAccrualsForFailedOrder(orderId: string): Promise<number> {
-  if (!serverEnv.REFERRAL_ENABLED) return 0;
-
   try {
     const reversed = await reverseAccrualsForOrder(getDb(), orderId);
     if (reversed > 0) {

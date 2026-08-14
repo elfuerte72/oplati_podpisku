@@ -152,6 +152,14 @@ export async function getReferralBalanceUsdCents(db: DB, userId: string): Promis
  * не уходили в минус): отмена должна попасть в тот месяц, когда произошла,
  * иначе задним числом изменится уже показанная партнёру цифра за прошлый месяц.
  *
+ * Гасит ТОЛЬКО заказы, реально лежащие в `failed` — проверка по данным, а не по
+ * месту вызова (находка ревью). Точки вызова глотают запрещённый переход:
+ * `markOrderFailed` ловит `OrderTransitionError` и всё равно доходит до отмены,
+ * так что заказ, уже ушедший в `completed`, лишался бы комиссии партнёра — и
+ * вернуть её нечем (recovery считает пропуском только заказ без строк ledger'а,
+ * а повторная вставка упрётся в частичный UNIQUE). Заодно это делает безопасной
+ * любую будущую точку вызова.
+ *
  * Идемпотентность держится ДВУМЯ слоями. `NOT EXISTS` отсекает обычный повтор
  * (ретрай крона, второй webhook), но сам по себе гарантии не даёт: в READ
  * COMMITTED два параллельных вызова — inline-путь провала заказа и бэкстоп-крон
@@ -179,6 +187,7 @@ export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Prom
     SELECT a.beneficiary_user_id, a.source_user_id, a.order_id, a.payment_id, a.level,
            a.kind, a.rate_bps, a.amount_usd_cents, 'reversed'
     FROM referral_accruals a
+    JOIN orders o ON o.id = a.order_id AND o.status = 'failed'
     WHERE a.order_id = ${orderId}
       AND a.status = 'accrued'
       AND NOT EXISTS (

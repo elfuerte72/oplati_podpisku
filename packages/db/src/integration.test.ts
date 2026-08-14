@@ -605,6 +605,7 @@ describe('consumeLinkToken (merge пользователей)', () => {
     });
 
     // Заказ провалился ПОСЛЕ оплаты — начисление уже погашено.
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${order.id}`);
     expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
 
     const { token } = await createLinkToken(db, { webSessionId });
@@ -786,8 +787,12 @@ describe('referral_accruals ledger (идемпотентность + reversal)',
 });
 
 describe('reverseAccrualsForOrder (отмена начислений провалившегося заказа, R-1)', () => {
-  /** Оплаченный заказ реферала с начислением партнёру — исходная точка всех кейсов. */
-  async function makeAccruedOrder(amountUsdCents = 200) {
+  /**
+   * Провалившийся заказ реферала с начислением партнёру — исходная точка кейсов.
+   * Статус выставляется напрямую: путь до `failed` идёт через фулфилмент, а
+   * функции важно лишь состояние, в котором заказ её застаёт.
+   */
+  async function makeAccruedOrder(amountUsdCents = 200, status = 'failed') {
     const partner = await makeUser();
     const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
     const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
@@ -798,8 +803,20 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
       paymentId: payment.id,
       rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents }],
     });
+    await db.execute(sql`UPDATE orders SET status = ${status} WHERE id = ${order.id}`);
     return { partner, buyer, order, payment };
   }
+
+  it('заказ НЕ в failed не гасится: отмена привязана к статусу, а не к месту вызова', async () => {
+    // markOrderFailed глотает запрещённый переход (например, заказ уже
+    // completed) и всё равно доходит до отмены — без этой проверки партнёр терял
+    // бы комиссию за ИСПОЛНЕННЫЙ заказ, а вернуть её нечем: recovery считает
+    // пропуском только заказ без строк ledger'а (находка ревью).
+    const { partner, order } = await makeAccruedOrder(200, 'completed');
+
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(0);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(200);
+  });
 
   it('гасит начисления заказа: баланс партнёра возвращается к нулю', async () => {
     const { partner, order } = await makeAccruedOrder();

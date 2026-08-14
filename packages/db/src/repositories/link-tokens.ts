@@ -215,7 +215,10 @@ export async function consumeLinkToken(
                     -- находится, и merge гасил бы ту же комиссию второй раз —
                     -- баланс партнёра уменьшался бы вдвое. Ключ ниже — тот же,
                     -- что у частичного UNIQUE на отменах (миграция 0030).
-                    OR (r.order_id IS NOT DISTINCT FROM a.order_id AND r.kind = a.kind)
+                    -- order_id обязателен: у него FK ON DELETE SET NULL, и для
+                    -- строки с NULL ветка выродилась бы в «любая отмена того же
+                    -- получателя/уровня/вида» и подавила бы гашение чужой строки.
+                    OR (a.order_id IS NOT NULL AND r.order_id = a.order_id AND r.kind = a.kind)
                   )
               )
             ON CONFLICT DO NOTHING
