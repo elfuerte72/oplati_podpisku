@@ -1,3 +1,4 @@
+import { PURCHASED_ORDER_STATUSES } from '@oplati/types';
 import type {
   CardStatus,
   OrderStatus,
@@ -52,12 +53,13 @@ export function isPayableStatus(status: OrderStatus): boolean {
   return PAYABLE_STATUSES.includes(status);
 }
 
-/** Статусы, которые считаем «состоявшейся покупкой» (для счётчиков профиля). */
-export const PURCHASED_STATUSES: readonly OrderStatus[] = [
-  'paid',
-  'in_fulfillment',
-  'completed',
-];
+/**
+ * Статусы, которые считаем «состоявшейся покупкой» (для счётчиков профиля).
+ * Реэкспорт единственного источника (@oplati/types): то же понятие применяется
+ * в обороте реферальной сети и в SQL-выборках, и своя копия здесь разъехалась
+ * бы с ними молча.
+ */
+export const PURCHASED_STATUSES: readonly OrderStatus[] = PURCHASED_ORDER_STATUSES;
 
 export type CabinetProfile = {
   displayName: string | null;

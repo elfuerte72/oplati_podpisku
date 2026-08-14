@@ -1,6 +1,7 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
+import { PURCHASED_STATUSES_SQL, REFUND_OR_FAILED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Ledger начислений (Этап B). Append-only: только INSERT, никогда UPDATE/DELETE.
@@ -100,6 +101,30 @@ export async function insertCommissionAccruals(
 }
 
 /**
+ * Формула доступного баланса партнёра одним SQL-фрагментом:
+ *   начислено − отменено − выводы (`requested|processing|paid`).
+ *
+ * Единственное определение на весь код: до этого та же арифметика жила в
+ * `getReferralBalanceUsdCents` и дважды внутри выборки отрицательных балансов —
+ * ровно тот вид дублирования денежного понятия, который эта ветка убирает в
+ * других местах (находка ревью). `userId` подставляется вызывающим: либо
+ * значением (тогда drizzle параметризует), либо SQL-фрагментом вроде
+ * `sql\`p.user_id\`` для ссылки на колонку внешнего запроса. Тип сужен с
+ * `unknown` (находка ревью): `unknown` не проверял ничего и позволял передать
+ * в денежный фрагмент что угодно.
+ */
+function balanceExpr(userId: SQL | string) {
+  return sql`(
+    COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+              WHERE beneficiary_user_id = ${userId} AND status = 'accrued'), 0)
+    - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                WHERE beneficiary_user_id = ${userId} AND status = 'reversed'), 0)
+    - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
+                WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')), 0)
+  )`;
+}
+
+/**
  * Доступный к выводу баланс партнёра (USD-центы):
  *   начислено (accrued) − реверснуто (reversed) − выводы (requested|processing|paid).
  *
@@ -112,22 +137,198 @@ export async function insertCommissionAccruals(
  */
 export async function getReferralBalanceUsdCents(db: DB, userId: string): Promise<number> {
   const rows = await db.execute<{ balance: string | number }>(sql`
-    SELECT (
-      COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_accruals
-        WHERE beneficiary_user_id = ${userId} AND status = 'accrued'
-      ), 0)
-      - COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_accruals
-        WHERE beneficiary_user_id = ${userId} AND status = 'reversed'
-      ), 0)
-      - COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_payouts
-        WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')
-      ), 0)
-    )::bigint AS balance
+    SELECT ${balanceExpr(userId)}::bigint AS balance
   `);
   return Number(rows[0]?.balance ?? 0);
+}
+
+
+/**
+ * Отмена реферальных начислений заказа, который после оплаты ушёл в `failed`
+ * (R-1). Комиссия платится из маржи исполненного заказа; провалившийся заказ
+ * маржи не приносит, а деньги клиенту возвращаются.
+ *
+ * Остальная система уже считает `failed` НЕ покупкой: этот статус не входит в
+ * `PURCHASED_ORDER_STATUSES` ни у прогрессии (оборот сети), ни у витрины, ни у
+ * выборки recovery. Ledger был единственным местом, где провалившийся заказ продолжал
+ * приносить партнёру деньги, и попадание в это состояние зависело от гонки:
+ * успел inline-путь начислить до провала — начисление оставалось навсегда, не
+ * успел — recovery его уже не досчитывал.
+ *
+ * Append-only (инвариант 1): исходная строка `accrued` НЕ трогается, отмена —
+ * новая строка `reversed` с теми же ключами; агрегаты кабинета её вычитают.
+ * Частичный UNIQUE на ledger'е покрывает только `status='accrued'`, поэтому
+ * такая вставка проходит.
+ *
+ * `created_at` — момент отмены, а НЕ копия исходного (в отличие от гашения
+ * самореферала в `consumeLinkToken`, где копия нужна, чтобы месячные агрегаты
+ * не уходили в минус): отмена должна попасть в тот месяц, когда произошла,
+ * иначе задним числом изменится уже показанная партнёру цифра за прошлый месяц.
+ *
+ * Гасит ТОЛЬКО заказы, реально лежащие в `failed`/`refunded`
+ * (`REFUND_OR_FAILED_ORDER_STATUSES`) — проверка по данным, а не по месту
+ * вызова (находка ревью). Точки вызова глотают запрещённый переход:
+ * `markOrderFailed` ловит `OrderTransitionError` и всё равно доходит до отмены,
+ * так что заказ, уже ушедший в `completed`, лишался бы комиссии партнёра — и
+ * вернуть её нечем (recovery считает пропуском только заказ без строк ledger'а,
+ * а повторная вставка упрётся в частичный UNIQUE). Заодно это делает безопасной
+ * любую будущую точку вызова.
+ *
+ * Идемпотентность держится ДВУМЯ слоями. `NOT EXISTS` отсекает обычный повтор
+ * (ретрай крона, второй webhook), но сам по себе гарантии не даёт: в READ
+ * COMMITTED два параллельных вызова — inline-путь провала заказа и бэкстоп-крон
+ * — не видят чужую незакоммиченную строку и вставляют обе, уводя баланс в
+ * минус. Гарантию от гонки даёт частичный UNIQUE
+ * `referral_accruals_order_reversal_idx` (миграция 0030) + `ON CONFLICT DO
+ * NOTHING`; проигравший гонку просто вернёт на одну строку меньше.
+ *
+ * ⚠️ Второй слой покрывает не всё: индекс создан с дефолтным `NULLS DISTINCT`,
+ * то есть для строки с `payment_id IS NULL` он не срабатывает вовсе, и от гонки
+ * остаётся только `NOT EXISTS` (тот использует `IS NOT DISTINCT FROM` и NULL
+ * обрабатывает верно, но лишь последовательно). Сегодня это недостижимо:
+ * `insertCommissionAccruals` всегда пишет `order_id`+`payment_id`, а бонусные
+ * строки (`order_id IS NULL`) в отмену не попадают ни одним путём. NULL может
+ * появиться ТОЛЬКО от `ON DELETE SET NULL` на `payments`/`orders`, а строки
+ * этих таблиц мы не удаляем никогда (`retention` чистит `raw_payload`, но не
+ * записи; `orders`/`order_events` — аудит-след). Закрыть до конца мешает
+ * инструмент: `NULLS NOT DISTINCT` drizzle умеет только для UNIQUE-констрейнта,
+ * а тот не бывает частичным; править сгенерированный SQL руками — значит
+ * получить снапшот, расходящийся с БД, и потерять клаузу при первой же
+ * регенерации индекса. Разобрано в BACKLOG.
+ *
+ * ⚠️ Обратный путь НЕ автоматизирован. State machine разрешает воскрешение
+ * `failed → refund_requested → completed` (ручной разбор), и у такого заказа
+ * начисление останется погашенным: `findOrdersMissingReferralAccruals` считает
+ * пропуском только заказ БЕЗ строк ledger'а, а здесь строки есть. Досчитать
+ * автоматически нельзя и по второму кругу: исходная `accrued` жива, и повторный
+ * `insertCommissionAccruals` упрётся в частичный UNIQUE. Восстановление —
+ * ручное, оператором. Автовосстановление сознательно не делаем: риск двойного
+ * начисления на редком пути дороже, чем разовая ручная правка.
+ *
+ * @returns сколько строк погашено (0 — гасить было нечего)
+ */
+export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    INSERT INTO referral_accruals
+      (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind,
+       rate_bps, amount_usd_cents, status)
+    SELECT a.beneficiary_user_id, a.source_user_id, a.order_id, a.payment_id, a.level,
+           a.kind, a.rate_bps, a.amount_usd_cents, 'reversed'
+    FROM referral_accruals a
+    JOIN orders o ON o.id = a.order_id AND o.status IN ${REFUND_OR_FAILED_STATUSES_SQL}
+    WHERE a.order_id = ${orderId}
+      AND a.status = 'accrued'
+      AND NOT EXISTS (
+        SELECT 1 FROM referral_accruals r
+        WHERE r.status = 'reversed'
+          AND r.order_id = a.order_id
+          AND r.payment_id IS NOT DISTINCT FROM a.payment_id
+          AND r.beneficiary_user_id = a.beneficiary_user_id
+          AND r.level = a.level
+          AND r.kind = a.kind
+      )
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `);
+  return rows.length;
+}
+
+/**
+ * Заказы, по которым деньги клиенту не остаются у нас (`failed`/`refunded`), с
+ * ЖИВЫМИ (непогашенными) начислениями — расхождение ledger'а для бэкстопа cron
+ * `referral-recovery` (R-1.7).
+ *
+ * Inline-вызовов отмены сегодня два (провал фулфилмента и недоплата), завтра их
+ * может стать больше, и забытая точка означает молча завышенный баланс партнёра
+ * — то есть ровно исходный баг, только в новом месте. Тот же двухслойный
+ * приём, что и у начисления: inline + сверка кроном.
+ *
+ * Без временного окна (в отличие от `findOrdersMissingReferralAccruals`):
+ * расхождений в норме НЕТ вообще, выборка идёт по узкому набору `failed`-заказов
+ * с начислениями, и старое расхождение молча похоронить нельзя — это деньги.
+ */
+export async function findOrdersWithUnreversedAccruals(
+  db: DBLike,
+  limit: number,
+): Promise<UnreversedAccrualOrder[]> {
+  const rows = await db.execute<{ order_id: string; status: string }>(sql`
+    SELECT DISTINCT a.order_id, o.status
+    FROM referral_accruals a
+    JOIN orders o ON o.id = a.order_id AND o.status IN ${REFUND_OR_FAILED_STATUSES_SQL}
+    WHERE a.status = 'accrued'
+      AND NOT EXISTS (
+        SELECT 1 FROM referral_accruals r
+        WHERE r.status = 'reversed'
+          AND r.order_id = a.order_id
+          AND r.payment_id IS NOT DISTINCT FROM a.payment_id
+          AND r.beneficiary_user_id = a.beneficiary_user_id
+          AND r.level = a.level
+          AND r.kind = a.kind
+      )
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({ orderId: r.order_id, status: r.status }));
+}
+
+/** Заказ с непогашенным начислением + его статус (нужен для тона алёрта). */
+export type UnreversedAccrualOrder = { orderId: string; status: string };
+
+/**
+ * Зеркало предыдущей выборки: заказ СОСТОЯЛСЯ (`PURCHASED_ORDER_STATUSES`), а
+ * комиссия по нему погашена. Партнёру недоплачено (находка финального ревью).
+ *
+ * Как сюда попадают. `markOrderFailed` гасит начисление и на пути
+ * `paypace_topup_pending`, где исход топапа НЕИЗВЕСТЕН. Если топап на самом деле
+ * прошёл и оператор довёл заказ `failed → refund_requested → completed`, строка
+ * `reversed` остаётся: `findOrdersMissingReferralAccruals` считает пропуском
+ * только заказ БЕЗ строк ledger'а, а повторная вставка `accrued` упрётся в
+ * частичный UNIQUE. Партнёр молча теряет комиссию, и до этой выборки не было
+ * ни одного места, где расхождение стало бы видно.
+ *
+ * Сверка была АСИММЕТРИЧНОЙ: `findOrdersWithUnreversedAccruals` смотрит только
+ * в сторону «партнёру переплатили» — то есть туда, где теряем мы. Сторона, где
+ * теряет партнёр, не проверялась вовсе; для программы, которая держится на
+ * доверии партнёров, это худшая из двух ошибок.
+ *
+ * ⚠️ Только СИГНАЛ, восстановление ручное. Автоматически дописать `accrued`
+ * нельзя (упрётся в UNIQUE), а писать компенсирующую строку «reversal
+ * reversal'а» на редком пути — верный способ получить двойное начисление в
+ * append-only ledger'е, откуда его уже не вычистить.
+ */
+export async function findPurchasedOrdersWithReversedAccruals(
+  db: DBLike,
+  limit: number,
+): Promise<{ orderId: string; status: string }[]> {
+  const rows = await db.execute<{ order_id: string; status: string }>(sql`
+    SELECT DISTINCT r.order_id, o.status
+    FROM referral_accruals r
+    JOIN orders o ON o.id = r.order_id AND o.status IN ${PURCHASED_STATUSES_SQL}
+    WHERE r.status = 'reversed'
+    LIMIT ${limit}
+  `);
+  return rows.map((x) => ({ orderId: x.order_id, status: x.status }));
+}
+
+/**
+ * Партнёры с отрицательным балансом — аномалия, требующая человека.
+ *
+ * Возникает, когда отмена приходит на деньги, по которым уже подана заявка на
+ * вывод: заявка вычитается из баланса, и клавбэк вычитается вторым разом.
+ * Формула — общий `balanceExpr`, тот же, что у `getReferralBalanceUsdCents`.
+ * Выплаты сейчас ручные, поэтому ценность сигнала в том, чтобы владелец узнал
+ * ДО перевода денег (находка ревью).
+ */
+export async function findNegativeReferralBalances(
+  db: DBLike,
+  limit: number,
+): Promise<{ userId: string; balanceUsdCents: number }[]> {
+  const rows = await db.execute<{ user_id: string; balance: string | number }>(sql`
+    SELECT p.user_id, ${balanceExpr(sql`p.user_id`)}::bigint AS balance
+    FROM (SELECT DISTINCT beneficiary_user_id AS user_id FROM referral_accruals) p
+    WHERE ${balanceExpr(sql`p.user_id`)} < 0
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({ userId: r.user_id, balanceUsdCents: Number(r.balance) }));
 }
 
 /**
@@ -178,7 +379,7 @@ export async function findOrdersMissingReferralAccruals(
         AND u.referred_by_set_at IS NOT NULL
         AND o.paid_at >= u.referred_by_set_at
       JOIN payments p ON p.order_id = o.id AND p.status = 'succeeded'
-      WHERE o.status IN ('paid', 'in_fulfillment', 'completed')
+      WHERE o.status IN ${PURCHASED_STATUSES_SQL}
         AND o.original_amount IS NOT NULL
         AND o.original_amount > 0
         AND o.paid_at >= now() - interval '30 days'

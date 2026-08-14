@@ -202,6 +202,32 @@ describe('buildReferralSnapshot — включённая программа', ()
     expect(snap.monthlyIncome[0]?.usdCents).toBe(0); // старые месяцы — нули
   });
 
+  // R-1.4: отмена ложится в месяц, когда произошла. Заказ оплачен 31-го,
+  // провалился 1-го — месяц уходит в минус, и это честное отражение возврата.
+  // Снапшот обязан донести минус до UI, а не подрезать его в ноль: спрятанный
+  // минус означает, что итог сверху падает без видимой причины (находка QA —
+  // весь путь отрицательного месяца не был покрыт нигде).
+  it('отрицательный месяц доходит до UI как есть, а не подрезается в ноль', async () => {
+    const key = currentMonthKey();
+    state.monthly = [{ month: key, usdCents: -800 }];
+
+    const snap = await buildReferralSnapshot('u1', ctx());
+
+    expect(snap.monthlyIncome.at(-1)).toEqual({ month: key, usdCents: -800 });
+  });
+
+  it('отрицательный баланс не роняет снапшот и закрывает выплату', async () => {
+    // Достижимо: отмена пришла на деньги, по которым уже подана заявка на вывод
+    // (её сумма вычитается из баланса, и клавбэк вычитается вторым разом) —
+    // ровно то, что ловит findNegativeReferralBalances.
+    state.balance = -1000;
+
+    const snap = await buildReferralSnapshot('u1', ctx());
+
+    expect(snap.balanceUsdCents).toBe(-1000);
+    expect(snap.canPayout).toBe(false);
+  });
+
   it('сбой выдачи кода не валит снапшот (graceful, код=null)', async () => {
     state.code = null; // ensureReferralCode бросит
     const snap = await buildReferralSnapshot('u1', ctx());

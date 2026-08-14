@@ -106,6 +106,8 @@ export {
   orderStatus,
   type OrderStatus,
   allowedTransitions,
+  PURCHASED_ORDER_STATUSES,
+  REFUND_OR_FAILED_ORDER_STATUSES,
   isAllowedTransition,
   OrderTransitionError,
 } from './order-state-machine.ts';
@@ -138,6 +140,7 @@ export {
   REFERRAL_RATE_TABLE,
   REFERRAL_MAX_LEVEL,
   REFERRAL_DEFAULT_CIRCLE,
+  DEFAULT_REFERRAL_RATE_L1_BPS,
   REFERRAL_MAX_CHAIN_BPS,
   REFERRAL_DEEPLINK_PREFIX,
   referralCodeSchema,

@@ -10,6 +10,7 @@ import {
 
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Read-агрегаты партнёрского кабинета (Этап D). Только чтение — считают сводку
@@ -25,7 +26,7 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * реферала = заказ в статусах paid/in_fulfillment/completed.
  */
 
-const PURCHASED = sql`('paid','in_fulfillment','completed')`;
+const PURCHASED = PURCHASED_STATUSES_SQL;
 const MONTH_START = sql`date_trunc('month', now())`;
 
 export type ReferralNetworkSummary = {

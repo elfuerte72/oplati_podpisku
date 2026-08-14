@@ -4,6 +4,7 @@ import type { ProgressionBonus } from '@oplati/types';
 
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Доступ к БД для месячной прогрессии партнёров (Этап C, крон `referral-rollup`).
@@ -23,7 +24,7 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * «Активный реферал» = заказ в статусах paid/in_fulfillment/completed (D-REF-5).
  */
 
-const PURCHASED = sql`('paid','in_fulfillment','completed')`;
+const PURCHASED = PURCHASED_STATUSES_SQL;
 
 /**
  * Кандидаты на rollup — все пользователи, которые кого-то пригласили (есть хотя бы

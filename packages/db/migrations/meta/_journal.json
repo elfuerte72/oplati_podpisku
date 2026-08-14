@@ -211,6 +211,13 @@
       "when": 1785417632167,
       "tag": "0029_analytics_views",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786700452029,
+      "tag": "0030_early_gideon",
+      "breakpoints": true
     }
   ]
 }

@@ -31,6 +31,7 @@ import { telegramShareLink } from '@/lib/telegram/links';
 
 import { fetchReferralSnapshot, requestPayout } from './partner-api';
 import { formatBps, formatLedgerDate, formatMonthShort, formatUsd } from './format-usd';
+import { PAYOUT_MANUAL_NOTE, payoutAcceptedMessage } from './payout-copy';
 
 /**
  * Партнёрский кабинет «Оплатишка» — комикс-нуар. Приоритетная поверхность —
@@ -720,15 +721,27 @@ function MonthlyIncomeChart({ snap }: { snap: ReferralSnapshot }) {
       <div className="mt-4 flex h-[92px] items-end gap-2">
         {snap.monthlyIncome.map((m, i) => (
           <div key={m.month} className="flex flex-1 flex-col items-center gap-1.5">
-            <span className="font-display text-[11px] font-bold text-[var(--text-muted)]">
-              {m.usdCents > 0 ? formatUsd(m.usdCents) : ''}
+            {/* Месяц может быть ОТРИЦАТЕЛЬНЫМ: отмена начисления (провал или
+                возврат заказа) ложится в месяц отмены. Молчать нельзя — итог
+                сверху уменьшится, а из графика причина не видна, и партнёр
+                увидит падение без объяснения (находка ревью). Столбик у такого
+                месяца рисуем минимальным и другим цветом, подпись показываем. */}
+            <span
+              className="font-display text-[11px] font-bold"
+              style={{ color: m.usdCents < 0 ? 'var(--danger, #c0392b)' : 'var(--text-muted)' }}
+            >
+              {m.usdCents !== 0 ? formatUsd(m.usdCents) : ''}
             </span>
             <div
               className="w-full rounded-t-[8px] border-[2.5px] border-[var(--shadow-ink)]"
               style={{
-                height: `${Math.max(6, (m.usdCents / maxMonthly) * 64)}px`,
+                height: `${Math.max(6, (Math.max(m.usdCents, 0) / maxMonthly) * 64)}px`,
                 background:
-                  i === snap.monthlyIncome.length - 1 ? 'var(--success)' : 'color-mix(in srgb, var(--success) 45%, transparent)',
+                  m.usdCents < 0
+                    ? 'var(--danger, #c0392b)'
+                    : i === snap.monthlyIncome.length - 1
+                      ? 'var(--success)'
+                      : 'color-mix(in srgb, var(--success) 45%, transparent)',
               }}
             />
             <span className="font-body text-[10px] text-[var(--text-muted)]">{formatMonthShort(m.month)}</span>
@@ -873,11 +886,7 @@ function WithdrawModal({
       // Честный срок вместо «отправлена» (решение владельца 2026-08-11):
       // автовыплат пока нет, заявку исполняет человек. Молчаливое «отправлено»
       // означало для партнёра, что деньги в пути, — а они просто заморожены.
-      onDone(
-        `Заявка на вывод ${formatUsd(res.amountUsdCents)} принята. ` +
-          `Напишем в Telegram, уточним реквизиты и переведём — обычно в течение ` +
-          `3 рабочих дней.`,
-      );
+      onDone(payoutAcceptedMessage(formatUsd(res.amountUsdCents)));
     } else {
       setErr(errorText(res));
     }
@@ -891,13 +900,12 @@ function WithdrawModal({
       >
         <div className="font-display text-[22px] font-bold">Вывести деньги</div>
         <div className="mb-4 font-body text-[13px] text-[var(--text-muted)]">
-          {/* Экран ДО отправки обещал автоматический перевод «в течение 1–3
-              рабочих дней». Автовыплат нет: исполнителя (Этап E2) не
-              существует, а реквизиты форма не собирает вовсе — их уточняет
-              человек. Обещание срока там, где нет механизма, хуже отсутствия
-              обещания (ревью 2026-08-11). */}
-          Выплату проводим вручную: после заявки напишем в Telegram, уточним
-          реквизиты и переведём — обычно в течение 3 рабочих дней
+          {/* Экран ДО отправки обещал автоматический перевод. Автовыплат нет:
+              исполнителя (Этап E2) не существует, реквизиты форма не собирает
+              вовсе — их уточняет человек, и он же считает рубли по курсу дня.
+              Обещание там, где нет механизма, хуже отсутствия обещания
+              (ревью 2026-08-11, валюта и курс — R-3). */}
+          {PAYOUT_MANUAL_NOTE}
         </div>
         <div className={`mb-4 p-3.5 ${SOFT}`}>
           <div className="font-body text-[11px] text-[var(--text-muted)]">Доступно к выводу</div>
