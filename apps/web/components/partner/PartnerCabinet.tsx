@@ -31,6 +31,7 @@ import { telegramShareLink } from '@/lib/telegram/links';
 
 import { fetchReferralSnapshot, requestPayout } from './partner-api';
 import { formatBps, formatLedgerDate, formatMonthShort, formatUsd } from './format-usd';
+import { PAYOUT_MANUAL_NOTE, payoutAcceptedMessage } from './payout-copy';
 
 /**
  * Партнёрский кабинет «Оплатишка» — комикс-нуар. Приоритетная поверхность —
@@ -873,11 +874,7 @@ function WithdrawModal({
       // Честный срок вместо «отправлена» (решение владельца 2026-08-11):
       // автовыплат пока нет, заявку исполняет человек. Молчаливое «отправлено»
       // означало для партнёра, что деньги в пути, — а они просто заморожены.
-      onDone(
-        `Заявка на вывод ${formatUsd(res.amountUsdCents)} принята. ` +
-          `Напишем в Telegram, уточним реквизиты и переведём — обычно в течение ` +
-          `3 рабочих дней.`,
-      );
+      onDone(payoutAcceptedMessage(formatUsd(res.amountUsdCents)));
     } else {
       setErr(errorText(res));
     }
@@ -891,13 +888,12 @@ function WithdrawModal({
       >
         <div className="font-display text-[22px] font-bold">Вывести деньги</div>
         <div className="mb-4 font-body text-[13px] text-[var(--text-muted)]">
-          {/* Экран ДО отправки обещал автоматический перевод «в течение 1–3
-              рабочих дней». Автовыплат нет: исполнителя (Этап E2) не
-              существует, а реквизиты форма не собирает вовсе — их уточняет
-              человек. Обещание срока там, где нет механизма, хуже отсутствия
-              обещания (ревью 2026-08-11). */}
-          Выплату проводим вручную: после заявки напишем в Telegram, уточним
-          реквизиты и переведём — обычно в течение 3 рабочих дней
+          {/* Экран ДО отправки обещал автоматический перевод. Автовыплат нет:
+              исполнителя (Этап E2) не существует, реквизиты форма не собирает
+              вовсе — их уточняет человек, и он же считает рубли по курсу дня.
+              Обещание там, где нет механизма, хуже отсутствия обещания
+              (ревью 2026-08-11, валюта и курс — R-3). */}
+          {PAYOUT_MANUAL_NOTE}
         </div>
         <div className={`mb-4 p-3.5 ${SOFT}`}>
           <div className="font-body text-[11px] text-[var(--text-muted)]">Доступно к выводу</div>
