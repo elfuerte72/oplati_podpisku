@@ -6,6 +6,7 @@ import type { PaymentRow } from '@oplati/db';
 import { freekassaTerminalReason, FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { getFreekassaClient, isFreekassaConfigured } from '../freekassa/index.ts';
 import { processFreekassaPaid, processFreekassaTerminal } from '../freekassa/handlers.ts';
 import { getLoveAndPayClient, isLoveAndPayConfigured } from '../loveandpay/index.ts';
@@ -150,8 +151,78 @@ async function pollFreekassaPayment(
       reason,
       providerStatus: order.status,
     });
+    return false;
+  }
+
+  // Статус, которого нет в контракте провайдера, — деньги в подвешенном
+  // состоянии (инцидент 14.08.2026).
+  //
+  // Клиент оплатил 11 680 ₽ по СБП: банк списал, чек есть, а Freekassa вернула
+  // `status: 7` — кода нет ни в их документации (2.3: 0/1/6/8/9), ни среди
+  // фильтров их же кабинета. Мы правильно НЕ выдали карту (неизвестный статус
+  // не терминален и не «оплачен»), но и не сказали никому — о проблеме узнали
+  // от клиента через полтора часа.
+  //
+  // Алертим именно на неизвестный код, а не по таймеру «висит дольше N минут»:
+  // больше половины счетов клиенты просто не оплачивают (статус NEW), и алерт
+  // на каждый такой превратил бы денежный сигнал в фон. Успешная оплата
+  // подтверждается за 30-40 секунд, поэтому аномалия видна на первом же прогоне
+  // крона — через ≤5 минут после платежа.
+  if (!isKnownFreekassaStatus(order.status)) {
+    await alertUnknownProviderStatus(payment, order.status, order.fk_order_id);
   }
   return false;
+}
+
+/** Коды из раздела 2.3 документации Freekassa; всё прочее — контрактный дрейф. */
+function isKnownFreekassaStatus(status: number): boolean {
+  return (Object.values(FREEKASSA_ORDER_STATUS) as number[]).includes(status);
+}
+
+// Дедуп DM по платежу: крон бежит каждые 5 минут, а зависший платёж живёт до
+// вмешательства человека — без дедупа владелец получал бы сообщение 12 раз в
+// час. Тот же приём, что у proxy-health и payment-conversion, но ключ — платёж:
+// один застрявший счёт не должен заглушать сигнал о втором.
+const UNKNOWN_STATUS_DM_DEDUP_MS = 60 * 60 * 1000;
+const unknownStatusAlertedAt = new Map<string, number>();
+
+/** Только для unit-тестов — сбрасывает окно дедупа DM. */
+export function resetUnknownStatusAlertDedupForTests(): void {
+  unknownStatusAlertedAt.clear();
+}
+
+async function alertUnknownProviderStatus(
+  payment: PaymentRow,
+  providerStatus: number,
+  providerOrderId: string,
+): Promise<void> {
+  log.error({
+    event: 'cron.poll_payment.unknown_provider_status',
+    paymentId: payment.id,
+    provider: payment.provider,
+    providerStatus,
+    providerOrderId,
+  });
+  Sentry.captureMessage('Freekassa: статус вне контракта — платёж в подвешенном состоянии', {
+    level: 'error',
+    tags: { source: 'cron.poll-payment', provider: payment.provider },
+    extra: { paymentId: payment.id, providerStatus, providerOrderId },
+  });
+
+  const now = Date.now();
+  const last = unknownStatusAlertedAt.get(payment.id) ?? 0;
+  if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
+  unknownStatusAlertedAt.set(payment.id, now);
+
+  // Прямой DM владельцу: Sentry-правила сюда не настроены, а на другом конце —
+  // клиент со списанными деньгами и без подписки.
+  await notifyOps(
+    `Платёж завис у провайдера: Freekassa вернула статус ${providerStatus}, ` +
+      `которого нет в её документации (известны 0/1/6/8/9). Операция ` +
+      `${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
+      `Карта НЕ выпущена. Если клиент говорит, что оплатил, — деньги списаны, ` +
+      `но провайдер платёж не подтвердил: нужен запрос в поддержку Freekassa.`,
+  );
 }
 
 /**

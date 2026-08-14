@@ -69,7 +69,11 @@ vi.mock('./issue-card.ts', () => ({ issueCard: vi.fn(async () => {}) }));
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+
 import { pollPayments } from './poll-payment.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
+import { resetUnknownStatusAlertDedupForTests } from './poll-payment-one.ts';
 
 const FK_PAYMENT: Pay = {
   id: 'pay-fk',
@@ -98,6 +102,7 @@ function fkOrder(status: number, over: Record<string, unknown> = {}) {
 describe('pollPayments — добор по провайдерам', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetUnknownStatusAlertDedupForTests();
     h.pending = [];
     h.freekassaConfigured = true;
     h.loveAndPayConfigured.value = true;
@@ -353,5 +358,59 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(res.errors).toBe(1);
     // Второй платёж всё равно обработан — воркер пула не умер вместе с первым.
     expect(h.findOrderMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('неизвестный статус провайдера поднимает тревогу владельцу (инцидент 14.08)', async () => {
+    // Клиент оплатил 11 680 ₽ по СБП, Freekassa вернула status 7 — кода нет ни в
+    // их документации (0/1/6/8/9), ни в фильтрах кабинета. Мы правильно не
+    // выдали карту, но и НЕ сказали никому: узнали от клиента. Такой платёж —
+    // деньги, зависшие между банком и провайдером, и это нельзя пропускать.
+    h.pending = [FK_PAYMENT];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    const text = String(vi.mocked(notifyOps).mock.calls[0]?.[0]);
+    expect(text).toContain('7');
+    expect(text).toContain('123');
+    // Карту не выдаём: статус не «оплачен».
+    expect(h.fkPaidMock).not.toHaveBeenCalled();
+  });
+
+  it('брошенный счёт (статус «Новый») владельца не беспокоит', async () => {
+    // Больше половины счетов клиенты просто не оплачивают. Алерт на каждый
+    // такой превратил бы денежный сигнал в фон.
+    h.pending = [FK_PAYMENT];
+    h.findOrderMock.mockResolvedValue(fkOrder(0));
+
+    await pollPayments();
+
+    expect(notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('документированные терминальные статусы тревогу не поднимают', async () => {
+    for (const status of [8, 9, 6]) {
+      vi.clearAllMocks();
+      resetUnknownStatusAlertDedupForTests();
+      h.pending = [FK_PAYMENT];
+      h.findOrderMock.mockResolvedValue(fkOrder(status));
+
+      await pollPayments();
+
+      expect(notifyOps).not.toHaveBeenCalled();
+    }
+  });
+
+  it('повторные прогоны по тому же платежу не дублируют DM', async () => {
+    // Крон бежит каждые 5 минут, а зависший платёж живёт до вмешательства
+    // человека — без дедупа владелец получал бы сообщение 12 раз в час.
+    h.pending = [FK_PAYMENT];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+    await pollPayments();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
   });
 });
