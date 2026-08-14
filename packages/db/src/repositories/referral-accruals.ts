@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
 
 /**
  * Ledger начислений (Этап B). Append-only: только INSERT, никогда UPDATE/DELETE.
@@ -128,6 +128,56 @@ export async function getReferralBalanceUsdCents(db: DB, userId: string): Promis
     )::bigint AS balance
   `);
   return Number(rows[0]?.balance ?? 0);
+}
+
+/**
+ * Отмена реферальных начислений заказа, который после оплаты ушёл в `failed`
+ * (R-1). Комиссия платится из маржи исполненного заказа; провалившийся заказ
+ * маржи не приносит, а деньги клиенту возвращаются.
+ *
+ * Остальная система уже считает `failed` НЕ покупкой: этот статус не входит в
+ * `PURCHASED` ни у прогрессии (оборот сети), ни у витрины, ни у выборки
+ * recovery. Ledger был единственным местом, где провалившийся заказ продолжал
+ * приносить партнёру деньги, и попадание в это состояние зависело от гонки:
+ * успел inline-путь начислить до провала — начисление оставалось навсегда, не
+ * успел — recovery его уже не досчитывал.
+ *
+ * Append-only (инвариант 1): исходная строка `accrued` НЕ трогается, отмена —
+ * новая строка `reversed` с теми же ключами; агрегаты кабинета её вычитают.
+ * Частичный UNIQUE на ledger'е покрывает только `status='accrued'`, поэтому
+ * такая вставка проходит.
+ *
+ * `created_at` — момент отмены, а НЕ копия исходного (в отличие от гашения
+ * самореферала в `consumeLinkToken`, где копия нужна, чтобы месячные агрегаты
+ * не уходили в минус): отмена должна попасть в тот месяц, когда произошла,
+ * иначе задним числом изменится уже показанная партнёру цифра за прошлый месяц.
+ *
+ * Идемпотентно: `NOT EXISTS` на уже существующую отмену той же строки. Без
+ * этого ретрай крона или повторный webhook уводили бы баланс в минус.
+ *
+ * @returns сколько строк погашено (0 — гасить было нечего)
+ */
+export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Promise<number> {
+  const rows = await db.execute<{ id: string }>(sql`
+    INSERT INTO referral_accruals
+      (beneficiary_user_id, source_user_id, order_id, payment_id, level, kind,
+       rate_bps, amount_usd_cents, status)
+    SELECT a.beneficiary_user_id, a.source_user_id, a.order_id, a.payment_id, a.level,
+           a.kind, a.rate_bps, a.amount_usd_cents, 'reversed'
+    FROM referral_accruals a
+    WHERE a.order_id = ${orderId}
+      AND a.status = 'accrued'
+      AND NOT EXISTS (
+        SELECT 1 FROM referral_accruals r
+        WHERE r.status = 'reversed'
+          AND r.order_id = a.order_id
+          AND r.beneficiary_user_id = a.beneficiary_user_id
+          AND r.level = a.level
+          AND r.kind = a.kind
+      )
+    RETURNING id
+  `);
+  return rows.length;
 }
 
 /**

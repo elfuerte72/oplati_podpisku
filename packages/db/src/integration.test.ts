@@ -39,6 +39,7 @@ import { getOrCreateUserByTelegramId } from './repositories/users.ts';
 import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
+  reverseAccrualsForOrder,
 } from './repositories/referral-accruals.ts';
 import {
   createReferralPayout,
@@ -746,6 +747,92 @@ describe('referral_accruals ledger (идемпотентность + reversal)',
     `);
 
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0); // 200 − 200
+  });
+});
+
+describe('reverseAccrualsForOrder (отмена начислений провалившегося заказа, R-1)', () => {
+  /** Оплаченный заказ реферала с начислением партнёру — исходная точка всех кейсов. */
+  async function makeAccruedOrder(amountUsdCents = 200) {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents }],
+    });
+    return { partner, buyer, order, payment };
+  }
+
+  it('гасит начисления заказа: баланс партнёра возвращается к нулю', async () => {
+    const { partner, order } = await makeAccruedOrder();
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(200);
+
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+  });
+
+  it('идемпотентен: повторный вызов не создаёт вторую компенсирующую строку', async () => {
+    const { partner, order } = await makeAccruedOrder();
+    await reverseAccrualsForOrder(db, order.id);
+
+    // Без этого баланс ушёл бы в минус на каждом ретрае крона/повторе webhook.
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(0);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    const rows = await db.execute<{ status: string }>(sql`
+      SELECT status FROM referral_accruals WHERE order_id = ${order.id} AND status = 'reversed'
+    `);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('заказ без начислений отрабатывает без ошибки и без строк', async () => {
+    const buyer = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({ userId: buyer.id });
+
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(0);
+  });
+
+  it('append-only: исходная строка остаётся accrued, а created_at отмены — момент отмены', async () => {
+    const { order } = await makeAccruedOrder();
+    const before = await db.execute<{ created_at: Date }>(sql`
+      SELECT created_at FROM referral_accruals WHERE order_id = ${order.id} AND status = 'accrued'
+    `);
+    const accruedAt = firstOf(before, 'исходное начисление').created_at;
+
+    await reverseAccrualsForOrder(db, order.id);
+
+    const rows = await db.execute<{ status: string; created_at: Date; amount_usd_cents: number }>(sql`
+      SELECT status, created_at, amount_usd_cents FROM referral_accruals
+      WHERE order_id = ${order.id} ORDER BY status
+    `);
+    expect(rows.map((r) => r.status)).toEqual(['accrued', 'reversed']);
+    // Суммы совпадают — отмена гасит ровно то, что начислено.
+    expect(rows[0]?.amount_usd_cents).toBe(rows[1]?.amount_usd_cents);
+    // created_at отмены — НЕ копия исходного (иначе отмена попадёт в месячный
+    // агрегат прошлого месяца и задним числом изменит показанную цифру).
+    const reversedAt = firstOf(rows.filter((r) => r.status === 'reversed'), 'отмена').created_at;
+    expect(new Date(reversedAt).getTime()).toBeGreaterThanOrEqual(new Date(accruedAt).getTime());
+  });
+
+  it('гасит все строки заказа, не задевая начисления других заказов', async () => {
+    const { partner, buyer, order } = await makeAccruedOrder();
+    // Второй заказ того же покупателя — он остаётся живым.
+    const second = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: second.payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: second.order.id,
+      paymentId: second.payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 300 }],
+    });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(500);
+
+    await reverseAccrualsForOrder(db, order.id);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(300);
   });
 });
 
