@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Upsert пользователя по `telegram_id`.
@@ -239,10 +240,10 @@ export async function getWebSessionProfile(
     SELECT
       u.display_name,
       u.telegram_id,
-      COUNT(o.id) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed'))::int
+      COUNT(o.id) FILTER (WHERE o.status IN ${PURCHASED_STATUSES_SQL})::int
         AS orders_count,
       COALESCE(
-        SUM(o.amount_rub) FILTER (WHERE o.status IN ('paid', 'in_fulfillment', 'completed')),
+        SUM(o.amount_rub) FILTER (WHERE o.status IN ${PURCHASED_STATUSES_SQL}),
         0
       )::bigint AS total_spent_kopecks
     FROM users u

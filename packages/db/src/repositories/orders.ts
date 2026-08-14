@@ -16,6 +16,7 @@ import {
   type OrderParameters,
 } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Репозиторий заказов. Главный экспорт — `transitionOrder()`: единственный
@@ -572,7 +573,7 @@ export async function hasPurchasedOrders(db: DB, userId: string): Promise<boolea
     SELECT EXISTS (
       SELECT 1 FROM orders
       WHERE user_id = ${userId}
-        AND status IN ('paid', 'in_fulfillment', 'completed')
+        AND status IN ${PURCHASED_STATUSES_SQL}
     ) AS exists
   `);
   return rows[0]?.exists ?? false;

@@ -9,6 +9,7 @@ import { eq, sql } from 'drizzle-orm';
 import {
   DEFAULT_REFERRAL_RATE_L1_BPS,
   OrderTransitionError,
+  PURCHASED_ORDER_STATUSES,
   analyticsDictionaryRows,
 } from '@oplati/types';
 
@@ -50,6 +51,7 @@ import {
   createReferralPayout,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
+import { getMonthlyRollupInput } from './repositories/referral-progression.ts';
 import {
   findActiveByUserId,
   findCardByIdForUser,
@@ -919,6 +921,35 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     await reverseAccrualsForOrder(db, order.id);
 
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(300);
+  });
+});
+
+describe('«покупка состоялась» — один список статусов (R-6)', () => {
+  it('оборот сети считает ровно PURCHASED_ORDER_STATUSES и игнорирует остальные', async () => {
+    // Список был объявлен независимо в прогрессии, витрине и выборке recovery.
+    // Новый статус развёл бы их молча: партнёр видел бы одну сеть, ставку
+    // получал бы по другой. Тест ходит через реальную выборку оборота.
+    const partner = await makeUser();
+    const monthKey = new Date().toISOString().slice(0, 8) + '01';
+
+    for (const status of PURCHASED_ORDER_STATUSES) {
+      const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+      const { order } = await makeOrderWithPendingPayment({ userId: buyer.id });
+      await db.execute(
+        sql`UPDATE orders SET status = ${status}, paid_at = now() WHERE id = ${order.id}`,
+      );
+    }
+    // Контроль: провалившийся заказ в оборот не идёт.
+    const failedBuyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const failed = await makeOrderWithPendingPayment({ userId: failedBuyer.id });
+    await db.execute(
+      sql`UPDATE orders SET status = 'failed', paid_at = now() WHERE id = ${failed.order.id}`,
+    );
+
+    const input = await getMonthlyRollupInput(db, partner.id, monthKey);
+
+    // makeOrderWithPendingPayment создаёт заказ на 500 USD-центов.
+    expect(input.networkTurnoverUsdCents).toBe(PURCHASED_ORDER_STATUSES.length * 500);
   });
 });
 

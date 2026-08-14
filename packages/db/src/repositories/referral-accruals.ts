@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import type { DB, DBLike } from '../index.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
  * Ledger начислений (Этап B). Append-only: только INSERT, никогда UPDATE/DELETE.
@@ -287,7 +288,7 @@ export async function findOrdersMissingReferralAccruals(
         AND u.referred_by_set_at IS NOT NULL
         AND o.paid_at >= u.referred_by_set_at
       JOIN payments p ON p.order_id = o.id AND p.status = 'succeeded'
-      WHERE o.status IN ('paid', 'in_fulfillment', 'completed')
+      WHERE o.status IN ${PURCHASED_STATUSES_SQL}
         AND o.original_amount IS NOT NULL
         AND o.original_amount > 0
         AND o.paid_at >= now() - interval '30 days'
