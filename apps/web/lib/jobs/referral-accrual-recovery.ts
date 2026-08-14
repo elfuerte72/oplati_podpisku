@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
   getDb,
@@ -80,7 +81,7 @@ export async function recoverReferralAccruals(): Promise<{
   let reversed = 0;
   let reversedOrders = 0;
   const stale = await findOrdersWithUnreversedAccruals(db, RECOVERY_LIMIT);
-  for (const orderId of stale) {
+  for (const { orderId } of stale) {
     try {
       const rows = await reverseAccrualsForOrder(db, orderId);
       reversed += rows;
@@ -95,26 +96,50 @@ export async function recoverReferralAccruals(): Promise<{
     }
   }
   if (stale.length > 0) {
-    // Не рутина: в норме inline-путь гасит сам, и сюда попадает только то, что
-    // он пропустил. Видимость важнее тишины — иначе дыра живёт незамеченной.
-    // Поэтому не только лог, но и DM владельцу: расхождение ledger'а означает,
-    // что какой-то путь перехода заказа в failed остался без отмены, и это
-    // деньги. Канал не зависит от Sentry alert rules (см. notifyOps).
-    await notifyOps(
-      `Реферальный ledger: найдено расхождений — ${stale.length} заказ(ов) с ` +
-        `непогашенными начислениями, погашено ${reversedOrders}. ` +
-        `В норме таких быть не должно: значит какой-то путь перевода заказа в ` +
-        `failed не гасит комиссию. Нужен разбор.`,
-    );
-    // Единицы разные и названы явно: `staleOrders` — заказы, `reversedRows` —
-    // строки ledger'а (у заказа их может быть несколько), иначе «reversed > orders»
-    // читалось бы как двойное гашение.
+    // Тон сигнала зависит от того, КАК заказ попал в набор.
+    //
+    // `failed` — автоматический путь, у него есть inline-вызовы отмены. Если
+    // строка дошла сюда, значит один из них промахнулся: это аномалия, и её
+    // надо разобрать. `refunded`/`cancelled` — ручной путь оператора, inline-
+    // вызова там нет и быть не может, поэтому гашение здесь штатное. Кричать
+    // «нужен разбор» на каждый возврат значит приучить владельца игнорировать
+    // денежный алерт (находка ревью).
+    const missedInline = stale.filter((o) => o.status === 'failed');
     log.warn({
       event: 'cron.referral_recovery.stale_accruals',
       staleOrders: stale.length,
+      missedInline: missedInline.length,
       reversedOrders,
       reversedRows: reversed,
     });
+    if (missedInline.length > 0) {
+      await notifyOps(
+        `Реферальный ledger: ${missedInline.length} провалившийся(ихся) заказ(ов) ` +
+          `остались с живой комиссией — их погасил ночной сверщик, а должен был ` +
+          `сам путь перевода в failed. Значит какая-то ветка не гасит начисления. ` +
+          `Нужен разбор.`,
+      );
+    }
+  }
+
+  // Отрицательный баланс — отдельная аномалия: отмена пришла на деньги, по
+  // которым уже подана заявка на вывод (её сумма вычитается из баланса, и
+  // клавбэк вычитается второй раз). Выплаты ручные, поэтому смысл сигнала —
+  // успеть сказать владельцу ДО перевода.
+  try {
+    const negative = await findNegativeReferralBalances(db, RECOVERY_LIMIT);
+    if (negative.length > 0) {
+      log.error({ event: 'cron.referral_recovery.negative_balance', partners: negative.length });
+      await notifyOps(
+        `Реферальный баланс ушёл в отрицательные значения у ${negative.length} ` +
+          `партнёра(ов): отмена начисления пришла на деньги, по которым уже есть ` +
+          `заявка на вывод. Проверить до перевода.`,
+      );
+    }
+  } catch (err) {
+    errors++;
+    log.error({ event: 'cron.referral_recovery.negative_check_error', err });
+    Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
   }
 
   log.info({

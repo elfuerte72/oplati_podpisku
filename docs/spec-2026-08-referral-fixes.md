@@ -349,6 +349,12 @@ T-1 — фундамент: всё остальное по R-1 зависит о
   - Acceptance: **миграция 0030 применена на прод-БД** (деплой её не применяет!); после первого прогона крона контрольный SQL возвращает 0; запись в `docs/CHANGELOG.md`.
   - Verify: контрольный SQL из критерия успеха №4 через `docker exec`; в логах — `cron.referral_recovery.stale_accruals` с `reversedRows: 1`, на следующем прогоне записи нет.
   - Files: `docs/CHANGELOG.md`.
+  - ⚠️ СНАЧАЛА проверить, что дублей нет — `CREATE UNIQUE INDEX` упадёт на них уже после того, как код выкачен, и отмена останется без гарантии от гонки:
+    ```sql
+    SELECT order_id, payment_id, beneficiary_user_id, level, kind, count(*)
+    FROM referral_accruals WHERE status = 'reversed'
+    GROUP BY 1,2,3,4,5 HAVING count(*) > 1;   -- должно быть 0 строк
+    ```
   - Готовая команда применения (с VPS, прод-БД снаружи недоступна):
     ```sql
     CREATE UNIQUE INDEX "referral_accruals_order_reversal_idx" ON "referral_accruals"

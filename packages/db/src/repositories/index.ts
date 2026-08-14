@@ -73,10 +73,12 @@ export {
   orderHasAccruals,
   reverseAccrualsForOrder,
   findOrdersWithUnreversedAccruals,
+  findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   type PartnerProfile,
   type CommissionAccrualInsert,
   type OrderMissingAccrual,
+  type UnreversedAccrualOrder,
 } from './referral-accruals.ts';
 
 export {

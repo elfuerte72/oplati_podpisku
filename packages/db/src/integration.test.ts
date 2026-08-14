@@ -46,6 +46,7 @@ import {
   insertCommissionAccruals,
   reverseAccrualsForOrder,
   findOrdersWithUnreversedAccruals,
+  findNegativeReferralBalances,
 } from './repositories/referral-accruals.ts';
 import {
   createReferralPayout,
@@ -871,7 +872,9 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
 
     expect(await reverseAccrualsForOrder(db, first.order.id)).toBe(2);
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
-    expect(await findOrdersWithUnreversedAccruals(db, 50)).not.toContain(first.order.id);
+    expect((await findOrdersWithUnreversedAccruals(db, 50)).map((f) => f.orderId)).not.toContain(
+      first.order.id,
+    );
   });
 
   it('ЗАПРОШЕННЫЙ возврат не гасится: его ещё могут отклонить', async () => {
@@ -887,7 +890,9 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
   it('бэкстоп видит и возвратные статусы, а не только failed', async () => {
     const { order } = await makeAccruedOrder(200, 'refunded');
 
-    expect(await findOrdersWithUnreversedAccruals(db, 50)).toContain(order.id);
+    expect((await findOrdersWithUnreversedAccruals(db, 50)).map((f) => f.orderId)).toContain(
+      order.id,
+    );
   });
 
   it('заказ НЕ в failed не гасится: отмена привязана к статусу, а не к месту вызова', async () => {
@@ -1030,6 +1035,48 @@ describe('«покупка состоялась» — один список ст
   });
 });
 
+describe('findNegativeReferralBalances (отмена поверх заявки на вывод)', () => {
+  it('ловит партнёра, у которого отмена ушла ниже поданной заявки', async () => {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 1000 }],
+    });
+    // Партнёр успел подать заявку на весь баланс — она уже вычтена.
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 1000 });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    // Заказ провалился: отмена вычитает те же деньги второй раз.
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${order.id}`);
+    await reverseAccrualsForOrder(db, order.id);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(-1000);
+    const negative = await findNegativeReferralBalances(db, 50);
+    expect(negative).toContainEqual({ userId: partner.id, balanceUsdCents: -1000 });
+  });
+
+  it('здоровые партнёры в выборку не попадают', async () => {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 500 }],
+    });
+
+    const negative = await findNegativeReferralBalances(db, 50);
+    expect(negative.map((n) => n.userId)).not.toContain(partner.id);
+  });
+});
+
 describe('дефолтная ставка партнёра — один источник (R-2)', () => {
   it('дефолт колонки locked_rate_l1_bps совпадает с базовой ставкой таблицы', async () => {
     // Ставка применяется из ДВУХ мест: колонка БД (когда профиль создаёт крон
@@ -1071,14 +1118,16 @@ describe('findOrdersWithUnreversedAccruals (бэкстоп сверки ledger, 
 
     const found = await findOrdersWithUnreversedAccruals(db, 50);
 
-    expect(found).toContain(order.id);
+    expect(found.map((f) => f.orderId)).toContain(order.id);
   });
 
   it('после отмены заказ из выборки уходит — крон не крутит его вечно', async () => {
     const { order } = await makeAccruedOrder('failed');
     await reverseAccrualsForOrder(db, order.id);
 
-    expect(await findOrdersWithUnreversedAccruals(db, 50)).not.toContain(order.id);
+    expect((await findOrdersWithUnreversedAccruals(db, 50)).map((f) => f.orderId)).not.toContain(
+      order.id,
+    );
   });
 
   it('живые заказы не трогает: paid и completed остаются с начислениями', async () => {
@@ -1087,8 +1136,9 @@ describe('findOrdersWithUnreversedAccruals (бэкстоп сверки ledger, 
 
     const found = await findOrdersWithUnreversedAccruals(db, 50);
 
-    expect(found).not.toContain(paid.order.id);
-    expect(found).not.toContain(completed.order.id);
+    const ids = found.map((f) => f.orderId);
+    expect(ids).not.toContain(paid.order.id);
+    expect(ids).not.toContain(completed.order.id);
   });
 });
 

@@ -224,9 +224,9 @@ export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Prom
 export async function findOrdersWithUnreversedAccruals(
   db: DBLike,
   limit: number,
-): Promise<string[]> {
-  const rows = await db.execute<{ order_id: string }>(sql`
-    SELECT DISTINCT a.order_id
+): Promise<UnreversedAccrualOrder[]> {
+  const rows = await db.execute<{ order_id: string; status: string }>(sql`
+    SELECT DISTINCT a.order_id, o.status
     FROM referral_accruals a
     JOIN orders o ON o.id = a.order_id AND o.status IN ${REFUND_OR_FAILED_STATUSES_SQL}
     WHERE a.status = 'accrued'
@@ -241,7 +241,46 @@ export async function findOrdersWithUnreversedAccruals(
       )
     LIMIT ${limit}
   `);
-  return rows.map((r) => r.order_id);
+  return rows.map((r) => ({ orderId: r.order_id, status: r.status }));
+}
+
+/** Заказ с непогашенным начислением + его статус (нужен для тона алёрта). */
+export type UnreversedAccrualOrder = { orderId: string; status: string };
+
+/**
+ * Партнёры с отрицательным балансом — аномалия, требующая человека.
+ *
+ * Возникает, когда отмена приходит на деньги, по которым уже подана заявка на
+ * вывод: заявка вычитается из баланса, и клавбэк вычитается вторым разом.
+ * Формула та же, что в `getReferralBalanceUsdCents` — держать синхронно.
+ * Выплаты сейчас ручные, поэтому ценность сигнала в том, чтобы владелец узнал
+ * ДО перевода денег (находка ревью).
+ */
+export async function findNegativeReferralBalances(
+  db: DBLike,
+  limit: number,
+): Promise<{ userId: string; balanceUsdCents: number }[]> {
+  const rows = await db.execute<{ user_id: string; balance: string | number }>(sql`
+    SELECT p.user_id, (
+      COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                WHERE beneficiary_user_id = p.user_id AND status = 'accrued'), 0)
+      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                  WHERE beneficiary_user_id = p.user_id AND status = 'reversed'), 0)
+      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
+                  WHERE user_id = p.user_id AND status IN ('requested', 'processing', 'paid')), 0)
+    )::bigint AS balance
+    FROM (SELECT DISTINCT beneficiary_user_id AS user_id FROM referral_accruals) p
+    WHERE (
+      COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                WHERE beneficiary_user_id = p.user_id AND status = 'accrued'), 0)
+      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                  WHERE beneficiary_user_id = p.user_id AND status = 'reversed'), 0)
+      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
+                  WHERE user_id = p.user_id AND status IN ('requested', 'processing', 'paid')), 0)
+    ) < 0
+    LIMIT ${limit}
+  `);
+  return rows.map((r) => ({ userId: r.user_id, balanceUsdCents: Number(r.balance) }));
 }
 
 /**
