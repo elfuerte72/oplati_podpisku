@@ -20,6 +20,20 @@ const log = childLogger('cron.referral-recovery');
 /** Сколько заказов добираем за один запуск (бэкстоп, объёмы малы). */
 const RECOVERY_LIMIT = 100;
 
+// Дедуп DM (тот же приём, что у proxy-health и payment-conversion). Крон бежит
+// ежечасно, а расхождение живёт до вмешательства человека: без дедупа владелец
+// получал бы одно и то же сообщение бесконечно, и денежный алерт стал бы фоном.
+// Sentry группирует сам, личка — нет.
+const OPS_DM_DEDUP_MS = 60 * 60 * 1000;
+let lastStaleDmAt = 0;
+let lastNegativeDmAt = 0;
+
+/** Только для unit-тестов — сбрасывает окна дедупа DM. */
+export function resetReferralRecoveryAlertDedupForTests(): void {
+  lastStaleDmAt = 0;
+  lastNegativeDmAt = 0;
+}
+
 /**
  * Cron `referral-recovery` (бэкстоп Этапа B): досчитывает реферальные начисления
  * для заказов, где основной inline-путь в `processInvoicePaid` не отработал (БД
@@ -112,12 +126,20 @@ export async function recoverReferralAccruals(): Promise<{
       reversedOrders,
       reversedRows: reversed,
     });
-    if (missedInline.length > 0) {
+    const now = Date.now();
+    if (missedInline.length > 0 && now - lastStaleDmAt >= OPS_DM_DEDUP_MS) {
+      lastStaleDmAt = now;
+      // Формулировка намеренно не утверждает баг: тот же набор строк даёт и
+      // ПЕРВЫЙ прогон после релиза (исторические начисления, которые никто не
+      // гасил, потому что фичи не было), и гонка со свежим провалом заказа —
+      // inline-путь гасит в отдельном запросе после коммита транзакции, и скан
+      // крона может попасть в это окно (находки ревью). Утверждать «есть баг»
+      // там, где его может не быть, — верный способ обесценить денежный алерт.
       await notifyOps(
-        `Реферальный ledger: ${missedInline.length} провалившийся(ихся) заказ(ов) ` +
-          `остались с живой комиссией — их погасил ночной сверщик, а должен был ` +
-          `сам путь перевода в failed. Значит какая-то ветка не гасит начисления. ` +
-          `Нужен разбор.`,
+        `Реферальный ledger: сверщик погасил комиссию по ${missedInline.length} ` +
+          `провалившемуся(ихся) заказу(ам) — обычно это делает сам путь перевода ` +
+          `в failed. Если это не первый прогон после релиза, стоит проверить, ` +
+          `какая ветка перестала гасить начисления.`,
       );
     }
   }
@@ -130,6 +152,10 @@ export async function recoverReferralAccruals(): Promise<{
     const negative = await findNegativeReferralBalances(db, RECOVERY_LIMIT);
     if (negative.length > 0) {
       log.error({ event: 'cron.referral_recovery.negative_balance', partners: negative.length });
+    }
+    const nowNegative = Date.now();
+    if (negative.length > 0 && nowNegative - lastNegativeDmAt >= OPS_DM_DEDUP_MS) {
+      lastNegativeDmAt = nowNegative;
       await notifyOps(
         `Реферальный баланс ушёл в отрицательные значения у ${negative.length} ` +
           `партнёра(ов): отмена начисления пришла на деньги, по которым уже есть ` +

@@ -38,7 +38,10 @@ vi.mock('../referral/accrue.ts', () => ({
   }),
 }));
 
-import { recoverReferralAccruals } from './referral-accrual-recovery.ts';
+import {
+  recoverReferralAccruals,
+  resetReferralRecoveryAlertDedupForTests,
+} from './referral-accrual-recovery.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 import * as db from '@oplati/db';
 import { notifyOps } from '../alerts/notify-ops.ts';
@@ -52,6 +55,7 @@ describe('recoverReferralAccruals', () => {
     dbState.negative = [];
     accrueState.throwOn = new Set();
     reverseState.throwOn = new Set();
+    resetReferralRecoveryAlertDedupForTests();
   });
 
   it('досчитывает каждый найденный заказ', async () => {
@@ -153,6 +157,28 @@ describe('recoverReferralAccruals', () => {
 
     expect(res.reversed).toBe(1);
     expect(res.errors).toBe(1);
+  });
+
+  it('повторный прогон не шлёт тот же DM снова (дедуп часа)', async () => {
+    // Крон бежит ежечасно, а расхождение живёт до вмешательства человека: без
+    // дедупа владелец получал бы одно и то же сообщение бесконечно, и денежный
+    // алерт превратился бы в фон (находка ревью). Sentry группирует сам, личка — нет.
+    dbState.unreversed = [{ orderId: 'stale-1', status: 'failed' }];
+    reverseState.throwOn = new Set(['stale-1']);
+
+    await recoverReferralAccruals();
+    await recoverReferralAccruals();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('отрицательный баланс: DM тоже под дедупом', async () => {
+    dbState.negative = [{ userId: 'u-1', balanceUsdCents: -1000 }];
+
+    await recoverReferralAccruals();
+    await recoverReferralAccruals();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
   });
 
   it('добор начислений и сверка отмен независимы: сбой добора не отменяет сверку', async () => {

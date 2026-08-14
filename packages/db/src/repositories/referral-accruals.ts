@@ -101,6 +101,26 @@ export async function insertCommissionAccruals(
 }
 
 /**
+ * Формула доступного баланса партнёра одним SQL-фрагментом:
+ *   начислено − отменено − выводы (`requested|processing|paid`).
+ *
+ * Единственное определение на весь код: до этого та же арифметика жила в
+ * `getReferralBalanceUsdCents` и дважды внутри выборки отрицательных балансов —
+ * ровно тот вид дублирования денежного понятия, который эта ветка убирает в
+ * других местах (находка ревью). `userId` подставляется вызывающим.
+ */
+function balanceExpr(userId: unknown) {
+  return sql`(
+    COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+              WHERE beneficiary_user_id = ${userId} AND status = 'accrued'), 0)
+    - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
+                WHERE beneficiary_user_id = ${userId} AND status = 'reversed'), 0)
+    - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
+                WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')), 0)
+  )`;
+}
+
+/**
  * Доступный к выводу баланс партнёра (USD-центы):
  *   начислено (accrued) − реверснуто (reversed) − выводы (requested|processing|paid).
  *
@@ -113,23 +133,11 @@ export async function insertCommissionAccruals(
  */
 export async function getReferralBalanceUsdCents(db: DB, userId: string): Promise<number> {
   const rows = await db.execute<{ balance: string | number }>(sql`
-    SELECT (
-      COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_accruals
-        WHERE beneficiary_user_id = ${userId} AND status = 'accrued'
-      ), 0)
-      - COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_accruals
-        WHERE beneficiary_user_id = ${userId} AND status = 'reversed'
-      ), 0)
-      - COALESCE((
-        SELECT SUM(amount_usd_cents) FROM referral_payouts
-        WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')
-      ), 0)
-    )::bigint AS balance
+    SELECT ${balanceExpr(userId)}::bigint AS balance
   `);
   return Number(rows[0]?.balance ?? 0);
 }
+
 
 /**
  * Отмена реферальных начислений заказа, который после оплаты ушёл в `failed`
@@ -252,7 +260,7 @@ export type UnreversedAccrualOrder = { orderId: string; status: string };
  *
  * Возникает, когда отмена приходит на деньги, по которым уже подана заявка на
  * вывод: заявка вычитается из баланса, и клавбэк вычитается вторым разом.
- * Формула та же, что в `getReferralBalanceUsdCents` — держать синхронно.
+ * Формула — общий `balanceExpr`, тот же, что у `getReferralBalanceUsdCents`.
  * Выплаты сейчас ручные, поэтому ценность сигнала в том, чтобы владелец узнал
  * ДО перевода денег (находка ревью).
  */
@@ -261,23 +269,9 @@ export async function findNegativeReferralBalances(
   limit: number,
 ): Promise<{ userId: string; balanceUsdCents: number }[]> {
   const rows = await db.execute<{ user_id: string; balance: string | number }>(sql`
-    SELECT p.user_id, (
-      COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
-                WHERE beneficiary_user_id = p.user_id AND status = 'accrued'), 0)
-      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
-                  WHERE beneficiary_user_id = p.user_id AND status = 'reversed'), 0)
-      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
-                  WHERE user_id = p.user_id AND status IN ('requested', 'processing', 'paid')), 0)
-    )::bigint AS balance
+    SELECT p.user_id, ${balanceExpr(sql`p.user_id`)}::bigint AS balance
     FROM (SELECT DISTINCT beneficiary_user_id AS user_id FROM referral_accruals) p
-    WHERE (
-      COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
-                WHERE beneficiary_user_id = p.user_id AND status = 'accrued'), 0)
-      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
-                  WHERE beneficiary_user_id = p.user_id AND status = 'reversed'), 0)
-      - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
-                  WHERE user_id = p.user_id AND status IN ('requested', 'processing', 'paid')), 0)
-    ) < 0
+    WHERE ${balanceExpr(sql`p.user_id`)} < 0
     LIMIT ${limit}
   `);
   return rows.map((r) => ({ userId: r.user_id, balanceUsdCents: Number(r.balance) }));

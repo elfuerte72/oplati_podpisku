@@ -721,15 +721,27 @@ function MonthlyIncomeChart({ snap }: { snap: ReferralSnapshot }) {
       <div className="mt-4 flex h-[92px] items-end gap-2">
         {snap.monthlyIncome.map((m, i) => (
           <div key={m.month} className="flex flex-1 flex-col items-center gap-1.5">
-            <span className="font-display text-[11px] font-bold text-[var(--text-muted)]">
-              {m.usdCents > 0 ? formatUsd(m.usdCents) : ''}
+            {/* Месяц может быть ОТРИЦАТЕЛЬНЫМ: отмена начисления (провал или
+                возврат заказа) ложится в месяц отмены. Молчать нельзя — итог
+                сверху уменьшится, а из графика причина не видна, и партнёр
+                увидит падение без объяснения (находка ревью). Столбик у такого
+                месяца рисуем минимальным и другим цветом, подпись показываем. */}
+            <span
+              className="font-display text-[11px] font-bold"
+              style={{ color: m.usdCents < 0 ? 'var(--danger, #c0392b)' : 'var(--text-muted)' }}
+            >
+              {m.usdCents !== 0 ? formatUsd(m.usdCents) : ''}
             </span>
             <div
               className="w-full rounded-t-[8px] border-[2.5px] border-[var(--shadow-ink)]"
               style={{
-                height: `${Math.max(6, (m.usdCents / maxMonthly) * 64)}px`,
+                height: `${Math.max(6, (Math.max(m.usdCents, 0) / maxMonthly) * 64)}px`,
                 background:
-                  i === snap.monthlyIncome.length - 1 ? 'var(--success)' : 'color-mix(in srgb, var(--success) 45%, transparent)',
+                  m.usdCents < 0
+                    ? 'var(--danger, #c0392b)'
+                    : i === snap.monthlyIncome.length - 1
+                      ? 'var(--success)'
+                      : 'color-mix(in srgb, var(--success) 45%, transparent)',
               }}
             />
             <span className="font-body text-[10px] text-[var(--text-muted)]">{formatMonthShort(m.month)}</span>
