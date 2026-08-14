@@ -16,6 +16,7 @@ import {
   primaryKey,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+import { DEFAULT_REFERRAL_RATE_L1_BPS } from '@oplati/types';
 import type {
   OrderParameters,
   PricingPolicy,
@@ -512,7 +513,10 @@ export const referralPartners = pgTable('referral_partners', {
   // 0 = Клиент .. 3 = Топ-партнёр (храповик — не понижается, Этап C)
   currentCircle: integer('current_circle').default(0).notNull(),
   // зафиксированная ставка L1 в bps (400 = 4%)
-  lockedRateL1Bps: integer('locked_rate_l1_bps').default(400).notNull(),
+  // Дефолт — общая константа (@oplati/types): ставка применяется и отсюда
+  // (профиль создаёт крон прогрессии), и из расчёта начисления, когда профиля
+  // ещё нет. Два независимых числа разъехались бы молча.
+  lockedRateL1Bps: integer('locked_rate_l1_bps').default(DEFAULT_REFERRAL_RATE_L1_BPS).notNull(),
   // временный +1% буст на следующий месяц (Этап C): действует до даты включительно
   boostUntil: date('boost_until'),
   boostRateBps: integer('boost_rate_bps'),

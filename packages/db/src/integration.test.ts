@@ -6,7 +6,11 @@ import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { eq, sql } from 'drizzle-orm';
 
-import { OrderTransitionError, analyticsDictionaryRows } from '@oplati/types';
+import {
+  DEFAULT_REFERRAL_RATE_L1_BPS,
+  OrderTransitionError,
+  analyticsDictionaryRows,
+} from '@oplati/types';
 
 import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
@@ -915,6 +919,24 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     await reverseAccrualsForOrder(db, order.id);
 
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(300);
+  });
+});
+
+describe('дефолтная ставка партнёра — один источник (R-2)', () => {
+  it('дефолт колонки locked_rate_l1_bps совпадает с базовой ставкой таблицы', async () => {
+    // Ставка применяется из ДВУХ мест: колонка БД (когда профиль создаёт крон
+    // прогрессии) и константа кода (когда профиля ещё нет — начисление считает
+    // по ней). Числа совпадают по случайности; разъедутся — партнёру начислят
+    // не то, что показано в кабинете, и без ошибки. Тест читает фактический
+    // дефолт из ПРИМЕНЁННЫХ миграций, а не из schema.ts.
+    const rows = await db.execute<{ column_default: string | null }>(sql`
+      SELECT column_default FROM information_schema.columns
+      WHERE table_name = 'referral_partners' AND column_name = 'locked_rate_l1_bps'
+    `);
+    const raw = firstOf(rows, 'дефолт колонки').column_default ?? '';
+    const dbDefault = Number.parseInt(raw, 10);
+
+    expect(dbDefault).toBe(DEFAULT_REFERRAL_RATE_L1_BPS);
   });
 });
 
