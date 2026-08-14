@@ -352,10 +352,10 @@ T-1 — фундамент: всё остальное по R-1 зависит о
   - Готовая команда применения (с VPS, прод-БД снаружи недоступна):
     ```sql
     CREATE UNIQUE INDEX "referral_accruals_order_reversal_idx" ON "referral_accruals"
-      USING btree ("order_id","beneficiary_user_id","level","kind")
+      USING btree ("order_id","payment_id","beneficiary_user_id","level","kind")
       WHERE "referral_accruals"."status" = 'reversed';
     INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
-      VALUES ('b0461846599cf2c425e1c43e0308d40ca5d32252dab15fa8e1ac764b17cac313', 1786700452029);
+      VALUES ('35e2527cade3c3a5658d07073de77e0ed6d2da02b20cb22a84a6fee4ede0bb57', 1786700452029);
     ```
   - Состояние прода проверено 2026-08-14 (до выката): расхождение ровно одно ($0.80 на `failed`-заказе), строк `reversed` нет, заявок на вывод нет ни одной. Значит массового гашения истории и ухода баланса в минус — риск, найденный ревью, — не будет.
 

@@ -825,6 +825,55 @@ describe('reverseAccrualsForOrder (отмена начислений прова�
     expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
   });
 
+  it('оплаченный заказ, закрытый как cancelled после возврата, тоже гасится', async () => {
+    // `paid → refund_requested → cancelled` — легальный путь: возврат оформили
+    // и закрыли отменой. Деньги у нас не остались, значит комиссии нет. До
+    // правки этот статус выпадал из набора, и ни отмена, ни бэкстоп такой заказ
+    // не видели — ровно та дыра, которую спека закрывает (находка ревью).
+    const { partner, order } = await makeAccruedOrder(200, 'cancelled');
+
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+  });
+
+  it('гасит КАЖДОЕ начисление заказа, даже если платежей было несколько', async () => {
+    // Ключ отмены должен совпадать с ключом начисления `(payment_id,
+    // beneficiary, level)`. Иначе у заказа с двумя succeeded-платежами (частичный
+    // UNIQUE на payments покрывает только pending, так что это возможно) две
+    // строки `accrued` гасились бы одной `reversed`, а `NOT EXISTS` считал бы
+    // заказ закрытым — половина комиссии выживала бы молча (находка ревью).
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const first = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: first.payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: first.order.id,
+      paymentId: first.payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+    // Второй платёж того же заказа (доплата) — своё начисление.
+    const { payment: second } = await upsertPaymentByProviderRef(db, {
+      orderId: first.order.id,
+      provider: 'loveandpay',
+      providerRef: `inv-second-${Date.now()}`,
+      amountRub: 50000,
+    });
+    await claimPaymentSucceeded(db, { paymentId: second.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: first.order.id,
+      paymentId: second.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${first.order.id}`);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(200);
+
+    expect(await reverseAccrualsForOrder(db, first.order.id)).toBe(2);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+    expect(await findOrdersWithUnreversedAccruals(db, 50)).not.toContain(first.order.id);
+  });
+
   it('ЗАПРОШЕННЫЙ возврат не гасится: его ещё могут отклонить', async () => {
     // `refund_requested → completed` разрешён (возврат отклонили, заказ
     // исполнен). Гашение необратимо — досчитать начисление заново нечем, —

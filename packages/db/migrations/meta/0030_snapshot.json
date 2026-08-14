@@ -1,6 +1,6 @@
 {
-  "id": "6b8fadae-69eb-4ed4-80f2-53a233f2fe72",
-  "prevId": "1af99bd0-a360-4282-8a3a-755b183cc7f1",
+  "id": "6500554c-6b6e-4afa-a554-7c22e2a34d2a",
+  "prevId": "6b8fadae-69eb-4ed4-80f2-53a233f2fe72",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1815,6 +1815,12 @@
           "columns": [
             {
               "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

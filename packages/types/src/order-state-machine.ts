@@ -63,12 +63,18 @@ export const PURCHASED_ORDER_STATUSES: readonly OrderStatus[] = [
  * ещё могут отклонить (`refund_requested → completed`), а гашение необратимо —
  * досчитать начисление заново нечем (recovery видит только заказы без строк
  * ledger'а, повторная вставка упирается в частичный UNIQUE). Ждём разрешения:
- * станет `refunded` — погасим тогда. `cancelled`/`expired` не входят по другой
- * причине — они до оплаты, начислений там не бывает.
+ * станет `refunded` — погасим тогда.
+ *
+ * `cancelled` входит: путь `paid → refund_requested → cancelled` легален
+ * (возврат оформили и закрыли отменой), и без него комиссия по такому заказу не
+ * гасилась бы ни отменой, ни бэкстопом — дыра ровно того же рода, что закрывает
+ * R-1 (находка ревью). До оплаты `cancelled` безвреден: начислений там нет.
+ * `expired` не входит — этот статус недостижим из оплаченных.
  */
 export const REFUND_OR_FAILED_ORDER_STATUSES: readonly OrderStatus[] = [
   'failed',
   'refunded',
+  'cancelled',
 ] as const;
 
 /**

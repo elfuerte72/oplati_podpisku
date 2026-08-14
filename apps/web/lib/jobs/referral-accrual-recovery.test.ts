@@ -9,6 +9,8 @@ vi.mock('../logger.ts', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+
 type Missing = { orderId: string; paymentId: string };
 const dbState = vi.hoisted(() => ({ missing: [] as Missing[], unreversed: [] as string[] }));
 const reverseState = vi.hoisted(() => ({ throwOn: new Set<string>() }));
@@ -34,6 +36,7 @@ vi.mock('../referral/accrue.ts', () => ({
 import { recoverReferralAccruals } from './referral-accrual-recovery.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 import * as db from '@oplati/db';
+import { notifyOps } from '../alerts/notify-ops.ts';
 
 describe('recoverReferralAccruals', () => {
   beforeEach(() => {
@@ -80,6 +83,26 @@ describe('recoverReferralAccruals', () => {
     expect(db.findOrdersMissingReferralAccruals).not.toHaveBeenCalled();
     expect(accrueReferralForPayment).not.toHaveBeenCalled();
     expect(db.findOrdersWithUnreversedAccruals).toHaveBeenCalled();
+  });
+
+  it('расхождение ledger уходит владельцу в Telegram, а не только в лог', async () => {
+    // Расхождений в норме нет вообще: каждое означает, что какой-то путь
+    // перехода в failed остался без отмены. Молчаливый warn в логах живёт
+    // незамеченным — это деньги (находка ревью).
+    dbState.unreversed = ['stale-1'];
+
+    await recoverReferralAccruals();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(notifyOps).mock.calls[0]?.[0])).toMatch(/реферальн/i);
+  });
+
+  it('чистый прогон владельца не беспокоит', async () => {
+    dbState.unreversed = [];
+
+    await recoverReferralAccruals();
+
+    expect(notifyOps).not.toHaveBeenCalled();
   });
 
   it('сбой БД при сверке виден в errors, а не маскируется нулём', async () => {

@@ -196,6 +196,7 @@ export async function reverseAccrualsForOrder(db: DBLike, orderId: string): Prom
         SELECT 1 FROM referral_accruals r
         WHERE r.status = 'reversed'
           AND r.order_id = a.order_id
+          AND r.payment_id IS NOT DISTINCT FROM a.payment_id
           AND r.beneficiary_user_id = a.beneficiary_user_id
           AND r.level = a.level
           AND r.kind = a.kind
@@ -233,6 +234,7 @@ export async function findOrdersWithUnreversedAccruals(
         SELECT 1 FROM referral_accruals r
         WHERE r.status = 'reversed'
           AND r.order_id = a.order_id
+          AND r.payment_id IS NOT DISTINCT FROM a.payment_id
           AND r.beneficiary_user_id = a.beneficiary_user_id
           AND r.level = a.level
           AND r.kind = a.kind

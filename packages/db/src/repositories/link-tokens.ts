@@ -218,7 +218,12 @@ export async function consumeLinkToken(
                     -- order_id обязателен: у него FK ON DELETE SET NULL, и для
                     -- строки с NULL ветка выродилась бы в «любая отмена того же
                     -- получателя/уровня/вида» и подавила бы гашение чужой строки.
-                    OR (a.order_id IS NOT NULL AND r.order_id = a.order_id AND r.kind = a.kind)
+                    OR (
+                      a.order_id IS NOT NULL
+                      AND r.order_id = a.order_id
+                      AND r.payment_id IS NOT DISTINCT FROM a.payment_id
+                      AND r.kind = a.kind
+                    )
                   )
               )
             ON CONFLICT DO NOTHING

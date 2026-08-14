@@ -11,6 +11,7 @@ import {
 
 import { serverEnv } from '../env.ts';
 import { childLogger } from '../logger.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 const log = childLogger('cron.referral-recovery');
@@ -96,6 +97,15 @@ export async function recoverReferralAccruals(): Promise<{
   if (stale.length > 0) {
     // Не рутина: в норме inline-путь гасит сам, и сюда попадает только то, что
     // он пропустил. Видимость важнее тишины — иначе дыра живёт незамеченной.
+    // Поэтому не только лог, но и DM владельцу: расхождение ledger'а означает,
+    // что какой-то путь перехода заказа в failed остался без отмены, и это
+    // деньги. Канал не зависит от Sentry alert rules (см. notifyOps).
+    await notifyOps(
+      `Реферальный ledger: найдено расхождений — ${stale.length} заказ(ов) с ` +
+        `непогашенными начислениями, погашено ${reversedOrders}. ` +
+        `В норме таких быть не должно: значит какой-то путь перевода заказа в ` +
+        `failed не гасит комиссию. Нужен разбор.`,
+    );
     // Единицы разные и названы явно: `staleOrders` — заказы, `reversedRows` —
     // строки ledger'а (у заказа их может быть несколько), иначе «reversed > orders»
     // читалось бы как двойное гашение.
