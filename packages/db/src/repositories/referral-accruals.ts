@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 
 import type { DB, DBLike } from '../index.ts';
 import { PURCHASED_STATUSES_SQL, REFUND_OR_FAILED_STATUSES_SQL } from './order-status-sql.ts';
@@ -107,9 +107,13 @@ export async function insertCommissionAccruals(
  * Единственное определение на весь код: до этого та же арифметика жила в
  * `getReferralBalanceUsdCents` и дважды внутри выборки отрицательных балансов —
  * ровно тот вид дублирования денежного понятия, который эта ветка убирает в
- * других местах (находка ревью). `userId` подставляется вызывающим.
+ * других местах (находка ревью). `userId` подставляется вызывающим: либо
+ * значением (тогда drizzle параметризует), либо SQL-фрагментом вроде
+ * `sql\`p.user_id\`` для ссылки на колонку внешнего запроса. Тип сужен с
+ * `unknown` (находка ревью): `unknown` не проверял ничего и позволял передать
+ * в денежный фрагмент что угодно.
  */
-function balanceExpr(userId: unknown) {
+function balanceExpr(userId: SQL | string) {
   return sql`(
     COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
               WHERE beneficiary_user_id = ${userId} AND status = 'accrued'), 0)
@@ -174,9 +178,23 @@ export async function getReferralBalanceUsdCents(db: DB, userId: string): Promis
  * (ретрай крона, второй webhook), но сам по себе гарантии не даёт: в READ
  * COMMITTED два параллельных вызова — inline-путь провала заказа и бэкстоп-крон
  * — не видят чужую незакоммиченную строку и вставляют обе, уводя баланс в
- * минус. Настоящую гарантию даёт частичный UNIQUE
+ * минус. Гарантию от гонки даёт частичный UNIQUE
  * `referral_accruals_order_reversal_idx` (миграция 0030) + `ON CONFLICT DO
  * NOTHING`; проигравший гонку просто вернёт на одну строку меньше.
+ *
+ * ⚠️ Второй слой покрывает не всё: индекс создан с дефолтным `NULLS DISTINCT`,
+ * то есть для строки с `payment_id IS NULL` он не срабатывает вовсе, и от гонки
+ * остаётся только `NOT EXISTS` (тот использует `IS NOT DISTINCT FROM` и NULL
+ * обрабатывает верно, но лишь последовательно). Сегодня это недостижимо:
+ * `insertCommissionAccruals` всегда пишет `order_id`+`payment_id`, а бонусные
+ * строки (`order_id IS NULL`) в отмену не попадают ни одним путём. NULL может
+ * появиться ТОЛЬКО от `ON DELETE SET NULL` на `payments`/`orders`, а строки
+ * этих таблиц мы не удаляем никогда (`retention` чистит `raw_payload`, но не
+ * записи; `orders`/`order_events` — аудит-след). Закрыть до конца мешает
+ * инструмент: `NULLS NOT DISTINCT` drizzle умеет только для UNIQUE-констрейнта,
+ * а тот не бывает частичным; править сгенерированный SQL руками — значит
+ * получить снапшот, расходящийся с БД, и потерять клаузу при первой же
+ * регенерации индекса. Разобрано в BACKLOG.
  *
  * ⚠️ Обратный путь НЕ автоматизирован. State machine разрешает воскрешение
  * `failed → refund_requested → completed` (ручной разбор), и у такого заказа
@@ -254,6 +272,42 @@ export async function findOrdersWithUnreversedAccruals(
 
 /** Заказ с непогашенным начислением + его статус (нужен для тона алёрта). */
 export type UnreversedAccrualOrder = { orderId: string; status: string };
+
+/**
+ * Зеркало предыдущей выборки: заказ СОСТОЯЛСЯ (`PURCHASED_ORDER_STATUSES`), а
+ * комиссия по нему погашена. Партнёру недоплачено (находка финального ревью).
+ *
+ * Как сюда попадают. `markOrderFailed` гасит начисление и на пути
+ * `paypace_topup_pending`, где исход топапа НЕИЗВЕСТЕН. Если топап на самом деле
+ * прошёл и оператор довёл заказ `failed → refund_requested → completed`, строка
+ * `reversed` остаётся: `findOrdersMissingReferralAccruals` считает пропуском
+ * только заказ БЕЗ строк ledger'а, а повторная вставка `accrued` упрётся в
+ * частичный UNIQUE. Партнёр молча теряет комиссию, и до этой выборки не было
+ * ни одного места, где расхождение стало бы видно.
+ *
+ * Сверка была АСИММЕТРИЧНОЙ: `findOrdersWithUnreversedAccruals` смотрит только
+ * в сторону «партнёру переплатили» — то есть туда, где теряем мы. Сторона, где
+ * теряет партнёр, не проверялась вовсе; для программы, которая держится на
+ * доверии партнёров, это худшая из двух ошибок.
+ *
+ * ⚠️ Только СИГНАЛ, восстановление ручное. Автоматически дописать `accrued`
+ * нельзя (упрётся в UNIQUE), а писать компенсирующую строку «reversal
+ * reversal'а» на редком пути — верный способ получить двойное начисление в
+ * append-only ledger'е, откуда его уже не вычистить.
+ */
+export async function findPurchasedOrdersWithReversedAccruals(
+  db: DBLike,
+  limit: number,
+): Promise<{ orderId: string; status: string }[]> {
+  const rows = await db.execute<{ order_id: string; status: string }>(sql`
+    SELECT DISTINCT r.order_id, o.status
+    FROM referral_accruals r
+    JOIN orders o ON o.id = r.order_id AND o.status IN ${PURCHASED_STATUSES_SQL}
+    WHERE r.status = 'reversed'
+    LIMIT ${limit}
+  `);
+  return rows.map((x) => ({ orderId: x.order_id, status: x.status }));
+}
 
 /**
  * Партнёры с отрицательным балансом — аномалия, требующая человека.

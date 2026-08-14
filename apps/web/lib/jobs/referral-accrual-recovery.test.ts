@@ -16,12 +16,18 @@ const dbState = vi.hoisted(() => ({
   missing: [] as Missing[],
   unreversed: [] as { orderId: string; status: string }[],
   negative: [] as { userId: string; balanceUsdCents: number }[],
+  underpaid: [] as { orderId: string; status: string }[],
+  throwOnStaleSelect: false,
 }));
 const reverseState = vi.hoisted(() => ({ throwOn: new Set<string>() }));
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
   findOrdersMissingReferralAccruals: vi.fn(async () => dbState.missing),
-  findOrdersWithUnreversedAccruals: vi.fn(async () => dbState.unreversed),
+  findOrdersWithUnreversedAccruals: vi.fn(async () => {
+    if (dbState.throwOnStaleSelect) throw new Error('select boom');
+    return dbState.unreversed;
+  }),
+  findPurchasedOrdersWithReversedAccruals: vi.fn(async () => dbState.underpaid),
   findNegativeReferralBalances: vi.fn(async () => dbState.negative),
   // Репозиторий зовётся напрямую: он БРОСАЕТ при сбое БД, и крон обязан это
   // увидеть (graceful-обёртка вернула бы 0 и спрятала аварию).
@@ -53,6 +59,8 @@ describe('recoverReferralAccruals', () => {
     dbState.missing = [];
     dbState.unreversed = [];
     dbState.negative = [];
+    dbState.underpaid = [];
+    dbState.throwOnStaleSelect = false;
     accrueState.throwOn = new Set();
     reverseState.throwOn = new Set();
     resetReferralRecoveryAlertDedupForTests();
@@ -178,6 +186,54 @@ describe('recoverReferralAccruals', () => {
     await recoverReferralAccruals();
     await recoverReferralAccruals();
 
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  // Зеркальная сверка (находка финального ревью): сторона, где теряет ПАРТНЁР,
+  // раньше не проверялась вовсе — сверка смотрела только туда, где теряем мы.
+  it('погашенная комиссия по состоявшемуся заказу уходит владельцу в Telegram', async () => {
+    dbState.underpaid = [{ orderId: 'ord-1', status: 'completed' }];
+
+    await recoverReferralAccruals();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(notifyOps).mock.calls[0]?.[0])).toMatch(/недоплачено/i);
+  });
+
+  it('недоплата партнёру: DM под дедупом часа', async () => {
+    dbState.underpaid = [{ orderId: 'ord-1', status: 'completed' }];
+
+    await recoverReferralAccruals();
+    await recoverReferralAccruals();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('сбой зеркальной сверки виден в errors и не валит остальные проверки', async () => {
+    vi.mocked(db.findPurchasedOrdersWithReversedAccruals).mockRejectedValueOnce(
+      new Error('boom'),
+    );
+    dbState.negative = [{ userId: 'u-1', balanceUsdCents: -500 }];
+
+    const res = await recoverReferralAccruals();
+
+    expect(res.errors).toBe(1);
+    // Проверка отрицательного баланса идёт ПОСЛЕ и обязана отработать.
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(notifyOps).mock.calls[0]?.[0])).toMatch(/отрицательн/i);
+  });
+
+  // Выборка stale стояла без перехвата, и её сбой ронял весь прогон вместе с
+  // двумя денежными сигналами, которые идут ниже (находка QA).
+  it('сбой ВЫБОРКИ stale не гасит зеркальную сверку и проверку баланса', async () => {
+    dbState.throwOnStaleSelect = true;
+    dbState.negative = [{ userId: 'u-1', balanceUsdCents: -500 }];
+
+    const res = await recoverReferralAccruals();
+
+    expect(res.errors).toBe(1);
+    expect(res.reversed).toBe(0);
+    expect(db.findNegativeReferralBalances).toHaveBeenCalled();
     expect(notifyOps).toHaveBeenCalledTimes(1);
   });
 

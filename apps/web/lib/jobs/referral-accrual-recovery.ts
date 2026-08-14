@@ -6,8 +6,10 @@ import {
   findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
+  findPurchasedOrdersWithReversedAccruals,
   getDb,
   reverseAccrualsForOrder,
+  type UnreversedAccrualOrder,
 } from '@oplati/db';
 
 import { serverEnv } from '../env.ts';
@@ -27,11 +29,13 @@ const RECOVERY_LIMIT = 100;
 const OPS_DM_DEDUP_MS = 60 * 60 * 1000;
 let lastStaleDmAt = 0;
 let lastNegativeDmAt = 0;
+let lastUnderpaidDmAt = 0;
 
 /** Только для unit-тестов — сбрасывает окна дедупа DM. */
 export function resetReferralRecoveryAlertDedupForTests(): void {
   lastStaleDmAt = 0;
   lastNegativeDmAt = 0;
+  lastUnderpaidDmAt = 0;
 }
 
 /**
@@ -92,9 +96,20 @@ export async function recoverReferralAccruals(): Promise<{
   // между «гасить было нечего» и «БД лежит» — крон отчитывался бы `errors: 0`
   // при сломанном ledger'е (находка ревью). Обёртка нужна там, где исключение
   // сорвало бы перевод заказа в failed; у крона такой опасности нет.
+  //
+  // Сама ВЫБОРКА тоже под перехватом (находка QA): она стояла голой, и её сбой
+  // ронял весь прогон вместе с двумя проверками, которые идут ниже, — то есть
+  // одна упавшая выборка гасила все денежные сигналы разом.
   let reversed = 0;
   let reversedOrders = 0;
-  const stale = await findOrdersWithUnreversedAccruals(db, RECOVERY_LIMIT);
+  let stale: UnreversedAccrualOrder[] = [];
+  try {
+    stale = await findOrdersWithUnreversedAccruals(db, RECOVERY_LIMIT);
+  } catch (err) {
+    errors++;
+    log.error({ event: 'cron.referral_recovery.stale_select_error', err });
+    Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
+  }
   for (const { orderId } of stale) {
     try {
       const rows = await reverseAccrualsForOrder(db, orderId);
@@ -142,6 +157,45 @@ export async function recoverReferralAccruals(): Promise<{
           `какая ветка перестала гасить начисления.`,
       );
     }
+  }
+
+  // Зеркальная сверка: заказ СОСТОЯЛСЯ, а комиссия по нему погашена — то есть
+  // партнёру недоплачено. До неё сверка была односторонней и ловила только
+  // случай «партнёру переплатили», где теряем мы (находка финального ревью).
+  // Путь попадания реальный: `markOrderFailed` гасит начисление и при
+  // НЕИЗВЕСТНОМ исходе топапа (`paypace_topup_pending`); если топап прошёл и
+  // оператор довёл заказ до `completed`, погашение остаётся навсегда.
+  //
+  // Только сигнал: автоматически дописать `accrued` нельзя (упрётся в частичный
+  // UNIQUE), а компенсировать отмену отмены в append-only ledger'е — верный
+  // способ получить двойное начисление, которое уже не вычистить.
+  try {
+    const underpaid = await findPurchasedOrdersWithReversedAccruals(db, RECOVERY_LIMIT);
+    if (underpaid.length > 0) {
+      log.error({
+        event: 'cron.referral_recovery.reversed_on_purchased_order',
+        orders: underpaid.length,
+      });
+      Sentry.captureMessage('Реферальная комиссия погашена по состоявшемуся заказу', {
+        level: 'error',
+        tags: { source: 'cron.referral-recovery', alert: 'referral_underpaid' },
+        extra: { orders: underpaid.slice(0, 20) },
+      });
+    }
+    const nowUnderpaid = Date.now();
+    if (underpaid.length > 0 && nowUnderpaid - lastUnderpaidDmAt >= OPS_DM_DEDUP_MS) {
+      lastUnderpaidDmAt = nowUnderpaid;
+      await notifyOps(
+        `Реферальный ledger: по ${underpaid.length} состоявшемуся(имся) заказу(ам) ` +
+          `комиссия партнёра погашена — партнёру недоплачено. Обычно это заказ, ` +
+          `который упал при неизвестном исходе топапа, а потом был доведён до ` +
+          `завершения вручную. Восстановление ручное, автоматически не досчитываем.`,
+      );
+    }
+  } catch (err) {
+    errors++;
+    log.error({ event: 'cron.referral_recovery.underpaid_check_error', err });
+    Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
   }
 
   // Отрицательный баланс — отдельная аномалия: отмена пришла на деньги, по

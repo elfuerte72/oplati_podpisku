@@ -572,6 +572,10 @@ export const referralAccruals = pgTable(
     // провала заказа и бэкстоп-крон) не видят чужую незакоммиченную строку и
     // вставляют обе, уводя баланс партнёра в минус. Частичный (только
     // 'reversed'), чтобы не мешать самим начислениям.
+    // ⚠️ Дефолтный `NULLS DISTINCT`: для строки с NULL в `payment_id`/`order_id`
+    // индекс не срабатывает. Недостижимо сегодня (оба поля пишутся всегда, а
+    // NULL может дать только `ON DELETE SET NULL`, и записи `payments`/`orders`
+    // мы не удаляем) — разбор в `reverseAccrualsForOrder` и BACKLOG.
     orderReversalIdx: uniqueIndex('referral_accruals_order_reversal_idx')
       .on(t.orderId, t.paymentId, t.beneficiaryUserId, t.level, t.kind)
       .where(sql`${t.status} = 'reversed'`),

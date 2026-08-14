@@ -73,6 +73,7 @@ export {
   orderHasAccruals,
   reverseAccrualsForOrder,
   findOrdersWithUnreversedAccruals,
+  findPurchasedOrdersWithReversedAccruals,
   findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   type PartnerProfile,

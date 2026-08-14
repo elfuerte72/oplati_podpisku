@@ -46,6 +46,7 @@ import {
   insertCommissionAccruals,
   reverseAccrualsForOrder,
   findOrdersWithUnreversedAccruals,
+  findPurchasedOrdersWithReversedAccruals,
   findNegativeReferralBalances,
 } from './repositories/referral-accruals.ts';
 import {
@@ -1139,6 +1140,56 @@ describe('findOrdersWithUnreversedAccruals (бэкстоп сверки ledger, 
     const ids = found.map((f) => f.orderId);
     expect(ids).not.toContain(paid.order.id);
     expect(ids).not.toContain(completed.order.id);
+  });
+});
+
+// Зеркало предыдущего блока. Сверка ловила только «партнёру переплатили» — там,
+// где теряем мы; сторона, где теряет партнёр, не проверялась вовсе (находка
+// финального ревью). Путь реальный: заказ упал при НЕИЗВЕСТНОМ исходе топапа,
+// начисление погашено, потом оператор довёл заказ до completed.
+describe('findPurchasedOrdersWithReversedAccruals (недоплата партнёру)', () => {
+  async function makeReversedOrder(finalStatus: 'completed' | 'failed' | 'refunded') {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 100 }],
+    });
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${order.id}`);
+    expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+    await db.execute(sql`UPDATE orders SET status = ${finalStatus} WHERE id = ${order.id}`);
+    return { partner, order };
+  }
+
+  it('воскрешённый заказ с погашенной комиссией виден сверке', async () => {
+    const { order } = await makeReversedOrder('completed');
+
+    const found = await findPurchasedOrdersWithReversedAccruals(db, 50);
+
+    expect(found.map((f) => f.orderId)).toContain(order.id);
+    expect(found.find((f) => f.orderId === order.id)?.status).toBe('completed');
+  });
+
+  it('штатно погашенный заказ сигналом не считается', async () => {
+    const failed = await makeReversedOrder('failed');
+    const refunded = await makeReversedOrder('refunded');
+
+    const ids = (await findPurchasedOrdersWithReversedAccruals(db, 50)).map((f) => f.orderId);
+
+    expect(ids).not.toContain(failed.order.id);
+    expect(ids).not.toContain(refunded.order.id);
+  });
+
+  it('баланс партнёра после воскрешения действительно занижен', async () => {
+    // Цифра — суть находки: комиссия начислена ($1.00) и погашена, заказ при
+    // этом состоялся. Ноль здесь означает, что партнёру недоплатили.
+    const { partner } = await makeReversedOrder('completed');
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
   });
 });
 

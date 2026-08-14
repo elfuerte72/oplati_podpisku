@@ -293,6 +293,29 @@ describe('issueCard', () => {
     expect(reverseReferralAccrualsForFailedOrder).toHaveBeenCalledWith('order-1');
   });
 
+  it('отмена идёт ПОСЛЕ перехода в failed, а не до (T-2)', async () => {
+    // Гейт отмены живёт в SQL: `JOIN orders o ON ... o.status IN (failed, ...)`.
+    // Позови её до коммита перехода — запрос увидит заказ ещё в
+    // `in_fulfillment`, погасит ноль строк и вернёт 0 БЕЗ ошибки. Проверка
+    // «оба мока вызваны» такую перестановку не ловит (находка QA).
+    h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+    h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+
+    await issueCard('order-1');
+
+    const failedAt = vi
+      .mocked(db.transitionOrder)
+      .mock.invocationCallOrder.at(
+        vi
+          .mocked(db.transitionOrder)
+          .mock.calls.findIndex((c) => (c[1] as { toStatus?: string }).toStatus === 'failed'),
+      );
+    const reversedAt = vi.mocked(reverseReferralAccrualsForFailedOrder).mock.invocationCallOrder[0];
+    expect(failedAt).toBeDefined();
+    expect(reversedAt).toBeDefined();
+    expect(reversedAt!).toBeGreaterThan(failedAt!);
+  });
+
   it('успешный заказ начисление НЕ трогает', async () => {
     h.topupMock.mockResolvedValue({
       cardId: 'pc-1',

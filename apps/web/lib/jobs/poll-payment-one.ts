@@ -179,12 +179,28 @@ function isKnownFreekassaStatus(status: number): boolean {
   return (Object.values(FREEKASSA_ORDER_STATUS) as number[]).includes(status);
 }
 
+/** Те же коды для текста алёрта — чтобы список не жил в строке отдельной копией. */
+function knownFreekassaStatusList(): string {
+  return (Object.values(FREEKASSA_ORDER_STATUS) as number[]).sort((a, b) => a - b).join('/');
+}
+
 // Дедуп DM по платежу: крон бежит каждые 5 минут, а зависший платёж живёт до
 // вмешательства человека — без дедупа владелец получал бы сообщение 12 раз в
 // час. Тот же приём, что у proxy-health и payment-conversion, но ключ — платёж:
 // один застрявший счёт не должен заглушать сигнал о втором.
 const UNKNOWN_STATUS_DM_DEDUP_MS = 60 * 60 * 1000;
 const unknownStatusAlertedAt = new Map<string, number>();
+
+/**
+ * Записи дедупа старше окна не нужны — без чистки Map растёт всё время жизни
+ * процесса (находка ревью). Чистим на записи: событие редкое, и отдельный
+ * таймер ради него держать незачем.
+ */
+function pruneUnknownStatusDedup(now: number): void {
+  for (const [id, at] of unknownStatusAlertedAt) {
+    if (now - at >= UNKNOWN_STATUS_DM_DEDUP_MS) unknownStatusAlertedAt.delete(id);
+  }
+}
 
 /** Только для unit-тестов — сбрасывает окно дедупа DM. */
 export function resetUnknownStatusAlertDedupForTests(): void {
@@ -212,13 +228,17 @@ async function alertUnknownProviderStatus(
   const now = Date.now();
   const last = unknownStatusAlertedAt.get(payment.id) ?? 0;
   if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
+  pruneUnknownStatusDedup(now);
   unknownStatusAlertedAt.set(payment.id, now);
 
   // Прямой DM владельцу: Sentry-правила сюда не настроены, а на другом конце —
   // клиент со списанными деньгами и без подписки.
   await notifyOps(
     `Платёж завис у провайдера: Freekassa вернула статус ${providerStatus}, ` +
-      `которого нет в её документации (известны 0/1/6/8/9). Операция ` +
+      // Список берём из контракта, а не из строки: захардкоженная копия
+      // разъедется с `FREEKASSA_ORDER_STATUS` при первом же добавлении кода —
+      // ровно то дублирование, которое эта ветка убирает в других местах.
+      `которого нет в её документации (известны ${knownFreekassaStatusList()}). Операция ` +
       `${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
       `Карта НЕ выпущена. Если клиент говорит, что оплатил, — деньги списаны, ` +
       `но провайдер платёж не подтвердил: нужен запрос в поддержку Freekassa.`,
