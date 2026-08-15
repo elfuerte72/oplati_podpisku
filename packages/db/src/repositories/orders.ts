@@ -413,13 +413,17 @@ export async function countRefundishHistoryByUser(
   db: DB,
   input: { userId: string; withinDays: number },
 ): Promise<number> {
+  // ⚠️ В raw-sql-фрагменты Date-объект передавать НЕЛЬЗЯ — только ISO-строку
+  // (паттерн analytics.ts): без маппинга колонки postgres-js падает на
+  // сериализации с TypeError «Received an instance of Date», а PGlite в тестах
+  // Date переваривает — регресс виден только в проде (SENTRY-BYZANTIUM-BATTERY-1D).
   const cutoff = new Date(Date.now() - input.withinDays * 24 * 60 * 60 * 1000);
   const rows = await db.execute<{ count: number }>(sql`
     SELECT count(*)::int AS count
     FROM ${orderEvents}
     JOIN ${orders} ON ${orders.id} = ${orderEvents.orderId}
     WHERE ${orders.userId} = ${input.userId}
-      AND ${orderEvents.createdAt} > ${cutoff}
+      AND ${orderEvents.createdAt} > ${cutoff.toISOString()}
       AND (
         ${orderEvents.eventType} = 'payment_amount_mismatch'
         OR (${orderEvents.payload} ->> 'providerStatus') = '6'
@@ -442,6 +446,8 @@ export async function findStaleOrdersInPaymentReview(
   db: DB,
   input: { olderThanMs: number },
 ): Promise<OrderRow[]> {
+  // ⚠️ Date в raw-sql-фрагмент не передавать — только ISO-строку (см.
+  // комментарий в countRefundishHistoryByUser; SENTRY-BYZANTIUM-BATTERY-1D).
   const cutoff = new Date(Date.now() - input.olderThanMs);
   return await db
     .select()
@@ -451,7 +457,7 @@ export async function findStaleOrdersInPaymentReview(
         SELECT max(${orderEvents.createdAt}) FROM ${orderEvents}
         WHERE ${orderEvents.orderId} = ${orders.id}
           AND ${orderEvents.toStatus} = 'payment_review'
-      ) < ${cutoff}`,
+      ) < ${cutoff.toISOString()}`,
     )
     .orderBy(asc(orders.createdAt))
     .limit(STUCK_BATCH_LIMIT);
