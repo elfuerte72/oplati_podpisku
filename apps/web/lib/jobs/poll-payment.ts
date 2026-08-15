@@ -13,6 +13,7 @@ import { childLogger } from '../logger.ts';
 import { isPaySpaceConfigured } from '../pay-space/index.ts';
 import { issueCard } from './issue-card.ts';
 import { pollPaymentOnce } from './poll-payment-one.ts';
+import { alertOnStalePaymentReview } from './payment-review-watch.ts';
 import { alertOnZeroPaymentConversion } from './payment-conversion.ts';
 import { alertOnLoveAndPayProxyDown } from './proxy-health.ts';
 import { alertOnLowVccBalance } from './vcc-balance.ts';
@@ -195,6 +196,10 @@ export async function pollPayments(): Promise<{
   // «шлюз отвечает 200, а платежи не проходят» — транспортный детектор его не
   // видит. Тоже сам ловит свои ошибки.
   await alertOnZeroPaymentConversion();
+
+  // Предохранитель «на проверке банка» дольше 7 дней (антифрод-трек, тикет 04):
+  // DM владельцу без автозакрытия. Сам ловит свои ошибки.
+  await alertOnStalePaymentReview();
 
   log.info({
     event: 'cron.poll_payment.done',

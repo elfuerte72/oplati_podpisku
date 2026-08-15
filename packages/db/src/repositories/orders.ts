@@ -401,6 +401,34 @@ export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
  */
 const STUCK_BATCH_LIMIT = 50;
 
+/**
+ * Заказы, залипшие «на проверке банка» дольше порога (антифрод-трек, тикет 04):
+ * предохранитель от вечного `payment_review` — DM владельцу, БЕЗ автозакрытия
+ * (исход решает провайдер/оператор, автомат здесь потерял бы деньги клиента).
+ *
+ * Возраст меряется по событию входа в статус (`order_events.to_status =
+ * 'payment_review'`, append-only журнал): `orders.updated_at` переходами не
+ * трогается, а полагаться на него значило бы сбрасывать таймер любым UPDATE.
+ */
+export async function findStaleOrdersInPaymentReview(
+  db: DB,
+  input: { olderThanMs: number },
+): Promise<OrderRow[]> {
+  const cutoff = new Date(Date.now() - input.olderThanMs);
+  return await db
+    .select()
+    .from(orders)
+    .where(
+      sql`${orders.status} = 'payment_review' AND (
+        SELECT max(${orderEvents.createdAt}) FROM ${orderEvents}
+        WHERE ${orderEvents.orderId} = ${orders.id}
+          AND ${orderEvents.toStatus} = 'payment_review'
+      ) < ${cutoff}`,
+    )
+    .orderBy(asc(orders.createdAt))
+    .limit(STUCK_BATCH_LIMIT);
+}
+
 export async function findStuckPaidOrders(
   db: DB,
   input: { olderThanMs: number },

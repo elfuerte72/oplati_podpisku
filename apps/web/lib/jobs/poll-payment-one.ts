@@ -2,7 +2,7 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import type { PaymentRow } from '@oplati/db';
+import { getDb, setPaymentProviderStatus, type PaymentRow } from '@oplati/db';
 import { freekassaTerminalReason, FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
@@ -114,6 +114,24 @@ async function pollFreekassaPayment(
     return false;
   }
 
+  // Снимок статуса провайдера в payments (антифрод-трек, тикет 03): раньше он
+  // жил только в логе и DM — заказ было не с чем сверить. Пишем ДО обработки;
+  // best-effort: телеметрия не должна мешать добору денег ниже. Дедуп
+  // автосообщения о холде (пачка 3) читает ПРЕЖНЕЕ значение из строки
+  // `payment`, загруженной до этого UPDATE, — порядок безопасен.
+  try {
+    await setPaymentProviderStatus(getDb(), {
+      paymentId: payment.id,
+      providerStatus: order.status,
+    });
+  } catch (err) {
+    log.error({ event: 'cron.poll_payment.status_snapshot_failed', paymentId: payment.id, err });
+    Sentry.captureException(err, {
+      tags: { source: 'cron.poll-payment', step: 'status_snapshot' },
+      extra: { paymentId: payment.id },
+    });
+  }
+
   // Бонус опроса: ответ содержит `fk_order_id`, и здесь видно, совпадает ли он
   // с тем, что мы сохранили при создании (открытый вопрос контракта — равен ли
   // `intid` возвращённому `orderId`).
@@ -151,6 +169,16 @@ async function pollFreekassaPayment(
       reason,
       providerStatus: order.status,
     });
+    return false;
+  }
+
+  // Антифрод-холд (статус 7, эмпирический — подтверждён поддержкой 2026-08-14):
+  // деньги списаны, банк держит перевод на проверке. НЕ терминальный и не
+  // «оплачен»: исход решает провайдер. DM владельцу — с прежним дедупом по
+  // платежу, но честным текстом «холд», а не «неизвестный статус»; перевод
+  // заказа в payment_review и автосообщение клиенту — пачка 3 (тикет 09).
+  if (order.status === FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD) {
+    await alertAntifraudHold(payment, order.fk_order_id);
     return false;
   }
 
@@ -207,6 +235,40 @@ export function resetUnknownStatusAlertDedupForTests(): void {
   unknownStatusAlertedAt.clear();
 }
 
+/**
+ * DM владельцу об антифрод-холде. Механизм дедупа общий с неизвестными
+ * статусами, но КЛЮЧ — со своим префиксом: «холд» и «неизвестный код» —
+ * семантически разные сигналы с разными действиями владельца, и переход
+ * платежа из одного в другой в пределах часа не должен глушить второй DM
+ * (находка ревью части 2).
+ */
+async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string): Promise<void> {
+  log.warn({
+    event: 'cron.poll_payment.antifraud_hold',
+    paymentId: payment.id,
+    providerOrderId,
+  });
+  Sentry.captureMessage('Freekassa: антифрод-холд — банк держит перевод на проверке', {
+    level: 'warning',
+    tags: { source: 'cron.poll-payment', alert: 'freekassa_antifraud_hold' },
+    extra: { paymentId: payment.id, providerOrderId },
+  });
+
+  const now = Date.now();
+  const dedupKey = `hold:${payment.id}`;
+  const last = unknownStatusAlertedAt.get(dedupKey) ?? 0;
+  if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
+  pruneUnknownStatusDedup(now);
+  unknownStatusAlertedAt.set(dedupKey, now);
+
+  await notifyOps(
+    `Антифрод-холд Freekassa (статус 7): банк поставил перевод на проверку. ` +
+      `Операция ${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
+      `Деньги у клиента списаны, карта НЕ выпущена — исход решает провайдер. ` +
+      `Обычно разрешается за часы; если висит дольше — запрос в поддержку Freekassa.`,
+  );
+}
+
 async function alertUnknownProviderStatus(
   payment: PaymentRow,
   providerStatus: number,
@@ -226,10 +288,11 @@ async function alertUnknownProviderStatus(
   });
 
   const now = Date.now();
-  const last = unknownStatusAlertedAt.get(payment.id) ?? 0;
+  const dedupKey = `unknown:${payment.id}`;
+  const last = unknownStatusAlertedAt.get(dedupKey) ?? 0;
   if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
   pruneUnknownStatusDedup(now);
-  unknownStatusAlertedAt.set(payment.id, now);
+  unknownStatusAlertedAt.set(dedupKey, now);
 
   // Прямой DM владельцу: Sentry-правила сюда не настроены, а на другом конце —
   // клиент со списанными деньгами и без подписки.

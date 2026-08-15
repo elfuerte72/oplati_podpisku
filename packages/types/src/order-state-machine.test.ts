@@ -5,6 +5,8 @@ import {
   isAllowedTransition,
   OrderTransitionError,
   orderStatus,
+  PURCHASED_ORDER_STATUSES,
+  REFUND_OR_FAILED_ORDER_STATUSES,
   type OrderStatus,
 } from './order-state-machine.ts';
 
@@ -58,6 +60,28 @@ describe('state machine', () => {
     //   refund_requested → refunded | completed
     expect(isAllowedTransition('refund_requested', 'refunded')).toBe(true);
     expect(isAllowedTransition('refund_requested', 'completed')).toBe(true);
+  });
+
+  it('payment_review: вход только из pending_payment, исходы paid/failed/cancelled', () => {
+    // Антифрод-трек (тикет 04): «банк держит перевод» / «клиент говорит, что
+    // оплатил». Заказ с (возможно) зафиксированными деньгами НЕ протухает.
+    expect(isAllowedTransition('pending_payment', 'payment_review')).toBe(true);
+    expect(isAllowedTransition('payment_review', 'paid')).toBe(true);
+    expect(isAllowedTransition('payment_review', 'failed')).toBe(true);
+    expect(isAllowedTransition('payment_review', 'cancelled')).toBe(true);
+
+    // Не протухает и не возникает из черновика: на проверку попадает только
+    // заказ, по которому уже был выставлен счёт.
+    expect(isAllowedTransition('payment_review', 'expired')).toBe(false);
+    expect(isAllowedTransition('ready_for_payment', 'payment_review')).toBe(false);
+    expect(isAllowedTransition('paid', 'payment_review')).toBe(false);
+  });
+
+  it('payment_review — НЕ «покупка состоялась» и НЕ отменённая покупка', () => {
+    // Деньги ещё не подтверждены провайдером: реферальные начисления, счётчики
+    // профиля и выборки «куплено» не должны видеть такой заказ.
+    expect(PURCHASED_ORDER_STATUSES).not.toContain('payment_review');
+    expect(REFUND_OR_FAILED_ORDER_STATUSES).not.toContain('payment_review');
   });
 
   it('OrderTransitionError: поля заполнены', () => {

@@ -29,9 +29,14 @@ import {
   claimRenewalReminder,
   createDraftOrder,
   findExpiredPayableOrders,
+  findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
+import {
+  findPendingPaymentsForPoll,
+  setPaymentProviderStatus,
+} from './repositories/payments.ts';
 import { nextFreekassaNonce } from './repositories/freekassa.ts';
 import {
   createConversation,
@@ -550,6 +555,126 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
     );
     expect(row.referredBy).toBeNull();
     expect(row.referredBySetAt).toBeNull();
+  });
+});
+
+describe('payment_review (антифрод-трек: заказ «на проверке банка»)', () => {
+  it('pending_payment → payment_review → paid проходит через transitionOrder', async () => {
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    const toReview = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'payment_review',
+      actorType: 'payment_provider',
+      payload: { reason: 'antifraud_hold' },
+    });
+    expect(toReview.transitioned).toBe(true);
+
+    // Оплата подтвердилась после холда — обычный путь paid работает и отсюда.
+    const toPaid = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'paid',
+      actorType: 'payment_provider',
+    });
+    expect(toPaid.transitioned).toBe(true);
+    expect(toPaid.order.status).toBe('paid');
+  });
+
+  it('payment_review не достижим из ready_for_payment и не уходит в expired', async () => {
+    const user = await makeUser();
+    const draft = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'integration-test order',
+      amountRub: 50000,
+    });
+    await expect(
+      transitionOrderDetailed(db, { orderId: draft.id, toStatus: 'payment_review' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    await expect(
+      transitionOrderDetailed(db, { orderId: order.id, toStatus: 'expired' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+  });
+
+  it('экспайр НЕ хоронит payment_review даже с истёкшим expires_at', async () => {
+    // Конец истории «оплатил, а получил „срок оплаты истёк“»: заказ с
+    // (возможно) зафиксированными деньгами не протухает по таймеру.
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({
+      userId: user.id,
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const expired = await findExpiredPayableOrders(db);
+    expect(expired.map((o) => o.id)).not.toContain(order.id);
+  });
+
+  it('findStaleOrdersInPaymentReview: старше порога — виден, свежий — нет', async () => {
+    const user = await makeUser();
+    const { order: fresh } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: fresh.id, toStatus: 'payment_review' });
+
+    // Возраст меряется по событию входа в payment_review (append-only journal),
+    // а не по updated_at: тот не трогается переходами. Состарить событие можно
+    // только руками: UPDATE отвергает append-only-триггер (и это правильно),
+    // поэтому на время бэкдейта триггер отключается — симуляция времени, не
+    // обход инварианта в продовом коде.
+    const { order: stale } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: stale.id, toStatus: 'payment_review' });
+    await pg.exec('ALTER TABLE order_events DISABLE TRIGGER order_events_append_only');
+    await db.execute(sql`
+      UPDATE order_events SET created_at = now() - interval '8 days'
+      WHERE order_id = ${stale.id} AND to_status = 'payment_review'
+    `);
+    await pg.exec('ALTER TABLE order_events ENABLE TRIGGER order_events_append_only');
+
+    const found = await findStaleOrdersInPaymentReview(db, {
+      olderThanMs: 7 * 24 * 60 * 60 * 1000,
+    });
+    const ids = found.map((o) => o.id);
+    expect(ids).toContain(stale.id);
+    expect(ids).not.toContain(fresh.id);
+  });
+
+  it('платёж под холдом опрашивается и после 25-часового окна', async () => {
+    // Холд может висеть дольше суток; без исключения в findPendingPaymentsForPoll
+    // такой платёж выпадал бы из добора, и разрешение холда мы бы не увидели.
+    const user = await makeUser();
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    await db.execute(
+      sql`UPDATE payments SET created_at = now() - interval '30 hours' WHERE id = ${payment.id}`,
+    );
+
+    const polled = await findPendingPaymentsForPoll(db);
+    expect(polled.map((p) => p.id)).toContain(payment.id);
+
+    // Контроль: столь же старый платёж обычного pending_payment-заказа в
+    // выборку не попадает — верхняя граница для него работает как раньше.
+    const { payment: ordinary } = await makeOrderWithPendingPayment({ userId: user.id });
+    await db.execute(
+      sql`UPDATE payments SET created_at = now() - interval '30 hours' WHERE id = ${ordinary.id}`,
+    );
+    const polled2 = await findPendingPaymentsForPoll(db);
+    expect(polled2.map((p) => p.id)).not.toContain(ordinary.id);
+  });
+
+  it('setPaymentProviderStatus пишет код и момент опроса', async () => {
+    const user = await makeUser();
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+
+    const rows = await db.execute<{ last_provider_status: number; last_provider_status_at: string | Date }>(
+      sql`SELECT last_provider_status, last_provider_status_at FROM payments WHERE id = ${payment.id}`,
+    );
+    expect(rows[0]?.last_provider_status).toBe(7);
+    expect(rows[0]?.last_provider_status_at).not.toBeNull();
   });
 });
 

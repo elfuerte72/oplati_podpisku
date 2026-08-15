@@ -225,6 +225,20 @@
       "when": 1786794234791,
       "tag": "0031_panoramic_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786795832393,
+      "tag": "0032_clear_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786795843596,
+      "tag": "0033_yellow_triathlon",
+      "breakpoints": true
     }
   ]
 }

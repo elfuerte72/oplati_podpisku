@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 
-import { payments } from '../schema.ts';
+import { orders, payments } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
 import type { PaymentProvider, PaymentStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
@@ -233,6 +233,11 @@ export async function claimPaymentTerminal(
  * сейчас счёт живёт 1 час (`INVOICE_TTL_HOURS`), и запас лишь удлиняет окно
  * добора. Сужать его без нужды не стоит: он ничего не стоит и страхует
  * от долгих провалов крона.
+ *
+ * Исключение из верхней границы — заказ «на проверке банка» (антифрод-трек,
+ * тикет 04): холд может висеть дольше суток, платёж при этом остаётся
+ * `pending` и не хоронится экспайром — без исключения он выпадал бы из опроса
+ * через 25 часов, и разрешение холда мы бы уже не увидели.
  */
 const POLL_BATCH_LIMIT = 50;
 
@@ -243,7 +248,14 @@ export async function findPendingPaymentsForPoll(db: DB): Promise<PaymentRow[]> 
     .where(
       sql`${payments.status} = 'pending'
           AND ${payments.createdAt} < now() - interval '10 minutes'
-          AND ${payments.createdAt} > now() - interval '25 hours'`,
+          AND (
+            ${payments.createdAt} > now() - interval '25 hours'
+            OR EXISTS (
+              SELECT 1 FROM ${orders}
+              WHERE ${orders.id} = ${payments.orderId}
+                AND ${orders.status} = 'payment_review'
+            )
+          )`,
     )
     .orderBy(asc(payments.createdAt))
     .limit(POLL_BATCH_LIMIT);
@@ -369,6 +381,23 @@ export async function findPaymentsByOrderId(db: DB, orderId: string): Promise<Pa
     .from(payments)
     .where(eq(payments.orderId, orderId))
     .orderBy(sql`${payments.createdAt} DESC`);
+}
+
+/**
+ * Записать последний код статуса, увиденный опросом провайдера (антифрод-трек,
+ * тикет 03). Обычный UPDATE — `payments` не append-only; перезапись тем же
+ * кодом безвредна и освежает `last_provider_status_at` (момент опроса).
+ * Дедуп «сообщение клиенту один раз на платёж» читает ПРЕЖНЕЕ значение до
+ * записи нового (пачка 3), поэтому порядок вызова важен вызывающему коду.
+ */
+export async function setPaymentProviderStatus(
+  db: DBLike,
+  input: { paymentId: string; providerStatus: number },
+): Promise<void> {
+  await db
+    .update(payments)
+    .set({ lastProviderStatus: input.providerStatus, lastProviderStatusAt: new Date() })
+    .where(eq(payments.id, input.paymentId));
 }
 
 /**

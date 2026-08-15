@@ -31,6 +31,8 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   expired: 'Истёк срок',
   refund_requested: 'Запрошен возврат',
   refunded: 'Возвращён',
+  // Антифрод-трек (Р6): банк держит перевод / клиент сообщил «оплатил».
+  payment_review: 'Платёж на проверке банка',
 };
 
 export const CARD_STATUS_LABELS: Record<CardStatus, string> = {

@@ -241,4 +241,12 @@ describe('freekassaTerminalReason', () => {
     // нельзя — деньги могли быть приняты.
     expect(freekassaTerminalReason(42)).toBeNull();
   });
+
+  it('антифрод-холд (7) — известный код и НЕ терминальный', () => {
+    // Эмпирический статус, в доке отсутствует, подтверждён поддержкой
+    // 2026-08-14 (инцидент ORD-J6TBP): деньги списаны, банк держит перевод.
+    // Хоронить такой заказ нельзя — исход решает провайдер.
+    expect(FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD).toBe(7);
+    expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD)).toBeNull();
+  });
 });

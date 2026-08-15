@@ -57,6 +57,9 @@ export const orderStatusEnum = pgEnum('order_status', [
   'expired',
   'refund_requested',
   'refunded',
+  // «Платёж на проверке» (антифрод-трек, миграция 0033). Новые значения —
+  // строго в конец: порядок в enum обязан совпадать с порядком ADD VALUE в БД.
+  'payment_review',
 ]);
 
 export const paymentProviderEnum = pgEnum('payment_provider', [
@@ -383,6 +386,11 @@ export const payments = pgTable(
     amountRub: integer('amount_rub').notNull(), // копейки
     status: paymentStatusEnum('status').default('pending').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>(),
+    // Последний код статуса, увиденный опросом провайдера (антифрод-трек,
+    // тикет 03): убирает слепоту «статус жил только в логе и DM». Числовой код
+    // Freekassa (0/1/6/7/8/9); nullable — вебхучные платежи опроса не видели.
+    lastProviderStatus: integer('last_provider_status'),
+    lastProviderStatusAt: timestamp('last_provider_status_at', { withTimezone: true }),
     // Платёж был восстановлен через cron-поллинг, а не webhook — Sentry warning при true
     recoveredViaPolling: boolean('recovered_via_polling').default(false).notNull(),
     // TTL счёта L&P
