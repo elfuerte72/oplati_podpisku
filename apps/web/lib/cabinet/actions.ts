@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import {
   appendOrderEvent,
   findCardByIdForUser,
+  findPaymentsByOrderId,
   findPendingPaymentByOrderId,
   getDb,
   getOrderById,
@@ -12,25 +13,38 @@ import {
   getServiceById,
   getUserProfileById,
   hasRecentOrderEvent,
+  transitionOrder,
 } from '@oplati/db';
-import { orderParameters } from '@oplati/types';
+import { orderParameters, OrderTransitionError } from '@oplati/types';
 
+import { EMAIL_REQUIRED_TEXT } from '../contacts/email.ts';
+import { PHONE_REQUIRED_FALLBACK_TEXT, phoneRequiredText } from '../contacts/phone.ts';
 import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import {
   confirmOrder,
   aboveMaxAmountText,
+  EmailRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
+  PhoneRequiredError,
   TelegramLinkRequiredError,
 } from '../tool-handlers/confirm-order.ts';
 import { proposeFromCatalog } from '../catalog/propose.ts';
-import { buildPaymentIssueOperatorMessage } from '../telegram/templates.ts';
+import {
+  buildPaymentIssueOperatorMessage,
+  buildPaymentProblemOperatorMessage,
+} from '../telegram/templates.ts';
 import { sendToSupportOperator } from '../telegram/support.ts';
-import type { PaymentIssueType } from './payment-issues.ts';
+import {
+  PAYMENT_PROBLEM_EVENT,
+  type PaymentIssueType,
+  type PaymentProblemType,
+} from './payment-issues.ts';
 import {
   CARD_STATUS_LABELS,
+  ORDER_STATUS_LABELS,
   PAYMENT_ISSUE_EVENT,
   SUBSCRIPTION_ACTIVATED_EVENT,
   isPayableStatus,
@@ -52,8 +66,17 @@ export type PayOrderResult =
   | { ok: true; paymentUrl: string; qrPayload: string | null; expiresAt: string | null }
   | {
       ok: false;
-      error: 'not_found' | 'not_payable' | 'invoice_unavailable' | 'link_required' | 'failed';
+      error:
+        | 'not_found'
+        | 'not_payable'
+        | 'invoice_unavailable'
+        | 'link_required'
+        | 'email_required'
+        | 'phone_required'
+        | 'failed';
       message: string;
+      /** Порог гейта телефона в целых рублях (только при phone_required). */
+      requiredFromRub?: number | null;
     };
 
 /** Достаёт платёжную ссылку из сохранённого invoice (для уже выставленного счёта). */
@@ -126,6 +149,23 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
         ok: false,
         error: 'link_required',
         message: 'Нужно открыть кабинет из Telegram, чтобы получить ссылку на оплату.',
+      };
+    }
+    // Профиль без почты (антифрод-трек, Р2): плашка контактов в UI не доводит
+    // до этого — гейт ловит старые клиенты/обходы. UI покажет поле почты.
+    if (err instanceof EmailRequiredError) {
+      return { ok: false, error: 'email_required', message: EMAIL_REQUIRED_TEXT };
+    }
+    // Гейт телефона (тикет 05): UI покажет поле в плашке; порог — в message.
+    if (err instanceof PhoneRequiredError) {
+      return {
+        ok: false,
+        error: 'phone_required',
+        requiredFromRub: err.requiredFromRub,
+        message:
+          err.requiredFromRub !== null
+            ? phoneRequiredText(err.requiredFromRub)
+            : PHONE_REQUIRED_FALLBACK_TEXT,
       };
     }
     // Тех. сбой транспорта до L&P — заказ жив, честный текст вместо generic.
@@ -318,6 +358,169 @@ export async function reportPaymentIssue(
   } catch (err) {
     log.error({ event: 'cabinet.payment_issue.failed', orderId, err });
     Sentry.captureException(err, { tags: { source: 'cabinet.payment_issue' }, extra: { orderId } });
+    return {
+      ok: false,
+      error: 'failed',
+      message: 'Не получилось отправить. Попробуй ещё раз через минуту.',
+    };
+  }
+}
+
+// ─── «Проблема с оплатой» — фаза ДО выпуска карты (тикет 10) ──────────────
+
+/** Окно дедупликации: новые типы порождают статусный переход и разбор оператором. */
+const PAYMENT_PROBLEM_DEDUP_MS = 60 * 60 * 1000;
+
+/** Свежесть «истёкшего» заказа, по которому ещё принимаем жалобу. */
+const PAYMENT_PROBLEM_EXPIRED_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+export type ReportPaymentProblemResult =
+  | { ok: true; duplicate: boolean; text: string }
+  | { ok: false; error: 'not_found' | 'not_available' | 'failed'; message: string };
+
+const PAYMENT_PROBLEM_CLIENT_TEXT: Record<PaymentProblemType, string> = {
+  not_confirmed:
+    'Передали оператору — проверит в течение дня. Ускорит дело чек об оплате: пришли его в бота командой /support.',
+  refund_request:
+    'Передали оператору — он свяжется с тобой в Telegram. Возврат возможен, пока карта по заказу не выпущена.',
+  other: 'Опиши проблему в боте командой /support — так оператор увидит её быстрее всего.',
+};
+
+/**
+ * Клиент нажал «Проблема с оплатой» на экране заказа ДО выпуска карты.
+ * «Я оплатил, но заказ не подтвердился» переводит заказ «на проверку» (актор
+ * user) — он перестаёт тикать к протуханию; для «истёкшего» статус не трогаем
+ * (переходов из expired нет и не добавляем) — только DM. Возврат — только
+ * руками оператора, автоматики нет (Р8).
+ */
+export async function reportPaymentProblem(
+  userId: string,
+  telegramId: string | null,
+  orderId: string,
+  problemType: PaymentProblemType,
+  comment?: string,
+): Promise<ReportPaymentProblemResult> {
+  const db = getDb();
+  const order = await getOrderById(db, orderId);
+  if (!order || order.userId !== userId) {
+    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
+  }
+  const freshExpired =
+    order.status === 'expired' &&
+    order.expiresAt !== null &&
+    Date.now() - order.expiresAt.getTime() <= PAYMENT_PROBLEM_EXPIRED_MAX_AGE_MS;
+  const allowed =
+    order.status === 'pending_payment' || order.status === 'payment_review' || freshExpired;
+  if (!allowed) {
+    return {
+      ok: false,
+      error: 'not_available',
+      message: 'Эта кнопка работает, пока заказ ждёт оплату или платёж на проверке.',
+    };
+  }
+
+  try {
+    // «Другая проблема» — существующий флоу /support (спека §6.1, пункт 3):
+    // подсказка без DM и событий — в боте оператор увидит описание сразу.
+    if (problemType === 'other') {
+      return { ok: true, duplicate: false, text: PAYMENT_PROBLEM_CLIENT_TEXT.other };
+    }
+
+    const duplicate = await hasRecentOrderEvent(db, {
+      orderId,
+      eventType: PAYMENT_PROBLEM_EVENT,
+      withinMs: PAYMENT_PROBLEM_DEDUP_MS,
+    });
+    if (duplicate) {
+      // Дедуп глушит только DM. Переход «на проверку» при «я оплатил» делаем и
+      // здесь: «хочу возврат» → через 10 минут «я оплатил» не должен оставлять
+      // заказ тикать к протуханию (находка ревью части 4).
+      if (problemType === 'not_confirmed' && order.status === 'pending_payment') {
+        try {
+          await transitionOrder(db, {
+            orderId,
+            toStatus: 'payment_review',
+            actorType: 'user',
+            eventType: PAYMENT_PROBLEM_EVENT,
+            payload: { problemType, reason: 'client_reported', duplicate: true },
+          });
+        } catch (err) {
+          if (!(err instanceof OrderTransitionError)) throw err;
+        }
+      }
+      return { ok: true, duplicate: true, text: PAYMENT_PROBLEM_CLIENT_TEXT[problemType] };
+    }
+
+    // Последний код провайдера (тикет 03) — оператору важно видеть, что там у
+    // Freekassa (7 = холд, 0 = счёт даже не оплачивался).
+    const payments = await findPaymentsByOrderId(db, orderId);
+    const latestPayment = payments[0] ?? null;
+    const [profile, service] = await Promise.all([
+      getUserProfileById(db, userId),
+      order.serviceId ? getServiceById(db, order.serviceId) : Promise.resolve(null),
+    ]);
+
+    // Доставка ПЕРВОЙ, записи после (как у соседнего reportPaymentIssue): если
+    // событие-дедуп записать до сбоя доставки, ретрай клиента в течение часа
+    // упирался бы в «обращение уже у оператора», которого оператор не получал
+    // (находка ревью части 4).
+    const operatorMessage = buildPaymentProblemOperatorMessage({
+      telegramId,
+      displayName: profile?.displayName ?? null,
+      orderShortId: order.shortId,
+      orderStatusLabel: ORDER_STATUS_LABELS[order.status],
+      service: service?.name ?? order.customServiceDescription ?? 'Заказ вне каталога',
+      amountKopecks: order.amountRub,
+      lastProviderStatus: latestPayment?.lastProviderStatus ?? null,
+      lastProviderStatusAt: latestPayment?.lastProviderStatusAt ?? null,
+      problemType,
+      ...(comment !== undefined ? { comment } : {}),
+    });
+    const delivered = await sendToSupportOperator(operatorMessage, { orderId, problemType });
+    if (!delivered) {
+      return {
+        ok: false,
+        error: 'failed',
+        message: 'Не получилось передать оператору. Попробуй ещё раз через пару минут.',
+      };
+    }
+
+    // «Я оплатил» из pending_payment → «на проверке банка»: перестаёт тикать к
+    // протуханию. Переход пишет событие сам (append-only, инвариант 1); в
+    // остальных случаях событие добавляется отдельной строкой.
+    if (problemType === 'not_confirmed' && order.status === 'pending_payment') {
+      try {
+        await transitionOrder(db, {
+          orderId,
+          toStatus: 'payment_review',
+          actorType: 'user',
+          eventType: PAYMENT_PROBLEM_EVENT,
+          payload: { problemType, reason: 'client_reported' },
+        });
+      } catch (err) {
+        // Гонка с poll'ом (заказ уже «на проверке» или ушёл дальше) — обращение
+        // уже у оператора; транзиентный сбой — наверх, в generic-ветку.
+        if (!(err instanceof OrderTransitionError)) throw err;
+        await appendOrderEvent(db, {
+          orderId,
+          eventType: PAYMENT_PROBLEM_EVENT,
+          actorType: 'user',
+          payload: { problemType, transitionSkipped: true },
+        });
+      }
+    } else {
+      await appendOrderEvent(db, {
+        orderId,
+        eventType: PAYMENT_PROBLEM_EVENT,
+        actorType: 'user',
+        payload: { problemType, orderStatus: order.status },
+      });
+    }
+
+    return { ok: true, duplicate: false, text: PAYMENT_PROBLEM_CLIENT_TEXT[problemType] };
+  } catch (err) {
+    log.error({ event: 'cabinet.payment_problem.failed', orderId, err });
+    Sentry.captureException(err, { tags: { source: 'cabinet.payment_problem' }, extra: { orderId } });
     return {
       ok: false,
       error: 'failed',

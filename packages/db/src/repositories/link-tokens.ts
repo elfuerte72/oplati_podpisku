@@ -350,6 +350,29 @@ export async function consumeLinkToken(
             );
           }
 
+          // Контакты плательщика (антифрод-трек, тикеты 01/02): почта вводится
+          // в плашке на САЙТЕ, то есть живёт в веб-строке, — без переноса merge
+          // терял бы её ровно между вводом и выставлением счёта (повторный
+          // confirm после привязки ловил бы 422 email_required). COALESCE —
+          // приоритет у выжившей telegram-строки, как у display_name;
+          // last_seen_ip берём тот, что свежее по last_seen_ip_at.
+          await tx.execute(sql`
+            UPDATE users AS t SET
+              email = COALESCE(t.email, w.email),
+              phone = COALESCE(t.phone, w.phone),
+              last_seen_ip = CASE
+                WHEN w.last_seen_ip_at IS NOT NULL
+                 AND (t.last_seen_ip_at IS NULL OR w.last_seen_ip_at > t.last_seen_ip_at)
+                THEN w.last_seen_ip ELSE t.last_seen_ip END,
+              last_seen_ip_at = CASE
+                WHEN w.last_seen_ip_at IS NOT NULL
+                 AND (t.last_seen_ip_at IS NULL OR w.last_seen_ip_at > t.last_seen_ip_at)
+                THEN w.last_seen_ip_at ELSE t.last_seen_ip_at END,
+              updated_at = now()
+            FROM users AS w
+            WHERE t.id = ${byTelegram.id} AND w.id = ${byWebSession.id}
+          `);
+
           await tx.execute(sql`DELETE FROM users WHERE id = ${byWebSession.id}`);
           merged = true;
         } else {

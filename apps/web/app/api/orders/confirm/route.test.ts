@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   getOrCreateUser: vi.fn(async () => ({ id: 'user-1' })),
   confirmOrder: vi.fn(),
   captureException: vi.fn(),
+  rememberClientIp: vi.fn(async () => {}),
+  updateUserContacts: vi.fn(async () => {}),
   errors: {} as Record<string, unknown>,
 }));
 
@@ -30,7 +32,10 @@ vi.mock('@/lib/ratelimit', () => ({
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
   getOrCreateUserByWebSessionId: h.getOrCreateUser,
+  updateUserContacts: h.updateUserContacts,
 }));
+
+vi.mock('@/lib/contacts/track-ip', () => ({ rememberClientIp: h.rememberClientIp }));
 
 vi.mock('@/lib/chat/session', () => ({
   getOrCreateWebSessionId: h.getOrCreateWebSessionId,
@@ -73,6 +78,57 @@ beforeEach(() => {
     expiresAt: '2026-08-12T12:00:00.000Z',
   });
   h.captureException.mockClear();
+  h.rememberClientIp.mockClear();
+  h.updateUserContacts.mockClear();
+});
+
+describe('контакты плательщика (антифрод-трек, тикеты 01/02)', () => {
+  it('живой запрос освежает last_seen_ip пользователя', async () => {
+    await POST(makeRequest());
+    expect(h.rememberClientIp).toHaveBeenCalledWith(expect.anything(), 'user-1');
+  });
+
+  it('email из плашки сохраняется в профиль ДО выставления счёта', async () => {
+    const res = await POST(makeRequest({ orderId: ORDER_ID, email: '  client@example.com ' }));
+
+    expect(res.status).toBe(200);
+    expect(h.updateUserContacts).toHaveBeenCalledWith(expect.anything(), {
+      userId: 'user-1',
+      email: 'client@example.com',
+    });
+    // Порядок: почта в профиле раньше, чем гейт email_required её прочитает.
+    const saveOrder = h.updateUserContacts.mock.invocationCallOrder[0]!;
+    const confirmCallOrder = h.confirmOrder.mock.invocationCallOrder[0]!;
+    expect(saveOrder).toBeLessThan(confirmCallOrder);
+  });
+
+  it('невалидный email → 400 invalid_email, счёт не создаётся', async () => {
+    const res = await POST(makeRequest({ orderId: ORDER_ID, email: 'не почта' }));
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_email');
+    expect(h.updateUserContacts).not.toHaveBeenCalled();
+    expect(h.confirmOrder).not.toHaveBeenCalled();
+  });
+
+  it('без email в теле профиль не трогаем', async () => {
+    await POST(makeRequest());
+    expect(h.updateUserContacts).not.toHaveBeenCalled();
+  });
+
+  it('профиль без почты (EmailRequiredError) → 422 email_required', async () => {
+    const { EmailRequiredError } = await import('@/lib/tool-handlers/confirm-order');
+    h.confirmOrder.mockRejectedValueOnce(new EmailRequiredError());
+
+    const res = await POST(makeRequest());
+    const json = (await res.json()) as { error: string; text: string };
+
+    expect(res.status).toBe(422);
+    expect(json.error).toBe('email_required');
+    expect(json.text).toContain('почт');
+    // Ожидаемый бизнес-отказ — не шумит в Sentry.
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
 });
 
 describe('инвариант 9 — rate-limit до резолва сессии', () => {

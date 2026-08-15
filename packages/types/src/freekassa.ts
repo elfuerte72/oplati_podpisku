@@ -143,6 +143,11 @@ export const freekassaCreateOrderParamsSchema = z.object({
   ip: z.string().min(1),
   amount: z.number().positive(),
   currency: z.string().min(3).max(10),
+  // Телефон плательщика (антифрод-трек, тикет 07). Опциональный: без номера
+  // ключ отсутствует и в подписи не участвует (`signApiRequest` сортирует
+  // фактические ключи). ⚠️ Параметр в доке провайдера не описан — отправка
+  // за флагом `FREEKASSA_SEND_TEL` до подтверждения живым вызовом.
+  tel: z.string().min(1).optional(),
 });
 export type FreekassaCreateOrderParams = z.infer<typeof freekassaCreateOrderParamsSchema>;
 
@@ -184,11 +189,17 @@ export type FreekassaErrorResponse = z.infer<typeof freekassaErrorResponseSchema
  * Статусы заказа у провайдера (по доке): `0` новый, `1` оплачен, `6` возврат,
  * `8` ошибка, `9` отмена. Приходят числом; принимаем и строку — типы в ответах
  * платёжных API дрейфуют (урок PaySpace).
+ *
+ * `7` — антифрод-холд: ЭМПИРИЧЕСКИЙ код, в документации отсутствует,
+ * подтверждён поддержкой Freekassa 2026-08-14 (инцидент ORD-J6TBP: деньги
+ * списаны по СБП, банк держит перевод на проверке). НЕ терминальный: исход
+ * решает провайдер — оплата подтвердится или уйдёт в отказ/возврат.
  */
 export const FREEKASSA_ORDER_STATUS = {
   NEW: 0,
   PAID: 1,
   REFUND: 6,
+  ANTIFRAUD_HOLD: 7,
   ERROR: 8,
   CANCELLED: 9,
 } as const;

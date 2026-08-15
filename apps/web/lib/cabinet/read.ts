@@ -21,6 +21,7 @@ import {
 } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import { phoneRequirementRub } from '../contacts/phone-gate.ts';
 import { buyerFeePercentForOrder } from '../payments/gateway.ts';
 import { withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
@@ -220,6 +221,7 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
   const profile: CabinetProfile = {
     displayName: profileRow?.displayName ?? null,
     phone: profileRow?.phone ?? null,
+    phoneSource: profileRow?.phoneSource ?? null,
     email: profileRow?.email ?? null,
     telegramLinked: profileRow?.telegramLinked ?? true,
     memberSince: (profileRow?.createdAt ?? new Date()).toISOString(),
@@ -231,6 +233,7 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
     profile,
     orders: orderSummaries,
     cards: cardsWithLiveBalance.map((c) => mapCard(c, purposeForCard(c.id))),
+    phoneRequiredFromRub: phoneRequirementRub(),
   };
 }
 

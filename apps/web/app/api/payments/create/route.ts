@@ -6,6 +6,7 @@ import {
   findPendingPaymentByOrderId,
   getDb,
   getOrderById,
+  getUserPayerContact,
   setOrderExpiresAt,
   transitionOrder,
   upsertPaymentByProviderRef,
@@ -13,6 +14,9 @@ import {
 } from '@oplati/db';
 import { OrderTransitionError } from '@oplati/types';
 
+import { EMAIL_REQUIRED, EMAIL_REQUIRED_TEXT } from '@/lib/contacts/email';
+import { isPhoneRequiredForAmount, PHONE_REQUIRED, phoneRequiredText } from '@/lib/contacts/phone';
+import { notifyPhoneGateBlocked, phoneRequirementRub } from '@/lib/contacts/phone-gate';
 import { serverEnv } from '@/lib/env.server';
 import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
@@ -209,6 +213,43 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Гейт email плательщика (антифрод-трек, Р2: почта обязательна при оплате).
+    // UI до сюда не доводит — плашка контактов не даёт отправить пустое поле;
+    // гейт ловит self-call бота и любые обходы UI. Только НОВЫЕ счета: путь
+    // repeat_confirm (заказ уже в pending_payment) возвращается выше — клиент
+    // со счётом, выставленным до фичи, должен спокойно доплатить.
+    const payerContact = await getUserPayerContact(db, order.userId);
+    if (!payerContact?.email) {
+      log.warn({ event: 'payments.create.email_required', orderId });
+      return NextResponse.json(
+        { ok: false, error: EMAIL_REQUIRED, message: EMAIL_REQUIRED_TEXT },
+        { status: 422 },
+      );
+    }
+
+    // Гейт телефона от порога (тикет 05). Сравнение суммы с порогом — общий
+    // `isPhoneRequiredForAmount` (он же в обеих плашках: конверсия рубли→
+    // копейки живёт в одном месте). UI до гейта не доводит (плашка не даст
+    // отправить пустое поле) — ловим self-call бота и обходы UI. Порог —
+    // в теле ответа: клиент показывает его динамически, не из зашитого текста.
+    const phoneThresholdRub = phoneRequirementRub();
+    if (
+      phoneThresholdRub !== null &&
+      isPhoneRequiredForAmount(order.amountRub, phoneThresholdRub) &&
+      !payerContact.phone
+    ) {
+      await notifyPhoneGateBlocked(order, phoneThresholdRub);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: PHONE_REQUIRED,
+          requiredFromRub: phoneThresholdRub,
+          message: phoneRequiredText(phoneThresholdRub),
+        },
+        { status: 422 },
+      );
+    }
+
     // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
     const orderAmountKopecks = order.amountRub;
 
@@ -217,6 +258,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       order,
       amountKopecks: orderAmountKopecks,
       paymentMethod,
+      payerContact,
     });
 
     log.info({

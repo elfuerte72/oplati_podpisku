@@ -401,6 +401,62 @@ export async function findExpiredPayableOrders(db: DB): Promise<OrderRow[]> {
  */
 const STUCK_BATCH_LIMIT = 50;
 
+/**
+ * Возвраты и недоплаты клиента за окно (антифрод-трек, тикет 11) — фундамент
+ * под будущие правила, БЕЗ блокировок сегодня. Считает по СУЩЕСТВУЮЩИМ данным
+ * (`order_events` + `orders`), новых таблиц нет:
+ *   - недоплата (`payment_amount_mismatch`);
+ *   - возврат у провайдера (терминальные события с providerStatus=6);
+ *   - заказы, дошедшие до `refunded`.
+ */
+export async function countRefundishHistoryByUser(
+  db: DB,
+  input: { userId: string; withinDays: number },
+): Promise<number> {
+  const cutoff = new Date(Date.now() - input.withinDays * 24 * 60 * 60 * 1000);
+  const rows = await db.execute<{ count: number }>(sql`
+    SELECT count(*)::int AS count
+    FROM ${orderEvents}
+    JOIN ${orders} ON ${orders.id} = ${orderEvents.orderId}
+    WHERE ${orders.userId} = ${input.userId}
+      AND ${orderEvents.createdAt} > ${cutoff}
+      AND (
+        ${orderEvents.eventType} = 'payment_amount_mismatch'
+        OR (${orderEvents.payload} ->> 'providerStatus') = '6'
+        OR ${orderEvents.toStatus} = 'refunded'
+      )
+  `);
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Заказы, залипшие «на проверке банка» дольше порога (антифрод-трек, тикет 04):
+ * предохранитель от вечного `payment_review` — DM владельцу, БЕЗ автозакрытия
+ * (исход решает провайдер/оператор, автомат здесь потерял бы деньги клиента).
+ *
+ * Возраст меряется по событию входа в статус (`order_events.to_status =
+ * 'payment_review'`, append-only журнал): `orders.updated_at` переходами не
+ * трогается, а полагаться на него значило бы сбрасывать таймер любым UPDATE.
+ */
+export async function findStaleOrdersInPaymentReview(
+  db: DB,
+  input: { olderThanMs: number },
+): Promise<OrderRow[]> {
+  const cutoff = new Date(Date.now() - input.olderThanMs);
+  return await db
+    .select()
+    .from(orders)
+    .where(
+      sql`${orders.status} = 'payment_review' AND (
+        SELECT max(${orderEvents.createdAt}) FROM ${orderEvents}
+        WHERE ${orderEvents.orderId} = ${orders.id}
+          AND ${orderEvents.toStatus} = 'payment_review'
+      ) < ${cutoff}`,
+    )
+    .orderBy(asc(orders.createdAt))
+    .limit(STUCK_BATCH_LIMIT);
+}
+
 export async function findStuckPaidOrders(
   db: DB,
   input: { olderThanMs: number },

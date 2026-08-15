@@ -9,9 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Pay = {
   id: string;
+  orderId?: string;
   provider: string;
   providerRef: string;
   providerInvoiceNumber: string | null;
+  lastProviderStatus?: number | null;
 };
 
 const h = vi.hoisted(() => ({
@@ -27,6 +29,9 @@ const h = vi.hoisted(() => ({
   lnpTerminalMock: vi.fn((..._args: unknown[]) => Promise.resolve({ kind: 'processed' })),
   fkPaidMock: vi.fn((..._args: unknown[]) => Promise.resolve({ kind: 'processed' })),
   fkTerminalMock: vi.fn((..._args: unknown[]) => Promise.resolve({ kind: 'processed' })),
+  setProviderStatusMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  transitionOrderMock: vi.fn((..._args: unknown[]) => Promise.resolve({})),
+  botSendMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -34,6 +39,14 @@ vi.mock('@oplati/db', () => ({
   findPendingPaymentsForPoll: vi.fn(async () => h.pending),
   findStuckPaidOrders: vi.fn(async () => []),
   findStuckInFulfillmentOrders: vi.fn(async () => []),
+  setPaymentProviderStatus: h.setProviderStatusMock,
+  transitionOrder: h.transitionOrderMock,
+  getOrderById: vi.fn(async () => ({ id: 'order-1', userId: 'user-1', status: 'payment_review' })),
+  getUserTelegramId: vi.fn(async () => '555'),
+}));
+
+vi.mock('../telegram/bot.ts', () => ({
+  getBot: () => ({ api: { sendMessage: h.botSendMock } }),
 }));
 
 vi.mock('../pay-space/index.ts', () => ({
@@ -64,6 +77,7 @@ vi.mock('../loveandpay/handlers.ts', () => ({
 
 vi.mock('./proxy-health.ts', () => ({ alertOnLoveAndPayProxyDown: vi.fn(async () => {}) }));
 vi.mock('./payment-conversion.ts', () => ({ alertOnZeroPaymentConversion: vi.fn(async () => {}) }));
+vi.mock('./payment-review-watch.ts', () => ({ alertOnStalePaymentReview: vi.fn(async () => {}) }));
 vi.mock('./vcc-balance.ts', () => ({ alertOnLowVccBalance: vi.fn(async () => {}) }));
 vi.mock('./issue-card.ts', () => ({ issueCard: vi.fn(async () => {}) }));
 
@@ -77,9 +91,11 @@ import { resetUnknownStatusAlertDedupForTests } from './poll-payment-one.ts';
 
 const FK_PAYMENT: Pay = {
   id: 'pay-fk',
+  orderId: 'order-1',
   provider: 'freekassa',
   providerRef: '123',
   providerInvoiceNumber: 'ORD-S3MGS-a1b2c3',
+  lastProviderStatus: null,
 };
 
 const LNP_PAYMENT: Pay = {
@@ -361,10 +377,26 @@ describe('pollPayments — добор по провайдерам', () => {
   });
 
   it('неизвестный статус провайдера поднимает тревогу владельцу (инцидент 14.08)', async () => {
-    // Клиент оплатил 11 680 ₽ по СБП, Freekassa вернула status 7 — кода нет ни в
-    // их документации (0/1/6/8/9), ни в фильтрах кабинета. Мы правильно не
-    // выдали карту, но и НЕ сказали никому: узнали от клиента. Такой платёж —
-    // деньги, зависшие между банком и провайдером, и это нельзя пропускать.
+    // Инцидент 14.08: клиент оплатил, Freekassa вернула код вне документации.
+    // Статус 7 с тех пор опознан как антифрод-холд (свой тест ниже) — ветку
+    // неизвестных кодов держим живой на СЛЕДУЮЩИЙ сюрприз провайдера.
+    h.pending = [FK_PAYMENT];
+    h.findOrderMock.mockResolvedValue(fkOrder(13));
+
+    await pollPayments();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+    const text = String(vi.mocked(notifyOps).mock.calls[0]?.[0]);
+    expect(text).toContain('13');
+    expect(text).toContain('123');
+    // Карту не выдаём: статус не «оплачен».
+    expect(h.fkPaidMock).not.toHaveBeenCalled();
+  });
+
+  it('антифрод-холд (7): DM говорит про холд, а не «неизвестный статус»', async () => {
+    // Тикет 03: код 7 опознан (эмпирически, подтверждён поддержкой 2026-08-14).
+    // Владелец должен видеть операционную ситуацию с известным следующим шагом,
+    // а не тревогу о контрактном дрейфе.
     h.pending = [FK_PAYMENT];
     h.findOrderMock.mockResolvedValue(fkOrder(7));
 
@@ -372,10 +404,81 @@ describe('pollPayments — добор по провайдерам', () => {
 
     expect(notifyOps).toHaveBeenCalledTimes(1);
     const text = String(vi.mocked(notifyOps).mock.calls[0]?.[0]);
-    expect(text).toContain('7');
-    expect(text).toContain('123');
-    // Карту не выдаём: статус не «оплачен».
+    expect(text).toContain('нтифрод-холд');
+    expect(text).not.toContain('нет в её документации');
+    // Не терминален и не оплачен: заказ не трогаем.
     expect(h.fkPaidMock).not.toHaveBeenCalled();
+    expect(h.fkTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it('повторные прогоны холда не дублируют DM (прежний дедуп)', async () => {
+    h.pending = [FK_PAYMENT];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+    await pollPayments();
+
+    expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('первый холд: заказ уходит «на проверку», клиент получает автосообщение', async () => {
+    // Тикет 09: прежний снимок статуса не 7 → это ПЕРВОЕ обнаружение.
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(h.transitionOrderMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'order-1',
+        toStatus: 'payment_review',
+        actorType: 'payment_provider',
+      }),
+    );
+    expect(h.botSendMock).toHaveBeenCalledTimes(1);
+    const text = String(h.botSendMock.mock.calls[0]?.[1]);
+    expect(text).toContain('провер');
+    expect(text).toContain('/support');
+  });
+
+  it('повторный опрос того же холда клиента НЕ спамит (дедуп по прежнему статусу)', async () => {
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: 7 }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(h.transitionOrderMock).not.toHaveBeenCalled();
+    expect(h.botSendMock).not.toHaveBeenCalled();
+  });
+
+  it('каждый опрос Freekassa сохраняет увиденный статус в платёж (тикет 03)', async () => {
+    // Снимок кода в payments убирает слепоту «статус жил только в логе и DM» —
+    // и служит дедупом автосообщения клиенту о холде (пачка 3).
+    for (const status of [0, 7]) {
+      vi.clearAllMocks();
+      resetUnknownStatusAlertDedupForTests();
+      h.pending = [FK_PAYMENT];
+      h.findOrderMock.mockResolvedValue(fkOrder(status));
+
+      await pollPayments();
+
+      expect(h.setProviderStatusMock).toHaveBeenCalledWith(expect.anything(), {
+        paymentId: 'pay-fk',
+        providerStatus: status,
+      });
+    }
+  });
+
+  it('сбой записи снимка статуса не мешает добору оплаты', async () => {
+    h.pending = [FK_PAYMENT];
+    h.setProviderStatusMock.mockRejectedValueOnce(new Error('db hiccup'));
+    h.findOrderMock.mockResolvedValue(fkOrder(1));
+
+    const res = await pollPayments();
+
+    expect(res.recovered).toBe(1);
+    expect(h.fkPaidMock).toHaveBeenCalledTimes(1);
   });
 
   it('брошенный счёт (статус «Новый») владельца не беспокоит', async () => {
@@ -406,7 +509,7 @@ describe('pollPayments — добор по провайдерам', () => {
     // Крон бежит каждые 5 минут, а зависший платёж живёт до вмешательства
     // человека — без дедупа владелец получал бы сообщение 12 раз в час.
     h.pending = [FK_PAYMENT];
-    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.findOrderMock.mockResolvedValue(fkOrder(13));
 
     await pollPayments();
     await pollPayments();

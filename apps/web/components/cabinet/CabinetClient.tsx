@@ -24,13 +24,16 @@ import {
   doMarkSubscriptionPaid,
   doPay,
   doReportPaymentIssue,
+  doReportPaymentProblem,
+  doUpdateContacts,
   fetchCardDetails,
   fetchOrderDetail,
   fetchSnapshot,
   type OrderDetail,
   type Snapshot,
 } from './cabinet-api';
-import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import { ProfileView } from './ProfileView';
+import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
@@ -100,7 +103,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const [phase, setPhase] = useState<Phase>(previewSnapshot ? 'ready' : 'loading');
   const [errorText, setErrorText] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(previewSnapshot ?? null);
-  const [view, setView] = useState<'list' | 'detail' | 'referral' | 'catalog'>('list');
+  const [view, setView] = useState<'list' | 'detail' | 'referral' | 'catalog' | 'profile'>('list');
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<'pay' | null>(null);
@@ -128,6 +131,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // `tgRef.current` в рендере: ref читать при рендере нельзя (и он всё равно
   // пуст на первом проходе — кнопка не появилась бы после загрузки SDK).
   const [canCloseApp, setCanCloseApp] = useState(false);
+  // requestContact есть не во всех клиентах Telegram (Bot API 6.9+) — как и
+  // close(), фиксируем в state: ref в рендере читать нельзя.
+  const [canRequestContact, setCanRequestContact] = useState(false);
 
   // ─── Инициализация: SDK Telegram → snapshot ──────────────────────────────
   useEffect(() => {
@@ -144,6 +150,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       initDataRef.current = tg.initData;
       setInitData(tg.initData);
       setCanCloseApp(typeof tg.close === 'function');
+      setCanRequestContact(typeof tg.requestContact === 'function');
       try {
         tg.ready();
         tg.expand();
@@ -270,6 +277,25 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     [detail, refreshDetail],
   );
 
+  // «Проблема с оплатой» — фаза до выпуска (тикет 10): после отправки
+  // перечитываем деталь (для «я оплатил» статус станет «на проверке банка»).
+  const reportPaymentProblem = useCallback(
+    async (problemType: PaymentProblemType, comment?: string) => {
+      if (!detail) {
+        return { ok: false as const, error: 'no_order', message: 'Заказ не открыт.' };
+      }
+      const res = await doReportPaymentProblem(
+        initDataRef.current,
+        detail.orderId,
+        problemType,
+        comment,
+      );
+      if (res.ok) void refreshDetail(detail.orderId);
+      return res;
+    },
+    [detail, refreshDetail],
+  );
+
   // «Подписка оплачена» — фиксируем подтверждение клиента и обновляем деталь.
   const confirmSubscriptionPaid = useCallback(async () => {
     if (!detail) {
@@ -280,11 +306,11 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return res;
   }, [detail, refreshDetail]);
 
-  const onPay = useCallback(async () => {
+  const onPay = useCallback(async (contactsToSend: { email?: string; phone?: string }) => {
     if (!detail) return;
     setBusy('pay');
     setActionMsg(null);
-    const res = await doPay(initDataRef.current, detail.orderId);
+    const res = await doPay(initDataRef.current, detail.orderId, contactsToSend);
     setBusy(null);
     if (res.ok) {
       setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
@@ -311,6 +337,37 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const contactSupport = useCallback(() => {
     tgRef.current?.close?.();
   }, []);
+
+  // «Взять из Telegram» (тикет 06): requestContact НЕ отдаёт номер приложению —
+  // Telegram доставляет его боту contact-сообщением, бот сохраняет с источником
+  // 'telegram'. Поэтому после «поделился» перечитываем снапшот с небольшой
+  // паузой (номер едет через webhook бота).
+  const requestTelegramPhone = useCallback(() => {
+    const tg = tgRef.current;
+    if (!tg?.requestContact) {
+      setNotice('Обнови Telegram или введи номер вручную.');
+      return;
+    }
+    tg.requestContact((shared) => {
+      if (!shared) return;
+      window.setTimeout(() => {
+        void reloadSnapshot();
+      }, 1500);
+    });
+  }, [reloadSnapshot]);
+
+  // Сохранение контактов с экрана «Профиль» (тикет 08).
+  const saveProfileContacts = useCallback(
+    async (contacts: { email?: string; phone?: string }) => {
+      const res = await doUpdateContacts(initDataRef.current, contacts);
+      if (res.ok) {
+        void reloadSnapshot();
+        return { ok: true as const };
+      }
+      return { ok: false as const, message: res.message };
+    },
+    [reloadSnapshot],
+  );
 
   // Тактильный отклик онбординга (необязателен — только в новых клиентах TG).
   const introHaptic = useCallback((kind: 'tick' | 'success') => {
@@ -376,6 +433,12 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           hasActiveCard={snapshot.cards.some((c) => c.status === 'active')}
           busy={busy}
           message={actionMsg}
+          // Prefill плашки контактов (тикеты 02/05) — из profile снапшота.
+          savedEmail={snapshot.profile.email}
+          savedPhone={snapshot.profile.phone}
+          phoneSource={snapshot.profile.phoneSource}
+          phoneRequiredFromRub={snapshot.phoneRequiredFromRub}
+          onRequestTelegramPhone={canRequestContact ? requestTelegramPhone : undefined}
           onBack={() => {
             activeOrderIdRef.current = null;
             setView('list');
@@ -386,6 +449,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           onPay={onPay}
           onOpenExternalLink={openExternalLink}
           onReportIssue={reportIssue}
+          onReportPaymentProblem={reportPaymentProblem}
           onSubscriptionPaid={confirmSubscriptionPaid}
           // Закрываем Mini App — пользователь оказывается в чате бота, где
           // работает /support. Своего канала связи у кабинета нет, а оставлять
@@ -399,6 +463,27 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   if (view === 'referral') {
     return <PartnerCabinet initData={initData} onBack={() => setView('list')} />;
+  }
+
+  // Экран «Профиль» (тикет 08): правка контактов вне заказа.
+  if (view === 'profile') {
+    return (
+      <main className="mx-auto w-full max-w-md p-4">
+        <ProfileView
+          // key: перезаход в форму при изменении контактов на сервере — после
+          // «Взять из Telegram» номер приходит через бота и reloadSnapshot,
+          // а useState в форме сам по пропу не переинициализируется.
+          key={`${snapshot.profile.email ?? ''}|${snapshot.profile.phone ?? ''}`}
+          profile={snapshot.profile}
+          onBack={() => {
+            setView('list');
+            void reloadSnapshot();
+          }}
+          onSave={saveProfileContacts}
+          onRequestTelegramPhone={canRequestContact ? requestTelegramPhone : undefined}
+        />
+      </main>
+    );
   }
 
   // Кнопочный каталог: выбор сервиса → заказ → экран заказа с кнопкой «Оплатить».
@@ -492,6 +577,23 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         onOpenExternalLink={openExternalLink}
         onOpenIssueOrder={issueOrderId ? () => void openOrder(issueOrderId) : undefined}
       />
+
+      {/* Профиль: правка контактов (почта/телефон) вне заказа — тикет 08. */}
+      <button
+        type="button"
+        onClick={() => {
+          setCardDetails(null);
+          setNotice(null);
+          setView('profile');
+        }}
+        className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+      >
+        <IconSend size={22} className="shrink-0 text-[var(--color-teal-light)]" />
+        <span className="flex-1 font-display text-[15px] font-bold text-[var(--text)]">
+          Профиль и контакты
+        </span>
+        <IconArrowRight size={18} className="shrink-0 text-[var(--text-muted)]" />
+      </button>
 
       {/* Отдельная кнопка на реферальную программу. */}
       <button

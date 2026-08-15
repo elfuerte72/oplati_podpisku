@@ -20,12 +20,15 @@ import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   aboveMaxAmountText,
   confirmOrder,
+  EmailRequiredError,
+  PhoneRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
 } from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
+import { askForContactBeforeInvoice } from './contact-flow';
 import { getBot } from './bot';
 import { resolveCallbackContext, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely, showOrEdit, withTypingIndicator } from './send';
@@ -40,6 +43,7 @@ import {
   catalogTierPrompt,
   buildBuyerFeeLine,
   orderCardText,
+  PAYMENT_PENDING_HINT,
 } from './templates';
 
 /**
@@ -395,6 +399,28 @@ export async function handleOrderActionCallback(
         await sendSafely(chatId, PROVIDER_UNAVAILABLE_TEXT, updateId);
         return;
       }
+      // Сумма от порога, а номера в профиле нет (тикет 06): reply-кнопка
+      // request_contact, счёт выставится после получения контакта.
+      if (err instanceof PhoneRequiredError) {
+        await askForContactBeforeInvoice({
+          ctx,
+          chatId,
+          orderId,
+          thresholdRub: err.requiredFromRub,
+          updateId,
+        });
+        return;
+      }
+      // Профиль без почты (антифрод-трек, Р2): в чате бота поля ввода нет —
+      // ведём в кабинет, где на экране заказа есть плашка контактов.
+      if (err instanceof EmailRequiredError) {
+        await sendSafely(
+          chatId,
+          'Почти готово! Для выставления счёта нужна почта для связи по заказу. Открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню), укажи почту на экране заказа — и оплата откроется там же.',
+          updateId,
+        );
+        return;
+      }
       // Generic-ветка. Оператора здесь никто не зовёт (в коде только Sentry),
       // поэтому и обещать его нельзя — обещание контакта, которого не будет,
       // хуже честного «попробуй ещё раз».
@@ -415,6 +441,7 @@ export async function handleOrderActionCallback(
     const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());
     if (feeLine) replyParts.push(feeLine);
     replyParts.push(`Счёт действует до ${formatExpires(confirmResult.expiresAt)}.`);
+    replyParts.push(PAYMENT_PENDING_HINT);
     const reply = replyParts.join('\n\n');
 
     await sendSafely(chatId, reply, updateId);

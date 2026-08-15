@@ -399,6 +399,15 @@ export type CardStatus = z.infer<typeof cardStatus>;
 export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);
 export type PaymentStatus = z.infer<typeof paymentStatus>;
 
+/**
+ * Источник телефона плательщика (антифрод-трек, тикет 05): `telegram` — номер
+ * отдал сам Telegram (верифицированный requestContact / reply-кнопка бота),
+ * `manual` — клиент ввёл руками (сверке и оператору важно различать: ручной
+ * слабее как доказательство — опечатки, чужой номер).
+ */
+export const phoneSource = z.enum(['telegram', 'manual']);
+export type PhoneSource = z.infer<typeof phoneSource>;
+
 export const attachmentKind = z.enum([
   'payment_proof',
   'kyc',

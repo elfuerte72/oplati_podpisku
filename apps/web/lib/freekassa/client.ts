@@ -60,6 +60,8 @@ export type CreateOrderInput = {
   /** Способ оплаты (`i`): 44 — СБП, 36 — карты РФ. */
   methodId: number;
   currency?: string;
+  /** Телефон плательщика E.164 (тикет 07); не передан → ключ не уходит вовсе. */
+  tel?: string;
 };
 
 export class FreekassaClient {
@@ -95,6 +97,9 @@ export class FreekassaClient {
         ip: input.ip,
         amount: kopecksToRubleAmount(input.amountKopecks),
         currency: input.currency ?? 'RUB',
+        // spread-условие, а не `tel: undefined`: ключ с undefined попал бы в
+        // Object.keys подписи и разошёлся бы с JSON-телом (там его нет).
+        ...(input.tel !== undefined ? { tel: input.tel } : {}),
       });
 
       // signature считается по params БЕЗ самого поля signature и добавляется

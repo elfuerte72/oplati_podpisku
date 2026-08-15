@@ -31,6 +31,8 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   expired: 'Истёк срок',
   refund_requested: 'Запрошен возврат',
   refunded: 'Возвращён',
+  // Антифрод-трек (Р6): банк держит перевод / клиент сообщил «оплатил».
+  payment_review: 'Платёж на проверке банка',
 };
 
 export const CARD_STATUS_LABELS: Record<CardStatus, string> = {
@@ -64,6 +66,8 @@ export const PURCHASED_STATUSES: readonly OrderStatus[] = PURCHASED_ORDER_STATUS
 export type CabinetProfile = {
   displayName: string | null;
   phone: string | null;
+  /** Откуда номер (антифрод-трек): 'telegram' | 'manual' | null. */
+  phoneSource: string | null;
   email: string | null;
   telegramLinked: boolean;
   memberSince: string;
@@ -169,4 +173,10 @@ export type CabinetSnapshot = {
   profile: CabinetProfile;
   orders: OrderSummary[];
   cards: CardView[];
+  /**
+   * Порог «телефон обязателен» в целых рублях (антифрод-трек, тикет 05);
+   * null — фича выключена. Плашка показывает поле телефона по нему — порог
+   * живёт в env, UI получает его отсюда (инвариант 10: не зашивать в тексты).
+   */
+  phoneRequiredFromRub: number | null;
 };

@@ -42,7 +42,16 @@ export type ChatCard =
        */
       buyerFeePercent: number;
     }
-  | { type: 'payment'; paymentUrl: string; qrPayload: string | null; expiresAt: string }
+  // orderId — для кнопки «Проблема с оплатой?» под платёжной карточкой
+  // (тикет 10); у карточек из AI tool-calls его нет (не парсится) — кнопка
+  // тогда не показывается.
+  | {
+      type: 'payment';
+      paymentUrl: string;
+      qrPayload: string | null;
+      expiresAt: string;
+      orderId?: string;
+    }
   | { type: 'operator'; slaHours: number }
   // Гейт привязки: confirm_order отклонён, у веб-пользователя нет Telegram.
   | { type: 'telegram_link'; orderId: string | null };

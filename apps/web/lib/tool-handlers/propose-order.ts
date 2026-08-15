@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/nextjs';
 
 import {
   countRecentOrdersByUser,
+  countRefundishHistoryByUser,
   createDraftOrder,
   findActiveByUserId,
   getDb,
@@ -11,6 +12,8 @@ import {
 } from '@oplati/db';
 import type { ProposeOrderResult } from '@oplati/agent';
 
+import { DedupWindow } from '../alerts/dedup-window.ts';
+import { notifyOps } from '../alerts/notify-ops.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { orderFloorRub } from '../payments/gateway.ts';
@@ -106,6 +109,37 @@ const HIGH_VALUE_MAX_AMOUNT_USD_CENTS = 120_000;
 const MAX_ORDERS_PER_WINDOW = 10;
 const ORDERS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// Учёт возвратов (тикет 11): окно истории и дедуп DM (серия заказов одного
+// клиента не должна спамить личку — одного сообщения в сутки достаточно).
+const REFUND_HISTORY_WINDOW_DAYS = 180;
+const refundHistoryDmDedup = new DedupWindow(24 * 60 * 60 * 1000);
+
+/** Только для unit-тестов. */
+export function resetRefundHistoryDedupForTests(): void {
+  refundHistoryDmDedup.resetForTests();
+}
+
+/** DM оператору о ненулевой истории возвратов клиента. Never-throw. */
+export async function notifyRefundHistoryIfAny(userId: string): Promise<void> {
+  try {
+    const count = await countRefundishHistoryByUser(getDb(), {
+      userId,
+      withinDays: REFUND_HISTORY_WINDOW_DAYS,
+    });
+    if (count === 0) return;
+    log.warn({ event: 'tool.propose_order.refund_history', userId, count });
+    if (!refundHistoryDmDedup.shouldSend(userId)) return;
+    await notifyOps(
+      `К сведению: клиент с историей возвратов оформляет новый заказ — ` +
+        `${count} возврат(ов)/недоплат за последние ${REFUND_HISTORY_WINDOW_DAYS} дней. ` +
+        `Блокировок нет (правил пока не строим) — просто держи в поле зрения.`,
+    );
+  } catch (err) {
+    log.error({ event: 'tool.propose_order.refund_history_failed', userId, err });
+    Sentry.captureException(err, { tags: { source: 'tool.propose_order', step: 'refund_history' } });
+  }
+}
+
 export async function proposeOrder(input: {
   serviceId?: string;
   customDescription?: string;
@@ -188,6 +222,13 @@ export async function proposeOrder(input: {
         'продолжить с оператором (request_human).',
     );
   }
+
+  // Учёт возвратов (антифрод-трек, тикет 11): ненулевая история возвратов/
+  // недоплат за 180 дней → DM оператору (информирование, НЕ блокировка —
+  // порогов не вводим, спека «не-цели»: скоринг не строим). Best-effort и
+  // ПОСЛЕ cap-гейта: телеметрия не должна ни ронять заказ, ни жечь запросы
+  // на срезанном абьюзе.
+  await notifyRefundHistoryIfAny(userId);
 
   let resolvedServiceId: string | null = null;
   let serviceRequiresKyc = false;

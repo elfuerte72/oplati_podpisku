@@ -25,6 +25,10 @@ export const orderStatus = z.enum([
   'expired',
   'refund_requested',
   'refunded',
+  // «Платёж на проверке» (антифрод-трек, Р6): банк держит перевод (poll увидел
+  // холд провайдера) или клиент говорит «оплатил, а заказ не подтвердился».
+  // Заказ НЕ протухает по таймеру; исход решает провайдер/оператор.
+  'payment_review',
 ]);
 
 export type OrderStatus = z.infer<typeof orderStatus>;
@@ -94,7 +98,9 @@ export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   // orders.expires_at — черновик хоронит cron expire-payments или гейт
   // payments-create; вечно оплатимый заказ по устаревшему курсу — дыра в марже.
   ready_for_payment: ['pending_payment', 'cancelled', 'expired'],
-  pending_payment: ['paid', 'expired', 'cancelled', 'failed'],
+  // → payment_review: банк поставил перевод на проверку (акторы:
+  // payment_provider — poll увидел холд; user — кнопка «я оплатил»).
+  pending_payment: ['paid', 'expired', 'cancelled', 'failed', 'payment_review'],
   paid: ['in_fulfillment', 'failed', 'refund_requested'],
   in_fulfillment: ['completed', 'failed'],
   completed: ['refund_requested'],
@@ -103,6 +109,11 @@ export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   refunded: [],
   cancelled: [],
   expired: [],
+  // Заказ с (возможно) зафиксированными деньгами: НЕ протухает (`expired`
+  // недостижим намеренно — конец истории «оплатил, а получил „срок истёк“»),
+  // исходы — оплата подтвердилась / отказ / отмена. Залипший дольше 7 дней
+  // алертится DM владельцу без автозакрытия (poll-payment).
+  payment_review: ['paid', 'failed', 'cancelled'],
 };
 
 export function isAllowedTransition(from: OrderStatus, to: OrderStatus): boolean {

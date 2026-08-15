@@ -2,7 +2,7 @@ import 'server-only';
 
 import { randomBytes } from 'node:crypto';
 
-import { getDb, getUserTelegramId, type OrderRow } from '@oplati/db';
+import { getDb, getUserPayerContact, type OrderRow, type UserPayerContact } from '@oplati/db';
 import {
   FREEKASSA_METHOD_CARD_RUB,
   FREEKASSA_METHOD_SBP,
@@ -159,6 +159,11 @@ export type CreateInvoiceInput = {
   /** Сумма заказа в копейках (уже провалидирована вызывающим кодом). */
   amountKopecks: number;
   paymentMethod?: 'sbp' | 'card' | undefined;
+  /**
+   * Контакты плательщика, если вызывающий код их уже прочитал (гейт
+   * `email_required` в payments/create). Не переданы → gateway сходит в БД сам.
+   */
+  payerContact?: UserPayerContact | null | undefined;
 };
 
 /**
@@ -333,13 +338,22 @@ async function createFreekassaInvoice(input: CreateInvoiceInput): Promise<Gatewa
   // а поиск платежа по MERCHANT_ORDER_ID остаётся однозначным.
   const paymentId = `${order.shortId}-${randomBytes(3).toString('hex')}`;
 
+  const contact =
+    input.payerContact !== undefined
+      ? input.payerContact
+      : await getUserPayerContact(getDb(), order.userId);
+
   const response = await getFreekassaClient().createOrder({
     paymentId,
     amountKopecks,
-    email: await payerEmailForOrder(order),
-    ip: serverEnv.FREEKASSA_FALLBACK_IP,
+    email: payerEmailForOrder(order, contact),
+    ip: payerIpForOrder(order, contact),
     methodId: freekassaMethodId(paymentMethod),
     currency: 'RUB',
+    // Телефон плательщика (тикет 07): при ЛЮБОЙ сумме, раз номер уже в профиле.
+    // За флагом FREEKASSA_SEND_TEL (дефолт выкл): параметр в доке не описан,
+    // контракт сначала подтверждается живым вызовом (правило проекта).
+    ...(serverEnv.FREEKASSA_SEND_TEL && contact?.phone ? { tel: contact.phone } : {}),
   });
 
   // Провайдер срок жизни заказа не отдаёт — это НАШ срок ожидания оплаты
@@ -384,24 +398,53 @@ function freekassaMethodId(paymentMethod: 'sbp' | 'card' | undefined): number {
 /**
  * Email плательщика для Freekassa (поле обязательное).
  *
- * У клиента почты мы не спрашиваем, зато `telegram_id` есть всегда: оплата без
- * привязки Telegram запрещена гейтом `TelegramLinkRequiredError`. Отсюда
- * санкционированный суррогат `<telegram_id>@telegram.org` (ТЗ §4.2).
- *
- * Отсутствие `telegram_id` — аномалия, а не рабочий сценарий, поэтому она
- * алертится, но НЕ роняет оплату: деньги важнее красоты адреса, а «оформи
- * заказ заново» на этом месте выглядело бы как поломка платежей.
+ * Основной источник — НАСТОЯЩАЯ почта из `users.email` (антифрод-трек, Р2):
+ * несуществующий ящик в чужом домене читался скорингом провайдера как портрет
+ * дроп-схемы. Гейт `email_required` в `payments/create` не даёт выставить счёт
+ * без почты, поэтому суррогат `<telegram_id>@telegram.org` остаётся только
+ * fallback-аномалией (страховка на случай обхода гейта / рассинхрона кода) —
+ * каждый случай алертится, но оплату НЕ роняет: деньги важнее красоты адреса.
  */
-async function payerEmailForOrder(order: OrderRow): Promise<string> {
-  const telegramId = await getUserTelegramId(getDb(), order.userId);
-  if (telegramId) return `${telegramId}@telegram.org`;
+function payerEmailForOrder(order: OrderRow, contact: UserPayerContact | null): string {
+  if (contact?.email) return contact.email;
 
   log.warn({
     event: 'payments.gateway.freekassa_email_fallback',
     orderId: order.id,
     shortId: order.shortId,
   });
+  Sentry.captureMessage('Freekassa: счёт ушёл с суррогатным email — в профиле нет почты', {
+    level: 'warning',
+    tags: { source: 'payments.gateway', alert: 'freekassa_email_fallback' },
+    extra: { orderId: order.id, shortId: order.shortId },
+  });
+  if (contact?.telegramId) return `${contact.telegramId}@telegram.org`;
   return `${order.shortId.toLowerCase()}@telegram.org`;
+}
+
+/**
+ * IP плательщика для Freekassa (поле обязательное, `127.0.0.1` блокируется).
+ *
+ * Основной источник — последний живой адрес клиента (`users.last_seen_ip`,
+ * тикет 01): заказ подтверждается живым запросом клиента, который сам только
+ * что обновил адрес, поэтому здесь он свежий с точностью до минут. Прежнее
+ * поведение «все плательщики приходят с IP нашего VPS во Франкфурте» — главный
+ * триггер антифрод-холдов — остаётся только fallback-аномалией с алёртом.
+ */
+function payerIpForOrder(order: OrderRow, contact: UserPayerContact | null): string {
+  if (contact?.lastSeenIp) return contact.lastSeenIp;
+
+  log.warn({
+    event: 'payments.gateway.freekassa_ip_fallback',
+    orderId: order.id,
+    shortId: order.shortId,
+  });
+  Sentry.captureMessage('Freekassa: счёт ушёл с fallback-IP сервера — у клиента нет last_seen_ip', {
+    level: 'warning',
+    tags: { source: 'payments.gateway', alert: 'freekassa_ip_fallback' },
+    extra: { orderId: order.id, shortId: order.shortId },
+  });
+  return serverEnv.FREEKASSA_FALLBACK_IP;
 }
 
 // ─── Общее ────────────────────────────────────────────────────────────────

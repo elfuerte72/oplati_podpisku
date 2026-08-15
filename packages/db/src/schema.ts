@@ -57,6 +57,9 @@ export const orderStatusEnum = pgEnum('order_status', [
   'expired',
   'refund_requested',
   'refunded',
+  // «Платёж на проверке» (антифрод-трек, миграция 0033). Новые значения —
+  // строго в конец: порядок в enum обязан совпадать с порядком ADD VALUE в БД.
+  'payment_review',
 ]);
 
 export const paymentProviderEnum = pgEnum('payment_provider', [
@@ -107,8 +110,18 @@ export const users = pgTable(
     displayName: text('display_name'),
     language: text('language').default('ru').notNull(),
     phone: text('phone'),
+    // Откуда номер (антифрод-трек, тикет 05): 'telegram' — отдал сам Telegram
+    // (requestContact / reply-кнопка, верифицирован), 'manual' — введён руками.
+    // Оператору и сверке важно различать; text без enum — значения задаёт
+    // приложение (@oplati/types phoneSource).
+    phoneSource: text('phone_source'),
     email: text('email'),
     notes: text('notes'),
+    // Антифрод-трек Freekassa (тикет 01): последний живой IP клиента — уходит
+    // провайдеру как IP плательщика вместо адреса нашего VPS. Обновляется с
+    // троттлингом (см. touchUserLastSeenIp), nullable — у старых строк его нет.
+    lastSeenIp: text('last_seen_ip'),
+    lastSeenIpAt: timestamp('last_seen_ip_at', { withTimezone: true }),
     // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
     // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
     // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —
@@ -378,6 +391,11 @@ export const payments = pgTable(
     amountRub: integer('amount_rub').notNull(), // копейки
     status: paymentStatusEnum('status').default('pending').notNull(),
     rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>(),
+    // Последний код статуса, увиденный опросом провайдера (антифрод-трек,
+    // тикет 03): убирает слепоту «статус жил только в логе и DM». Числовой код
+    // Freekassa (0/1/6/7/8/9); nullable — вебхучные платежи опроса не видели.
+    lastProviderStatus: integer('last_provider_status'),
+    lastProviderStatusAt: timestamp('last_provider_status_at', { withTimezone: true }),
     // Платёж был восстановлен через cron-поллинг, а не webhook — Sentry warning при true
     recoveredViaPolling: boolean('recovered_via_polling').default(false).notNull(),
     // TTL счёта L&P

@@ -27,11 +27,17 @@ import { deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
   claimRenewalReminder,
+  countRefundishHistoryByUser,
   createDraftOrder,
   findExpiredPayableOrders,
+  findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
+import {
+  findPendingPaymentsForPoll,
+  setPaymentProviderStatus,
+} from './repositories/payments.ts';
 import { nextFreekassaNonce } from './repositories/freekassa.ts';
 import {
   createConversation,
@@ -40,7 +46,13 @@ import {
 import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
-import { getOrCreateUserByTelegramId } from './repositories/users.ts';
+import {
+  getOrCreateUserByTelegramId,
+  getPayerPhoneForOrder,
+  getUserPayerContact,
+  touchUserLastSeenIp,
+  updateUserContacts,
+} from './repositories/users.ts';
 import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
@@ -548,7 +560,345 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
   });
 });
 
+describe('payment_review (антифрод-трек: заказ «на проверке банка»)', () => {
+  it('pending_payment → payment_review → paid проходит через transitionOrder', async () => {
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    const toReview = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'payment_review',
+      actorType: 'payment_provider',
+      payload: { reason: 'antifraud_hold' },
+    });
+    expect(toReview.transitioned).toBe(true);
+
+    // Оплата подтвердилась после холда — обычный путь paid работает и отсюда.
+    const toPaid = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'paid',
+      actorType: 'payment_provider',
+    });
+    expect(toPaid.transitioned).toBe(true);
+    expect(toPaid.order.status).toBe('paid');
+  });
+
+  it('payment_review не достижим из ready_for_payment и не уходит в expired', async () => {
+    const user = await makeUser();
+    const draft = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'integration-test order',
+      amountRub: 50000,
+    });
+    await expect(
+      transitionOrderDetailed(db, { orderId: draft.id, toStatus: 'payment_review' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    await expect(
+      transitionOrderDetailed(db, { orderId: order.id, toStatus: 'expired' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+  });
+
+  it('экспайр НЕ хоронит payment_review даже с истёкшим expires_at', async () => {
+    // Конец истории «оплатил, а получил „срок оплаты истёк“»: заказ с
+    // (возможно) зафиксированными деньгами не протухает по таймеру.
+    const user = await makeUser();
+    const { order } = await makeOrderWithPendingPayment({
+      userId: user.id,
+      expiresAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const expired = await findExpiredPayableOrders(db);
+    expect(expired.map((o) => o.id)).not.toContain(order.id);
+  });
+
+  it('findStaleOrdersInPaymentReview: старше порога — виден, свежий — нет', async () => {
+    const user = await makeUser();
+    const { order: fresh } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: fresh.id, toStatus: 'payment_review' });
+
+    // Возраст меряется по событию входа в payment_review (append-only journal),
+    // а не по updated_at: тот не трогается переходами. Состарить событие можно
+    // только руками: UPDATE отвергает append-only-триггер (и это правильно),
+    // поэтому на время бэкдейта триггер отключается — симуляция времени, не
+    // обход инварианта в продовом коде.
+    const { order: stale } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: stale.id, toStatus: 'payment_review' });
+    await pg.exec('ALTER TABLE order_events DISABLE TRIGGER order_events_append_only');
+    await db.execute(sql`
+      UPDATE order_events SET created_at = now() - interval '8 days'
+      WHERE order_id = ${stale.id} AND to_status = 'payment_review'
+    `);
+    await pg.exec('ALTER TABLE order_events ENABLE TRIGGER order_events_append_only');
+
+    const found = await findStaleOrdersInPaymentReview(db, {
+      olderThanMs: 7 * 24 * 60 * 60 * 1000,
+    });
+    const ids = found.map((o) => o.id);
+    expect(ids).toContain(stale.id);
+    expect(ids).not.toContain(fresh.id);
+  });
+
+  it('платёж под холдом опрашивается и после 25-часового окна', async () => {
+    // Холд может висеть дольше суток; без исключения в findPendingPaymentsForPoll
+    // такой платёж выпадал бы из добора, и разрешение холда мы бы не увидели.
+    const user = await makeUser();
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    await db.execute(
+      sql`UPDATE payments SET created_at = now() - interval '30 hours' WHERE id = ${payment.id}`,
+    );
+
+    const polled = await findPendingPaymentsForPoll(db);
+    expect(polled.map((p) => p.id)).toContain(payment.id);
+
+    // Контроль: столь же старый платёж обычного pending_payment-заказа в
+    // выборку не попадает — верхняя граница для него работает как раньше.
+    const { payment: ordinary } = await makeOrderWithPendingPayment({ userId: user.id });
+    await db.execute(
+      sql`UPDATE payments SET created_at = now() - interval '30 hours' WHERE id = ${ordinary.id}`,
+    );
+    const polled2 = await findPendingPaymentsForPoll(db);
+    expect(polled2.map((p) => p.id)).not.toContain(ordinary.id);
+  });
+
+  it('setPaymentProviderStatus пишет код и момент опроса', async () => {
+    const user = await makeUser();
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+
+    const rows = await db.execute<{ last_provider_status: number; last_provider_status_at: string | Date }>(
+      sql`SELECT last_provider_status, last_provider_status_at FROM payments WHERE id = ${payment.id}`,
+    );
+    expect(rows[0]?.last_provider_status).toBe(7);
+    expect(rows[0]?.last_provider_status_at).not.toBeNull();
+  });
+});
+
+describe('countRefundishHistoryByUser (учёт возвратов, тикет 11)', () => {
+  it('считает недоплаты, возвраты провайдера и refunded-заказы за окно', async () => {
+    const user = await makeUser();
+
+    // Недоплата (amount_mismatch).
+    const a = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: a.order.id,
+      toStatus: 'failed',
+      eventType: 'payment_amount_mismatch',
+      actorType: 'payment_provider',
+    });
+    // Возврат у провайдера (терминал с providerStatus=6).
+    const b = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: b.order.id,
+      toStatus: 'cancelled',
+      eventType: 'payment_cancelled',
+      actorType: 'payment_provider',
+      payload: { providerStatus: 6 },
+    });
+    // Дошедший до refunded.
+    const c = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'paid' });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'refund_requested' });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'refunded' });
+    // Обычная отмена — НЕ считается.
+    const d = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: d.order.id,
+      toStatus: 'cancelled',
+      eventType: 'payment_cancelled',
+      actorType: 'payment_provider',
+      payload: { providerStatus: 9 },
+    });
+
+    expect(await countRefundishHistoryByUser(db, { userId: user.id, withinDays: 180 })).toBe(3);
+
+    // Чужая история не подмешивается.
+    const other = await makeUser();
+    expect(await countRefundishHistoryByUser(db, { userId: other.id, withinDays: 180 })).toBe(0);
+  });
+});
+
+describe('touchUserLastSeenIp (антифрод-трек: последний живой IP клиента)', () => {
+  async function readIpState(userId: string) {
+    const rows = await db
+      .select({ ip: schema.users.lastSeenIp, at: schema.users.lastSeenIpAt })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+    return firstOf(rows, 'users last_seen_ip');
+  }
+
+  it('первый визит пишет IP и момент', async () => {
+    const user = await makeUser();
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(true);
+    const state = await readIpState(user.id);
+    expect(state.ip).toBe('203.0.113.5');
+    expect(state.at).toBeInstanceOf(Date);
+  });
+
+  it('тот же IP в пределах 10 минут — UPDATE не выполняется (троттлинг)', async () => {
+    // Листание кабинета — десятки запросов в минуту; без троттлинга каждый тап
+    // генерировал бы UPDATE по users.
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+    const before = await readIpState(user.id);
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(false);
+    const after = await readIpState(user.id);
+    expect(after.at?.getTime()).toBe(before.at?.getTime());
+  });
+
+  it('смена IP обновляет запись сразу, не дожидаясь 10 минут', async () => {
+    // Свежесть адреса важнее экономии UPDATE'ов: счёт уходит провайдеру с
+    // ПОСЛЕДНИМ адресом, и клиент мог переключиться с Wi-Fi на LTE за минуту.
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '198.51.100.7' });
+
+    expect(updated).toBe(true);
+    expect((await readIpState(user.id)).ip).toBe('198.51.100.7');
+  });
+
+  it('тот же IP, но метка старше 10 минут — освежаем момент', async () => {
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+    await db.execute(
+      sql`UPDATE users SET last_seen_ip_at = now() - interval '11 minutes' WHERE id = ${user.id}`,
+    );
+    const before = await readIpState(user.id);
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(true);
+    const after = await readIpState(user.id);
+    expect(after.at!.getTime()).toBeGreaterThan(before.at!.getTime());
+  });
+});
+
+describe('getUserPayerContact (данные плательщика для счёта Freekassa)', () => {
+  it('отдаёт telegram_id, email, phone и last_seen_ip одной строкой', async () => {
+    const user = await makeUser({
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+
+    const contact = await getUserPayerContact(db, user.id);
+
+    expect(contact).toMatchObject({
+      telegramId: user.telegramId,
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+  });
+
+  it('незаполненные контакты — null, незнакомый пользователь — null целиком', async () => {
+    const user = await makeUser();
+
+    const contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ email: null, phone: null, lastSeenIp: null });
+
+    expect(await getUserPayerContact(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
+  });
+
+  it('updateUserContacts пишет email; вызов без полей — noop', async () => {
+    const user = await makeUser();
+
+    await updateUserContacts(db, { userId: user.id, email: 'client@example.com' });
+    expect((await getUserPayerContact(db, user.id))?.email).toBe('client@example.com');
+
+    await updateUserContacts(db, { userId: user.id });
+    expect((await getUserPayerContact(db, user.id))?.email).toBe('client@example.com');
+  });
+
+  it('телефон едет парой с источником; ручная правка перекрывает telegram-источник', async () => {
+    // Тикет 05/08: номер без пометки «кто его дал» бесполезен сверке; ручная
+    // правка сбрасывает источник в manual (Р4 — номер СБП может отличаться).
+    const user = await makeUser();
+
+    await updateUserContacts(db, {
+      userId: user.id,
+      phone: '+79991234567',
+      phoneSource: 'telegram',
+    });
+    let contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ phone: '+79991234567', phoneSource: 'telegram' });
+
+    await updateUserContacts(db, {
+      userId: user.id,
+      phone: '+79997654321',
+      phoneSource: 'manual',
+    });
+    contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ phone: '+79997654321', phoneSource: 'manual' });
+    // email при этом не тронут.
+    expect(contact?.email).toBeNull();
+  });
+
+  it('getPayerPhoneForOrder отдаёт номер владельца заказа', async () => {
+    const user = await makeUser({ phone: '+79991234567', phoneSource: 'telegram' });
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    expect(await getPayerPhoneForOrder(db, order.id)).toEqual({
+      phone: '+79991234567',
+      phoneSource: 'telegram',
+    });
+    expect(await getPayerPhoneForOrder(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
+  });
+});
+
 describe('consumeLinkToken (merge пользователей)', () => {
+  it('merge переносит контакты и last_seen_ip веб-строки (антифрод-трек)', async () => {
+    // Основной сценарий сайта: клиент ввёл почту в плашке (веб-строка), затем
+    // привязал Telegram. Merge удаляет веб-строку — без переноса почта и адрес
+    // терялись бы ровно между вводом и выставлением счёта.
+    const webSessionId = `ws-contact-${++seq}`;
+    await makeUser({
+      telegramId: null,
+      webSessionId,
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+      lastSeenIpAt: new Date(),
+    });
+    const telegramUser = await makeUser();
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    const res = await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+    expect(res.ok).toBe(true);
+
+    const contact = await getUserPayerContact(db, telegramUser.id);
+    expect(contact).toMatchObject({
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+  });
+
+  it('merge НЕ перетирает контакты telegram-строки почтой веб-строки', async () => {
+    // COALESCE-семантика: у выжившей строки приоритет — как у display_name.
+    const webSessionId = `ws-contact2-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, email: 'web@example.com' });
+    const telegramUser = await makeUser({ email: 'tg@example.com' });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+
+    expect((await getUserPayerContact(db, telegramUser.id))?.email).toBe('tg@example.com');
+  });
+
   it('самореферал гасится при merge компенсирующей строкой', async () => {
     // Аудит 2026-08-10 (HIGH). Человек открыл СВОЮ ЖЕ реф-ссылку в боте:
     // web-строка W стала реферером telegram-строки T, и покупки T начисляли

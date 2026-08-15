@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   ),
   safeAppendMessage: vi.fn(async (..._args: unknown[]) => undefined),
   captureException: vi.fn(),
+  askContact: vi.fn((..._args: unknown[]) => Promise.resolve()),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -31,7 +32,12 @@ vi.mock('@oplati/db', () => ({
   LINK_TOKEN_PREFIX: 'link_',
 }));
 
-vi.mock('@/lib/tool-handlers/confirm-order', () => ({ confirmOrder: h.confirmOrder }));
+// Классы ошибок — настоящие (instanceof в catch link-flow), подменяем только вызов.
+vi.mock('@/lib/tool-handlers/confirm-order', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tool-handlers/confirm-order')>();
+  return { ...actual, confirmOrder: h.confirmOrder };
+});
+vi.mock('./contact-flow', () => ({ askForContactBeforeInvoice: h.askContact }));
 vi.mock('./send', () => ({ sendSafely: h.sendSafely }));
 vi.mock('./persist', () => ({
   persistInbound: h.persistInbound,
@@ -175,6 +181,36 @@ describe('handoff заказа: счёт выставляется прямо в 
     h.getOrdersByUserId.mockResolvedValueOnce([readyOrder({ amountRub: null })]);
     await handleLinkDeepLink(update, message, 'link_abc');
     expect(h.confirmOrder).not.toHaveBeenCalled();
+  });
+
+  it('сумма от порога без номера: счёт НЕ выставляется, бот просит контакт', async () => {
+    // Тикет 06: handoff не выставляет счёт до получения номера — вместо ссылки
+    // оплаты уходит reply-кнопка request_contact (счёт выставит contact-flow).
+    const { PhoneRequiredError } = await import('@/lib/tool-handlers/confirm-order');
+    h.getOrdersByUserId.mockResolvedValueOnce([readyOrder()]);
+    h.confirmOrder.mockRejectedValueOnce(new PhoneRequiredError(10_000));
+
+    await handleLinkDeepLink(update, message, 'link_abc');
+
+    expect(h.confirmOrder).toHaveBeenCalledTimes(1);
+    expect(sentText()).toContain('привязан');
+    expect(h.askContact).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: 'order-1', thresholdRub: 10_000 }),
+    );
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('заказ без почты в профиле → подсказка про кабинет, а не тишина', async () => {
+    // Переходное окно антифрод-трека: заказ оформлен в вебе ДО плашки
+    // контактов, email_required ловится и превращается в понятный шаг.
+    const { EmailRequiredError } = await import('@/lib/tool-handlers/confirm-order');
+    h.getOrdersByUserId.mockResolvedValueOnce([readyOrder()]);
+    h.confirmOrder.mockRejectedValueOnce(new EmailRequiredError());
+    await handleLinkDeepLink(update, message, 'link_abc');
+    expect(sentText()).toContain('привязан');
+    expect(sentText()).toContain('почт');
+    // Ожидаемый бизнес-кейс, не сбой — Sentry не шумит.
+    expect(h.captureException).not.toHaveBeenCalled();
   });
 
   it('сбой выставления счёта НЕ роняет привязку', async () => {

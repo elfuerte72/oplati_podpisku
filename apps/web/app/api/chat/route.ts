@@ -30,6 +30,7 @@ import {
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { createToolHandlers } from '@/lib/tool-handlers';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 import { toAgentHistory } from '@/lib/chat/history';
@@ -177,6 +178,9 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const webSessionId = await getOrCreateWebSessionId();
   const ctx = await resolveContext(webSessionId);
+
+  // Антифрод-трек (тикет 01): любой живой запрос клиента освежает last_seen_ip.
+  if (ctx) await rememberClientIp(req, ctx.userId);
 
   if (ctx) await safeAppend(ctx, 'user', text, { channel: 'web' });
 

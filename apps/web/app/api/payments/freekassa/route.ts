@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/nextjs';
 import {
   FREEKASSA_NOTIFICATION_IPS,
   freekassaNotificationSchema,
+  maskPayerAccount,
   toStorableNotification,
 } from '@oplati/types';
 
@@ -157,6 +158,8 @@ export async function POST(req: Request): Promise<Response> {
       amountRaw: notification.AMOUNT,
       // Подпись и полный счёт плательщика в хранилище не попадают.
       rawPayload: toStorableNotification(notification),
+      // Маска для сверки телефона (тикет 07) — полный счёт дальше не едет.
+      payerAccountMasked: maskPayerAccount(notification.payer_account),
     });
     // Платёж ещё не записан у нас (гонка с созданием счёта) или сумма
     // неразбираема — просим повторить: во втором случае повтор бессмысленен,

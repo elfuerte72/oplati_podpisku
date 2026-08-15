@@ -11,6 +11,7 @@ import {
 import { proposeFromCatalog, type ProposeFromCatalogError } from '@/lib/catalog/propose';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { getOrCreateWebSessionId } from '@/lib/chat/session';
 
 /**
@@ -83,6 +84,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     const db = getDb();
     const webSessionId = await getOrCreateWebSessionId();
     const user = await getOrCreateUserByWebSessionId(db, { webSessionId, language: 'ru' }, dbLog);
+    // Антифрод-трек (тикет 01): создание заказа — живой запрос клиента,
+    // запоминаем его адрес для будущего счёта Freekassa.
+    await rememberClientIp(req, user.id);
     const conversation = await getOrCreateActiveConversation(
       db,
       { userId: user.id, channel: 'web' },
