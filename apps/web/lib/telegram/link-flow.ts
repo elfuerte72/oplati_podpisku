@@ -8,8 +8,13 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 import { formatExpires, formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import { currentBuyerFeePercent } from '@/lib/payments/gateway';
-import { confirmOrder, EmailRequiredError } from '@/lib/tool-handlers/confirm-order';
+import {
+  confirmOrder,
+  EmailRequiredError,
+  PhoneRequiredError,
+} from '@/lib/tool-handlers/confirm-order';
 
+import { askForContactBeforeInvoice } from './contact-flow';
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
 import { buildBuyerFeeLine } from './templates';
@@ -82,9 +87,31 @@ export async function handleLinkDeepLink(
       // хрупкое звено (вкладка умирает, поллинг спит), поэтому если у него
       // есть свежий заказ, ждущий оплаты, — выставляем счёт и даём оплатить
       // прямо здесь, возвращаться на сайт не нужно.
-      replyText =
-        (await buildPendingOrderHandoffTextBounded(result.userId, update.update_id)) ??
-        LINK_SUCCESS_TEXT;
+      const handoff = await buildPendingOrderHandoffTextBounded(result.userId, update.update_id);
+      if (handoff !== null && typeof handoff !== 'string') {
+        // Сумма от порога, а номера в профиле нет (тикет 06): привязка удалась,
+        // счёт выставится после того, как клиент поделится контактом.
+        const ctxForContact = await persistInbound(update, message);
+        if (ctxForContact) {
+          await safeAppendMessage(
+            ctxForContact,
+            'user',
+            '/start (привязка Telegram с сайта)',
+            { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
+            update.update_id,
+          );
+        }
+        await sendSafely(chatId, LINK_SUCCESS_TEXT, update.update_id);
+        await askForContactBeforeInvoice({
+          ctx: ctxForContact,
+          chatId,
+          orderId: handoff.needContact.orderId,
+          thresholdRub: handoff.needContact.thresholdRub,
+          updateId: update.update_id,
+        });
+        return;
+      }
+      replyText = handoff ?? LINK_SUCCESS_TEXT;
     } else {
       log.info({ event: 'telegram.link.rejected', updateId: update.update_id, reason: result.reason });
       replyText = LINK_INVALID_TEXT;
@@ -124,10 +151,13 @@ const LINK_HANDOFF_ORDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  */
 const LINK_HANDOFF_TIMEOUT_MS = 15_000;
 
+/** Маркер «привязано, но перед счётом нужен номер» (тикет 06). */
+type HandoffNeedsContact = { needContact: { orderId: string; thresholdRub: number | null } };
+
 async function buildPendingOrderHandoffTextBounded(
   userId: string,
   updateId: number,
-): Promise<string | null> {
+): Promise<string | HandoffNeedsContact | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), LINK_HANDOFF_TIMEOUT_MS);
@@ -157,7 +187,7 @@ async function buildPendingOrderHandoffTextBounded(
 async function buildPendingOrderHandoffText(
   userId: string,
   updateId: number,
-): Promise<string | null> {
+): Promise<string | HandoffNeedsContact | null> {
   try {
     const recentOrders = await getOrdersByUserId(getDb(), userId, 10);
     const cutoff = Date.now() - LINK_HANDOFF_ORDER_MAX_AGE_MS;
@@ -170,7 +200,20 @@ async function buildPendingOrderHandoffText(
     );
     if (!pending) return null;
 
-    const confirmResult = await confirmOrder({ orderId: pending.id, userId });
+    let confirmResult;
+    try {
+      confirmResult = await confirmOrder({ orderId: pending.id, userId });
+    } catch (err) {
+      // Сумма от порога, номера нет (тикет 06): не текст, а просьба поделиться
+      // контактом — счёт выставится после него (обрабатывает вызывающий код).
+      if (err instanceof PhoneRequiredError) {
+        log.info({ event: 'telegram.link.handoff_phone_required', updateId, orderId: pending.id });
+        return {
+          needContact: { orderId: pending.id, thresholdRub: err.requiredFromRub },
+        };
+      }
+      throw err;
+    }
     log.info({
       event: 'telegram.link.handoff_invoice_created',
       updateId,

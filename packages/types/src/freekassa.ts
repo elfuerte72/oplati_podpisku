@@ -143,6 +143,11 @@ export const freekassaCreateOrderParamsSchema = z.object({
   ip: z.string().min(1),
   amount: z.number().positive(),
   currency: z.string().min(3).max(10),
+  // Телефон плательщика (антифрод-трек, тикет 07). Опциональный: без номера
+  // ключ отсутствует и в подписи не участвует (`signApiRequest` сортирует
+  // фактические ключи). ⚠️ Параметр в доке провайдера не описан — отправка
+  // за флагом `FREEKASSA_SEND_TEL` до подтверждения живым вызовом.
+  tel: z.string().min(1).optional(),
 });
 export type FreekassaCreateOrderParams = z.infer<typeof freekassaCreateOrderParamsSchema>;
 

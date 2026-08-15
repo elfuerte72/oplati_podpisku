@@ -21,12 +21,14 @@ import {
   aboveMaxAmountText,
   confirmOrder,
   EmailRequiredError,
+  PhoneRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
 } from '@/lib/tool-handlers/confirm-order';
 
 import { maxAmountUsdFor, parseCustomAmountUsd } from './amount';
+import { askForContactBeforeInvoice } from './contact-flow';
 import { getBot } from './bot';
 import { resolveCallbackContext, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely, showOrEdit, withTypingIndicator } from './send';
@@ -394,6 +396,18 @@ export async function handleOrderActionCallback(
       // Веб и кабинет говорят это же одним общим текстом.
       if (err instanceof PaymentProviderUnavailableError) {
         await sendSafely(chatId, PROVIDER_UNAVAILABLE_TEXT, updateId);
+        return;
+      }
+      // Сумма от порога, а номера в профиле нет (тикет 06): reply-кнопка
+      // request_contact, счёт выставится после получения контакта.
+      if (err instanceof PhoneRequiredError) {
+        await askForContactBeforeInvoice({
+          ctx,
+          chatId,
+          orderId,
+          thresholdRub: err.requiredFromRub,
+          updateId,
+        });
         return;
       }
       // Профиль без почты (антифрод-трек, Р2): в чате бота поля ввода нет —

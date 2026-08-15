@@ -60,6 +60,8 @@ const eventViewSchema = z.object({ label: z.string(), at: z.string(), type: z.st
 const profileSchema = z.object({
   displayName: z.string().nullable(),
   phone: z.string().nullable(),
+  // Откуда номер (антифрод-трек): 'telegram' | 'manual' | null.
+  phoneSource: z.string().nullable(),
   email: z.string().nullable(),
   telegramLinked: z.boolean(),
   memberSince: z.string(),
@@ -72,6 +74,8 @@ const snapshotSchema = z.object({
   profile: profileSchema,
   orders: z.array(orderSummarySchema),
   cards: z.array(cardViewSchema),
+  // Порог «телефон обязателен» в целых рублях (тикет 05); null — выключено.
+  phoneRequiredFromRub: z.number().nullable(),
   /** Реф-ссылка для главного меню (кнопка «Скопировать»); null — программа выключена. */
   referralLink: z.string().nullable(),
 });
@@ -228,18 +232,46 @@ export async function fetchCardDetails(initData: string, cardId: string): Promis
 export async function doPay(
   initData: string,
   orderId: string,
-  email?: string,
+  contacts?: { email?: string; phone?: string },
 ): Promise<PayResult> {
-  // email — из плашки контактов (тикет 02): сервер сохранит его в профиль ДО
-  // выставления счёта (гейт email_required читает профиль).
+  // Контакты — из плашки (тикеты 02/05): сервер сохранит их в профиль ДО
+  // выставления счёта (гейты email_required/phone_required читают профиль).
   const resp = await callCabinet({
     action: 'pay',
     initData,
     orderId,
-    ...(email !== undefined ? { email } : {}),
+    ...(contacts?.email !== undefined ? { email: contacts.email } : {}),
+    ...(contacts?.phone !== undefined ? { phone: contacts.phone } : {}),
   });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return withMessage(parsed.data);
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
+}
+
+const updateContactsResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
+]);
+
+export type UpdateContactsResult =
+  | { ok: true }
+  | { ok: false; error: string; message: string };
+
+/** Экран «Профиль» (тикет 08): правка контактов вне заказа. */
+export async function doUpdateContacts(
+  initData: string,
+  contacts: { email?: string; phone?: string },
+): Promise<UpdateContactsResult> {
+  const resp = await callCabinet({ action: 'update-contacts', initData, ...contacts });
+  const parsed = resp ? updateContactsResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) {
+    if (parsed.data.ok) return parsed.data;
+    return {
+      ok: false,
+      error: parsed.data.error,
+      message: parsed.data.message ?? errorTextFor(parsed.data.error),
+    };
+  }
   return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
 }
 

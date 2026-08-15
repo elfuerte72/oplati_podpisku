@@ -16,6 +16,7 @@ import {
   showCatalogList,
   tryHandlePendingAmount,
 } from './catalog-callbacks';
+import { handleContactMessage } from './contact-flow';
 import { persistInbound, readPendingMeta, safeAppendMessage } from './persist';
 import { sendSafely, showOrEdit } from './send';
 import { handleStartCommand } from './start-menu';
@@ -113,7 +114,17 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   //     фото альбома, так что общий бакет альбом бы и выел — вместе с кнопкой
   //     «Поддержка», которая платит из того же кошелька;
   //   - `telegram` — текст и callback-кнопки, как и было до аудита.
-  const kind = rawText === null ? 'media' : isStartCommand(rawText) ? 'start' : 'text';
+  // Контакт (reply-кнопка request_contact, тикет 06) — шаг оплаты крупного
+  // заказа: считаем его текстовым бакетом `telegram`, а не медиа — альбом
+  // скриншотов не должен выедать возможность поделиться номером.
+  const kind =
+    rawText === null
+      ? message.contact
+        ? 'contact'
+        : 'media'
+      : isStartCommand(rawText)
+        ? 'start'
+        : 'text';
   const bucket =
     kind === 'start' ? 'telegram-start' : kind === 'media' ? 'telegram-media' : 'telegram';
   const rlIdentity = String(telegramUserId ?? chatId);
@@ -130,6 +141,18 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         update.update_id,
       );
     }
+    return;
+  }
+
+  if (kind === 'contact') {
+    log.info({
+      event: 'telegram.update.handled',
+      updateId: update.update_id,
+      chatId,
+      telegramUserId,
+      kind: 'contact',
+    });
+    await handleContactMessage(update, message);
     return;
   }
 

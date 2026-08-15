@@ -5,6 +5,7 @@ export {
   getUserPayerContact,
   touchUserLastSeenIp,
   updateUserContacts,
+  getPayerPhoneForOrder,
   getUserProfileById,
   type UserPayerContact,
   findUserIdByWebSessionId,

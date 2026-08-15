@@ -28,6 +28,8 @@ const h = vi.hoisted(() => ({
   })),
   getClientIp: vi.fn(() => '1.2.3.4'),
   buildSnapshot: vi.fn(async () => ({ orders: [], cards: [] })),
+  updateUserContacts: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  payOrder: vi.fn(async () => ({ ok: true })),
   state: {
     signatureOk: true,
     signatureReason: 'bad_signature' as string,
@@ -51,9 +53,13 @@ vi.mock('@/lib/cabinet/read', () => ({
 }));
 vi.mock('@/lib/cabinet/actions', () => ({
   markSubscriptionActivated: vi.fn(async () => ({ ok: true })),
-  payOrder: vi.fn(async () => ({ ok: true })),
+  payOrder: h.payOrder,
   proposeNewOrder: vi.fn(async () => ({ ok: true })),
   reportPaymentIssue: vi.fn(async () => ({ ok: true })),
+}));
+vi.mock('@oplati/db', () => ({
+  getDb: () => ({}),
+  updateUserContacts: h.updateUserContacts,
 }));
 vi.mock('@/lib/cabinet/referral-read', () => ({
   getReferralLinkForCabinet: vi.fn(async () => null),
@@ -207,5 +213,59 @@ describe('POST /api/cabinet — порядок барьеров', () => {
     const res = await POST(makeRequest(snapshotBody));
     expect(res.status).toBe(200);
     expect(h.buildSnapshot).toHaveBeenCalledOnce();
+  });
+});
+
+describe('POST /api/cabinet — контакты плательщика (тикеты 05/08)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.state.signatureOk = true;
+    h.state.identityAllowed = true;
+    h.state.authFloodAllowed = true;
+  });
+
+  it('update-contacts: телефон нормализуется и сохраняется с источником manual', async () => {
+    const res = await POST(
+      makeRequest({ action: 'update-contacts', initData: 'x', phone: '8 999 123-45-67' }),
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ ok: true });
+    expect(h.updateUserContacts).toHaveBeenCalledWith(expect.anything(), {
+      userId: 'user-1',
+      phone: '+79991234567',
+      phoneSource: 'manual',
+    });
+  });
+
+  it('update-contacts: невалидный номер → invalid_phone, БД не трогается', async () => {
+    const res = await POST(
+      makeRequest({ action: 'update-contacts', initData: 'x', phone: 'не номер' }),
+    );
+
+    await expect(res.json()).resolves.toMatchObject({ ok: false, error: 'invalid_phone' });
+    expect(h.updateUserContacts).not.toHaveBeenCalled();
+  });
+
+  it('pay с контактами: сохранение идёт ДО выставления счёта', async () => {
+    await POST(
+      makeRequest({
+        action: 'pay',
+        initData: 'x',
+        orderId: '11111111-1111-4111-8111-111111111111',
+        email: 'client@example.com',
+        phone: '+79991234567',
+      }),
+    );
+
+    expect(h.updateUserContacts).toHaveBeenCalledWith(expect.anything(), {
+      userId: 'user-1',
+      email: 'client@example.com',
+      phone: '+79991234567',
+      phoneSource: 'manual',
+    });
+    const saveOrder = h.updateUserContacts.mock.invocationCallOrder[0]!;
+    const payCallOrder = h.payOrder.mock.invocationCallOrder[0]!;
+    expect(saveOrder).toBeLessThan(payCallOrder);
   });
 });

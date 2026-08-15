@@ -15,6 +15,8 @@ import {
 import { OrderTransitionError } from '@oplati/types';
 
 import { EMAIL_REQUIRED, EMAIL_REQUIRED_TEXT } from '@/lib/contacts/email';
+import { isPhoneRequiredForAmount, PHONE_REQUIRED, phoneRequiredText } from '@/lib/contacts/phone';
+import { notifyPhoneGateBlocked, phoneRequirementRub } from '@/lib/contacts/phone-gate';
 import { serverEnv } from '@/lib/env.server';
 import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
@@ -221,6 +223,29 @@ export async function POST(req: Request): Promise<NextResponse> {
       log.warn({ event: 'payments.create.email_required', orderId });
       return NextResponse.json(
         { ok: false, error: EMAIL_REQUIRED, message: EMAIL_REQUIRED_TEXT },
+        { status: 422 },
+      );
+    }
+
+    // Гейт телефона от порога (тикет 05). Сравнение суммы с порогом — общий
+    // `isPhoneRequiredForAmount` (он же в обеих плашках: конверсия рубли→
+    // копейки живёт в одном месте). UI до гейта не доводит (плашка не даст
+    // отправить пустое поле) — ловим self-call бота и обходы UI. Порог —
+    // в теле ответа: клиент показывает его динамически, не из зашитого текста.
+    const phoneThresholdRub = phoneRequirementRub();
+    if (
+      phoneThresholdRub !== null &&
+      isPhoneRequiredForAmount(order.amountRub, phoneThresholdRub) &&
+      !payerContact.phone
+    ) {
+      await notifyPhoneGateBlocked(order, phoneThresholdRub);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: PHONE_REQUIRED,
+          requiredFromRub: phoneThresholdRub,
+          message: phoneRequiredText(phoneThresholdRub),
+        },
         { status: 422 },
       );
     }

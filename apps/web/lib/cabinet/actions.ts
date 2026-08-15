@@ -16,6 +16,7 @@ import {
 import { orderParameters } from '@oplati/types';
 
 import { EMAIL_REQUIRED_TEXT } from '../contacts/email.ts';
+import { PHONE_REQUIRED_FALLBACK_TEXT, phoneRequiredText } from '../contacts/phone.ts';
 import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import {
@@ -25,6 +26,7 @@ import {
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
+  PhoneRequiredError,
   TelegramLinkRequiredError,
 } from '../tool-handlers/confirm-order.ts';
 import { proposeFromCatalog } from '../catalog/propose.ts';
@@ -60,8 +62,11 @@ export type PayOrderResult =
         | 'invoice_unavailable'
         | 'link_required'
         | 'email_required'
+        | 'phone_required'
         | 'failed';
       message: string;
+      /** Порог гейта телефона в целых рублях (только при phone_required). */
+      requiredFromRub?: number | null;
     };
 
 /** Достаёт платёжную ссылку из сохранённого invoice (для уже выставленного счёта). */
@@ -140,6 +145,18 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
     // до этого — гейт ловит старые клиенты/обходы. UI покажет поле почты.
     if (err instanceof EmailRequiredError) {
       return { ok: false, error: 'email_required', message: EMAIL_REQUIRED_TEXT };
+    }
+    // Гейт телефона (тикет 05): UI покажет поле в плашке; порог — в message.
+    if (err instanceof PhoneRequiredError) {
+      return {
+        ok: false,
+        error: 'phone_required',
+        requiredFromRub: err.requiredFromRub,
+        message:
+          err.requiredFromRub !== null
+            ? phoneRequiredText(err.requiredFromRub)
+            : PHONE_REQUIRED_FALLBACK_TEXT,
+      };
     }
     // Тех. сбой транспорта до L&P — заказ жив, честный текст вместо generic.
     if (err instanceof PaymentProviderUnavailableError) {

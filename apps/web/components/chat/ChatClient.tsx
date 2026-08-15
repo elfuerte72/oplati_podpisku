@@ -21,7 +21,8 @@ import { DocsFooter } from '@/components/info/DocsFooter';
 import { FreekassaBadge } from '@/components/info/FreekassaBadge';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { track } from '@/lib/analytics/client';
-import { ContactCard, useContactEmail } from '@/components/contacts/ContactCard';
+import { ContactCard, useContacts } from '@/components/contacts/ContactCard';
+import { isPhoneRequiredForAmount } from '@/lib/contacts/phone';
 import { ErrorNotice } from './ErrorNotice';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
@@ -92,18 +93,33 @@ export function ChatClient() {
   const [pose, setPose] = useState<MascotPose>('wave');
   // Профиль-drawer на мобильном (на десктопе панель видна всегда).
   const [profileOpen, setProfileOpen] = useState(false);
-  // Почта из профиля — prefill плашки контактов на карточке заказа (тикет 02).
+  // Контакты из профиля — prefill плашки на карточке заказа (тикеты 02/05).
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
-  const contact = useContactEmail(profileEmail);
+  const [profilePhone, setProfilePhone] = useState<string | null>(null);
+  // Порог «телефон обязателен» в целых рублях; null — фича выключена.
+  const [phoneThresholdRub, setPhoneThresholdRub] = useState<number | null>(null);
+  const contacts = useContacts({ email: profileEmail, phone: profilePhone });
 
-  // Prefill почты для плашки: read-only /api/profile, best-effort (сбой → поле
-  // просто пустое, клиент введёт руками).
+  // Prefill контактов и порог телефона: read-only /api/profile, best-effort
+  // (сбой → поля пустые, клиент введёт руками; порог без ответа = выключен).
   useEffect(() => {
     let cancelled = false;
     void fetchWithTimeout('/api/profile', {}, 5000)
-      .then((res) => res.json() as Promise<{ ok?: boolean; profile?: { email?: string | null } }>)
+      .then(
+        (res) =>
+          res.json() as Promise<{
+            ok?: boolean;
+            profile?: { email?: string | null; phone?: string | null };
+            phoneRequiredFromRub?: number | null;
+          }>,
+      )
       .then((data) => {
-        if (!cancelled && data.ok && data.profile?.email) setProfileEmail(data.profile.email);
+        if (cancelled || !data.ok) return;
+        if (data.profile?.email) setProfileEmail(data.profile.email);
+        if (data.profile?.phone) setProfilePhone(data.profile.phone);
+        if (typeof data.phoneRequiredFromRub === 'number') {
+          setPhoneThresholdRub(data.phoneRequiredFromRub);
+        }
       })
       .catch(() => {
         // необязательный prefill — молчаливый пропуск осознан
@@ -326,11 +342,12 @@ export function ChatClient() {
       if (confirming !== null || confirmed.includes(orderId)) return;
       setConfirming(orderId);
       setError(null);
-      // Почта из плашки уезжает вместе с подтверждением (тикет 02); сервер
-      // сохраняет её в профиль ДО выставления счёта, поэтому «сохранено»
-      // отмечаем оптимистично — даже неудачная оплата почту не теряет.
-      const email = contact.emailToSend;
-      if (email !== undefined) contact.markSaved(email);
+      // Контакты из плашки уезжают вместе с подтверждением (тикеты 02/05);
+      // сервер сохраняет их в профиль ДО выставления счёта, поэтому
+      // «сохранено» отмечаем оптимистично — неудачная оплата их не теряет.
+      const email = contacts.email.toSend;
+      const phone = contacts.phone.toSend;
+      contacts.markSubmitted();
       try {
         // Таймаут 65с: confirm создаёт счёт L&P через self-call (maxDuration=60).
         const res = await fetchWithTimeout(
@@ -338,7 +355,11 @@ export function ChatClient() {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ orderId, ...(email !== undefined ? { email } : {}) }),
+            body: JSON.stringify({
+              orderId,
+              ...(email !== undefined ? { email } : {}),
+              ...(phone !== undefined ? { phone } : {}),
+            }),
           },
           65_000,
         );
@@ -376,7 +397,7 @@ export function ChatClient() {
         setConfirming(null);
       }
     },
-    [confirming, confirmed, contact, setPoseSettling, startPoll],
+    [confirming, confirmed, contacts, setPoseSettling, startPoll],
   );
 
   // «Очистить диалог»: сервер открывает новый conversation (история остаётся
@@ -457,6 +478,11 @@ export function ChatClient() {
         );
       case 'order': {
         const isPaid = paidOrders.includes(card.orderId);
+        // Поле телефона — только при сумме от порога (тикет 05); порог живёт
+        // на сервере (/api/profile), сравнение — общий isPhoneRequiredForAmount.
+        const phoneRequired = isPhoneRequiredForAmount(card.totalKopecks, phoneThresholdRub);
+        const contactsOk =
+          contacts.email.ok && (!phoneRequired || contacts.phone.ok);
         return (
           <OrderPanel
             analyticsSurface="web_chat"
@@ -473,10 +499,14 @@ export function ChatClient() {
             stamp={isPaid ? <PaidStamp /> : undefined}
             confirm={
               <div className="space-y-3">
-                {/* Плашка контактов (тикет 02): почта обязательна для счёта.
-                    Прячем, когда заказ уже оплачен/счёт создан — поле отработало. */}
+                {/* Плашка контактов (тикеты 02/05): почта обязательна всегда,
+                    телефон — от порога. Прячем, когда счёт уже создан. */}
                 {!isPaid && !confirmed.includes(card.orderId) && (
-                  <ContactCard {...contact.card} />
+                  <ContactCard
+                    contacts={contacts}
+                    phoneRequired={phoneRequired}
+                    phoneRequiredFromRub={phoneThresholdRub}
+                  />
                 )}
                 <ComicButton
                   onClick={() => void confirmOrder(card.orderId)}
@@ -484,7 +514,7 @@ export function ChatClient() {
                     isPaid ||
                     confirming !== null ||
                     confirmed.includes(card.orderId) ||
-                    !contact.emailOk
+                    !contactsOk
                   }
                 >
                   {isPaid

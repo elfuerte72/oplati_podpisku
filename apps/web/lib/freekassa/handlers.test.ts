@@ -31,11 +31,13 @@ vi.mock('@oplati/db', () => {
     byInvoiceNumber: Pay | null;
     forceClaimNull: boolean;
     forceTerminalClaimNull: boolean;
+    payerPhone: { phone: string | null; phoneSource: string | null } | null;
   } = {
     byRef: null,
     byInvoiceNumber: null,
     forceClaimNull: false,
     forceTerminalClaimNull: false,
+    payerPhone: null,
   };
   return {
     // claim + transition обёрнуты в db.transaction: мок исполняет callback с
@@ -56,6 +58,10 @@ vi.mock('@oplati/db', () => {
       return p && p.status === 'pending' ? { ...p, status: 'failed' } : null;
     }),
     transitionOrder: vi.fn(async () => ({})),
+    getPayerPhoneForOrder: vi.fn(async () => state.payerPhone),
+    __setPayerPhone(p: { phone: string | null; phoneSource: string | null } | null) {
+      state.payerPhone = p;
+    },
     __setPayment(p: Pay | null, opts: { onlyByInvoiceNumber?: boolean } = {}) {
       state.byRef = opts.onlyByInvoiceNumber ? null : p;
       state.byInvoiceNumber = p;
@@ -75,6 +81,7 @@ vi.mock('@sentry/nextjs', () => ({
 
 import {
   freekassaNotificationSchema,
+  maskPayerAccount,
   OrderTransitionError,
   toStorableNotification,
 } from '@oplati/types';
@@ -89,6 +96,7 @@ import { processFreekassaPaid, processFreekassaTerminal } from './handlers.ts';
 type MockedDb = typeof db & {
   __setPayment: (p: Pay | null, opts?: { onlyByInvoiceNumber?: boolean }) => void;
   __forceClaimNull: () => void;
+  __setPayerPhone: (p: { phone: string | null; phoneSource: string | null } | null) => void;
 };
 
 const PAYMENT: Pay = {
@@ -120,6 +128,8 @@ function paidInput(overrides: Record<string, string> = {}) {
     merchantOrderId: n.MERCHANT_ORDER_ID,
     amountRaw: n.AMOUNT,
     rawPayload: toStorableNotification(n),
+    // Как в роуте вебхука: маска для сверки телефона (тикет 07).
+    payerAccountMasked: maskPayerAccount(n.payer_account),
   };
 }
 
@@ -142,6 +152,49 @@ describe('processFreekassaPaid', () => {
       orderId: 'order-1',
       paymentId: 'pay-1',
     });
+  });
+
+  it('сверка телефона: пометка в событии, несовпадение НИЧЕГО не блокирует (Р4)', async () => {
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+    (db as unknown as MockedDb).__setPayerPhone({ phone: '+79991234567', phoneSource: 'telegram' });
+
+    await processFreekassaPaid(paidInput({ payer_account: '+79991234567' }));
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        toStatus: 'paid',
+        payload: expect.objectContaining({ phone_match: true, phone_source: 'telegram' }),
+      }),
+    );
+
+    vi.clearAllMocks();
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+    (db as unknown as MockedDb).__setPayerPhone({ phone: '+79990000000', phoneSource: 'manual' });
+
+    const res = await processFreekassaPaid(paidInput({ payer_account: '+79991234567' }));
+    // Несовпадение — нейтральная пометка: обычный processed, выпуск карты идёт.
+    expect(res.kind).toBe('processed');
+    expect(dispatchIssueCard).toHaveBeenCalledWith('order-1');
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({ phone_match: false }),
+      }),
+    );
+  });
+
+  it('нет payer_account в уведомлении → phone_match: null, профиль не читается', async () => {
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+
+    await processFreekassaPaid(paidInput());
+
+    expect(db.getPayerPhoneForOrder).not.toHaveBeenCalled();
+    expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        payload: expect.objectContaining({ phone_match: null, phone_source: null }),
+      }),
+    );
   });
 
   it('повтор уведомления идемпотентен: claim не выдан — побочных эффектов нет', async () => {

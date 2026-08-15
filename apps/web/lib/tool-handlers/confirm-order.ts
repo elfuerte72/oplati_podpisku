@@ -8,6 +8,7 @@ import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
 import { selfCallBaseUrl } from '../deployment-url.ts';
 import { EMAIL_REQUIRED } from '../contacts/email.ts';
+import { PHONE_REQUIRED } from '../contacts/phone.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -52,6 +53,21 @@ export class EmailRequiredError extends Error {
       `${EMAIL_REQUIRED}: в профиле пользователя нет почты, счёт не создан. Попроси пользователя указать почту для связи по заказу (в плашке контактов на экране заказа) и подтвердить оплату ещё раз.`,
     );
     this.name = 'EmailRequiredError';
+  }
+}
+
+/** Маркер «нужен телефон» — антифрод-трек (тикет 05); литерал в lib/contacts. */
+export { PHONE_REQUIRED };
+
+export class PhoneRequiredError extends Error {
+  /** Порог в целых рублях из тела 422 — UI показывает его динамически. */
+  readonly requiredFromRub: number | null;
+  constructor(requiredFromRub: number | null) {
+    super(
+      `${PHONE_REQUIRED}: для заказов от ${requiredFromRub ?? 'порога'} ₽ банк требует телефон плательщика, счёт не создан. Попроси пользователя указать телефон в контактах заказа (плашка на экране заказа) и подтвердить оплату ещё раз.`,
+    );
+    this.name = 'PhoneRequiredError';
+    this.requiredFromRub = requiredFromRub;
   }
 }
 
@@ -117,7 +133,21 @@ export function aboveMaxAmountText(maxAmountRub: number | null): string {
 }
 
 /** Тело ошибки /api/payments/create (инвариант «Zod на границах»). */
-const errorBodySchema = z.object({ error: z.string(), maxAmountRub: z.number().optional() });
+const errorBodySchema = z.object({
+  error: z.string(),
+  maxAmountRub: z.number().optional(),
+  requiredFromRub: z.number().optional(),
+});
+
+/** Порог телефона из тела 422 — чтобы назвать клиенту конкретную цифру. */
+function parseRequiredFromRub(respText: string): number | null {
+  try {
+    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
+    return parsed.success ? (parsed.data.requiredFromRub ?? null) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Лимит из тела 422 — чтобы назвать клиенту конкретную цифру, а не «слишком много». */
 function parseMaxAmountRub(respText: string): number | null {
@@ -224,6 +254,9 @@ export async function confirmOrder(input: {
       }
       if (resp.status === 422 && errorCode === EMAIL_REQUIRED) {
         throw new EmailRequiredError();
+      }
+      if (resp.status === 422 && errorCode === PHONE_REQUIRED) {
+        throw new PhoneRequiredError(parseRequiredFromRub(respText));
       }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }

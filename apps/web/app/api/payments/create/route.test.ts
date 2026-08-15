@@ -35,8 +35,14 @@ const h = vi.hoisted(() => ({
     // проверки гейта, не заставляя весь файл переключаться на Freekassa: там
     // потребовались бы ещё и её ключи в env.
     maxAmountRubOverride: null as number | null,
-    payerContact: null as { telegramId: string | null; email: string | null } | null,
+    payerContact: null as {
+      telegramId: string | null;
+      email: string | null;
+      phone?: string | null;
+    } | null,
+    phoneThreshold: null as number | null,
   },
+  phoneGateNotifyMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -82,6 +88,11 @@ vi.mock('@/lib/jobs/proxy-health', () => ({
 
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
+vi.mock('@/lib/contacts/phone-gate', () => ({
+  phoneRequirementRub: () => h.state.phoneThreshold,
+  notifyPhoneGateBlocked: h.phoneGateNotifyMock,
+}));
+
 vi.mock('@/lib/payments/gateway', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/payments/gateway')>();
   return {
@@ -118,6 +129,7 @@ beforeEach(() => {
   };
   // Дефолт — профиль с почтой: гейт email_required проверяется отдельным сьютом.
   h.state.payerContact = { telegramId: '12345', email: 'client@example.com' };
+  h.state.phoneThreshold = null;
   // Транзакция исполняет callback с сентинелом (rollback-семантику проверяет
   // интеграционный сьют packages/db на реальном Postgres).
   h.transactionMock.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -324,6 +336,52 @@ describe('POST /api/payments/create — гейт email плательщика (�
 
     expect(resp.status).toBe(200);
     expect(((await resp.json()) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+describe('POST /api/payments/create — гейт телефона от порога (антифрод-трек, тикет 05)', () => {
+  it('порог не задан → телефон не спрашивается нигде (фича выключена)', async () => {
+    // Дефолт env — undefined: безопасный rollout.
+    h.state.phoneThreshold = null;
+    h.state.payerContact = { telegramId: '12345', email: 'client@example.com', phone: null };
+    h.state.order = { ...h.state.order!, amountRub: 5_000_000 }; // 50 000 ₽
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+  });
+
+  it('сумма ≥ порога без номера → 422 phone_required с порогом в теле + DM оператору', async () => {
+    h.state.phoneThreshold = 10_000;
+    h.state.payerContact = { telegramId: '12345', email: 'client@example.com', phone: null };
+    h.state.order = { ...h.state.order!, amountRub: 1_000_000 }; // 10 000 ₽ ровно
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string; requiredFromRub: number };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('phone_required');
+    // Порог в теле ответа — UI показывает динамически (не зашивать в тексты).
+    expect(json.requiredFromRub).toBe(10_000);
+    expect(h.transactionMock).not.toHaveBeenCalled();
+    // DM оператору (дедуп проверяет unit-сьют phone-gate).
+    expect(h.phoneGateNotifyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('сумма ниже порога или номер в профиле → счёт выставляется', async () => {
+    h.state.phoneThreshold = 10_000;
+
+    h.state.payerContact = { telegramId: '12345', email: 'client@example.com', phone: null };
+    h.state.order = { ...h.state.order!, amountRub: 999_900 }; // 9 999 ₽
+    expect((await POST(makeRequest({ orderId: ORDER_ID }))).status).toBe(200);
+
+    h.state.payerContact = {
+      telegramId: '12345',
+      email: 'client@example.com',
+      phone: '+79991234567',
+    };
+    h.state.order = { ...h.state.order!, amountRub: 5_000_000 };
+    expect((await POST(makeRequest({ orderId: ORDER_ID }))).status).toBe(200);
   });
 });
 

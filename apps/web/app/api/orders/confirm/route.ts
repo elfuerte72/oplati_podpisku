@@ -7,6 +7,13 @@ import { getDb, getOrCreateUserByWebSessionId, updateUserContacts } from '@oplat
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
+import {
+  PHONE_INVALID_TEXT,
+  PHONE_REQUIRED,
+  PHONE_REQUIRED_FALLBACK_TEXT,
+  normalizePhone,
+  phoneRequiredText,
+} from '@/lib/contacts/phone';
 import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
@@ -17,6 +24,7 @@ import {
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
+  PhoneRequiredError,
   TELEGRAM_LINK_REQUIRED,
   TelegramLinkRequiredError,
 } from '@/lib/tool-handlers/confirm-order';
@@ -42,10 +50,11 @@ const dbLog = childLogger('db');
 
 const bodySchema = z.object({
   orderId: z.string().uuid(),
-  // Почта из плашки контактов (тикет 02): передаётся, когда клиент только что
-  // ввёл/поменял адрес. Формат проверяем отдельно ниже — Zod-отказ всего тела
-  // дал бы невнятный invalid_body вместо подсказки «проверь адрес».
+  // Контакты из плашки (тикеты 02/05): передаются, когда клиент только что
+  // ввёл/поменял значение. Формат проверяем отдельно ниже — Zod-отказ всего
+  // тела дал бы невнятный invalid_body вместо подсказки «проверь адрес».
   email: z.string().max(320).optional(),
+  phone: z.string().max(32).optional(),
 });
 
 const FAIL_TEXT =
@@ -75,14 +84,24 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   const { orderId } = parsed.data;
 
-  // Почта валидируется ДО обращения к БД: невалидный адрес — ошибка клиенту,
-  // а не молчаливое «сохранили мусор» (Zod на границе, инвариант 5).
+  // Контакты валидируются ДО обращения к БД: невалидное значение — ошибка
+  // клиенту, а не молчаливое «сохранили мусор» (Zod на границе, инвариант 5).
   let email: string | null = null;
   if (parsed.data.email !== undefined) {
     email = normalizeEmail(parsed.data.email);
     if (!email) {
       return NextResponse.json(
         { ok: false, error: 'invalid_email', text: EMAIL_INVALID_TEXT },
+        { status: 400 },
+      );
+    }
+  }
+  let phone: string | null = null;
+  if (parsed.data.phone !== undefined) {
+    phone = normalizePhone(parsed.data.phone);
+    if (!phone) {
+      return NextResponse.json(
+        { ok: false, error: 'invalid_phone', text: PHONE_INVALID_TEXT },
         { status: 400 },
       );
     }
@@ -97,7 +116,17 @@ export async function POST(req: Request): Promise<NextResponse> {
     // ниже уйдёт провайдеру уже с ним. Почта из плашки сохраняется ДО
     // выставления счёта — гейт email_required в payments/create читает профиль.
     await rememberClientIp(req, userId);
-    if (email) await updateUserContacts(getDb(), { userId, email });
+    // Ручной ввод с сайта — источник номера всегда 'manual' (тикет 05).
+    if (phone) {
+      await updateUserContacts(getDb(), {
+        userId,
+        ...(email ? { email } : {}),
+        phone,
+        phoneSource: 'manual',
+      });
+    } else if (email) {
+      await updateUserContacts(getDb(), { userId, email });
+    }
   } catch (err) {
     log.error({ event: 'web-chat.confirm.session_failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat.confirm' } });
@@ -144,6 +173,22 @@ export async function POST(req: Request): Promise<NextResponse> {
           ok: false,
           error: EMAIL_REQUIRED,
           text: 'Укажи почту для связи по заказу — на неё банк напишет, если платёж встанет на проверку.',
+        },
+        { status: 422 },
+      );
+    }
+    // Гейт телефона (тикет 05): UI покажет поле в плашке; порог — в теле.
+    if (err instanceof PhoneRequiredError) {
+      log.info({ event: 'web-chat.confirm.phone_required', orderId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: PHONE_REQUIRED,
+          requiredFromRub: err.requiredFromRub,
+          text:
+            err.requiredFromRub !== null
+              ? phoneRequiredText(err.requiredFromRub)
+              : PHONE_REQUIRED_FALLBACK_TEXT,
         },
         { status: 422 },
       );

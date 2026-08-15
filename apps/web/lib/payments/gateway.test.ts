@@ -313,6 +313,30 @@ describe('createGatewayInvoice — Freekassa', () => {
     );
   });
 
+  it('tel уходит только при включённом FREEKASSA_SEND_TEL и номере в профиле', async () => {
+    // Контракт `tel` у провайдера не подтверждён живым вызовом — до этого
+    // отправка за флагом (правило «не выдумывать чужой контракт»).
+    h.payerContact = {
+      telegramId: '12345',
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    };
+
+    await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
+    expect(h.createOrderMock.mock.calls[0]?.[0]).not.toHaveProperty('tel');
+
+    h.env.FREEKASSA_SEND_TEL = true;
+    await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
+    expect(h.createOrderMock.mock.calls[1]?.[0]).toMatchObject({ tel: '+79991234567' });
+
+    // Флаг включён, но номера нет — ключ не уходит вовсе.
+    h.payerContact = { ...h.payerContact, phone: null };
+    await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
+    expect(h.createOrderMock.mock.calls[2]?.[0]).not.toHaveProperty('tel');
+    h.env.FREEKASSA_SEND_TEL = false;
+  });
+
   it('без telegram_id оплата не падает — используется запасной адрес', async () => {
     h.payerContact = { telegramId: null, email: null, phone: null, lastSeenIp: null };
 

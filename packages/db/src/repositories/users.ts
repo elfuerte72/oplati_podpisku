@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { sql } from 'drizzle-orm';
 
+import type { PhoneSource } from '@oplati/types';
+
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
@@ -221,8 +223,9 @@ export async function isWebSessionLinkedToTelegram(
 
 export type WebSessionProfile = {
   displayName: string | null;
-  /** Почта из плашки контактов (антифрод-трек) — prefill поля на сайте. */
+  /** Контакты из плашки (антифрод-трек) — prefill полей на сайте. */
   email: string | null;
+  phone: string | null;
   telegramLinked: boolean;
   ordersCount: number;
   totalSpentKopecks: number;
@@ -235,6 +238,7 @@ export async function getWebSessionProfile(
   const rows = await db.execute<{
     display_name: string | null;
     email: string | null;
+    phone: string | null;
     telegram_id: string | null;
     orders_count: number;
     // ::bigint приходит из драйвера строкой — Number() при маппинге.
@@ -243,6 +247,7 @@ export async function getWebSessionProfile(
     SELECT
       u.display_name,
       u.email,
+      u.phone,
       u.telegram_id,
       COUNT(o.id) FILTER (WHERE o.status IN ${PURCHASED_STATUSES_SQL})::int
         AS orders_count,
@@ -261,6 +266,7 @@ export async function getWebSessionProfile(
     return {
       displayName: null,
       email: null,
+      phone: null,
       telegramLinked: false,
       ordersCount: 0,
       totalSpentKopecks: 0,
@@ -269,6 +275,7 @@ export async function getWebSessionProfile(
   return {
     displayName: row.display_name,
     email: row.email,
+    phone: row.phone,
     telegramLinked: row.telegram_id !== null,
     ordersCount: row.orders_count,
     totalSpentKopecks: Number(row.total_spent_kopecks),
@@ -283,6 +290,8 @@ export async function getWebSessionProfile(
 export type UserProfile = {
   displayName: string | null;
   phone: string | null;
+  /** Откуда номер: 'telegram' | 'manual' | null (пометка на экране «Профиль»). */
+  phoneSource: string | null;
   email: string | null;
   telegramLinked: boolean;
   createdAt: Date;
@@ -295,11 +304,12 @@ export async function getUserProfileById(
   const rows = await db.execute<{
     display_name: string | null;
     phone: string | null;
+    phone_source: string | null;
     email: string | null;
     telegram_id: string | null;
     created_at: string;
   }>(
-    sql`SELECT display_name, phone, email, telegram_id, created_at
+    sql`SELECT display_name, phone, phone_source, email, telegram_id, created_at
         FROM users WHERE id = ${userId} LIMIT 1`,
   );
   const row = rows[0];
@@ -307,6 +317,7 @@ export async function getUserProfileById(
   return {
     displayName: row.display_name,
     phone: row.phone,
+    phoneSource: row.phone_source,
     email: row.email,
     telegramLinked: row.telegram_id !== null,
     createdAt: new Date(row.created_at),
@@ -315,16 +326,30 @@ export async function getUserProfileById(
 
 /**
  * Сохранить контакты клиента (антифрод-трек: email — тикет 02, телефон —
- * пачка 2). Обновляются только переданные поля; email пишется уже
- * нормализованным (валидация — на границе, `lib/contacts`).
+ * тикет 05). Обновляются только переданные поля; значения пишутся уже
+ * нормализованными (валидация — на границе, `lib/contacts`). Телефон всегда
+ * едет парой с источником: номер без пометки «кто его дал» бесполезен сверке.
  */
+export type UpdateUserContactsInput = { userId: string; email?: string } & (
+  | { phone?: undefined; phoneSource?: undefined }
+  // Номер без источника не принимается ТИПОМ: тихий дефолт прятал бы ошибку
+  // вызывающего кода, а сверке важно знать, кто дал номер (@oplati/types
+  // phoneSource — единственный словарь значений).
+  | { phone: string; phoneSource: PhoneSource }
+);
+
 export async function updateUserContacts(
   db: DB,
-  input: { userId: string; email?: string },
+  input: UpdateUserContactsInput,
 ): Promise<void> {
-  if (input.email === undefined) return;
+  const sets = [];
+  if (input.email !== undefined) sets.push(sql`email = ${input.email}`);
+  if (input.phone !== undefined) {
+    sets.push(sql`phone = ${input.phone}`, sql`phone_source = ${input.phoneSource}`);
+  }
+  if (sets.length === 0) return;
   await db.execute(sql`
-    UPDATE users SET email = ${input.email}, updated_at = now()
+    UPDATE users SET ${sql.join(sets, sql`, `)}, updated_at = now()
     WHERE id = ${input.userId}
   `);
 }
@@ -366,6 +391,7 @@ export type UserPayerContact = {
   telegramId: string | null;
   email: string | null;
   phone: string | null;
+  phoneSource: string | null;
   lastSeenIp: string | null;
 };
 
@@ -377,9 +403,10 @@ export async function getUserPayerContact(
     telegram_id: string | null;
     email: string | null;
     phone: string | null;
+    phone_source: string | null;
     last_seen_ip: string | null;
   }>(
-    sql`SELECT telegram_id, email, phone, last_seen_ip
+    sql`SELECT telegram_id, email, phone, phone_source, last_seen_ip
         FROM users WHERE id = ${userId} LIMIT 1`,
   );
   const row = rows[0];
@@ -388,8 +415,28 @@ export async function getUserPayerContact(
     telegramId: row.telegram_id,
     email: row.email,
     phone: row.phone,
+    phoneSource: row.phone_source,
     lastSeenIp: row.last_seen_ip,
   };
+}
+
+/**
+ * Телефон плательщика по ЗАКАЗУ — для сверки в вебхуке `paid` (тикет 07):
+ * хвост `payer_account_masked` сравнивается с хвостом номера из профиля.
+ * Read-only, один JOIN — вебхук не должен ходить в БД дважды.
+ */
+export async function getPayerPhoneForOrder(
+  db: DB,
+  orderId: string,
+): Promise<{ phone: string | null; phoneSource: string | null } | null> {
+  const rows = await db.execute<{ phone: string | null; phone_source: string | null }>(
+    sql`SELECT u.phone, u.phone_source
+        FROM users u JOIN orders o ON o.user_id = u.id
+        WHERE o.id = ${orderId} LIMIT 1`,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return { phone: row.phone, phoneSource: row.phone_source };
 }
 
 /**

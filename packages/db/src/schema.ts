@@ -110,6 +110,11 @@ export const users = pgTable(
     displayName: text('display_name'),
     language: text('language').default('ru').notNull(),
     phone: text('phone'),
+    // Откуда номер (антифрод-трек, тикет 05): 'telegram' — отдал сам Telegram
+    // (requestContact / reply-кнопка, верифицирован), 'manual' — введён руками.
+    // Оператору и сверке важно различать; text без enum — значения задаёт
+    // приложение (@oplati/types phoneSource).
+    phoneSource: text('phone_source'),
     email: text('email'),
     notes: text('notes'),
     // Антифрод-трек Freekassa (тикет 01): последний живой IP клиента — уходит

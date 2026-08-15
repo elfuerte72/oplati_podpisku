@@ -18,6 +18,13 @@ export type TelegramWebApp = {
   openTelegramLink?: (url: string) => void;
   /** Закрыть Mini App — возвращает пользователя в чат бота (там работает /support). */
   close?: () => void;
+  /**
+   * Bot API 6.9+: нативный запрос телефона (антифрод-трек, тикет 06). Callback
+   * получает только boolean «поделился ли» — САМ НОМЕР приложению не отдаётся
+   * (проверено по core.telegram.org/bots/webapps 2026-08-15): Telegram шлёт его
+   * боту contact-сообщением, где его принимает `handleContactMessage`.
+   */
+  requestContact?: (callback?: (shared: boolean) => void) => void;
   /** Цвет фона мини-аппа (chrome) — выставляем под фирменный noir/paper. */
   setBackgroundColor?: (color: string) => void;
   /** Цвет шапки Telegram над мини-аппом. */

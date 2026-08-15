@@ -8,6 +8,7 @@ import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
+import { PHONE_INVALID_TEXT, normalizePhone } from '@/lib/contacts/phone';
 import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
@@ -60,10 +61,22 @@ const orderAction = z.object({ initData: z.string().min(1), orderId: z.string().
 const requestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('snapshot'), initData: z.string().min(1) }),
   orderAction.extend({ action: z.literal('order') }),
-  // `email` — из плашки контактов (тикет 02): передаётся, когда клиент только
-  // что ввёл/поменял адрес. Формат проверяется в диспатче (normalizeEmail) —
-  // Zod-отказ всего тела дал бы invalid_body вместо подсказки про адрес.
-  orderAction.extend({ action: z.literal('pay'), email: z.string().max(320).optional() }),
+  // `email`/`phone` — из плашки контактов (тикеты 02/05): передаются, когда
+  // клиент только что ввёл/поменял значение. Формат проверяется в диспатче
+  // (normalize*) — Zod-отказ всего тела дал бы invalid_body вместо подсказки.
+  orderAction.extend({
+    action: z.literal('pay'),
+    email: z.string().max(320).optional(),
+    phone: z.string().max(32).optional(),
+  }),
+  // Экран «Профиль» (тикет 08): правка контактов вне заказа. Авторизация
+  // initData и per-identity лимит бакета `cabinet` покрывают его как остальные.
+  z.object({
+    action: z.literal('update-contacts'),
+    initData: z.string().min(1),
+    email: z.string().max(320).optional(),
+    phone: z.string().max(32).optional(),
+  }),
   z.object({
     action: z.literal('card-details'),
     initData: z.string().min(1),
@@ -90,6 +103,42 @@ const requestSchema = z.discriminatedUnion('action', [
 ]);
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
+
+/**
+ * Валидация и сохранение контактов из тела запроса (плашка/профиль, тикеты
+ * 02/05/08). Телефон, введённый руками, всегда получает источник 'manual' —
+ * telegram-источник ставит ТОЛЬКО contact-сообщение боту (проверенное
+ * `contact.user_id === from.id`).
+ */
+async function saveContactsFromBody(
+  userId: string,
+  rawEmail: string | undefined,
+  rawPhone: string | undefined,
+): Promise<{ ok: true } | { ok: false; error: string; message: string }> {
+  let email: string | undefined;
+  if (rawEmail !== undefined) {
+    const normalized = normalizeEmail(rawEmail);
+    if (!normalized) return { ok: false, error: 'invalid_email', message: EMAIL_INVALID_TEXT };
+    email = normalized;
+  }
+  let phone: string | undefined;
+  if (rawPhone !== undefined) {
+    const normalized = normalizePhone(rawPhone);
+    if (!normalized) return { ok: false, error: 'invalid_phone', message: PHONE_INVALID_TEXT };
+    phone = normalized;
+  }
+  if (phone !== undefined) {
+    await updateUserContacts(getDb(), {
+      userId,
+      ...(email !== undefined ? { email } : {}),
+      phone,
+      phoneSource: 'manual',
+    });
+  } else if (email !== undefined) {
+    await updateUserContacts(getDb(), { userId, email });
+  }
+  return { ok: true };
+}
 
 /**
  * 429 в формате, который РАЗБИРАЕТ клиент кабинета: поле `message` заполнено.
@@ -226,21 +275,20 @@ export async function POST(req: Request): Promise<NextResponse> {
         return NextResponse.json({ ok: true, order: detail }, { status: 200 });
       }
       case 'pay': {
-        // Почта из плашки сохраняется ДО выставления счёта: гейт email_required
-        // в payments/create читает профиль, а не тело запроса.
-        if (body.email !== undefined) {
-          const email = normalizeEmail(body.email);
-          if (!email) {
-            return NextResponse.json(
-              { ok: false, error: 'invalid_email', message: EMAIL_INVALID_TEXT },
-              { status: 200 },
-            );
-          }
-          await updateUserContacts(getDb(), { userId, email });
-        }
+        // Контакты из плашки сохраняются ДО выставления счёта: гейты
+        // email_required/phone_required в payments/create читают профиль.
+        const saved = await saveContactsFromBody(userId, body.email, body.phone);
+        if (!saved.ok) return NextResponse.json(saved, { status: 200 });
         const result = await payOrder(userId, body.orderId);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
+      }
+      case 'update-contacts': {
+        // Экран «Профиль»: ручная правка телефона сбрасывает источник в
+        // 'manual' (внутри saveContactsFromBody); «Взять из Telegram» идёт
+        // МИМО этого action — номер приходит боту contact-сообщением.
+        const saved = await saveContactsFromBody(userId, body.email, body.phone);
+        return NextResponse.json(saved.ok ? { ok: true } : saved, { status: 200 });
       }
       // Действия `repeat`/`operator` удалены (L-9 аудита, 2026-07-19): кнопки
       // убраны из UI ещё 2026-07-03, repeatOrder был сломан для тарифных

@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { getDb, getWebSessionProfile } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
+import { phoneRequirementRub } from '@/lib/contacts/phone-gate';
 import { readWebSessionId } from '@/lib/chat/session';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { cabinetDeepLink } from '@/lib/telegram/deep-links';
@@ -28,6 +29,7 @@ const log = childLogger('profile');
 const EMPTY = {
   displayName: null,
   email: null,
+  phone: null,
   telegramLinked: false,
   ordersCount: 0,
   totalSpentKopecks: 0,
@@ -60,19 +62,31 @@ async function resolveBotLinks(): Promise<{
 }
 
 export async function GET(): Promise<NextResponse> {
+  // Порог «телефон обязателен» (антифрод-трек): плашка контактов показывает
+  // поле по нему; в UI-тексты порог не зашивается (инвариант 10). Внутри try:
+  // serverEnv валидируется лениво, и мусор в переменной не должен ронять
+  // роут, который спроектирован никогда-не-500.
+  let phoneRequiredFromRub: number | null = null;
   try {
+    phoneRequiredFromRub = phoneRequirementRub();
     // Независимы — параллелим, чтобы cold-start getMe не задерживал чтение сессии.
     const [links, webSessionId] = await Promise.all([resolveBotLinks(), readWebSessionId()]);
     if (!webSessionId) {
-      return NextResponse.json({ ok: true, profile: EMPTY, ...links }, { status: 200 });
+      return NextResponse.json(
+        { ok: true, profile: EMPTY, phoneRequiredFromRub, ...links },
+        { status: 200 },
+      );
     }
     const profile = await getWebSessionProfile(getDb(), webSessionId);
-    return NextResponse.json({ ok: true, profile, ...links }, { status: 200 });
+    return NextResponse.json(
+      { ok: true, profile, phoneRequiredFromRub, ...links },
+      { status: 200 },
+    );
   } catch (err) {
     log.error({ event: 'profile.failed', err });
     Sentry.captureException(err, { tags: { source: 'profile' } });
     return NextResponse.json(
-      { ok: false, profile: EMPTY, supportUrl: null, cabinetUrl: null },
+      { ok: false, profile: EMPTY, phoneRequiredFromRub, supportUrl: null, cabinetUrl: null },
       { status: 200 },
     );
   }

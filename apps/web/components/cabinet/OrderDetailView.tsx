@@ -4,7 +4,8 @@ import { useState } from 'react';
 
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
-import { ContactCard, useContactEmail } from '@/components/contacts/ContactCard';
+import { ContactCard, useContacts } from '@/components/contacts/ContactCard';
+import { isPhoneRequiredForAmount } from '@/lib/contacts/phone';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
 import {
@@ -32,10 +33,16 @@ type Props = {
   hasActiveCard: boolean;
   busy: 'pay' | null;
   message: DetailActionMessage | null;
-  /** Почта из профиля (prefill плашки контактов, тикет 02). */
+  /** Контакты из профиля (prefill плашки, тикеты 02/05). */
   savedEmail: string | null;
+  savedPhone: string | null;
+  phoneSource: string | null;
+  /** Порог «телефон обязателен» в целых рублях; null — фича выключена. */
+  phoneRequiredFromRub: number | null;
   onBack: () => void;
-  onPay: (email?: string) => void;
+  onPay: (contactsToSend: { email?: string; phone?: string }) => void;
+  /** «Взять из Telegram» (requestContact SDK); не задан → кнопки нет. */
+  onRequestTelegramPhone?: (() => void) | undefined;
   onOpenExternalLink: (url: string) => void;
   onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
@@ -465,22 +472,33 @@ export function OrderDetailView({
   busy,
   message,
   savedEmail,
+  savedPhone,
+  phoneSource,
+  phoneRequiredFromRub,
   onBack,
   onPay,
   onOpenExternalLink,
   onReportIssue,
   onSubscriptionPaid,
   onContactSupport,
+  onRequestTelegramPhone,
 }: Props) {
-  // Плашка контактов (тикет 02): почта обязательна для выставления счёта.
-  // markSaved — оптимистично при нажатии «Оплатить»: сервер сохраняет почту в
-  // профиль ДО создания счёта, поэтому даже неудачная оплата её не теряет.
-  const contact = useContactEmail(savedEmail);
+  // Плашка контактов (тикеты 02/05). markSubmitted — оптимистично при нажатии
+  // «Оплатить»: сервер сохраняет контакты ДО создания счёта, поэтому даже
+  // неудачная оплата их не теряет.
+  const contacts = useContacts({ email: savedEmail, phone: savedPhone });
+  // Сравнение суммы с порогом — общий isPhoneRequiredForAmount (одно место
+  // конверсии рубли→копейки на гейт и обе плашки).
+  const phoneRequired = isPhoneRequiredForAmount(order.amountKopecks, phoneRequiredFromRub);
+  const contactsOk = contacts.email.ok && (!phoneRequired || contacts.phone.ok);
 
   const handlePay = () => {
-    const email = contact.emailToSend;
-    if (email !== undefined) contact.markSaved(email);
-    onPay(email);
+    const toSend = {
+      ...(contacts.email.toSend !== undefined ? { email: contacts.email.toSend } : {}),
+      ...(contacts.phone.toSend !== undefined ? { phone: contacts.phone.toSend } : {}),
+    };
+    contacts.markSubmitted();
+    onPay(toSend);
   };
 
   return (
@@ -533,11 +551,17 @@ export function OrderDetailView({
 
         {order.payable && (
           <div className="mt-5 space-y-3">
-            <ContactCard {...contact.card} />
+            <ContactCard
+              contacts={contacts}
+              phoneRequired={phoneRequired}
+              phoneRequiredFromRub={phoneRequiredFromRub}
+              phoneSource={phoneSource}
+              onRequestTelegramPhone={onRequestTelegramPhone}
+            />
             <ComicButton
               variant="primary"
               onClick={handlePay}
-              disabled={busy !== null || !contact.emailOk}
+              disabled={busy !== null || !contactsOk}
             >
               {busy === 'pay'
                 ? 'Готовлю счёт…'

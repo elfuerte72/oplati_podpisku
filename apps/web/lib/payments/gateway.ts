@@ -350,6 +350,10 @@ async function createFreekassaInvoice(input: CreateInvoiceInput): Promise<Gatewa
     ip: payerIpForOrder(order, contact),
     methodId: freekassaMethodId(paymentMethod),
     currency: 'RUB',
+    // Телефон плательщика (тикет 07): при ЛЮБОЙ сумме, раз номер уже в профиле.
+    // За флагом FREEKASSA_SEND_TEL (дефолт выкл): параметр в доке не описан,
+    // контракт сначала подтверждается живым вызовом (правило проекта).
+    ...(serverEnv.FREEKASSA_SEND_TEL && contact?.phone ? { tel: contact.phone } : {}),
   });
 
   // Провайдер срок жизни заказа не отдаёт — это НАШ срок ожидания оплаты

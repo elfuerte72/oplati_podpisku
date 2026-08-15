@@ -8,6 +8,7 @@ import {
   findPaymentByProviderInvoiceNumber,
   findPaymentByProviderRef,
   getDb,
+  getPayerPhoneForOrder,
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
@@ -18,6 +19,7 @@ import {
 } from '@oplati/types';
 
 import { notifyOps } from '../alerts/notify-ops.ts';
+import { phoneTailMatches } from '../contacts/phone-match.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { childLogger } from '../logger.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
@@ -64,6 +66,12 @@ export type FreekassaPaidInput = {
   rawPayload: Record<string, unknown>;
   /** true — факт оплаты добран cron'ом, а не пришёл вебхуком. */
   recoveredViaPolling?: boolean;
+  /**
+   * Маскированный счёт плательщика из уведомления (`****XXXX`, тикет 07) — для
+   * сверки хвоста с телефоном профиля. У добора его нет (в `/orders` поле не
+   * объявлено) — сверка тогда null.
+   */
+  payerAccountMasked?: string | undefined;
 };
 
 export type FreekassaHandlerResult =
@@ -309,6 +317,23 @@ export async function processFreekassaPaid(
     };
   }
 
+  // Сверка телефона (тикет 07): хвост маскированного счёта плательщика против
+  // номера из профиля. Только пометка в meta события — Р4: несовпадение НИЧЕГО
+  // не блокирует (телефон СБП может законно отличаться). Best-effort: сбой
+  // чтения профиля не должен мешать приёму денег.
+  let phoneMatch: boolean | null = null;
+  let phoneSource: string | null = null;
+  if (input.payerAccountMasked !== undefined) {
+    try {
+      const payerPhone = await getPayerPhoneForOrder(db, payment.orderId);
+      phoneMatch = phoneTailMatches(input.payerAccountMasked, payerPhone?.phone ?? null);
+      phoneSource = payerPhone?.phoneSource ?? null;
+    } catch (err) {
+      log.error({ event: 'freekassa.handlers.phone_match_failed', paymentId: payment.id, err });
+      Sentry.captureException(err, { tags: { source: 'freekassa.handlers', step: 'phone_match' } });
+    }
+  }
+
   // Claim (`pending → succeeded`) и переход заказа в `paid` — В ОДНОЙ
   // транзакции. Сбой перехода откатывает claim → платёж остаётся pending →
   // добор (этап 4 ТЗ) или повтор уведомления обработает заново.
@@ -334,6 +359,9 @@ export async function processFreekassaPaid(
           intid: intid,
           merchantOrderId: merchantOrderId,
           recoveredViaPolling,
+          // Сверка телефона (тикет 07): пометка для оператора, не фильтр (Р4).
+          phone_match: phoneMatch,
+          phone_source: phoneSource,
         },
       });
     } catch (err) {

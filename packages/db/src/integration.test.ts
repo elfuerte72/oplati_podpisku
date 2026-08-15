@@ -47,6 +47,7 @@ import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts
 import { setReferrerOnce } from './repositories/referrals.ts';
 import {
   getOrCreateUserByTelegramId,
+  getPayerPhoneForOrder,
   getUserPayerContact,
   touchUserLastSeenIp,
   updateUserContacts,
@@ -775,6 +776,41 @@ describe('getUserPayerContact (данные плательщика для счё
 
     await updateUserContacts(db, { userId: user.id });
     expect((await getUserPayerContact(db, user.id))?.email).toBe('client@example.com');
+  });
+
+  it('телефон едет парой с источником; ручная правка перекрывает telegram-источник', async () => {
+    // Тикет 05/08: номер без пометки «кто его дал» бесполезен сверке; ручная
+    // правка сбрасывает источник в manual (Р4 — номер СБП может отличаться).
+    const user = await makeUser();
+
+    await updateUserContacts(db, {
+      userId: user.id,
+      phone: '+79991234567',
+      phoneSource: 'telegram',
+    });
+    let contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ phone: '+79991234567', phoneSource: 'telegram' });
+
+    await updateUserContacts(db, {
+      userId: user.id,
+      phone: '+79997654321',
+      phoneSource: 'manual',
+    });
+    contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ phone: '+79997654321', phoneSource: 'manual' });
+    // email при этом не тронут.
+    expect(contact?.email).toBeNull();
+  });
+
+  it('getPayerPhoneForOrder отдаёт номер владельца заказа', async () => {
+    const user = await makeUser({ phone: '+79991234567', phoneSource: 'telegram' });
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    expect(await getPayerPhoneForOrder(db, order.id)).toEqual({
+      phone: '+79991234567',
+      phoneSource: 'telegram',
+    });
+    expect(await getPayerPhoneForOrder(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
   });
 });
 

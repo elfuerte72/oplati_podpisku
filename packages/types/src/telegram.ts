@@ -34,6 +34,17 @@ const telegramMessageSchema = z.object({
   from: telegramUserSchema.optional(),
   text: z.string().optional(),
   caption: z.string().optional(),
+  // Контакт из reply-кнопки request_contact (антифрод-трек, тикет 06).
+  // Разбираем структурно: `user_id` обязателен для проверки «клиент прислал
+  // СВОЙ номер, а не чужой из адресной книги».
+  contact: z
+    .object({
+      phone_number: z.string(),
+      first_name: z.string().optional(),
+      last_name: z.string().optional(),
+      user_id: z.number().int().optional(),
+    })
+    .optional(),
   // Медиа-поля: парсим только наличие. Структуру (file_id, mime_type и т.п.)
   // не разбираем — нам нужно лишь определить тип контента для шаблонного ответа.
   photo: z.array(z.unknown()).optional(),

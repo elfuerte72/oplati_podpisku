@@ -2,7 +2,8 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 import { GrammyError, HttpError } from 'grammy';
-import type { InlineKeyboard } from 'grammy';
+import type { InlineKeyboard, Keyboard } from 'grammy';
+import type { ReplyKeyboardRemove } from 'grammy/types';
 
 import { childLogger } from '@/lib/logger';
 
@@ -46,7 +47,8 @@ export async function sendSafely(
   chatId: number,
   text: string,
   updateId: number,
-  replyMarkup?: InlineKeyboard,
+  // Reply-клавиатуры (request_contact) и их снятие — контакт-флоу тикета 06.
+  replyMarkup?: InlineKeyboard | Keyboard | ReplyKeyboardRemove,
   opts?: { parseMode?: 'HTML' },
 ): Promise<void> {
   try {
