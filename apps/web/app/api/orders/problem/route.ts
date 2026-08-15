@@ -56,9 +56,17 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const db = getDb();
+    // Cookie раньше БД: запрос без сессии — заведомый 404, ходить в БД (и
+    // падать в 500 при её недоступности) ему незачем.
     const webSessionId = await readWebSessionId();
-    const userId = webSessionId ? await findUserIdByWebSessionId(db, webSessionId) : null;
+    if (!webSessionId) {
+      return NextResponse.json(
+        { ok: false, error: 'not_found', message: 'Заказ не найден.' },
+        { status: 404 },
+      );
+    }
+    const db = getDb();
+    const userId = await findUserIdByWebSessionId(db, webSessionId);
     if (!userId) {
       return NextResponse.json(
         { ok: false, error: 'not_found', message: 'Заказ не найден.' },
