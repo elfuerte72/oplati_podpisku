@@ -24,6 +24,7 @@ import {
   doMarkSubscriptionPaid,
   doPay,
   doReportPaymentIssue,
+  doReportPaymentProblem,
   doUpdateContacts,
   fetchCardDetails,
   fetchOrderDetail,
@@ -32,7 +33,7 @@ import {
   type Snapshot,
 } from './cabinet-api';
 import { ProfileView } from './ProfileView';
-import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
@@ -276,6 +277,25 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     [detail, refreshDetail],
   );
 
+  // «Проблема с оплатой» — фаза до выпуска (тикет 10): после отправки
+  // перечитываем деталь (для «я оплатил» статус станет «на проверке банка»).
+  const reportPaymentProblem = useCallback(
+    async (problemType: PaymentProblemType, comment?: string) => {
+      if (!detail) {
+        return { ok: false as const, error: 'no_order', message: 'Заказ не открыт.' };
+      }
+      const res = await doReportPaymentProblem(
+        initDataRef.current,
+        detail.orderId,
+        problemType,
+        comment,
+      );
+      if (res.ok) void refreshDetail(detail.orderId);
+      return res;
+    },
+    [detail, refreshDetail],
+  );
+
   // «Подписка оплачена» — фиксируем подтверждение клиента и обновляем деталь.
   const confirmSubscriptionPaid = useCallback(async () => {
     if (!detail) {
@@ -429,6 +449,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           onPay={onPay}
           onOpenExternalLink={openExternalLink}
           onReportIssue={reportIssue}
+          onReportPaymentProblem={reportPaymentProblem}
           onSubscriptionPaid={confirmSubscriptionPaid}
           // Закрываем Mini App — пользователь оказывается в чате бота, где
           // работает /support. Своего канала связи у кабинета нет, а оставлять

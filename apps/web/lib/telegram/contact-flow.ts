@@ -17,7 +17,7 @@ import {
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import { currentBuyerFeePercent } from '../payments/gateway.ts';
 import { formatExpires } from '@/components/comic/format';
-import { buildBuyerFeeLine } from './templates.ts';
+import { buildBuyerFeeLine, PAYMENT_PENDING_HINT } from './templates.ts';
 import { persistInbound, safeAppendMessage, type PersistContext } from './persist.ts';
 import { sendSafely } from './send.ts';
 
@@ -190,6 +190,7 @@ async function issueInvoiceAfterContact(
     const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());
     if (feeLine) parts.push(feeLine);
     parts.push(`Счёт действует до ${formatExpires(result.expiresAt)}.`);
+    parts.push(PAYMENT_PENDING_HINT);
     const reply = parts.join('\n\n');
     await safeAppendMessage(ctx, 'assistant', reply, { source: 'contact_flow' }, updateId);
     await sendSafely(chatId, reply, updateId, REMOVE_KEYBOARD);

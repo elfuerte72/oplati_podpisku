@@ -2,11 +2,23 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { getDb, setPaymentProviderStatus, type PaymentRow } from '@oplati/db';
-import { freekassaTerminalReason, FREEKASSA_ORDER_STATUS } from '@oplati/types';
+import {
+  getDb,
+  getUserTelegramId,
+  getOrderById,
+  setPaymentProviderStatus,
+  transitionOrder,
+  type PaymentRow,
+} from '@oplati/db';
+import {
+  freekassaTerminalReason,
+  FREEKASSA_ORDER_STATUS,
+  OrderTransitionError,
+} from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
 import { notifyOps } from '../alerts/notify-ops.ts';
+import { getBot } from '../telegram/bot.ts';
 import { getFreekassaClient, isFreekassaConfigured } from '../freekassa/index.ts';
 import { processFreekassaPaid, processFreekassaTerminal } from '../freekassa/handlers.ts';
 import { getLoveAndPayClient, isLoveAndPayConfigured } from '../loveandpay/index.ts';
@@ -174,11 +186,12 @@ async function pollFreekassaPayment(
 
   // Антифрод-холд (статус 7, эмпирический — подтверждён поддержкой 2026-08-14):
   // деньги списаны, банк держит перевод на проверке. НЕ терминальный и не
-  // «оплачен»: исход решает провайдер. DM владельцу — с прежним дедупом по
-  // платежу, но честным текстом «холд», а не «неизвестный статус»; перевод
-  // заказа в payment_review и автосообщение клиенту — пачка 3 (тикет 09).
+  // «оплачен»: исход решает провайдер. Заказ уходит «на проверку» (перестаёт
+  // тикать к протуханию), клиент получает автосообщение РОВНО один раз (дедуп
+  // по прежнему `last_provider_status` из строки `payment`, загруженной ДО
+  // снапшота выше), владельцу — DM с прежним дедупом (тикет 09).
   if (order.status === FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD) {
-    await alertAntifraudHold(payment, order.fk_order_id);
+    await handleAntifraudHold(payment, order.fk_order_id);
     return false;
   }
 
@@ -233,6 +246,74 @@ function pruneUnknownStatusDedup(now: number): void {
 /** Только для unit-тестов — сбрасывает окно дедупа DM. */
 export function resetUnknownStatusAlertDedupForTests(): void {
   unknownStatusAlertedAt.clear();
+}
+
+/** Текст клиенту при обнаружении холда (спека §5.3 + строка из §6.1). */
+const HOLD_CLIENT_TEXT =
+  'Оплату видим! Банк поставил перевод на проверку — это бывает при крупных суммах. ' +
+  'Деньги не потеряны, ничего делать не нужно: напишем, как только банк подтвердит. ' +
+  'Обычно это занимает до пары часов.\n\n' +
+  'Если подтверждения долго нет — открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню) или напиши /support.';
+
+/**
+ * Первое обнаружение холда: заказ → «на проверке банка» + автосообщение
+ * клиенту; повторные опросы (прежний статус уже 7) не спамят. Best-effort
+ * на каждом шаге: сбой сообщения не откатывает переход и наоборот — деньги
+ * важнее, а poll вернётся через 5 минут.
+ */
+async function handleAntifraudHold(payment: PaymentRow, providerOrderId: string): Promise<void> {
+  await alertAntifraudHold(payment, providerOrderId);
+
+  // Дедуп «ровно один раз на платёж»: слать только при СМЕНЕ статуса на 7.
+  // `payment.lastProviderStatus` — прежний снимок (строка выбрана до записи
+  // нового значения выше по функции). Известные щели best-effort-схемы:
+  // упавший снапшот повторит сообщение на следующем проходе (безвредно),
+  // а транзиентный сбой перехода ниже при уже записанном снапшоте оставит
+  // заказ в pending_payment — его подстрахуют кнопка «Проблема с оплатой»
+  // и сторож stale-review.
+  if (payment.lastProviderStatus === FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD) return;
+
+  const db = getDb();
+  try {
+    await transitionOrder(db, {
+      orderId: payment.orderId,
+      toStatus: 'payment_review',
+      actorType: 'payment_provider',
+      eventType: 'payment_review_entered',
+      payload: {
+        paymentId: payment.id,
+        provider: 'freekassa',
+        reason: 'antifraud_hold',
+        providerStatus: FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD,
+        providerOrderId,
+      },
+    });
+  } catch (err) {
+    // Заказ уже «на проверке» (кнопка клиента, гонка) или ушёл дальше —
+    // легитимно; транзиентный сбой БД — залогировать, poll повторит.
+    if (!(err instanceof OrderTransitionError)) {
+      log.error({ event: 'cron.poll_payment.hold_transition_failed', paymentId: payment.id, err });
+      Sentry.captureException(err, {
+        tags: { source: 'cron.poll-payment', step: 'hold_transition' },
+        extra: { paymentId: payment.id, orderId: payment.orderId },
+      });
+      return;
+    }
+  }
+
+  try {
+    const order = await getOrderById(db, payment.orderId);
+    // Guard по фактическому статусу: при гонке с вебхуком заказ мог уже стать
+    // paid — «банк проверяет перевод» после подтверждения оплаты дезориентирует.
+    if (order?.status !== 'payment_review') return;
+    const telegramId = await getUserTelegramId(db, order.userId);
+    if (telegramId) {
+      await getBot().api.sendMessage(telegramId, HOLD_CLIENT_TEXT);
+      log.info({ event: 'cron.poll_payment.hold_client_notified', orderId: payment.orderId });
+    }
+  } catch (err) {
+    log.warn({ event: 'cron.poll_payment.hold_notify_failed', orderId: payment.orderId, err });
+  }
 }
 
 /**

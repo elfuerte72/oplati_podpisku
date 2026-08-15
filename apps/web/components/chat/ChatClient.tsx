@@ -27,6 +27,7 @@ import { ErrorNotice } from './ErrorNotice';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
 import { MobileTelegramBanner } from './MobileTelegramBanner';
+import { PaymentProblemPanel } from './PaymentProblemPanel';
 import { PROFILE_REFRESH_EVENT, ProfilePanel } from './ProfilePanel';
 import { RichText } from './RichText';
 import { TelegramLinkCard } from './TelegramLink';
@@ -376,7 +377,15 @@ export function ChatClient() {
             {
               kind: 'cards',
               id: nextId(),
-              cards: [{ type: 'payment', paymentUrl, qrPayload: data.qrPayload ?? null, expiresAt }],
+              cards: [
+                {
+                  type: 'payment',
+                  paymentUrl,
+                  qrPayload: data.qrPayload ?? null,
+                  expiresAt,
+                  orderId,
+                },
+              ],
             },
           ]);
           setPoseSettling('celebrate', 4000);
@@ -532,16 +541,19 @@ export function ChatClient() {
       }
       case 'payment':
         return (
-          <PaymentBlock
-            key={key}
-            paymentUrl={card.paymentUrl}
-            qrPayload={card.qrPayload}
-            expiresAt={card.expiresAt}
-            onPayClick={() =>
-              // immediate: вкладка уходит на домен провайдера, debounce ждать некому.
-              track('pay_link_click', { surface: 'web_chat' }, { immediate: true })
-            }
-          />
+          <div key={key} className="space-y-2">
+            <PaymentBlock
+              paymentUrl={card.paymentUrl}
+              qrPayload={card.qrPayload}
+              expiresAt={card.expiresAt}
+              onPayClick={() =>
+                // immediate: вкладка уходит на домен провайдера, debounce ждать некому.
+                track('pay_link_click', { surface: 'web_chat' }, { immediate: true })
+              }
+            />
+            {/* «Проблема с оплатой» — фаза до выпуска карты (тикет 10). */}
+            {card.orderId && <PaymentProblemPanel orderId={card.orderId} />}
+          </div>
         );
       case 'telegram_link': {
         const linkedOrderId = card.orderId;

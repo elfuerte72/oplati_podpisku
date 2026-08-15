@@ -17,7 +17,7 @@ import {
 import { askForContactBeforeInvoice } from './contact-flow';
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
-import { buildBuyerFeeLine } from './templates';
+import { buildBuyerFeeLine, PAYMENT_PENDING_HINT } from './templates';
 
 /**
  * Привязка веб-сессии к Telegram: deep-link `/start link_<token>` + handoff
@@ -231,6 +231,7 @@ async function buildPendingOrderHandoffText(
     parts.push(
       `Счёт действует до ${formatExpires(confirmResult.expiresAt)}. Чек и доступы после оплаты придут сюда, в Telegram.`,
     );
+    parts.push(PAYMENT_PENDING_HINT);
     return parts.join('\n\n');
   } catch (err) {
     // Профиль без почты (антифрод-трек): заказ оформлен ДО фичи плашки

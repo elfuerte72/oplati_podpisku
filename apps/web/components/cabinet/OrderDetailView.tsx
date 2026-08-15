@@ -12,7 +12,10 @@ import {
   PAYMENT_ISSUE_CHECKLIST,
   PAYMENT_ISSUE_LABELS,
   PAYMENT_ISSUE_TYPES,
+  PAYMENT_PROBLEM_LABELS,
+  PAYMENT_PROBLEM_TYPES,
   type PaymentIssueType,
+  type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
 import { track } from '@/lib/analytics/client';
@@ -23,7 +26,12 @@ import {
 } from '@/lib/cabinet/types';
 
 import { StatusBadge } from './StatusBadge';
-import type { OrderDetail, PaymentIssueResult, SubscriptionPaidResult } from './cabinet-api';
+import type {
+  OrderDetail,
+  PaymentIssueResult,
+  PaymentProblemResult,
+  SubscriptionPaidResult,
+} from './cabinet-api';
 
 export type DetailActionMessage = { tone: 'ok' | 'err'; text: string };
 
@@ -45,6 +53,11 @@ type Props = {
   onRequestTelegramPhone?: (() => void) | undefined;
   onOpenExternalLink: (url: string) => void;
   onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
+  /** «Проблема с оплатой» — фаза ДО выпуска карты (тикет 10). */
+  onReportPaymentProblem: (
+    problemType: PaymentProblemType,
+    comment?: string,
+  ) => Promise<PaymentProblemResult>;
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
   /**
    * Уйти в поддержку из плашки ошибки. Нужен, когда счёт не выставился
@@ -461,6 +474,126 @@ function AfterCardBlock({
 }
 
 /**
+ * Видимость кнопки «Проблема с оплатой» (тикет 10): ждёт оплаты / на проверке /
+ * СВЕЖИЙ истёкший. 48 часов — зеркало серверного окна в `reportPaymentProblem`
+ * (сервер всё равно отвергнет несвежий, здесь только UX без мёртвой кнопки).
+ */
+const PAYMENT_PROBLEM_EXPIRED_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+function showPaymentProblemButton(order: OrderDetail): boolean {
+  if (order.status === 'pending_payment' || order.status === 'payment_review') return true;
+  if (order.status !== 'expired' || !order.expiresAt) return false;
+  return Date.now() - new Date(order.expiresAt).getTime() <= PAYMENT_PROBLEM_EXPIRED_MAX_AGE_MS;
+}
+
+/**
+ * «Проблема с оплатой» — фаза ДО выпуска карты (тикет 10): клиент сам зовёт
+ * человека, не разыскивая поддержку. Три пункта; «я оплатил» переводит заказ
+ * «на проверку» (сервер), возврат — только руками оператора.
+ */
+function PaymentProblemBlock({
+  onReport,
+}: {
+  onReport: (problemType: PaymentProblemType, comment?: string) => Promise<PaymentProblemResult>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [problemType, setProblemType] = useState<PaymentProblemType>('not_confirmed');
+  const [comment, setComment] = useState('');
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState<DetailActionMessage | null>(null);
+
+  const send = async () => {
+    if (sending) return;
+    setSending(true);
+    setNote(null);
+    const res = await onReport(problemType, comment.trim() || undefined);
+    setSending(false);
+    if (res.ok) {
+      setOpen(false);
+      setNote({
+        tone: 'ok',
+        text: res.duplicate ? 'Обращение уже у оператора — он на связи в Telegram.' : res.text,
+      });
+    } else {
+      setNote({ tone: 'err', text: res.message });
+    }
+  };
+
+  return (
+    <div className="mt-4">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline"
+      >
+        Проблема с оплатой?
+      </button>
+
+      {open && (
+        <div className="mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] p-3.5">
+          <fieldset>
+            <legend className="font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
+              Что случилось:
+            </legend>
+            <div className="mt-1.5 space-y-1">
+              {PAYMENT_PROBLEM_TYPES.map((type) => (
+                <label key={type} className="flex items-center gap-2 font-body text-sm text-[var(--text)]">
+                  <input
+                    type="radio"
+                    name="payment-problem-type"
+                    checked={problemType === type}
+                    onChange={() => setProblemType(type)}
+                    className="accent-[var(--accent)]"
+                  />
+                  {PAYMENT_PROBLEM_LABELS[type]}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={2}
+            maxLength={1000}
+            placeholder="Комментарий (необязательно)"
+            aria-label="Комментарий к проблеме"
+            className="mt-2.5 w-full resize-none rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--bg)] px-3 py-2 font-body text-sm text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none"
+          />
+
+          <ComicButton
+            variant="primary"
+            className="mt-2 w-full px-4 py-2.5 text-sm"
+            disabled={sending}
+            onClick={() => void send()}
+          >
+            {sending ? 'Отправляю…' : 'Отправить оператору'}
+          </ComicButton>
+          <p className="mt-1.5 font-body text-[11px] leading-snug text-[var(--text-muted)]">
+            Оператору уйдут номер заказа, сумма и статус платежа у платёжной системы.
+            Возврат возможен, пока карта по заказу не выпущена.
+          </p>
+        </div>
+      )}
+
+      {note && (
+        <p
+          role="status"
+          className={[
+            'mt-3 rounded-[12px] border-2 px-3 py-2 font-body text-sm',
+            note.tone === 'ok'
+              ? 'border-[var(--color-teal-deep)] text-[var(--text)]'
+              : 'border-[var(--color-stamp)] text-[var(--color-stamp)]',
+          ].join(' ')}
+        >
+          {note.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * Экран деталей заказа: сводка, кнопка «Оплатить <сумма>» (финальная сумма — на
  * кнопке, ТЗ §3), таймлайн событий, платежи и блок «что дальше» после выпуска
  * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
@@ -479,6 +612,7 @@ export function OrderDetailView({
   onPay,
   onOpenExternalLink,
   onReportIssue,
+  onReportPaymentProblem,
   onSubscriptionPaid,
   onContactSupport,
   onRequestTelegramPhone,
@@ -585,6 +719,11 @@ export function OrderDetailView({
               </p>
             )}
           </div>
+        )}
+
+        {/* «Проблема с оплатой» — фаза до выпуска (тикет 10). */}
+        {showPaymentProblemButton(order) && (
+          <PaymentProblemBlock onReport={onReportPaymentProblem} />
         )}
 
         {message && (

@@ -30,6 +30,10 @@ const h = vi.hoisted(() => ({
   },
   appendOrderEvent: vi.fn(async () => undefined),
   hasRecentOrderEvent: vi.fn(),
+  transitionOrder: vi.fn(async () => ({})),
+  findPaymentsByOrderId: vi.fn(async () => [
+    { id: 'pay-1', lastProviderStatus: 7, lastProviderStatusAt: new Date() },
+  ]),
   sendToSupportOperator: vi.fn(),
   proposeFromCatalog: vi.fn(),
   getOrCreateActiveConversation: vi.fn(async () => ({ id: 'conv-1' })),
@@ -41,7 +45,9 @@ vi.mock('@oplati/db', () => ({
   getOrderById: vi.fn(async () => h.state.order),
   appendOrderEvent: h.appendOrderEvent,
   hasRecentOrderEvent: h.hasRecentOrderEvent,
+  transitionOrder: h.transitionOrder,
   findCardByIdForUser: vi.fn(async () => null),
+  findPaymentsByOrderId: h.findPaymentsByOrderId,
   findPendingPaymentByOrderId: vi.fn(async () => null),
   getServiceById: vi.fn(async () => ({ name: 'Spotify' })),
   getUserProfileById: vi.fn(async () => ({ displayName: 'Тест' })),
@@ -61,7 +67,12 @@ vi.mock('@sentry/nextjs', () => ({
   captureMessage: vi.fn(),
 }));
 
-import { markSubscriptionActivated, proposeNewOrder, reportPaymentIssue } from './actions.ts';
+import {
+  markSubscriptionActivated,
+  proposeNewOrder,
+  reportPaymentIssue,
+  reportPaymentProblem,
+} from './actions.ts';
 
 function completedOrder(overrides: Partial<OrderLike> = {}): OrderLike {
   return {
@@ -241,5 +252,109 @@ describe('proposeNewOrder — цена строго серверная', () => {
     const arg = h.proposeFromCatalog.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(Object.hasOwn(arg, 'tierName')).toBe(false);
     expect(Object.hasOwn(arg, 'amountUsdCents')).toBe(false);
+  });
+});
+
+describe('reportPaymentProblem («Проблема с оплатой» до выпуска, тикет 10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.state.order = completedOrder({ status: 'pending_payment' });
+    h.hasRecentOrderEvent.mockResolvedValue(false);
+    h.sendToSupportOperator.mockResolvedValue(true);
+  });
+
+  it('«я оплатил» из pending_payment: заказ уходит «на проверку» + DM со статусом провайдера', async () => {
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'not_confirmed');
+
+    expect(res.ok).toBe(true);
+    expect(h.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'order-1',
+        toStatus: 'payment_review',
+        actorType: 'user',
+      }),
+    );
+    const dm = String(h.sendToSupportOperator.mock.calls[0]?.[0]);
+    expect(dm).toContain('антифрод-холд');
+    expect(dm).toContain('ORD-AB12');
+  });
+
+  it('свежий «истёкший»: статус не трогается — только DM', async () => {
+    h.state.order = completedOrder({ status: 'expired' });
+    // findExpiredPayableOrders хоронит по expiresAt — свежесть меряем по нему.
+    (h.state.order as OrderLike & { expiresAt?: Date }).expiresAt = new Date(
+      Date.now() - 60 * 60 * 1000,
+    );
+
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'not_confirmed');
+
+    expect(res.ok).toBe(true);
+    expect(h.transitionOrder).not.toHaveBeenCalled();
+    expect(h.appendOrderEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('давно истёкший заказ — отказ not_available', async () => {
+    h.state.order = completedOrder({ status: 'expired' });
+    (h.state.order as OrderLike & { expiresAt?: Date }).expiresAt = new Date(
+      Date.now() - 5 * 24 * 60 * 60 * 1000,
+    );
+
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'not_confirmed');
+    expect(res).toMatchObject({ ok: false, error: 'not_available' });
+  });
+
+  it('«хочу возврат»: никакой автоматики — только событие и DM', async () => {
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'refund_request');
+
+    expect(res.ok).toBe(true);
+    expect(h.transitionOrder).not.toHaveBeenCalled();
+    expect(h.appendOrderEvent).toHaveBeenCalledTimes(1);
+    if (res.ok) expect(res.text).toContain('карта');
+  });
+
+  it('повторное нажатие в течение часа не плодит DM, но переход «я оплатил» делает', async () => {
+    // Дедуп глушит только DM: «хочу возврат» → через 10 минут «я оплатил» не
+    // должен оставлять заказ тикать к протуханию.
+    h.hasRecentOrderEvent.mockResolvedValue(true);
+
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'not_confirmed');
+
+    expect(res).toMatchObject({ ok: true, duplicate: true });
+    expect(h.sendToSupportOperator).not.toHaveBeenCalled();
+    expect(h.transitionOrder).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'payment_review' }),
+    );
+  });
+
+  it('«другая проблема» — подсказка /support без DM и событий (спека §6.1)', async () => {
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'other');
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.text).toContain('/support');
+    expect(h.sendToSupportOperator).not.toHaveBeenCalled();
+    expect(h.appendOrderEvent).not.toHaveBeenCalled();
+  });
+
+  it('сбой доставки DM: записей нет — ретрай не упрётся в ложный «уже у оператора»', async () => {
+    h.sendToSupportOperator.mockResolvedValueOnce(false);
+
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'refund_request');
+
+    expect(res).toMatchObject({ ok: false, error: 'failed' });
+    expect(h.appendOrderEvent).not.toHaveBeenCalled();
+    expect(h.transitionOrder).not.toHaveBeenCalled();
+  });
+
+  it('чужой заказ — not_found (ownership)', async () => {
+    const res = await reportPaymentProblem('user-2', '555', 'order-1', 'not_confirmed');
+    expect(res).toMatchObject({ ok: false, error: 'not_found' });
+  });
+
+  it('выполненный заказ этой кнопке недоступен (фаза после выпуска — у «Не проходит оплата?»)', async () => {
+    h.state.order = completedOrder({ status: 'completed' });
+    const res = await reportPaymentProblem('user-1', '555', 'order-1', 'not_confirmed');
+    expect(res).toMatchObject({ ok: false, error: 'not_available' });
   });
 });

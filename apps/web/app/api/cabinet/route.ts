@@ -20,8 +20,9 @@ import {
   payOrder,
   proposeNewOrder,
   reportPaymentIssue,
+  reportPaymentProblem,
 } from '@/lib/cabinet/actions';
-import { PAYMENT_ISSUE_TYPES } from '@/lib/cabinet/payment-issues';
+import { PAYMENT_ISSUE_TYPES, PAYMENT_PROBLEM_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
 
 /**
@@ -96,6 +97,12 @@ const requestSchema = z.discriminatedUnion('action', [
   orderAction.extend({
     action: z.literal('payment-issue'),
     issueType: z.enum(PAYMENT_ISSUE_TYPES),
+    comment: z.string().max(1000).optional(),
+  }),
+  // «Проблема с оплатой» — фаза ДО выпуска карты (антифрод-трек, тикет 10).
+  orderAction.extend({
+    action: z.literal('payment-problem'),
+    problemType: z.enum(PAYMENT_PROBLEM_TYPES),
     comment: z.string().max(1000).optional(),
   }),
   // «Подписка оплачена» — клиент подтвердил успех на сайте сервиса.
@@ -308,6 +315,17 @@ export async function POST(req: Request): Promise<NextResponse> {
           telegramId,
           body.orderId,
           body.issueType,
+          body.comment,
+        );
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
+      }
+      case 'payment-problem': {
+        const result = await reportPaymentProblem(
+          userId,
+          telegramId,
+          body.orderId,
+          body.problemType,
           body.comment,
         );
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;

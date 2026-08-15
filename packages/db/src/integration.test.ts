@@ -27,6 +27,7 @@ import { deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
   claimRenewalReminder,
+  countRefundishHistoryByUser,
   createDraftOrder,
   findExpiredPayableOrders,
   findStaleOrdersInPaymentReview,
@@ -676,6 +677,50 @@ describe('payment_review (антифрод-трек: заказ «на пров�
     );
     expect(rows[0]?.last_provider_status).toBe(7);
     expect(rows[0]?.last_provider_status_at).not.toBeNull();
+  });
+});
+
+describe('countRefundishHistoryByUser (учёт возвратов, тикет 11)', () => {
+  it('считает недоплаты, возвраты провайдера и refunded-заказы за окно', async () => {
+    const user = await makeUser();
+
+    // Недоплата (amount_mismatch).
+    const a = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: a.order.id,
+      toStatus: 'failed',
+      eventType: 'payment_amount_mismatch',
+      actorType: 'payment_provider',
+    });
+    // Возврат у провайдера (терминал с providerStatus=6).
+    const b = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: b.order.id,
+      toStatus: 'cancelled',
+      eventType: 'payment_cancelled',
+      actorType: 'payment_provider',
+      payload: { providerStatus: 6 },
+    });
+    // Дошедший до refunded.
+    const c = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'paid' });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'refund_requested' });
+    await transitionOrderDetailed(db, { orderId: c.order.id, toStatus: 'refunded' });
+    // Обычная отмена — НЕ считается.
+    const d = await makeOrderWithPendingPayment({ userId: user.id });
+    await transitionOrderDetailed(db, {
+      orderId: d.order.id,
+      toStatus: 'cancelled',
+      eventType: 'payment_cancelled',
+      actorType: 'payment_provider',
+      payload: { providerStatus: 9 },
+    });
+
+    expect(await countRefundishHistoryByUser(db, { userId: user.id, withinDays: 180 })).toBe(3);
+
+    // Чужая история не подмешивается.
+    const other = await makeUser();
+    expect(await countRefundishHistoryByUser(db, { userId: other.id, withinDays: 180 })).toBe(0);
   });
 });
 

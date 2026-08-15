@@ -43,6 +43,7 @@ import {
   catalogTierPrompt,
   buildBuyerFeeLine,
   orderCardText,
+  PAYMENT_PENDING_HINT,
 } from './templates';
 
 /**
@@ -440,6 +441,7 @@ export async function handleOrderActionCallback(
     const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());
     if (feeLine) replyParts.push(feeLine);
     replyParts.push(`Счёт действует до ${formatExpires(confirmResult.expiresAt)}.`);
+    replyParts.push(PAYMENT_PENDING_HINT);
     const reply = replyParts.join('\n\n');
 
     await sendSafely(chatId, reply, updateId);

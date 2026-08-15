@@ -152,6 +152,7 @@ export {
   claimRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,
+  countRefundishHistoryByUser,
   hasPurchasedOrders,
   type OrderRow,
   type OrderEventRow,

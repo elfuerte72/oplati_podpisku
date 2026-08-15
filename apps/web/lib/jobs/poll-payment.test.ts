@@ -9,9 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Pay = {
   id: string;
+  orderId?: string;
   provider: string;
   providerRef: string;
   providerInvoiceNumber: string | null;
+  lastProviderStatus?: number | null;
 };
 
 const h = vi.hoisted(() => ({
@@ -28,6 +30,8 @@ const h = vi.hoisted(() => ({
   fkPaidMock: vi.fn((..._args: unknown[]) => Promise.resolve({ kind: 'processed' })),
   fkTerminalMock: vi.fn((..._args: unknown[]) => Promise.resolve({ kind: 'processed' })),
   setProviderStatusMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  transitionOrderMock: vi.fn((..._args: unknown[]) => Promise.resolve({})),
+  botSendMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -36,6 +40,13 @@ vi.mock('@oplati/db', () => ({
   findStuckPaidOrders: vi.fn(async () => []),
   findStuckInFulfillmentOrders: vi.fn(async () => []),
   setPaymentProviderStatus: h.setProviderStatusMock,
+  transitionOrder: h.transitionOrderMock,
+  getOrderById: vi.fn(async () => ({ id: 'order-1', userId: 'user-1', status: 'payment_review' })),
+  getUserTelegramId: vi.fn(async () => '555'),
+}));
+
+vi.mock('../telegram/bot.ts', () => ({
+  getBot: () => ({ api: { sendMessage: h.botSendMock } }),
 }));
 
 vi.mock('../pay-space/index.ts', () => ({
@@ -80,9 +91,11 @@ import { resetUnknownStatusAlertDedupForTests } from './poll-payment-one.ts';
 
 const FK_PAYMENT: Pay = {
   id: 'pay-fk',
+  orderId: 'order-1',
   provider: 'freekassa',
   providerRef: '123',
   providerInvoiceNumber: 'ORD-S3MGS-a1b2c3',
+  lastProviderStatus: null,
 };
 
 const LNP_PAYMENT: Pay = {
@@ -406,6 +419,37 @@ describe('pollPayments — добор по провайдерам', () => {
     await pollPayments();
 
     expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('первый холд: заказ уходит «на проверку», клиент получает автосообщение', async () => {
+    // Тикет 09: прежний снимок статуса не 7 → это ПЕРВОЕ обнаружение.
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(h.transitionOrderMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'order-1',
+        toStatus: 'payment_review',
+        actorType: 'payment_provider',
+      }),
+    );
+    expect(h.botSendMock).toHaveBeenCalledTimes(1);
+    const text = String(h.botSendMock.mock.calls[0]?.[1]);
+    expect(text).toContain('провер');
+    expect(text).toContain('/support');
+  });
+
+  it('повторный опрос того же холда клиента НЕ спамит (дедуп по прежнему статусу)', async () => {
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: 7 }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(h.transitionOrderMock).not.toHaveBeenCalled();
+    expect(h.botSendMock).not.toHaveBeenCalled();
   });
 
   it('каждый опрос Freekassa сохраняет увиденный статус в платёж (тикет 03)', async () => {

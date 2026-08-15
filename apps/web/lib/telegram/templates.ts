@@ -2,7 +2,12 @@ import 'server-only';
 
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import type { CatalogService, CatalogTier } from '@/lib/catalog/build';
-import { PAYMENT_ISSUE_LABELS, type PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import {
+  PAYMENT_ISSUE_LABELS,
+  PAYMENT_PROBLEM_LABELS,
+  type PaymentIssueType,
+  type PaymentProblemType,
+} from '@/lib/cabinet/payment-issues';
 import { isValidLuhn } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
@@ -59,6 +64,13 @@ export const MEDIA_REPLY: Record<MediaKind, string> = {
 // поддержка и заглушки будущих продуктов (VPN, канал).
 
 /** Подпись web_app-кнопки Mini App (открывает /cabinet). */
+/**
+ * Подсказка под ссылкой оплаты (антифрод-трек, тикет 09): зависший платёж
+ * больше не заканчивается тишиной — клиент знает, куда идти.
+ */
+export const PAYMENT_PENDING_HINT =
+  'Если оплатил, а подтверждения долго нет — открой заказ в кабинете или напиши /support.';
+
 export const START_APP_BUTTON = '📱 Открыть приложение';
 
 /** Подпись кнопки поддержки в стартовом меню (callback `support`). */
@@ -462,6 +474,74 @@ export function buildPaymentIssueOperatorMessage(params: {
   if (!comment) return header;
   const commentHeader = '\n\n<b>Комментарий клиента:</b>\n';
   // -1 — запас под «…», добавляемый при обрезке.
+  const bodyBudget = Math.max(
+    0,
+    Math.min(
+      SUPPORT_MESSAGE_MAX_LEN,
+      TELEGRAM_MESSAGE_LIMIT - header.length - commentHeader.length - 1,
+    ),
+  );
+  const safeComment = redactCardNumbers(comment);
+  return header + commentHeader + truncateEscapedHtml(escapeHtml(safeComment), bodyBudget);
+}
+
+/**
+ * DM оператору «Проблема с оплатой» — фаза ДО выпуска карты (тикет 10).
+ * Тот же канал и та же дисциплина, что у buildPaymentIssueOperatorMessage;
+ * ключевое отличие — последний код провайдера (тикет 03): оператор сразу
+ * видит, холд это (7) или счёт даже не оплачивался (0).
+ */
+export function buildPaymentProblemOperatorMessage(params: {
+  /** null — веб-клиент без привязки (личность по веб-сессии, ссылки нет). */
+  telegramId: number | string | null;
+  displayName?: string | null;
+  orderShortId: string;
+  orderStatusLabel: string;
+  service: string;
+  amountKopecks?: number | null;
+  lastProviderStatus: number | null;
+  lastProviderStatusAt: Date | null;
+  problemType: PaymentProblemType;
+  comment?: string | null;
+}): string {
+  const nameLine =
+    params.displayName && params.displayName.length > 0
+      ? escapeHtml(params.displayName)
+      : 'без имени';
+  const providerLine =
+    params.lastProviderStatus !== null
+      ? `<b>Статус у провайдера:</b> ${params.lastProviderStatus}` +
+        (params.lastProviderStatus === 7 ? ' (антифрод-холд)' : '') +
+        (params.lastProviderStatusAt
+          ? ` — на ${formatExpires(params.lastProviderStatusAt.toISOString())}`
+          : '')
+      : '<b>Статус у провайдера:</b> опрос его ещё не видел';
+  const rows = [
+    '⚠️ <b>Проблема с оплатой (до выпуска карты)</b>',
+    '',
+    `<b>Клиент:</b> ${nameLine}`,
+    ...(params.telegramId !== null
+      ? [
+          `<b>Telegram ID:</b> <code>${params.telegramId}</code>`,
+          `<b>Профиль:</b> <a href="tg://user?id=${params.telegramId}">открыть чат</a>`,
+        ]
+      : ['<b>Канал:</b> сайт (Telegram не привязан)']),
+    '',
+    `<b>Заказ:</b> ${escapeHtml(params.orderShortId)} — ${escapeHtml(params.orderStatusLabel)}`,
+    `<b>Сервис:</b> ${escapeHtml(params.service)}`,
+    ...(params.amountKopecks !== null && params.amountKopecks !== undefined
+      ? [`<b>Сумма заказа:</b> ${formatRub(params.amountKopecks)}`]
+      : []),
+    providerLine,
+    `<b>Обращение:</b> ${PAYMENT_PROBLEM_LABELS[params.problemType]}`,
+    ...(params.problemType === 'not_confirmed'
+      ? ['Клиенту предложено прислать чек через /support.']
+      : []),
+  ];
+  const header = rows.join('\n');
+  const comment = params.comment?.trim();
+  if (!comment) return header;
+  const commentHeader = '\n\n<b>Комментарий клиента:</b>\n';
   const bodyBudget = Math.max(
     0,
     Math.min(

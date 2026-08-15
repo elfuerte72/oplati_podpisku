@@ -8,7 +8,9 @@ import {
   findPaymentByProviderInvoiceNumber,
   findPaymentByProviderRef,
   getDb,
+  getOrderById,
   getPayerPhoneForOrder,
+  getUserTelegramId,
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
@@ -20,6 +22,7 @@ import {
 
 import { notifyOps } from '../alerts/notify-ops.ts';
 import { phoneTailMatches } from '../contacts/phone-match.ts';
+import { getBot } from '../telegram/bot.ts';
 import { dispatchIssueCard, dispatchPaymentConfirmed } from '../jobs/dispatcher.ts';
 import { childLogger } from '../logger.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
@@ -478,6 +481,17 @@ export async function processFreekassaTerminal(
     return { kind: 'not_found', providerRef: intid };
   }
 
+  // Был ли заказ «на проверке банка» (тикет 09): у такого клиента деньги
+  // СПИСАНЫ — молчаливое захоронение оставило бы его без ответа. Читаем до
+  // транзакции: после перехода статус уже терминальный.
+  let wasUnderReview = false;
+  try {
+    wasUnderReview = (await getOrderById(db, payment.orderId))?.status === 'payment_review';
+  } catch (err) {
+    log.error({ event: 'freekassa.handlers.review_lookup_failed', orderId: payment.orderId, err });
+    Sentry.captureException(err, { tags: { source: 'freekassa.handlers', step: 'review_lookup' } });
+  }
+
   const claimed = await db.transaction(async (tx) => {
     const row = await claimPaymentTerminal(tx, payment.id, log);
     if (!row) return null;
@@ -514,12 +528,59 @@ export async function processFreekassaTerminal(
   });
 
   if (!claimed) {
+    // Возврат по УЖЕ оплаченному платежу (тикет 11): claim не выдан, потому
+    // что платёж давно `succeeded` — деньги были приняты и уехали обратно, а
+    // заказ, возможно, исполнен. Автоматики нет — только громкая денежная
+    // аномалия (лог + Sentry + DM), разбирает человек.
+    if (providerStatus === FREEKASSA_ORDER_STATUS.REFUND && payment.status === 'succeeded') {
+      log.error({
+        event: 'freekassa.handlers.refund_on_succeeded',
+        paymentId: payment.id,
+        orderId: payment.orderId,
+      });
+      Sentry.captureMessage('Freekassa: возврат по УЖЕ оплаченному платежу — деньги уехали обратно', {
+        level: 'error',
+        tags: { source: 'freekassa.handlers', alert: 'refund_on_succeeded' },
+        extra: { paymentId: payment.id, orderId: payment.orderId, intid },
+      });
+      await notifyOps(
+        `Денежная аномалия: Freekassa показывает ВОЗВРАТ (статус 6) по платежу, который у нас ` +
+          `оплачен (операция ${intid}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽). ` +
+          `Деньги вернулись отправителю, а заказ мог быть исполнен — нужна ручная сверка ` +
+          `заказа и запрос в поддержку Freekassa.`,
+      );
+    }
     log.info({
       event: 'freekassa.handlers.idempotent_skip',
       paymentId: payment.id,
       reason: 'not_pending',
     });
     return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'not_pending' };
+  }
+
+  // Исход холда «отказ/отмена/возврат» (тикет 09): у клиента списаны деньги —
+  // честный текст вместо тишины + DM владельцу. Best-effort: сбой доставки не
+  // меняет результат обработки.
+  if (wasUnderReview) {
+    try {
+      const order = await getOrderById(db, payment.orderId);
+      const telegramId = order ? await getUserTelegramId(db, order.userId) : null;
+      if (telegramId) {
+        await getBot().api.sendMessage(
+          telegramId,
+          'Банк отклонил перевод — деньги вернутся отправителю (обычно в течение пары дней). ' +
+            'Заказ можно оформить заново. Если деньги не вернутся — напиши /support, разберёмся.',
+        );
+      }
+    } catch (err) {
+      log.warn({ event: 'freekassa.handlers.review_reject_notify_failed', orderId: payment.orderId, err });
+    }
+    // notifyOps never-throw (гасит ошибки сам) — отдельная обёртка не нужна.
+    await notifyOps(
+      `Холд разрешился ОТКАЗОМ: банк отклонил перевод по заказу (операция ${intid}, ` +
+        `сумма ${(payment.amountRub / 100).toFixed(2)} ₽). Клиенту отправлено сообщение, ` +
+        `деньги должны вернуться отправителю — стоит проследить.`,
+    );
   }
 
   // Возврат (статус 6) по счёту, который у нас НЕ был отмечен оплаченным —

@@ -15,6 +15,24 @@ export const PAYMENT_ISSUE_LABELS: Record<PaymentIssueType, string> = {
   other: 'Другая проблема',
 };
 
+/**
+ * «Проблема с оплатой» — фаза ДО выпуска карты (антифрод-трек, тикет 10):
+ * рублёвая оплата не подтвердилась. Отдельный словарь от `PAYMENT_ISSUE_TYPES`
+ * (те — про фазу ПОСЛЕ выпуска: «карта не проходит на сайте сервиса»).
+ */
+export const PAYMENT_PROBLEM_TYPES = ['not_confirmed', 'refund_request', 'other'] as const;
+
+export type PaymentProblemType = (typeof PAYMENT_PROBLEM_TYPES)[number];
+
+export const PAYMENT_PROBLEM_LABELS: Record<PaymentProblemType, string> = {
+  not_confirmed: 'Я оплатил, но заказ не подтвердился',
+  refund_request: 'Хочу возврат',
+  other: 'Другая проблема',
+};
+
+/** Событие в `order_events` — оно же ключ дедупа повторных нажатий (1 час). */
+export const PAYMENT_PROBLEM_EVENT = 'payment_problem_reported';
+
 /** Чек-лист самопроверки перед обращением в поддержку — пункты из ТЗ §6. */
 export const PAYMENT_ISSUE_CHECKLIST: readonly string[] = [
   'Правильная ли локация VPN?',

@@ -3,7 +3,7 @@
 import { z } from 'zod';
 import { servicePaymentInstructions } from '@oplati/types';
 
-import type { PaymentIssueType } from '@/lib/cabinet/payment-issues';
+import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { fetchWithTimeout } from '@/lib/http';
 
 import { errorTextFor } from './error-text';
@@ -245,6 +245,41 @@ export async function doPay(
   });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return withMessage(parsed.data);
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
+}
+
+const paymentProblemResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), duplicate: z.boolean(), text: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
+]);
+
+export type PaymentProblemResult =
+  | Extract<z.infer<typeof paymentProblemResultSchema>, { ok: true }>
+  | { ok: false; error: string; message: string };
+
+/** «Проблема с оплатой» — фаза ДО выпуска карты (тикет 10). */
+export async function doReportPaymentProblem(
+  initData: string,
+  orderId: string,
+  problemType: PaymentProblemType,
+  comment?: string,
+): Promise<PaymentProblemResult> {
+  const resp = await callCabinet({
+    action: 'payment-problem',
+    initData,
+    orderId,
+    problemType,
+    ...(comment !== undefined ? { comment } : {}),
+  });
+  const parsed = resp ? paymentProblemResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) {
+    if (parsed.data.ok) return parsed.data;
+    return {
+      ok: false,
+      error: parsed.data.error,
+      message: parsed.data.message ?? errorTextFor(parsed.data.error),
+    };
+  }
   return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
 }
 
