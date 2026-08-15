@@ -280,11 +280,11 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return res;
   }, [detail, refreshDetail]);
 
-  const onPay = useCallback(async () => {
+  const onPay = useCallback(async (email?: string) => {
     if (!detail) return;
     setBusy('pay');
     setActionMsg(null);
-    const res = await doPay(initDataRef.current, detail.orderId);
+    const res = await doPay(initDataRef.current, detail.orderId, email);
     setBusy(null);
     if (res.ok) {
       setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
@@ -376,6 +376,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           hasActiveCard={snapshot.cards.some((c) => c.status === 'active')}
           busy={busy}
           message={actionMsg}
+          // Prefill плашки контактов (тикет 02): почта уже в profile снапшота.
+          savedEmail={snapshot.profile.email}
           onBack={() => {
             activeOrderIdRef.current = null;
             setView('list');

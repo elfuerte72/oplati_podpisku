@@ -20,6 +20,7 @@ import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   aboveMaxAmountText,
   confirmOrder,
+  EmailRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
@@ -393,6 +394,16 @@ export async function handleOrderActionCallback(
       // Веб и кабинет говорят это же одним общим текстом.
       if (err instanceof PaymentProviderUnavailableError) {
         await sendSafely(chatId, PROVIDER_UNAVAILABLE_TEXT, updateId);
+        return;
+      }
+      // Профиль без почты (антифрод-трек, Р2): в чате бота поля ввода нет —
+      // ведём в кабинет, где на экране заказа есть плашка контактов.
+      if (err instanceof EmailRequiredError) {
+        await sendSafely(
+          chatId,
+          'Почти готово! Для выставления счёта нужна почта для связи по заказу. Открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню), укажи почту на экране заказа — и оплата откроется там же.',
+          updateId,
+        );
         return;
       }
       // Generic-ветка. Оператора здесь никто не зовёт (в коде только Sentry),

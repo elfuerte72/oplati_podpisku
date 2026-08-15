@@ -40,7 +40,12 @@ import {
 import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
 import { setReferrerOnce } from './repositories/referrals.ts';
-import { getOrCreateUserByTelegramId } from './repositories/users.ts';
+import {
+  getOrCreateUserByTelegramId,
+  getUserPayerContact,
+  touchUserLastSeenIp,
+  updateUserContacts,
+} from './repositories/users.ts';
 import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
@@ -548,7 +553,146 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
   });
 });
 
+describe('touchUserLastSeenIp (антифрод-трек: последний живой IP клиента)', () => {
+  async function readIpState(userId: string) {
+    const rows = await db
+      .select({ ip: schema.users.lastSeenIp, at: schema.users.lastSeenIpAt })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+    return firstOf(rows, 'users last_seen_ip');
+  }
+
+  it('первый визит пишет IP и момент', async () => {
+    const user = await makeUser();
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(true);
+    const state = await readIpState(user.id);
+    expect(state.ip).toBe('203.0.113.5');
+    expect(state.at).toBeInstanceOf(Date);
+  });
+
+  it('тот же IP в пределах 10 минут — UPDATE не выполняется (троттлинг)', async () => {
+    // Листание кабинета — десятки запросов в минуту; без троттлинга каждый тап
+    // генерировал бы UPDATE по users.
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+    const before = await readIpState(user.id);
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(false);
+    const after = await readIpState(user.id);
+    expect(after.at?.getTime()).toBe(before.at?.getTime());
+  });
+
+  it('смена IP обновляет запись сразу, не дожидаясь 10 минут', async () => {
+    // Свежесть адреса важнее экономии UPDATE'ов: счёт уходит провайдеру с
+    // ПОСЛЕДНИМ адресом, и клиент мог переключиться с Wi-Fi на LTE за минуту.
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '198.51.100.7' });
+
+    expect(updated).toBe(true);
+    expect((await readIpState(user.id)).ip).toBe('198.51.100.7');
+  });
+
+  it('тот же IP, но метка старше 10 минут — освежаем момент', async () => {
+    const user = await makeUser();
+    await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+    await db.execute(
+      sql`UPDATE users SET last_seen_ip_at = now() - interval '11 minutes' WHERE id = ${user.id}`,
+    );
+    const before = await readIpState(user.id);
+
+    const updated = await touchUserLastSeenIp(db, { userId: user.id, ip: '203.0.113.5' });
+
+    expect(updated).toBe(true);
+    const after = await readIpState(user.id);
+    expect(after.at!.getTime()).toBeGreaterThan(before.at!.getTime());
+  });
+});
+
+describe('getUserPayerContact (данные плательщика для счёта Freekassa)', () => {
+  it('отдаёт telegram_id, email, phone и last_seen_ip одной строкой', async () => {
+    const user = await makeUser({
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+
+    const contact = await getUserPayerContact(db, user.id);
+
+    expect(contact).toMatchObject({
+      telegramId: user.telegramId,
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+  });
+
+  it('незаполненные контакты — null, незнакомый пользователь — null целиком', async () => {
+    const user = await makeUser();
+
+    const contact = await getUserPayerContact(db, user.id);
+    expect(contact).toMatchObject({ email: null, phone: null, lastSeenIp: null });
+
+    expect(await getUserPayerContact(db, '00000000-0000-4000-8000-000000000000')).toBeNull();
+  });
+
+  it('updateUserContacts пишет email; вызов без полей — noop', async () => {
+    const user = await makeUser();
+
+    await updateUserContacts(db, { userId: user.id, email: 'client@example.com' });
+    expect((await getUserPayerContact(db, user.id))?.email).toBe('client@example.com');
+
+    await updateUserContacts(db, { userId: user.id });
+    expect((await getUserPayerContact(db, user.id))?.email).toBe('client@example.com');
+  });
+});
+
 describe('consumeLinkToken (merge пользователей)', () => {
+  it('merge переносит контакты и last_seen_ip веб-строки (антифрод-трек)', async () => {
+    // Основной сценарий сайта: клиент ввёл почту в плашке (веб-строка), затем
+    // привязал Telegram. Merge удаляет веб-строку — без переноса почта и адрес
+    // терялись бы ровно между вводом и выставлением счёта.
+    const webSessionId = `ws-contact-${++seq}`;
+    await makeUser({
+      telegramId: null,
+      webSessionId,
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+      lastSeenIpAt: new Date(),
+    });
+    const telegramUser = await makeUser();
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    const res = await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+    expect(res.ok).toBe(true);
+
+    const contact = await getUserPayerContact(db, telegramUser.id);
+    expect(contact).toMatchObject({
+      email: 'client@example.com',
+      phone: '+79991234567',
+      lastSeenIp: '203.0.113.5',
+    });
+  });
+
+  it('merge НЕ перетирает контакты telegram-строки почтой веб-строки', async () => {
+    // COALESCE-семантика: у выжившей строки приоритет — как у display_name.
+    const webSessionId = `ws-contact2-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, email: 'web@example.com' });
+    const telegramUser = await makeUser({ email: 'tg@example.com' });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+
+    expect((await getUserPayerContact(db, telegramUser.id))?.email).toBe('tg@example.com');
+  });
+
   it('самореферал гасится при merge компенсирующей строкой', async () => {
     // Аудит 2026-08-10 (HIGH). Человек открыл СВОЮ ЖЕ реф-ссылку в боте:
     // web-строка W стала реферером telegram-строки T, и покупки T начисляли

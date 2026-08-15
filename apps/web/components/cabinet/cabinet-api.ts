@@ -225,8 +225,19 @@ export async function fetchCardDetails(initData: string, cardId: string): Promis
 }
 
 /** Действия возвращают свой discriminated-результат (ok:true/false) как есть. */
-export async function doPay(initData: string, orderId: string): Promise<PayResult> {
-  const resp = await callCabinet({ action: 'pay', initData, orderId });
+export async function doPay(
+  initData: string,
+  orderId: string,
+  email?: string,
+): Promise<PayResult> {
+  // email — из плашки контактов (тикет 02): сервер сохранит его в профиль ДО
+  // выставления счёта (гейт email_required читает профиль).
+  const resp = await callCabinet({
+    action: 'pay',
+    initData,
+    orderId,
+    ...(email !== undefined ? { email } : {}),
+  });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return withMessage(parsed.data);
   return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };

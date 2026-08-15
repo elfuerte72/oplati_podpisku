@@ -109,6 +109,11 @@ export const users = pgTable(
     phone: text('phone'),
     email: text('email'),
     notes: text('notes'),
+    // Антифрод-трек Freekassa (тикет 01): последний живой IP клиента — уходит
+    // провайдеру как IP плательщика вместо адреса нашего VPS. Обновляется с
+    // троттлингом (см. touchUserLastSeenIp), nullable — у старых строк его нет.
+    lastSeenIp: text('last_seen_ip'),
+    lastSeenIpAt: timestamp('last_seen_ip_at', { withTimezone: true }),
     // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
     // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
     // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —

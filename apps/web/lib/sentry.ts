@@ -12,8 +12,10 @@ import type * as SentryTypes from '@sentry/nextjs';
 
 // Карточные реквизиты (pan/cvc/cvv/cardNo) и auth-строки (initData/signature) —
 // аудит 2026-07-11 F-06: страховочный слой, код их в Sentry не отправляет.
+// `tel`/`last_seen_ip` — антифрод-трек (Р5): контакты и адрес клиента уходят
+// провайдеру, но не во внешние сервисы наблюдаемости.
 const PII_KEY_RE =
-  /^(content|message|text|email|phone|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature)$/i;
+  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip)$/i;
 
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
 function scrubPii(value: unknown, depth = 0): unknown {

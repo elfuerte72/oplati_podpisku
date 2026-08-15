@@ -2,9 +2,13 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { getDb, updateUserContacts } from '@oplati/db';
+
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
+import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { upsertCabinetUser, verifyCabinetInitData } from '@/lib/cabinet/auth';
@@ -56,7 +60,10 @@ const orderAction = z.object({ initData: z.string().min(1), orderId: z.string().
 const requestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('snapshot'), initData: z.string().min(1) }),
   orderAction.extend({ action: z.literal('order') }),
-  orderAction.extend({ action: z.literal('pay') }),
+  // `email` — из плашки контактов (тикет 02): передаётся, когда клиент только
+  // что ввёл/поменял адрес. Формат проверяется в диспатче (normalizeEmail) —
+  // Zod-отказ всего тела дал бы invalid_body вместо подсказки про адрес.
+  orderAction.extend({ action: z.literal('pay'), email: z.string().max(320).optional() }),
   z.object({
     action: z.literal('card-details'),
     initData: z.string().min(1),
@@ -183,6 +190,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   const { userId } = auth.user;
 
+  // Антифрод-трек (тикет 01): кабинет — самый частый живой запрос клиента,
+  // отсюда last_seen_ip обычно и свежий. Троттлинг внутри — листание экранов
+  // не генерирует UPDATE на каждый тап.
+  await rememberClientIp(req, userId);
+
   // 4. Диспатч действия.
   try {
     switch (body.action) {
@@ -214,6 +226,18 @@ export async function POST(req: Request): Promise<NextResponse> {
         return NextResponse.json({ ok: true, order: detail }, { status: 200 });
       }
       case 'pay': {
+        // Почта из плашки сохраняется ДО выставления счёта: гейт email_required
+        // в payments/create читает профиль, а не тело запроса.
+        if (body.email !== undefined) {
+          const email = normalizeEmail(body.email);
+          if (!email) {
+            return NextResponse.json(
+              { ok: false, error: 'invalid_email', message: EMAIL_INVALID_TEXT },
+              { status: 200 },
+            );
+          }
+          await updateUserContacts(getDb(), { userId, email });
+        }
         const result = await payOrder(userId, body.orderId);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });

@@ -21,6 +21,7 @@ import { DocsFooter } from '@/components/info/DocsFooter';
 import { FreekassaBadge } from '@/components/info/FreekassaBadge';
 import { fetchWithTimeout, parseJsonSafe } from '@/lib/http';
 import { track } from '@/lib/analytics/client';
+import { ContactCard, useContactEmail } from '@/components/contacts/ContactCard';
 import { ErrorNotice } from './ErrorNotice';
 import { LeftNav } from './LeftNav';
 import { Mascot, type MascotPose } from './Mascot';
@@ -91,6 +92,26 @@ export function ChatClient() {
   const [pose, setPose] = useState<MascotPose>('wave');
   // Профиль-drawer на мобильном (на десктопе панель видна всегда).
   const [profileOpen, setProfileOpen] = useState(false);
+  // Почта из профиля — prefill плашки контактов на карточке заказа (тикет 02).
+  const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  const contact = useContactEmail(profileEmail);
+
+  // Prefill почты для плашки: read-only /api/profile, best-effort (сбой → поле
+  // просто пустое, клиент введёт руками).
+  useEffect(() => {
+    let cancelled = false;
+    void fetchWithTimeout('/api/profile', {}, 5000)
+      .then((res) => res.json() as Promise<{ ok?: boolean; profile?: { email?: string | null } }>)
+      .then((data) => {
+        if (!cancelled && data.ok && data.profile?.email) setProfileEmail(data.profile.email);
+      })
+      .catch(() => {
+        // необязательный prefill — молчаливый пропуск осознан
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageViewSentRef = useRef(false);
@@ -305,6 +326,11 @@ export function ChatClient() {
       if (confirming !== null || confirmed.includes(orderId)) return;
       setConfirming(orderId);
       setError(null);
+      // Почта из плашки уезжает вместе с подтверждением (тикет 02); сервер
+      // сохраняет её в профиль ДО выставления счёта, поэтому «сохранено»
+      // отмечаем оптимистично — даже неудачная оплата почту не теряет.
+      const email = contact.emailToSend;
+      if (email !== undefined) contact.markSaved(email);
       try {
         // Таймаут 65с: confirm создаёт счёт L&P через self-call (maxDuration=60).
         const res = await fetchWithTimeout(
@@ -312,7 +338,7 @@ export function ChatClient() {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ orderId }),
+            body: JSON.stringify({ orderId, ...(email !== undefined ? { email } : {}) }),
           },
           65_000,
         );
@@ -350,7 +376,7 @@ export function ChatClient() {
         setConfirming(null);
       }
     },
-    [confirming, confirmed, setPoseSettling, startPoll],
+    [confirming, confirmed, contact, setPoseSettling, startPoll],
   );
 
   // «Очистить диалог»: сервер открывает новый conversation (история остаётся
@@ -446,18 +472,30 @@ export function ChatClient() {
             buyerFeePercent={card.buyerFeePercent}
             stamp={isPaid ? <PaidStamp /> : undefined}
             confirm={
-              <ComicButton
-                onClick={() => void confirmOrder(card.orderId)}
-                disabled={isPaid || confirming !== null || confirmed.includes(card.orderId)}
-              >
-                {isPaid
-                  ? 'Оплачено'
-                  : confirmed.includes(card.orderId)
-                    ? 'Счёт создан'
-                    : confirming === card.orderId
-                      ? 'Создаю счёт…'
-                      : `Оплатить ${formatRub(card.totalKopecks)}`}
-              </ComicButton>
+              <div className="space-y-3">
+                {/* Плашка контактов (тикет 02): почта обязательна для счёта.
+                    Прячем, когда заказ уже оплачен/счёт создан — поле отработало. */}
+                {!isPaid && !confirmed.includes(card.orderId) && (
+                  <ContactCard {...contact.card} />
+                )}
+                <ComicButton
+                  onClick={() => void confirmOrder(card.orderId)}
+                  disabled={
+                    isPaid ||
+                    confirming !== null ||
+                    confirmed.includes(card.orderId) ||
+                    !contact.emailOk
+                  }
+                >
+                  {isPaid
+                    ? 'Оплачено'
+                    : confirmed.includes(card.orderId)
+                      ? 'Счёт создан'
+                      : confirming === card.orderId
+                        ? 'Создаю счёт…'
+                        : `Оплатить ${formatRub(card.totalKopecks)}`}
+                </ComicButton>
+              </div>
             }
           />
         );

@@ -4,6 +4,7 @@ import { useState } from 'react';
 
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
+import { ContactCard, useContactEmail } from '@/components/contacts/ContactCard';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
 import {
@@ -31,8 +32,10 @@ type Props = {
   hasActiveCard: boolean;
   busy: 'pay' | null;
   message: DetailActionMessage | null;
+  /** Почта из профиля (prefill плашки контактов, тикет 02). */
+  savedEmail: string | null;
   onBack: () => void;
-  onPay: () => void;
+  onPay: (email?: string) => void;
   onOpenExternalLink: (url: string) => void;
   onReportIssue: (issueType: PaymentIssueType, comment?: string) => Promise<PaymentIssueResult>;
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
@@ -461,6 +464,7 @@ export function OrderDetailView({
   hasActiveCard,
   busy,
   message,
+  savedEmail,
   onBack,
   onPay,
   onOpenExternalLink,
@@ -468,6 +472,17 @@ export function OrderDetailView({
   onSubscriptionPaid,
   onContactSupport,
 }: Props) {
+  // Плашка контактов (тикет 02): почта обязательна для выставления счёта.
+  // markSaved — оптимистично при нажатии «Оплатить»: сервер сохраняет почту в
+  // профиль ДО создания счёта, поэтому даже неудачная оплата её не теряет.
+  const contact = useContactEmail(savedEmail);
+
+  const handlePay = () => {
+    const email = contact.emailToSend;
+    if (email !== undefined) contact.markSaved(email);
+    onPay(email);
+  };
+
   return (
     <div className="space-y-4">
       <button
@@ -517,8 +532,13 @@ export function OrderDetailView({
         )}
 
         {order.payable && (
-          <div className="mt-5">
-            <ComicButton variant="primary" onClick={onPay} disabled={busy !== null}>
+          <div className="mt-5 space-y-3">
+            <ContactCard {...contact.card} />
+            <ComicButton
+              variant="primary"
+              onClick={handlePay}
+              disabled={busy !== null || !contact.emailOk}
+            >
               {busy === 'pay'
                 ? 'Готовлю счёт…'
                 : order.amountKopecks !== null

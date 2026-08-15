@@ -8,7 +8,7 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 import { formatExpires, formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
 import { currentBuyerFeePercent } from '@/lib/payments/gateway';
-import { confirmOrder } from '@/lib/tool-handlers/confirm-order';
+import { confirmOrder, EmailRequiredError } from '@/lib/tool-handlers/confirm-order';
 
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
@@ -190,6 +190,15 @@ async function buildPendingOrderHandoffText(
     );
     return parts.join('\n\n');
   } catch (err) {
+    // Профиль без почты (антифрод-трек): заказ оформлен ДО фичи плашки
+    // контактов — счёт не выставить, но молчать нельзя: клиент пришёл сюда
+    // именно оплатить. Говорим, где указать почту, вместо тишины.
+    if (err instanceof EmailRequiredError) {
+      log.info({ event: 'telegram.link.handoff_email_required', updateId });
+      return (
+        'Готово, Telegram привязан! Остался один шаг до оплаты: укажи почту для связи по заказу — открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню), поле почты там, на экране заказа. После этого счёт выставится там же.'
+      );
+    }
     // Привязку из-за счёта не роняем: уйдёт стандартный LINK_SUCCESS_TEXT,
     // пользователь оплатит с сайта или из кабинета.
     log.error({ event: 'telegram.link.handoff_failed', updateId, err });

@@ -11,7 +11,17 @@ const h = vi.hoisted(() => ({
     FREEKASSA_FALLBACK_IP: '187.124.172.104',
     FREEKASSA_INVOICE_TTL_HOURS: 1,
   } as Record<string, unknown>,
-  telegramId: '12345' as string | null,
+  payerContact: {
+    telegramId: '12345',
+    email: null,
+    phone: null,
+    lastSeenIp: null,
+  } as {
+    telegramId: string | null;
+    email: string | null;
+    phone: string | null;
+    lastSeenIp: string | null;
+  } | null,
   freekassaConfigured: true,
   loveAndPayConfigured: true,
   createOrderMock: vi.fn(),
@@ -29,7 +39,7 @@ vi.mock('@/lib/env.server', () => ({
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
-  getUserTelegramId: vi.fn(async () => h.telegramId),
+  getUserPayerContact: vi.fn(async () => h.payerContact),
 }));
 
 vi.mock('@/lib/freekassa/index.ts', () => ({
@@ -54,6 +64,8 @@ vi.mock('@/lib/loveandpay/index.ts', () => {
     getLoveAndPayClient: () => ({ createInvoice: h.createInvoiceMock }),
   };
 });
+
+import * as Sentry from '@sentry/nextjs';
 
 import { notifyOps } from '@/lib/alerts/notify-ops.ts';
 // НАСТОЯЩИЙ класс ошибки: детектор недоступности проверяет его через
@@ -81,7 +93,7 @@ describe('переключатель провайдера', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.env.PAYMENT_PRIMARY_PROVIDER = 'loveandpay';
-    h.telegramId = '12345';
+    h.payerContact = { telegramId: '12345', email: null, phone: null, lastSeenIp: null };
     h.createOrderMock.mockResolvedValue({
       type: 'success',
       orderId: '123',
@@ -211,7 +223,7 @@ describe('createGatewayInvoice — Love & Pay', () => {
 describe('createGatewayInvoice — Freekassa', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.telegramId = '12345';
+    h.payerContact = { telegramId: '12345', email: null, phone: null, lastSeenIp: null };
     h.env.FREEKASSA_METHOD_ID = 44;
     h.createOrderMock.mockResolvedValue({
       type: 'success',
@@ -246,18 +258,63 @@ describe('createGatewayInvoice — Freekassa', () => {
     expect(a.providerInvoiceNumber).not.toBe(b.providerInvoiceNumber);
   });
 
-  it('email — суррогат <telegram_id>@telegram.org, ip — серверный fallback', async () => {
+  it('живой профиль: счёт уходит с реальным email и последним IP клиента', async () => {
+    // Антифрод-трек (тикеты 01/02): вместо «все плательщики из Франкфурта с
+    // несуществующей почтой» провайдер видит правду о плательщике.
+    h.payerContact = {
+      telegramId: '12345',
+      email: 'client@example.com',
+      phone: null,
+      lastSeenIp: '203.0.113.5',
+    };
+
+    await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
+
+    expect(h.createOrderMock.mock.calls[0]?.[0]).toMatchObject({
+      email: 'client@example.com',
+      ip: '203.0.113.5',
+    });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('нет last_seen_ip → серверный fallback + алёрт (аномалия, не рабочий режим)', async () => {
+    h.payerContact = {
+      telegramId: '12345',
+      email: 'client@example.com',
+      phone: null,
+      lastSeenIp: null,
+    };
+
+    await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
+
+    expect(h.createOrderMock.mock.calls[0]?.[0]).toMatchObject({
+      // 127.0.0.1 провайдер блокирует — шлём публичный IP узла.
+      ip: '187.124.172.104',
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('IP'),
+      expect.objectContaining({ tags: expect.objectContaining({ alert: 'freekassa_ip_fallback' }) }),
+    );
+  });
+
+  it('нет email в профиле → суррогат <telegram_id>@telegram.org + алёрт', async () => {
+    // Старые заказы, оформленные до фичи: оплату не роняем, но каждый случай
+    // виден — суррогат должен исчезнуть по мере заполнения профилей.
     await createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 });
 
     expect(h.createOrderMock.mock.calls[0]?.[0]).toMatchObject({
       email: '12345@telegram.org',
-      // 127.0.0.1 провайдер блокирует — шлём публичный IP узла.
-      ip: '187.124.172.104',
     });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('email'),
+      expect.objectContaining({
+        tags: expect.objectContaining({ alert: 'freekassa_email_fallback' }),
+      }),
+    );
   });
 
   it('без telegram_id оплата не падает — используется запасной адрес', async () => {
-    h.telegramId = null;
+    h.payerContact = { telegramId: null, email: null, phone: null, lastSeenIp: null };
 
     const invoice = await createGatewayInvoice({
       gateway: 'freekassa',
@@ -333,7 +390,7 @@ describe('автофоллбэк на резервный шлюз', () => {
     vi.clearAllMocks();
     resetFallbackAlertDedupForTests();
     h.env.PAYMENT_AUTO_FALLBACK = true;
-    h.telegramId = '12345';
+    h.payerContact = { telegramId: '12345', email: null, phone: null, lastSeenIp: null };
     h.createOrderMock.mockResolvedValue({
       type: 'success',
       orderId: '123',

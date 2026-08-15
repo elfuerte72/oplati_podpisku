@@ -2,14 +2,18 @@ import * as Sentry from '@sentry/nextjs';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { getDb, getOrCreateUserByWebSessionId } from '@oplati/db';
+import { getDb, getOrCreateUserByWebSessionId, updateUserContacts } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
+import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
+import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   confirmOrder,
   aboveMaxAmountText,
+  EMAIL_REQUIRED,
+  EmailRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
@@ -36,7 +40,13 @@ export const maxDuration = 60;
 const log = childLogger('web-chat-confirm');
 const dbLog = childLogger('db');
 
-const bodySchema = z.object({ orderId: z.string().uuid() });
+const bodySchema = z.object({
+  orderId: z.string().uuid(),
+  // Почта из плашки контактов (тикет 02): передаётся, когда клиент только что
+  // ввёл/поменял адрес. Формат проверяем отдельно ниже — Zod-отказ всего тела
+  // дал бы невнятный invalid_body вместо подсказки «проверь адрес».
+  email: z.string().max(320).optional(),
+});
 
 const FAIL_TEXT =
   'Не получилось создать счёт прямо сейчас. Попробуй ещё раз или напиши «оператор».';
@@ -65,11 +75,29 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   const { orderId } = parsed.data;
 
+  // Почта валидируется ДО обращения к БД: невалидный адрес — ошибка клиенту,
+  // а не молчаливое «сохранили мусор» (Zod на границе, инвариант 5).
+  let email: string | null = null;
+  if (parsed.data.email !== undefined) {
+    email = normalizeEmail(parsed.data.email);
+    if (!email) {
+      return NextResponse.json(
+        { ok: false, error: 'invalid_email', text: EMAIL_INVALID_TEXT },
+        { status: 400 },
+      );
+    }
+  }
+
   let userId: string;
   try {
     const webSessionId = await getOrCreateWebSessionId();
     const user = await getOrCreateUserByWebSessionId(getDb(), { webSessionId, language: 'ru' }, dbLog);
     userId = user.id;
+    // Антифрод-трек: живой запрос клиента — момент запомнить его адрес; счёт
+    // ниже уйдёт провайдеру уже с ним. Почта из плашки сохраняется ДО
+    // выставления счёта — гейт email_required в payments/create читает профиль.
+    await rememberClientIp(req, userId);
+    if (email) await updateUserContacts(getDb(), { userId, email });
   } catch (err) {
     log.error({ event: 'web-chat.confirm.session_failed', err });
     Sentry.captureException(err, { tags: { source: 'web-chat.confirm' } });
@@ -104,6 +132,20 @@ export async function POST(req: Request): Promise<NextResponse> {
         // 409: ожидаемый бизнес-отказ (нет привязки), не сбой — клиент рисует
         // карточку привязки по error-полю, статус различает кейс в метриках.
         { status: 409 },
+      );
+    }
+    // Профиль без почты (антифрод-трек, Р2): плашка контактов не доводит до
+    // этого, но self-call и старые вкладки должны получить понятный ответ —
+    // клиент увидит поле почты и повторит подтверждение.
+    if (err instanceof EmailRequiredError) {
+      log.info({ event: 'web-chat.confirm.email_required', orderId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: EMAIL_REQUIRED,
+          text: 'Укажи почту для связи по заказу — на неё банк напишет, если платёж встанет на проверку.',
+        },
+        { status: 422 },
       );
     }
     // Фиксация цены протухла (H-2): заказ захоронен сервером, ретрай

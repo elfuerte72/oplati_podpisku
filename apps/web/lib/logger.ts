@@ -49,6 +49,13 @@ export const redactPaths: string[] = [
   '*.email',
   '*.phone',
   '*.card',
+  // Антифрод-трек (Р5): контакты и адрес клиента уходят провайдеру, но не в
+  // логи — режим PAN. `tel` — имя поля в исходящем запросе Freekassa,
+  // `last_seen_ip` — колонка users (IP клиента = PII по GDPR-логике).
+  '*.tel',
+  '*.last_seen_ip',
+  '*.lastSeenIp',
+  'body.tel',
   // Карточные реквизиты и auth-строки (аудит 2026-07-11 F-06): первичная защита —
   // код никогда их не логирует (card-secrets.ts, non-enumerable rawBody); это
   // страховочный слой на случай будущего рефакторинга. pan_masked НЕ редактируем

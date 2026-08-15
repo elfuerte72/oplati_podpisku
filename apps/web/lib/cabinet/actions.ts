@@ -15,11 +15,13 @@ import {
 } from '@oplati/db';
 import { orderParameters } from '@oplati/types';
 
+import { EMAIL_REQUIRED_TEXT } from '../contacts/email.ts';
 import { childLogger } from '../logger.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
 import {
   confirmOrder,
   aboveMaxAmountText,
+  EmailRequiredError,
   OrderAboveMaxAmountError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
@@ -52,7 +54,13 @@ export type PayOrderResult =
   | { ok: true; paymentUrl: string; qrPayload: string | null; expiresAt: string | null }
   | {
       ok: false;
-      error: 'not_found' | 'not_payable' | 'invoice_unavailable' | 'link_required' | 'failed';
+      error:
+        | 'not_found'
+        | 'not_payable'
+        | 'invoice_unavailable'
+        | 'link_required'
+        | 'email_required'
+        | 'failed';
       message: string;
     };
 
@@ -127,6 +135,11 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
         error: 'link_required',
         message: 'Нужно открыть кабинет из Telegram, чтобы получить ссылку на оплату.',
       };
+    }
+    // Профиль без почты (антифрод-трек, Р2): плашка контактов в UI не доводит
+    // до этого — гейт ловит старые клиенты/обходы. UI покажет поле почты.
+    if (err instanceof EmailRequiredError) {
+      return { ok: false, error: 'email_required', message: EMAIL_REQUIRED_TEXT };
     }
     // Тех. сбой транспорта до L&P — заказ жив, честный текст вместо generic.
     if (err instanceof PaymentProviderUnavailableError) {

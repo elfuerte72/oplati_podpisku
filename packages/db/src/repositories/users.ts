@@ -221,6 +221,8 @@ export async function isWebSessionLinkedToTelegram(
 
 export type WebSessionProfile = {
   displayName: string | null;
+  /** Почта из плашки контактов (антифрод-трек) — prefill поля на сайте. */
+  email: string | null;
   telegramLinked: boolean;
   ordersCount: number;
   totalSpentKopecks: number;
@@ -232,6 +234,7 @@ export async function getWebSessionProfile(
 ): Promise<WebSessionProfile> {
   const rows = await db.execute<{
     display_name: string | null;
+    email: string | null;
     telegram_id: string | null;
     orders_count: number;
     // ::bigint приходит из драйвера строкой — Number() при маппинге.
@@ -239,6 +242,7 @@ export async function getWebSessionProfile(
   }>(sql`
     SELECT
       u.display_name,
+      u.email,
       u.telegram_id,
       COUNT(o.id) FILTER (WHERE o.status IN ${PURCHASED_STATUSES_SQL})::int
         AS orders_count,
@@ -254,10 +258,17 @@ export async function getWebSessionProfile(
 
   const row = rows[0];
   if (!row) {
-    return { displayName: null, telegramLinked: false, ordersCount: 0, totalSpentKopecks: 0 };
+    return {
+      displayName: null,
+      email: null,
+      telegramLinked: false,
+      ordersCount: 0,
+      totalSpentKopecks: 0,
+    };
   }
   return {
     displayName: row.display_name,
+    email: row.email,
     telegramLinked: row.telegram_id !== null,
     ordersCount: row.orders_count,
     totalSpentKopecks: Number(row.total_spent_kopecks),
@@ -299,6 +310,85 @@ export async function getUserProfileById(
     email: row.email,
     telegramLinked: row.telegram_id !== null,
     createdAt: new Date(row.created_at),
+  };
+}
+
+/**
+ * Сохранить контакты клиента (антифрод-трек: email — тикет 02, телефон —
+ * пачка 2). Обновляются только переданные поля; email пишется уже
+ * нормализованным (валидация — на границе, `lib/contacts`).
+ */
+export async function updateUserContacts(
+  db: DB,
+  input: { userId: string; email?: string },
+): Promise<void> {
+  if (input.email === undefined) return;
+  await db.execute(sql`
+    UPDATE users SET email = ${input.email}, updated_at = now()
+    WHERE id = ${input.userId}
+  `);
+}
+
+/**
+ * Обновить последний живой IP клиента (антифрод-трек Freekassa, тикет 01).
+ *
+ * Троттлинг зашит в WHERE: UPDATE выполняется только если адрес сменился или
+ * прошлой записи больше 10 минут — иначе листание кабинета (десятки запросов в
+ * минуту) генерировало бы UPDATE по `users` на каждый тап. Смена IP пишется
+ * сразу: счёт провайдеру должен уйти с ПОСЛЕДНИМ адресом клиента.
+ *
+ * Возвращает, была ли строка реально обновлена (для тестов и debug-логов).
+ */
+export async function touchUserLastSeenIp(
+  db: DB,
+  input: { userId: string; ip: string },
+): Promise<boolean> {
+  const rows = await db.execute<{ id: string }>(sql`
+    UPDATE users
+    SET last_seen_ip = ${input.ip}, last_seen_ip_at = now(), updated_at = now()
+    WHERE id = ${input.userId}
+      AND (
+        last_seen_ip IS DISTINCT FROM ${input.ip}
+        OR last_seen_ip_at IS NULL
+        OR last_seen_ip_at < now() - interval '10 minutes'
+      )
+    RETURNING id
+  `);
+  return rows.length > 0;
+}
+
+/**
+ * Данные плательщика для выставления счёта (антифрод-трек): email и IP уходят
+ * Freekassa, телефон — с пачки 2. Одна строка одним запросом — гейты
+ * `payments/create` и `createFreekassaInvoice` не должны ходить в БД дважды.
+ */
+export type UserPayerContact = {
+  telegramId: string | null;
+  email: string | null;
+  phone: string | null;
+  lastSeenIp: string | null;
+};
+
+export async function getUserPayerContact(
+  db: DB,
+  userId: string,
+): Promise<UserPayerContact | null> {
+  const rows = await db.execute<{
+    telegram_id: string | null;
+    email: string | null;
+    phone: string | null;
+    last_seen_ip: string | null;
+  }>(
+    sql`SELECT telegram_id, email, phone, last_seen_ip
+        FROM users WHERE id = ${userId} LIMIT 1`,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    telegramId: row.telegram_id,
+    email: row.email,
+    phone: row.phone,
+    lastSeenIp: row.last_seen_ip,
   };
 }
 

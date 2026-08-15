@@ -31,7 +31,11 @@ vi.mock('@oplati/db', () => ({
   LINK_TOKEN_PREFIX: 'link_',
 }));
 
-vi.mock('@/lib/tool-handlers/confirm-order', () => ({ confirmOrder: h.confirmOrder }));
+// Классы ошибок — настоящие (instanceof в catch link-flow), подменяем только вызов.
+vi.mock('@/lib/tool-handlers/confirm-order', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/tool-handlers/confirm-order')>();
+  return { ...actual, confirmOrder: h.confirmOrder };
+});
 vi.mock('./send', () => ({ sendSafely: h.sendSafely }));
 vi.mock('./persist', () => ({
   persistInbound: h.persistInbound,
@@ -175,6 +179,19 @@ describe('handoff заказа: счёт выставляется прямо в 
     h.getOrdersByUserId.mockResolvedValueOnce([readyOrder({ amountRub: null })]);
     await handleLinkDeepLink(update, message, 'link_abc');
     expect(h.confirmOrder).not.toHaveBeenCalled();
+  });
+
+  it('заказ без почты в профиле → подсказка про кабинет, а не тишина', async () => {
+    // Переходное окно антифрод-трека: заказ оформлен в вебе ДО плашки
+    // контактов, email_required ловится и превращается в понятный шаг.
+    const { EmailRequiredError } = await import('@/lib/tool-handlers/confirm-order');
+    h.getOrdersByUserId.mockResolvedValueOnce([readyOrder()]);
+    h.confirmOrder.mockRejectedValueOnce(new EmailRequiredError());
+    await handleLinkDeepLink(update, message, 'link_abc');
+    expect(sentText()).toContain('привязан');
+    expect(sentText()).toContain('почт');
+    // Ожидаемый бизнес-кейс, не сбой — Sentry не шумит.
+    expect(h.captureException).not.toHaveBeenCalled();
   });
 
   it('сбой выставления счёта НЕ роняет привязку', async () => {

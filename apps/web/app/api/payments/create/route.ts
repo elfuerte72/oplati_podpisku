@@ -6,6 +6,7 @@ import {
   findPendingPaymentByOrderId,
   getDb,
   getOrderById,
+  getUserPayerContact,
   setOrderExpiresAt,
   transitionOrder,
   upsertPaymentByProviderRef,
@@ -13,6 +14,7 @@ import {
 } from '@oplati/db';
 import { OrderTransitionError } from '@oplati/types';
 
+import { EMAIL_REQUIRED, EMAIL_REQUIRED_TEXT } from '@/lib/contacts/email';
 import { serverEnv } from '@/lib/env.server';
 import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
@@ -209,6 +211,20 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Гейт email плательщика (антифрод-трек, Р2: почта обязательна при оплате).
+    // UI до сюда не доводит — плашка контактов не даёт отправить пустое поле;
+    // гейт ловит self-call бота и любые обходы UI. Только НОВЫЕ счета: путь
+    // repeat_confirm (заказ уже в pending_payment) возвращается выше — клиент
+    // со счётом, выставленным до фичи, должен спокойно доплатить.
+    const payerContact = await getUserPayerContact(db, order.userId);
+    if (!payerContact?.email) {
+      log.warn({ event: 'payments.create.email_required', orderId });
+      return NextResponse.json(
+        { ok: false, error: EMAIL_REQUIRED, message: EMAIL_REQUIRED_TEXT },
+        { status: 422 },
+      );
+    }
+
     // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
     const orderAmountKopecks = order.amountRub;
 
@@ -217,6 +233,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       order,
       amountKopecks: orderAmountKopecks,
       paymentMethod,
+      payerContact,
     });
 
     log.info({

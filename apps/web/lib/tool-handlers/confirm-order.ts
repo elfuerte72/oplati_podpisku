@@ -7,6 +7,7 @@ import type { ConfirmOrderResult } from '@oplati/agent';
 import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
 import { selfCallBaseUrl } from '../deployment-url.ts';
+import { EMAIL_REQUIRED } from '../contacts/email.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -39,6 +40,18 @@ export class TelegramLinkRequiredError extends Error {
       `${TELEGRAM_LINK_REQUIRED}: у пользователя не привязан Telegram. Подтверждение оплаты, чек и доступы доставляются только сообщением в Telegram, поэтому счёт не создан. Объясни это пользователю одной фразой и попроси нажать кнопку «Связать Telegram» под сообщением.`,
     );
     this.name = 'TelegramLinkRequiredError';
+  }
+}
+
+/** Маркер «нужна почта» — антифрод-трек (Р2); литерал живёт в lib/contacts. */
+export { EMAIL_REQUIRED };
+
+export class EmailRequiredError extends Error {
+  constructor() {
+    super(
+      `${EMAIL_REQUIRED}: в профиле пользователя нет почты, счёт не создан. Попроси пользователя указать почту для связи по заказу (в плашке контактов на экране заказа) и подтвердить оплату ещё раз.`,
+    );
+    this.name = 'EmailRequiredError';
   }
 }
 
@@ -208,6 +221,9 @@ export async function confirmOrder(input: {
       }
       if (resp.status === 422 && errorCode === 'above_max_amount') {
         throw new OrderAboveMaxAmountError(parseMaxAmountRub(respText));
+      }
+      if (resp.status === 422 && errorCode === EMAIL_REQUIRED) {
+        throw new EmailRequiredError();
       }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }

@@ -27,6 +27,7 @@ const log = childLogger('profile');
 
 const EMPTY = {
   displayName: null,
+  email: null,
   telegramLinked: false,
   ordersCount: 0,
   totalSpentKopecks: 0,
