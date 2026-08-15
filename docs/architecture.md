@@ -116,24 +116,26 @@ instrumentation.ts                Sentry server/edge + fail-fast env
 5. Ответ агента append'ится в БД и уходит клиенту (в Telegram — с разбивкой по 4096 символов).
 6. **Graceful degradation:** если БД недоступна — `runAgentNoTools` (бот отвечает, но без памяти и заказов); если Anthropic недоступен — понятный текст с предложением позвать оператора.
 
-### 2. Оплата (Love&Pay)
+### 2. Оплата (Freekassa — основной шлюз, Love&Pay — резерв)
 
-1. `confirm_order` → внутренний `POST /api/payments/create` (защита `X-Internal-Token`, self-call в свой же deployment) → инвойс L&P → ссылка клиенту.
+1. `confirm_order` → внутренний `POST /api/payments/create` (защита `X-Internal-Token`, self-call в свой же deployment). Гейты до счёта: протухшая фиксация цены (`409 order_expired`), контакты плательщика — `422 email_required` всегда и `422 phone_required` от порога `PHONE_REQUIRED_FROM_RUB` (антифрод-трек 2026-08-15). Шлюз выбирает `PAYMENT_PRIMARY_PROVIDER` (**только для нового счёта**); счёт уходит с настоящими email (`users.email`) и IP (`users.last_seen_ip`) плательщика → ссылка клиенту.
 2. Заказ: `ready_for_payment → pending_payment` через `transitionOrder()`.
-3. Клиент платит → L&P шлёт webhook `invoice.paid` на `/api/payments/loveandpay`: проверка подписи, Zod-парс, идемпотентность по `UNIQUE(provider, provider_ref)`. Атомарный claim платежа (`pending → succeeded`) **и** переход заказа `pending_payment → paid` — **в одной транзакции** (сбой перехода откатывает claim → платёж остаётся `pending` → `poll-payment` дообработает; иначе оплаченный заказ «умер» бы без recovery). Победитель claim'а рассылает уведомление клиенту, запускает issue-card и реферальные начисления. Webhook всегда отвечает `200` (ошибки — в теле), чтобы L&P не ретраил бесконечно.
-4. Подстраховка: cron `poll-payment` каждые 5 минут опрашивает зависшие `pending_payment` (потерянные webhook'и), `expire-payments` закрывает просроченные (но НЕ те, у кого уже есть успешный платёж — защита от захоронения оплаченного заказа).
+3. Клиент платит → webhook провайдера (`/api/payments/freekassa` или `/api/payments/loveandpay` — **обе ручки живут всегда**, независимо от выбранного шлюза): проверка подписи, Zod-парс, идемпотентность по `UNIQUE(provider, provider_ref)`. Атомарный claim платежа (`pending → succeeded`) **и** переход заказа `→ paid` — **в одной транзакции** (сбой перехода откатывает claim → платёж остаётся `pending` → `poll-payment` дообработает; иначе оплаченный заказ «умер» бы без recovery). Победитель claim'а рассылает уведомление клиенту, запускает issue-card и реферальные начисления. Webhook всегда отвечает `200` (ошибки — в теле), у Freekassa «принято» — тело `YES`.
+4. Подстраховка: cron `poll-payment` каждые 5 минут опрашивает зависшие `pending_payment` (потерянные webhook'и; Freekassa о неуспехе вообще не уведомляет — опрос единственный способ узнать про отмену), `expire-payments` закрывает просроченные (но НЕ те, у кого уже есть успешный платёж — защита от захоронения оплаченного заказа).
+5. Антифрод-холд: опрос увидел статус `7` → снапшот в `payments.last_provider_status`, заказ в `payment_review` («на проверке банка», не протухает) + клиенту ровно одно автосообщение; исход решает провайдер (`paid`/`failed`), залипание дольше 7 дней — DM-сторож. Кнопка «Проблема с оплатой» (Mini App + сайт) даёт клиенту тот же путь руками.
 
 ### 3. Жизненный цикл заказа (state machine)
 
-13 статусов, переходы — только через `transitionOrder()`:
+14 статусов, переходы — только через `transitionOrder()`:
 
 ```
 draft → clarifying → kyc_required ⇄ clarifying
       ↘ ready_for_payment → pending_payment → paid → in_fulfillment → completed
                                   ↘ expired      ↘ failed                ↘ refund_requested → refunded
+                                  ↘ payment_review → paid | failed | cancelled
 ```
 
-Терминальные (`failed`, `cancelled`, `refunded`, `expired`) — без выходов: заказ не переоткрывается, заводится новый. Каждый переход = строка в append-only `order_events` в той же транзакции. Append-only форсит триггер БД `order_events_append_only` (UPDATE/DELETE → exception), а не только конвенция кода.
+`payment_review` («платёж на проверке банка», антифрод-трек 2026-08-15) — заказ с возможно уже списанными деньгами: НЕ протухает (`expired` из него недостижим намеренно), входы — холд провайдера (poll, статус 7) или кнопка «Проблема с оплатой» («я оплатил»), исход решает провайдер/оператор. Терминальные (`cancelled`, `refunded`, `expired`) — без выходов: заказ не переоткрывается, заводится новый; `failed` и `completed` квази-терминальны (единственный выход → `refund_requested`). Каждый переход = строка в append-only `order_events` в той же транзакции. Append-only форсит триггер БД `order_events_append_only` (UPDATE/DELETE → exception), а не только конвенция кода.
 
 ### 4. Фоновые задачи (системный crontab)
 
@@ -141,8 +143,8 @@ draft → clarifying → kyc_required ⇄ clarifying
 
 | Job | Расписание | Что делает |
 |---|---|---|
-| `poll-payment` | каждые 5 мин | сверка зависших платежей со шлюзом + recovery застрявших в `paid` |
-| `expire-payments` | каждые 15 мин | `pending_payment → expired` по таймауту |
+| `poll-payment` | каждые 5 мин | сверка зависших платежей со шлюзом (включая `payment_review` без потолка давности) + recovery застрявших в `paid` + 7-дневный DM-сторож залипших `payment_review` |
+| `expire-payments` | каждые 15 мин | оба оплатимых статуса по таймауту: `pending_payment` и `ready_for_payment`-черновики с протухшей фиксацией цены |
 | `renewal-reminder` | 07:00 UTC | напоминания о продлении подписки |
 | `recycle-cards` | 03:30 UTC | карты старше `CARD_LIFETIME_DAYS` (180 д) → `release` + `recycled` |
 | `retention` | 04:15 UTC | чистка `messages` (90 д) и `payments.raw_payload` (180 д) |
