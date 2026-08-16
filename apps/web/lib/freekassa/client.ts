@@ -47,6 +47,20 @@ export type FreekassaClientOptions = {
   nonceProvider: () => Promise<number>;
   /** Override fetch (для тестов / моков). */
   fetchImpl?: typeof fetch;
+  /**
+   * Наблюдатель за сбоем ОБРАЩЕНИЯ к провайдеру: отказ API, контракт-дрейф,
+   * транспорт. Зовётся перед пробросом ошибки наверх, на поток не влияет и
+   * решать ничего не должен — существует, чтобы клиент остался транспортом и
+   * не знал про Sentry/Telegram. Единственный потребитель — ops-алёрт об
+   * отказе по `nonce` (`nonce-alert.ts`), инжектится в `index.ts`.
+   *
+   * ⚠️ Что сюда НЕ попадает (проверено ревью, формулировка намеренно узкая):
+   * `QUEUE_TIMEOUT` очереди, сбой `nonceProvider()` (недоступная БД) и Zod на
+   * ИСХОДЯЩИХ параметрах — они происходят до отправки. Их видно в Sentry как
+   * обычные исключения; расширять наблюдатель на них здесь не стали, чтобы
+   * «сбой обращения» не превратился в «любая ошибка модуля».
+   */
+  onApiError?: (err: unknown, ctx: { path: string }) => void;
 };
 
 export type CreateOrderInput = {
@@ -71,6 +85,7 @@ export class FreekassaClient {
   private readonly log: Logger;
   private readonly nonceProvider: () => Promise<number>;
   private readonly fetchImpl: typeof fetch;
+  private readonly onApiError: ((err: unknown, ctx: { path: string }) => void) | undefined;
 
   constructor(opts: FreekassaClientOptions) {
     this.apiKey = opts.apiKey;
@@ -79,6 +94,7 @@ export class FreekassaClient {
     this.log = opts.logger;
     this.nonceProvider = opts.nonceProvider;
     this.fetchImpl = opts.fetchImpl ?? fetch.bind(globalThis);
+    this.onApiError = opts.onApiError;
   }
 
   /** `POST /orders/create` — создание заказа и получение ссылки на оплату. */
@@ -217,7 +233,34 @@ export class FreekassaClient {
     return run;
   }
 
+  /**
+   * Тонкая обёртка над `sendJson` ради наблюдателя `onApiError`: он видит и
+   * отказ провайдера, и контракт-дрейф, и транспорт — потому что «шлюз
+   * отвечает, но отвергает всё» снаружи выглядит так же зелено, как здоровый
+   * прод. Ошибка уходит вызывающему без изменений.
+   */
   private async requestJson<T>(
+    path: string,
+    body: Record<string, unknown>,
+    parse: (raw: unknown) => T,
+  ): Promise<T> {
+    try {
+      return await this.sendJson(path, body, parse);
+    } catch (err) {
+      // Своё try/catch: бросок наблюдателя ПОДМЕНИЛ бы исходную ошибку, и
+      // `payments/create` перестал бы узнавать `FreekassaApiError` — клиент
+      // получил бы `500` вместо «технический сбой, попробуй позже», а причина
+      // отказа шлюза потерялась бы. Наблюдение не имеет права стоить диагностики.
+      try {
+        this.onApiError?.(err, { path });
+      } catch (observerErr) {
+        this.log.error({ event: 'freekassa.observer_failed', path, err: observerErr });
+      }
+      throw err;
+    }
+  }
+
+  private async sendJson<T>(
     path: string,
     body: Record<string, unknown>,
     parse: (raw: unknown) => T,

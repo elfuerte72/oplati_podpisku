@@ -56,6 +56,35 @@ describe('POST /api/alerts/sentry', () => {
     expect(text).toContain('PaySpaceApiError: insufficient funds');
   });
 
+  it('РЕГРЕСС 2026-08-16: боевой payload internal integration доезжает с содержанием', async () => {
+    // Прод шлёт именно эту форму (интеграция telegram-alerts-d8df3a в правиле
+    // 644412), а тесты знали только legacy — поэтому владельцу месяцами
+    // приходило «Sentry issue / Проект: — / Окружение: —» и выглядело как шум.
+    const res = await POST(
+      makeReq('?s=top-secret', {
+        action: 'triggered',
+        installation: { uuid: 'a8e5d37a' },
+        data: {
+          event: {
+            title: 'FreekassaApiError: Request with same (or bigger) nonce already exist',
+            culprit: 'GET /api/cron/poll-payment',
+            level: 'error',
+            tags: [['environment', 'production']],
+            web_url: 'https://oplatishka.sentry.io/issues/1117540176/',
+          },
+          triggered_rule: 'Send a notification for high priority issues',
+        },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const [, text] = h.sendMessageMock.mock.calls[0] as [string, string];
+    expect(text).toContain('FreekassaApiError');
+    expect(text).toContain('Где: GET /api/cron/poll-payment');
+    expect(text).toContain('Окружение: production');
+    expect(text).toContain('https://oplatishka.sentry.io/issues/1117540176/');
+  });
+
   it('секрет в заголовке X-Alert-Token тоже принимается', async () => {
     const req = new Request('https://example.com/api/alerts/sentry', {
       method: 'POST',

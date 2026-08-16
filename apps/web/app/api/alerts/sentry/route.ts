@@ -79,7 +79,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, skipped: 'invalid_payload' }, { status: 200 });
   }
 
-  const text = formatSentryAlertMessage(parsed.data);
+  const { text, degraded } = formatSentryAlertMessage(parsed.data);
+  if (degraded) {
+    // Формат payload'а разошёлся с парсером: алёрт уйдёт, но без названия
+    // проблемы. Ключи верхнего уровня — единственная зацепка для разбора
+    // (значения не логируем: в событии Sentry бывают данные клиента).
+    log.warn({ event: 'alerts.sentry.degraded', keys: Object.keys(parsed.data).sort() });
+  }
 
   try {
     await sendAlert(chatId, text);
