@@ -27,16 +27,28 @@ import { z } from 'zod';
  * прочерком: строка «Окружение: —» не несёт информации, её отсутствие — несёт.
  */
 
+/**
+ * Поле внешнего payload'а: `.nullish()`, а НЕ `.optional()`.
+ *
+ * Sentry для незаполненных полей шлёт `null`, а не пропускает ключ (в примере
+ * доки так приходят `dist`, `release`, `culprit`). `.optional()` принимает
+ * только `undefined`, поэтому ОДИН `null` роняет разбор ВСЕГО payload'а — и
+ * алёрт молча теряется (`route.ts` отвечает `200 skipped:'invalid_payload'`).
+ * Ровно та же логика, по которой `tags` объявлены `unknown[]`: на внешней
+ * границе строгость оборачивается не «поймали дрейф», а «потеряли алёрт».
+ */
+const externalString = () => z.string().nullish();
+
 const sentryEventSchema = z
   .object({
-    title: z.string().optional(),
-    message: z.string().optional(),
-    culprit: z.string().optional(),
-    level: z.string().optional(),
+    title: externalString(),
+    message: externalString(),
+    culprit: externalString(),
+    level: externalString(),
     /** Прямым полем есть только у legacy; у internal integration — в `tags`. */
-    environment: z.string().optional(),
-    web_url: z.string().optional(),
-    issue_url: z.string().optional(),
+    environment: externalString(),
+    web_url: externalString(),
+    issue_url: externalString(),
     /**
      * `unknown[]`, а не типизированный кортеж, намеренно: тег неожиданной формы
      * провалил бы разбор ВСЕГО payload'а, и алёрт был бы молча потерян (route
@@ -50,23 +62,23 @@ const sentryEventSchema = z
 export const sentryAlertPayloadSchema = z
   .object({
     // Формат 1 — legacy webhook.
-    project_name: z.string().optional(),
-    project: z.string().optional(),
-    culprit: z.string().optional(),
-    level: z.string().optional(),
-    message: z.string().optional(),
-    url: z.string().optional(),
-    triggering_rules: z.array(z.string()).optional(),
-    event: sentryEventSchema.optional(),
+    project_name: externalString(),
+    project: externalString(),
+    culprit: externalString(),
+    level: externalString(),
+    message: externalString(),
+    url: externalString(),
+    triggering_rules: z.array(z.string()).nullish(),
+    event: sentryEventSchema.nullish(),
     // Формат 2 — internal integration.
     data: z
       .object({
-        event: sentryEventSchema.optional(),
-        triggered_rule: z.string().optional(),
-        issue_alert: z.object({ title: z.string().optional() }).passthrough().optional(),
+        event: sentryEventSchema.nullish(),
+        triggered_rule: externalString(),
+        issue_alert: z.object({ title: externalString() }).passthrough().nullish(),
       })
       .passthrough()
-      .optional(),
+      .nullish(),
   })
   .passthrough();
 
@@ -83,19 +95,31 @@ const LEVEL_LABEL: Record<string, string> = {
 const MAX_TITLE = 300;
 const FALLBACK_TITLE = 'Sentry issue';
 
+/** Первое непустое строковое значение; `null`/`undefined`/пробелы — не значение. */
+function firstFilled(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return null;
+}
+
+function clamp(value: string): string {
+  return value.length > MAX_TITLE ? `${value.slice(0, MAX_TITLE)}…` : value;
+}
+
 /**
  * `environment` из `tags`. Sentry шлёт теги парами `["environment","production"]`
  * (доказано примером в доке), но в части ответов API — объектами
  * `{key, value}`; принимаем обе формы и молча пропускаем всё остальное.
  */
-function environmentFromTags(tags: unknown[] | undefined): string | null {
+function environmentFromTags(tags: unknown[] | null | undefined): string | null {
   if (!tags) return null;
   for (const tag of tags) {
     if (Array.isArray(tag) && tag[0] === 'environment' && typeof tag[1] === 'string') {
       return tag[1];
     }
-    if (tag !== null && typeof tag === 'object' && !Array.isArray(tag)) {
-      const { key, value } = tag as { key?: unknown; value?: unknown };
+    if (tag !== null && typeof tag === 'object' && !Array.isArray(tag) && 'key' in tag && 'value' in tag) {
+      const { key, value } = tag;
       if (key === 'environment' && typeof value === 'string') return value;
     }
   }
@@ -118,29 +142,31 @@ export function formatSentryAlertMessage(p: SentryAlertPayload): {
 } {
   const ev = p.data?.event ?? p.event ?? {};
 
-  const level = (p.level ?? ev.level ?? 'error').toLowerCase();
+  // Через firstFilled, а не `??`: пустая строка в payload'е — это тоже
+  // «значения нет», иначе заголовок вышел бы «Sentry · » без уровня.
+  const level = (firstFilled(p.level, ev.level) ?? 'error').toLowerCase();
   const label = LEVEL_LABEL[level] ?? level.toUpperCase();
 
-  const rawTitle = ev.title ?? ev.message ?? p.message ?? ev.culprit ?? p.culprit;
-  const degraded = rawTitle === undefined || rawTitle.trim() === '';
-  const title = degraded
-    ? FALLBACK_TITLE
-    : rawTitle.length > MAX_TITLE
-      ? `${rawTitle.slice(0, MAX_TITLE)}…`
-      : rawTitle;
+  const rawTitle = firstFilled(ev.title, ev.message, p.message, ev.culprit, p.culprit);
+  const degraded = rawTitle === null;
+  const title = clamp(rawTitle ?? FALLBACK_TITLE);
 
-  // «Где» дублировало бы заголовок, если тот сам собрался из culprit.
-  const culprit = ev.culprit ?? p.culprit;
-  const where = culprit && culprit !== title ? culprit : null;
+  // «Где» сравнивается с СЫРЫМ заголовком, а не с обрезанным: у длинного
+  // culprit'а, ставшего заголовком, обрезок с ним не совпал бы, и сообщение
+  // получило бы его второй раз целиком. Обрезаем и его — Telegram отвергает
+  // сообщения длиннее ~4096 символов ЦЕЛИКОМ, то есть одно распухшее поле
+  // внешнего payload'а стоило бы нам всего алёрта.
+  const culprit = firstFilled(ev.culprit, p.culprit);
+  const where = culprit !== null && culprit !== rawTitle ? clamp(culprit) : null;
 
-  const environment = ev.environment ?? environmentFromTags(ev.tags);
+  const environment = firstFilled(ev.environment, environmentFromTags(ev.tags));
   // Имя проекта есть только в legacy-формате; числовой id из internal
   // integration человеку бесполезен, поэтому его не печатаем.
-  const project = p.project_name ?? p.project ?? null;
+  const project = firstFilled(p.project_name, p.project);
   const rule = p.triggering_rules?.length
     ? p.triggering_rules.join(', ')
-    : (p.data?.triggered_rule ?? p.data?.issue_alert?.title ?? null);
-  const link = ev.web_url ?? p.url ?? ev.issue_url ?? null;
+    : firstFilled(p.data?.triggered_rule, p.data?.issue_alert?.title);
+  const link = firstFilled(ev.web_url, p.url, ev.issue_url);
 
   const lines = [`Sentry · ${label}`, title, ''];
   if (where) lines.push(`Где: ${where}`);

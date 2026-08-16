@@ -45,11 +45,14 @@ export function getFreekassaClient(): FreekassaClient {
     logger: childLogger('freekassa'),
     // Монотонный nonce — последовательность Postgres (миграция 0026).
     nonceProvider: () => nextFreekassaNonce(getDb()),
-    // Fire-and-forget намеренно: алёрт never-throw, а ждать Telegram здесь
-    // значит держать очередь запросов к Freekassa (`serialized`) на время
-    // отправки DM — при отказе по nonce она и так падает у всех подряд.
+    // Fire-and-forget намеренно: ждать Telegram здесь значит держать очередь
+    // запросов к Freekassa (`serialized`) на время отправки DM — при отказе по
+    // nonce она и так падает у всех подряд. `.catch` обязателен (репо-паттерн
+    // `analytics/track.ts`, `telegram/send.ts`): Node 24 роняет ПРОЦЕСС на
+    // необработанном отклонении — проверено на прод-контейнере, — и сбой
+    // алёрта убивал бы приложение ровно в момент аварии приёма оплаты.
     onApiError: (err, ctx) => {
-      void alertOnFreekassaNonceRejected(err, ctx);
+      void alertOnFreekassaNonceRejected(err, ctx).catch(() => undefined);
     },
   });
   return _client;

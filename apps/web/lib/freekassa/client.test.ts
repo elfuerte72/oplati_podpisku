@@ -322,6 +322,21 @@ describe('onApiError (наблюдатель для ops-алёртов)', () => 
     expect(seen).toHaveLength(1);
   });
 
+  it('бросок наблюдателя НЕ подменяет исходную ошибку', async () => {
+    // Иначе payments/create перестал бы узнавать FreekassaApiError: клиент
+    // получил бы 500 вместо «технический сбой, попробуй позже», а причина
+    // отказа шлюза потерялась бы.
+    const client = makeClient({
+      fetchImpl: vi.fn(async () => jsonResponse(ERROR_BODY, 400)) as unknown as typeof fetch,
+      onApiError: () => {
+        throw new Error('наблюдатель сломался');
+      },
+    });
+
+    await expect(client.createOrder(INPUT)).rejects.toBeInstanceOf(FreekassaApiError);
+    await expect(client.createOrder(INPUT)).rejects.toThrow('nonce');
+  });
+
   it('успешный запрос наблюдателя не дёргает', async () => {
     const onApiError = vi.fn();
     const client = makeClient({

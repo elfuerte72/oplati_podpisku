@@ -42,14 +42,21 @@ export function resetFreekassaNonceAlertDedupForTests(): void {
 const DM_TEXT =
   'КРИТИЧНО: Freekassa отвергает наши запросы — "nonce already exist". ' +
   'Счета на оплату сейчас НЕ выставляются: клиент, нажавший "Оплатить", получает ошибку. ' +
-  'Причина: счётчик nonce на стороне кассы обогнал наш (так было 2026-08-15). ' +
-  'Лечение ручное — поднять последовательность freekassa_nonce в прод-БД выше значения ' +
-  'провайдера; порядок в docs/incidents.md, инцидент 2026-08-15.';
+  'Вероятная причина: счётчик nonce на стороне кассы обогнал наш (так было 2026-08-15). ' +
+  'Сначала убедись, что отказы идут ПОДРЯД: единичный бывает и от разъезда порядка ' +
+  'запросов, тогда счётчик трогать не нужно. Если подряд — лечение ручное: измерить ' +
+  'водяной знак провайдера и поднять последовательность freekassa_nonce в прод-БД выше ' +
+  'него; порядок в docs/incidents.md, инцидент 2026-08-15.';
 
 /**
- * Зовётся на КАЖДОМ сбое обращения к Freekassa (наблюдатель `onApiError`
- * клиента) и сама решает, её ли это случай. Never-throw: алёрт не имеет права
- * повлиять на путь платежа.
+ * Зовётся на каждом сбое обращения к Freekassa (наблюдатель `onApiError`
+ * клиента) и сама решает, её ли это случай.
+ *
+ * **Never-throw буквально:** под `try` весь корпус, а не только доставка DM.
+ * `Sentry.captureMessage` и pino — тоже код, и их бросок здесь означал бы
+ * отклонённый промис на fire-and-forget пути, то есть падение процесса
+ * (Node 24 роняет процесс на необработанном отклонении). Падать из-за
+ * НАБЛЮДАТЕЛЯ в момент аварии приёма оплаты — худший из возможных исходов.
  */
 export async function alertOnFreekassaNonceRejected(
   err: unknown,
@@ -57,20 +64,22 @@ export async function alertOnFreekassaNonceRejected(
 ): Promise<void> {
   if (!isFreekassaNonceRejected(err)) return;
 
-  log.error({ event: 'freekassa.nonce_rejected', path: ctx.path });
-  Sentry.captureMessage('Freekassa отвергает запросы по nonce — приём оплаты стоит', {
-    level: 'error',
-    tags: { source: 'freekassa', alert: 'freekassa_nonce_rejected' },
-    extra: { path: ctx.path },
-  });
-
-  if (!dedup.shouldSend('freekassa_nonce')) return;
-
   try {
+    log.error({ event: 'freekassa.nonce_rejected', path: ctx.path });
+    Sentry.captureMessage('Freekassa отвергает запросы по nonce — приём оплаты стоит', {
+      level: 'error',
+      tags: { source: 'freekassa', alert: 'freekassa_nonce_rejected' },
+      extra: { path: ctx.path },
+    });
+
+    // Дедуп только для лички: Sentry группирует сам, и глушить его здесь значит
+    // потерять счётчик событий, по которому видно, идёт сбой или уже кончился.
+    if (!dedup.shouldSend('freekassa_nonce')) return;
+
     await notifyOps(DM_TEXT);
-  } catch (notifyErr) {
-    // Без captureException — анти-петля, как в notify-ops.ts: Sentry-алёрт выше
-    // уже ушёл, а провал доставки DM породил бы новый issue и новый алёрт.
-    log.error({ event: 'freekassa.nonce_rejected.notify_failed', err: notifyErr });
+  } catch (alertErr) {
+    // Без captureException — анти-петля, как в notify-ops.ts: провал алёрта
+    // породил бы новый issue и новый алёрт.
+    log.error({ event: 'freekassa.nonce_rejected.alert_failed', err: alertErr });
   }
 }

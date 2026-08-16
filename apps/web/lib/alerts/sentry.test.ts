@@ -43,9 +43,35 @@ const LEGACY = {
 };
 
 describe('sentryAlertPayloadSchema', () => {
-  it('парсит оба формата: legacy-webhook и internal integration', () => {
-    expect(sentryAlertPayloadSchema.safeParse(LEGACY).success).toBe(true);
-    expect(sentryAlertPayloadSchema.safeParse(INTERNAL_INTEGRATION).success).toBe(true);
+  it('парсит оба формата и СОХРАНЯЕТ поля', () => {
+    // Проверяем именно значения: схема all-optional + passthrough принимает
+    // любой объект, поэтому `success === true` был бы зелёным даже после
+    // удаления всего блока `data` — тест, который нельзя провалить.
+    const internal = sentryAlertPayloadSchema.safeParse(INTERNAL_INTEGRATION);
+    expect(internal.success).toBe(true);
+    expect(internal.success && internal.data.data?.event?.title).toContain('FreekassaApiError');
+    expect(internal.success && internal.data.data?.triggered_rule).toBe(
+      'Send a notification for high priority issues',
+    );
+
+    const legacy = sentryAlertPayloadSchema.safeParse(LEGACY);
+    expect(legacy.success).toBe(true);
+    expect(legacy.success && legacy.data.event?.title).toBe('PaySpaceApiError: insufficient funds');
+  });
+
+  it('РЕГРЕСС: null в поле не роняет разбор — Sentry так шлёт пустые поля', () => {
+    // `.optional()` принимает только undefined, поэтому один `culprit: null`
+    // отправлял ВЕСЬ payload в invalid_payload, и алёрт терялся молча.
+    const res = sentryAlertPayloadSchema.safeParse({
+      action: 'triggered',
+      data: {
+        event: { title: 'boom', culprit: null, environment: null, level: 'error' },
+        triggered_rule: null,
+      },
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.success && res.data.data?.event?.title).toBe('boom');
   });
 
   it('тег неожиданной формы не роняет разбор — иначе алёрт потерялся бы молча', () => {
@@ -118,6 +144,43 @@ describe('formatSentryAlertMessage', () => {
 
     expect(text).toContain('GET /api/bot');
     expect(text).not.toContain('Где:');
+  });
+
+  it('длинный culprit-заголовок не печатается вторым разом и обрезается', () => {
+    // Сравнение «Где» с УЖЕ обрезанным заголовком не совпало бы, и сообщение
+    // получило бы тот же текст целиком второй раз.
+    const { text } = formatSentryAlertMessage({ event: { culprit: 'y'.repeat(500) } });
+
+    expect(text).not.toContain('Где:');
+    expect(text.length).toBeLessThan(400);
+  });
+
+  it('распухшее поле payload’а не съедает алёрт целиком (лимит Telegram)', () => {
+    const { text } = formatSentryAlertMessage({
+      event: { title: 'boom', culprit: 'z'.repeat(9000) },
+    });
+
+    expect(text).toContain('Где:');
+    expect(text.length).toBeLessThan(1000);
+  });
+
+  it('environment достаётся и из объектной формы тегов', () => {
+    const { text } = formatSentryAlertMessage({
+      data: { event: { title: 'boom', tags: [{ key: 'environment', value: 'dev' }] } },
+    });
+
+    expect(text).toContain('Окружение: dev');
+  });
+
+  it('null и пустые строки трактуются как «значения нет», а не печатаются', () => {
+    const { text, degraded } = formatSentryAlertMessage({
+      data: { event: { title: null, message: '', culprit: 'GET /api/bot', level: null } },
+    });
+
+    expect(degraded).toBe(false);
+    expect(text).toContain('Sentry · ОШИБКА'); // level=null → дефолт error
+    expect(text).toContain('GET /api/bot');
+    expect(text).not.toContain('Окружение');
   });
 
   it('обрезает слишком длинный title', () => {

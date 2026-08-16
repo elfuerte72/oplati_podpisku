@@ -29,7 +29,14 @@ export class FreekassaApiError extends Error {
  * алёрт (`nonce-alert.ts`). Call-site'ы зовут предикат, а не парсят сообщение.
  */
 export function isFreekassaNonceRejected(err: unknown): boolean {
-  return err instanceof FreekassaApiError && /nonce/i.test(err.message);
+  if (!(err instanceof FreekassaApiError)) return false;
+  // Одного «nonce» мало: в ветке «не-`type:error` тело с плохим статусом»
+  // (`client.ts`) сообщением становится СЫРОЕ тело провайдера, а в HTML любой
+  // страницы-заглушки слово `nonce` встречается штатно (CSP-атрибут скрипта).
+  // Ложный алёрт здесь дороже пропущенного: он зовёт владельца править счётчик
+  // на живом шлюзе. Поэтому требуем и характерную часть фразы провайдера —
+  // «Request with same (or bigger) nonce already exist».
+  return /nonce/i.test(err.message) && /already exist|bigger/i.test(err.message);
 }
 
 /**

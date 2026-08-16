@@ -66,6 +66,51 @@ describe('alertOnFreekassaNonceRejected (инцидент 2026-08-15)', () => {
     expect(h.captureMessageMock).not.toHaveBeenCalled();
   });
 
+  it('чужой текст со словом nonce тревогу НЕ поднимает', async () => {
+    // Сырое тело провайдера становится message в ветке «не-type:error тело с
+    // плохим статусом»: HTML-заглушка содержит nonce штатно (CSP-атрибут).
+    // Ложный алёрт дороже пропущенного — он зовёт править счётчик на живом шлюзе.
+    await alertOnFreekassaNonceRejected(
+      new FreekassaApiError({
+        code: 'HTTP_502',
+        httpStatus: 502,
+        message: '<html><script nonce="abc123">…</script><h1>502 Bad Gateway</h1></html>',
+      }),
+      CTX,
+    );
+
+    expect(h.notifyOpsMock).not.toHaveBeenCalled();
+    expect(h.captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('через час окно дедупа открывается снова — авария не должна замолчать', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-16T10:00:00Z'));
+      await alertOnFreekassaNonceRejected(NONCE_ERR, CTX);
+      expect(h.notifyOpsMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-08-16T10:59:00Z'));
+      await alertOnFreekassaNonceRejected(NONCE_ERR, CTX);
+      expect(h.notifyOpsMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-08-16T11:00:01Z'));
+      await alertOnFreekassaNonceRejected(NONCE_ERR, CTX);
+      expect(h.notifyOpsMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('бросок Sentry не поднимается наверх: на fire-and-forget пути это падение процесса', async () => {
+    h.captureMessageMock.mockImplementationOnce(() => {
+      throw new Error('sentry transport dead');
+    });
+
+    await expect(alertOnFreekassaNonceRejected(NONCE_ERR, CTX)).resolves.toBeUndefined();
+    expect(h.notifyOpsMock).not.toHaveBeenCalled();
+  });
+
   it('сбой доставки DM не бросает — путь платежа важнее алёрта', async () => {
     h.notifyOpsMock.mockRejectedValueOnce(new Error('telegram down'));
     await expect(alertOnFreekassaNonceRejected(NONCE_ERR, CTX)).resolves.toBeUndefined();
