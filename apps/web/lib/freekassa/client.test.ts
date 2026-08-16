@@ -17,6 +17,7 @@ function makeClient(opts: {
   fetchImpl: typeof fetch;
   nonceProvider?: () => Promise<number>;
   logger?: unknown;
+  onApiError?: (err: unknown, ctx: { path: string }) => void;
 }) {
   return new FreekassaClient({
     apiKey: API_KEY,
@@ -25,6 +26,7 @@ function makeClient(opts: {
     logger: (opts.logger ?? silentLogger) as never,
     nonceProvider: opts.nonceProvider ?? (async () => 2_000_000_001),
     fetchImpl: opts.fetchImpl,
+    ...(opts.onApiError ? { onApiError: opts.onApiError } : {}),
   });
 }
 
@@ -284,5 +286,50 @@ describe('сериализация запросов (порядок nonce)', () 
 
     expect(await first).toContain('сеть');
     await expect(second).resolves.toMatchObject({ orderId: '123' });
+  });
+});
+
+describe('onApiError (наблюдатель для ops-алёртов)', () => {
+  const ERROR_BODY = {
+    type: 'error',
+    message: 'Request with same (or bigger) nonce already exist',
+  };
+
+  it('видит отказ провайдера с путём запроса, ошибка уходит вызывающему как прежде', async () => {
+    const seen: Array<{ err: unknown; path: string }> = [];
+    const client = makeClient({
+      fetchImpl: vi.fn(async () => jsonResponse(ERROR_BODY, 400)) as unknown as typeof fetch,
+      onApiError: (err, ctx) => seen.push({ err, path: ctx.path }),
+    });
+
+    await expect(client.createOrder(INPUT)).rejects.toBeInstanceOf(FreekassaApiError);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.path).toBe('/orders/create');
+    expect((seen[0]?.err as Error).message).toContain('nonce');
+  });
+
+  it('видит и транспортный сбой — иначе «шлюз молчит» прошло бы мимо алёртов', async () => {
+    const seen: unknown[] = [];
+    const client = makeClient({
+      fetchImpl: vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch,
+      onApiError: (err) => seen.push(err),
+    });
+
+    await expect(client.findOrderByPaymentId('ORD-S3MGS-a1b2c3')).rejects.toThrow('fetch failed');
+    expect(seen).toHaveLength(1);
+  });
+
+  it('успешный запрос наблюдателя не дёргает', async () => {
+    const onApiError = vi.fn();
+    const client = makeClient({
+      fetchImpl: vi.fn(async () => jsonResponse(SUCCESS_BODY)) as unknown as typeof fetch,
+      onApiError,
+    });
+
+    await client.createOrder(INPUT);
+    expect(onApiError).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import { getDb, nextFreekassaNonce } from '@oplati/db';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { FreekassaClient } from './client.ts';
+import { alertOnFreekassaNonceRejected } from './nonce-alert.ts';
 
 /**
  * Lazy-singleton клиента Freekassa — тот же паттерн, что у `getDb()`,
@@ -44,6 +45,12 @@ export function getFreekassaClient(): FreekassaClient {
     logger: childLogger('freekassa'),
     // Монотонный nonce — последовательность Postgres (миграция 0026).
     nonceProvider: () => nextFreekassaNonce(getDb()),
+    // Fire-and-forget намеренно: алёрт never-throw, а ждать Telegram здесь
+    // значит держать очередь запросов к Freekassa (`serialized`) на время
+    // отправки DM — при отказе по nonce она и так падает у всех подряд.
+    onApiError: (err, ctx) => {
+      void alertOnFreekassaNonceRejected(err, ctx);
+    },
   });
   return _client;
 }
