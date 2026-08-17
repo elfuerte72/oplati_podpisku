@@ -26,6 +26,7 @@ import {
 import { deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   claimRenewalReminder,
   countRefundishHistoryByUser,
   createDraftOrder,
@@ -33,6 +34,7 @@ import {
   findStuckInFulfillmentOrders,
   getOrderById,
   getOrderEventsByOrderId,
+  hasPurchasedOrders,
   findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
   transitionOrderDetailed,
@@ -3193,7 +3195,10 @@ describe('ручная выдача провалившегося заказа (�
   });
 
   it('после двух шагов заказ снова считается состоявшимся', async () => {
-    const { order } = await makeFailedOrderWithReversedAccrual();
+    const { buyer, order } = await makeFailedOrderWithReversedAccrual();
+    // До ручной выдачи заказ провалившийся: денег в итогах клиента нет.
+    expect((await getClientDetailForPanel(db, buyer.id))?.totals.purchasedRubKopecks).toBe(0);
+    expect(await hasPurchasedOrders(db, buyer.id)).toBe(false);
 
     await transitionOrderDetailed(db, {
       orderId: order.id,
@@ -3205,7 +3210,13 @@ describe('ручная выдача провалившегося заказа (�
 
     const after = await getOrderById(db, order.id);
     expect(after?.status).toBe('completed');
-    expect(PURCHASED_ORDER_STATUSES).toContain('completed');
+    // «Считается состоявшимся» проверяем ПОТРЕБИТЕЛЯМИ набора статусов, а не
+    // утверждением про саму константу: `toContain('completed')` зеленело бы и
+    // при выборке, которая эту константу не читает.
+    expect((await getClientDetailForPanel(db, buyer.id))?.totals.purchasedRubKopecks).toBe(
+      order.amountRub,
+    );
+    expect(await hasPurchasedOrders(db, buyer.id)).toBe(true);
   });
 
   /**
@@ -3349,6 +3360,47 @@ describe('панель: карточка клиента (тикет 04)', () => 
     ]);
   });
 
+  it('итоги считаются в БАЗЕ и не занижаются срезом списка', async () => {
+    // Смысл всей затеи виден только за потолком выборки: список режется, а
+    // деньги — нет. Складывать видимые строки значило бы показывать владельцу
+    // заниженную сумму по самому ценному клиенту и ровно столько заказов,
+    // сколько влезло на экран.
+    const client = await makeUser({ telegramId: `tg-client-many-${++seq}` });
+    const total = PANEL_MAX_ROWS + 5;
+    for (let i = 0; i < total; i++) {
+      await createDraftOrder(db, {
+        userId: client.id,
+        status: 'completed',
+        customServiceDescription: `bulk order ${i}`,
+        amountRub: 10_000,
+        originalAmount: 100,
+        originalCurrency: 'USD',
+      });
+    }
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.orders.length).toBe(PANEL_MAX_ROWS);
+    expect(detail?.totals.ordersCount).toBe(total);
+    expect(detail?.totals.purchasedRubKopecks).toBe(total * 10_000);
+  });
+
+  it('карт у клиента считается столько, сколько их есть, а не сколько показано', async () => {
+    const client = await makeUser({ telegramId: `tg-client-cards-${++seq}` });
+    for (let i = 0; i < 3; i++) {
+      await db.insert(schema.cards).values({
+        userId: client.id,
+        providerCardId: `count-card-${++seq}`,
+        panMasked: '400000******2222',
+        balanceUsdCents: 0,
+      });
+    }
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.totals.cardsCount).toBe(3);
+  });
+
   it('последний живой IP клиента в панель не отдаётся', async () => {
     const client = await makeUser({ telegramId: `tg-ip-client-${++seq}` });
     await touchUserLastSeenIp(db, { userId: client.id, ip: '203.0.113.77' });
@@ -3410,12 +3462,13 @@ describe('панель: антифрод-холды (тикет 05)', () => {
     expect(rows.map((r) => r.orderId)).not.toContain(order.id);
   });
 
-  it('заказ с двумя платежами показывается ОДНОЙ строкой', async () => {
+  it('заказ с двумя платежами: одна строка, и статус в ней — от СВЕЖЕГО платежа', async () => {
     const user = await makeUser({ telegramId: `tg-hold-two-${++seq}` });
     const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
     // Первый счёт закрыт терминально — только после этого частичный UNIQUE
     // (не более одного ЖИВОГО инвойса на заказ) пропускает второй.
     await claimPaymentTerminal(db, payment.id);
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 8 });
     const second = await upsertPaymentByProviderRef(db, {
       orderId: order.id,
       provider: 'freekassa',
@@ -3423,21 +3476,123 @@ describe('панель: антифрод-холды (тикет 05)', () => {
       amountRub: 50000,
     });
     await setPaymentProviderStatus(db, { paymentId: second.payment.id, providerStatus: 7 });
+    // Возраст платежей задаём явно: два INSERT'а подряд могут лечь в одну
+    // миллисекунду, и «свежий» перестал бы быть определён — тест зеленел бы
+    // от совпадения, а не от правила.
+    await db
+      .update(schema.payments)
+      .set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(schema.payments.id, payment.id));
     await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
 
     const { items: rows } = await listHoldsForPanel(db);
+    const mine = rows.filter((r) => r.orderId === order.id);
 
-    expect(rows.filter((r) => r.orderId === order.id)).toHaveLength(1);
+    expect(mine).toHaveLength(1);
+    // Правило «показываем последнее, что провайдер сказал»: перевыставленный
+    // счёт на проверке (7), а не отвергнутый первый (8). Прежняя версия брала
+    // любой ненулевой статус и на этой паре врала.
+    expect(mine[0]?.lastProviderStatus).toBe(7);
+  });
+
+  it('неопрошенный свежий счёт не прячет операцию, которую держит банк', async () => {
+    // Клиенту перевыставили счёт, поллер его ещё не видел (статуса нет). На
+    // экране обязана остаться операция С ХОЛДОМ: именно её номер менеджер
+    // подставляет в обращение в поддержку Freekassa, и именно по ней банк
+    // держит деньги. Показать пустой статус свежего счёта значило бы стереть
+    // и причину попадания заказа на экран.
+    const user = await makeUser({ telegramId: `tg-hold-fresh-null-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await claimPaymentTerminal(db, payment.id);
+    const fresh = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `hold-fresh-${++seq}`,
+      amountRub: 50000,
+    });
+    await db
+      .update(schema.payments)
+      .set({ createdAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(schema.payments.id, payment.id));
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items } = await listHoldsForPanel(db, 100);
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.lastProviderStatus).toBe(7);
+    expect(row?.paymentId).toBe(payment.id);
+    expect(row?.paymentId).not.toBe(fresh.payment.id);
+  });
+
+  it('«клиенту ушло» читается фактом доставки, а не выводится из статуса', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-notified-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    // Заказ УЖЕ на проверке банка, но автосообщение могло не уйти: отправка
+    // best-effort, и «бот заблокирован пользователем» гасится log.warn.
+    // Лимит задан явно: в файле общая база, и на дефолтной странице свой заказ
+    // однажды перестанет помещаться — тест упадёт с непонятным `undefined`.
+    const before = await listHoldsForPanel(db, 100);
+    expect(before.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeNull();
+    // Заодно: страница, вместившая всё, не должна кричать «показаны не все».
+    expect(before.hasMore).toBe(false);
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+      actorType: 'system',
+    });
+
+    const after = await listHoldsForPanel(db, 100);
+    expect(after.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('ОДИН заказ с длинной историей счетов тоже даёт «есть ещё»', async () => {
+    // Запас выборки — три платежа на заказ. Заказ с большим числом
+    // перевыставлений съедает его в одиночку: заказов набралось меньше
+    // страницы, но дальше потолка мы просто НЕ ЗНАЕМ, что есть. Молчаливый
+    // хвост на экране, чья пустота означает «холдов нет», — прямая ложь.
+    const user = await makeUser({ telegramId: `tg-hold-many-pay-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await claimPaymentTerminal(db, payment.id);
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    // limit=1 → потолок выборки 1*3+1 = 4 строки; делаем платежей заведомо больше.
+    for (let i = 0; i < 6; i++) {
+      const extra = await upsertPaymentByProviderRef(db, {
+        orderId: order.id,
+        provider: 'freekassa',
+        providerRef: `hold-many-${++seq}`,
+        amountRub: 50000,
+      });
+      await claimPaymentTerminal(db, extra.payment.id);
+      await setPaymentProviderStatus(db, { paymentId: extra.payment.id, providerStatus: 7 });
+    }
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const page = await listHoldsForPanel(db, 1);
+
+    expect(page.hasMore).toBe(true);
   });
 
   it('усечение списка холдов не молчит', async () => {
     // Прежний тест утверждал `Array.isArray(...)` — тавтология при
-    // типизированном возврате, да ещё на базе, где холды уже созданы соседними
-    // тестами. Проверяем то, что действительно может сломаться.
+    // типизированном возврате. Проверяем то, что действительно может сломаться:
+    // страница обрезана, и об этом СКАЗАНО. Молчаливый срез читается как
+    // «холдов больше нет» — ровно наоборот смыслу экрана.
+    const user = await makeUser({ telegramId: `tg-hold-page-${++seq}` });
+    for (let i = 0; i < 2; i++) {
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    }
+
     const page = await listHoldsForPanel(db, 1);
 
-    expect(page.items.length).toBeLessThanOrEqual(1);
-    expect(typeof page.hasMore).toBe('boolean');
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
   });
 });
 

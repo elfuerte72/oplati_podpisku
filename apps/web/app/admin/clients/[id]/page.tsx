@@ -7,6 +7,7 @@ import { getClientDetailForPanel, getDb } from '@oplati/db';
 import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
+  cardStatusLabel,
   formatKopecks,
   formatUsdCents,
   orderStatusLabel,
@@ -36,8 +37,10 @@ export default async function PanelClientPage({
 }) {
   const access = await panelPageAccess('clients');
   if (!access.allowed) {
+    // `current` не задан намеренно: карточка клиента не пункт меню, и подсветка
+    // «Заказы» на ней говорила бы человеку, что он в другом разделе.
     return (
-      <PanelShell actor={access.actor} current="/admin/orders" live={false}>
+      <PanelShell actor={access.actor} live={false}>
         <PanelForbidden title="Клиент" />
       </PanelShell>
     );
@@ -53,12 +56,14 @@ export default async function PanelClientPage({
 
   const { client } = detail;
   const reach = clientReachability(client);
-  const totalPaidKopecks = detail.orders
-    .filter((o) => o.status === 'completed' || o.status === 'paid' || o.status === 'in_fulfillment')
-    .reduce((sum, o) => sum + (o.amountRubKopecks ?? 0), 0);
+  // Список заказов режется потолком выборки, поэтому итоги берутся ИЗ БАЗЫ
+  // (`detail.totals`), а не складываются по видимым строкам: у клиента со 100+
+  // заказами сумма по срезу молча занижала бы деньги, а «Заказов» показывало бы
+  // ровно потолок.
+  const hiddenOrders = detail.totals.ordersCount - detail.orders.length;
 
   return (
-    <PanelShell actor={access.actor} current="/admin/orders">
+    <PanelShell actor={access.actor}>
       <div className="panel-card" style={{ marginBottom: 16 }}>
         <h1 className="panel-title">{client.displayName ?? 'Клиент без имени'}</h1>
         <p className="panel-muted">
@@ -102,11 +107,11 @@ export default async function PanelClientPage({
           <h2 className="panel-title">Итоги</h2>
           <dl className="panel-dl">
             <dt>Заказов</dt>
-            <dd>{detail.orders.length}</dd>
+            <dd>{detail.totals.ordersCount}</dd>
             <dt>Оплачено</dt>
-            <dd>{formatKopecks(totalPaidKopecks)}</dd>
+            <dd>{formatKopecks(detail.totals.purchasedRubKopecks)}</dd>
             <dt>Карт</dt>
-            <dd>{detail.cards.length}</dd>
+            <dd>{detail.totals.cardsCount}</dd>
           </dl>
         </section>
 
@@ -184,6 +189,17 @@ export default async function PanelClientPage({
             </table>
           </div>
         )}
+        {hiddenOrders > 0 ? (
+          // Усечение проговаривается вслух: молчаливый срез читается как «это
+          // все заказы клиента» и врёт тем сильнее, чем ценнее клиент.
+          // Отправлять в общий список намеренно НЕ обещаем: фильтра по клиенту
+          // там нет, а поиск умеет только номер, telegram, email и имя — у
+          // веб-клиента без контактов искать нечем.
+          <p className="panel-muted" style={{ marginTop: 8 }}>
+            Показаны последние {detail.orders.length} из {detail.totals.ordersCount}; ещё{' '}
+            {hiddenOrders} не помещаются на экран.
+          </p>
+        ) : null}
       </section>
 
       <section className="panel-card" style={{ marginTop: 16 }}>
@@ -205,7 +221,7 @@ export default async function PanelClientPage({
                 {detail.cards.map((card) => (
                   <tr key={card.id}>
                     <td>{card.panMasked}</td>
-                    <td>{card.status}</td>
+                    <td>{cardStatusLabel(card.status)}</td>
                     <td>{formatUsdCents(card.balanceUsdCents)}</td>
                     <td className="panel-muted">
                       <LocalTime iso={card.createdAt.toISOString()} />

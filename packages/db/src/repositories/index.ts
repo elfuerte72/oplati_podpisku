@@ -149,6 +149,7 @@ export {
   findStuckInFulfillmentOrders,
   findOrdersForRenewalReminder,
   appendOrderEvent,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   claimRenewalReminder,
   hasRecentOrderEvent,
   countRecentOrdersByUser,

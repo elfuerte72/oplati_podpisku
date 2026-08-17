@@ -23,13 +23,16 @@ import { PANEL_BUSY_ATTRIBUTE } from './LiveRefresh';
  * действия (`LiveRefresh`).
  */
 
+/** Текст на случай, когда код отказа незнаком или ответа не было вовсе. */
+const FALLBACK_ERROR = 'Не получилось: что-то на нашей стороне. Попробуй через минуту.';
+
 const ERROR_TEXT: Record<string, string> = {
   comment_required: 'Опиши, что именно выдали — одной строки достаточно.',
+  not_paid: 'Успешного платежа по заказу нет — выдавать нечего. Сверь платёж у провайдера.',
   wrong_status: 'Статус заказа изменился. Обнови страницу и посмотри, что с ним стало.',
   not_found: 'Заказ не найден.',
   forbidden: 'Раздел доступен только владельцу.',
   unauthorized: 'Сессия истекла — войди заново.',
-  unavailable: 'Не получилось: что-то на нашей стороне. Попробуй через минуту.',
 };
 
 export function ManualFulfillment({
@@ -63,8 +66,12 @@ export function ManualFulfillment({
       });
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        const code = (data as { error?: string } | null)?.error ?? 'unavailable';
-        setError(ERROR_TEXT[code] ?? ERROR_TEXT.unavailable!);
+        const code = (data as { error?: string } | null)?.error;
+        // `Object.hasOwn`, а не `ERROR_TEXT[code]`: код приходит из тела ответа,
+        // то есть снаружи. Строка `toString` в поле `error` дала бы функцию
+        // вместо текста и уронила бы форму на рендере.
+        const text = code && Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : undefined;
+        setError(text ?? FALLBACK_ERROR);
         return;
       }
       setComment('');
@@ -72,7 +79,7 @@ export function ManualFulfillment({
     } catch {
       // Сеть отвалилась. Молчать нельзя: человек должен знать, что заказ НЕ
       // переведён, иначе он решит, что выдача записана, и уйдёт.
-      setError(ERROR_TEXT.unavailable!);
+      setError(FALLBACK_ERROR);
     } finally {
       setBusy(false);
       document.body.removeAttribute(PANEL_BUSY_ATTRIBUTE);

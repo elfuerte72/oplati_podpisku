@@ -1,10 +1,26 @@
+import type { CardStatus, PaymentStatus } from '@oplati/types';
+
 /**
  * Форматирование для панели. Чистые функции без Next и без env — их зовут и
  * серверные страницы, и клиентские компоненты, и тесты.
  *
  * ⚠️ Деньги приходят целыми в минимальных единицах (инвариант 3) и такими же
  * считаются: `float` в рублях здесь не появляется даже на печать.
+ *
+ * ⚠️ Импорты — только `type`: модуль едет в клиентский бандл.
  */
+
+/**
+ * Поиск подписи по словарю-литералу.
+ *
+ * Через `Object.hasOwn`, а не `dict[key]`: у объектного литерала есть прототип,
+ * поэтому `dict['toString']` вернул бы ФУНКЦИЮ там, где тип обещает строку. Для
+ * значений из enum'а базы это теория, а вот для кода ошибки из тела ответа —
+ * нет: строка `toString` в поле `error` уронила бы React.
+ */
+function lookupLabel(dict: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(dict, key) ? dict[key] : undefined;
+}
 
 /** Копейки → «1 234 ₽». Дробную часть не показываем: копеек в ценах нет. */
 export function formatKopecks(value: number | null | undefined): string {
@@ -97,9 +113,12 @@ export function formatAge(from: Date, now: Date): string {
 }
 
 /**
- * Человеческие подписи статусов заказа. `Record` по всем значениям enum'а не
- * ставим намеренно: словарь живёт в `@oplati/types`, а панель не должна падать
- * из-за нового статуса — незнакомый показываем как есть.
+ * Человеческие подписи статусов заказа.
+ *
+ * Здесь `Record<string, …>` осознанно, в отличие от карт и платежей ниже:
+ * подписи статусов заказа читает и клиентский кабинет со своим словарём, и
+ * ссылка на общий тип связала бы две витрины, которые говорят с разной
+ * аудиторией. Рантайм-фолбэк «показываем как есть» остаётся везде.
  */
 const ORDER_STATUS_LABELS: Record<string, string> = {
   draft: 'черновик',
@@ -119,7 +138,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 export function orderStatusLabel(status: string): string {
-  return ORDER_STATUS_LABELS[status] ?? status;
+  return lookupLabel(ORDER_STATUS_LABELS, status) ?? status;
 }
 
 /**
@@ -137,8 +156,50 @@ export function orderStatusTone(status: string): 'danger' | 'warn' | 'ok' | 'mut
 }
 
 /**
+ * Статусы карты. Сырой `recycled` на экране менеджера не значит ничего:
+ * «переработана» — это закрытая по сроку жизни карта, а не ошибка.
+ *
+ * ⚠️ `Record<CardStatus, …>`, а не `Record<string, …>`: новое значение enum'а
+ * обязано СЛОМАТЬ сборку, а не молча показать менеджеру латиницу. Тот же приём,
+ * что у прав в `permissions.ts` («новая роль не падает в менеджера»). Рантайм
+ * при этом остаётся снисходительным — см. фолбэк ниже.
+ */
+const CARD_STATUS_LABELS: Record<CardStatus, string> = {
+  active: 'активна',
+  idle: 'простаивает',
+  recycled: 'закрыта',
+};
+
+export function cardStatusLabel(status: string): string {
+  return lookupLabel(CARD_STATUS_LABELS, status) ?? status;
+}
+
+/**
+ * Статусы платежа. `pending` подписан «ждёт подтверждения», а НЕ «ждёт оплаты»:
+ * при холде антифрода деньги у клиента уже списаны, а строка платежа остаётся
+ * `pending` (claim не проходил). «Ждёт оплаты» на экране холдов означало бы
+ * прямую ложь ровно в том случае, ради которого экран и заведён.
+ */
+const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
+  pending: 'ждёт подтверждения',
+  succeeded: 'оплачен',
+  failed: 'не прошёл',
+  refunded: 'возвращён',
+};
+
+export function paymentStatusLabel(status: string): string {
+  return lookupLabel(PAYMENT_STATUS_LABELS, status) ?? status;
+}
+
+/**
  * Код статуса платежа у провайдера. `7` — холд антифрода Freekassa
  * (эмпирический, подтверждён поддержкой 2026-08-14).
+ *
+ * ⚠️ Числа здесь литералами, хотя рядом есть `FREEKASSA_ORDER_STATUS`, и это
+ * осознанный компромисс: `@oplati/types` тянет за собой zod, а модуль едет в
+ * клиентский бандл (его читает `LocalTime`). Словарь ПОДПИСЕЙ — не источник
+ * решений: решения (что считать холдом) принимаются на сервере из общей
+ * константы, здесь только текст рядом с числом, которое всё равно печатается.
  */
 const PROVIDER_STATUS_LABELS: Record<number, string> = {
   0: 'новый',

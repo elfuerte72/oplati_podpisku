@@ -580,6 +580,17 @@ export async function claimRenewalReminder(db: DBLike, orderId: string): Promise
 }
 
 /**
+ * Автосообщение клиенту «банк проверяет перевод» ДОСТАВЛЕНО.
+ *
+ * Пишется только после успешной отправки (`lib/jobs/poll-payment-one.ts`), а
+ * читается панелью холдов (`repositories/panel.ts`). Константа общая, чтобы
+ * имя события не разъехалось между писателем и читателем: отправка
+ * best-effort, и её отказ («бот заблокирован пользователем») означает, что
+ * менеджеру писать клиенту НАДО — цена расхождения тут молчание к клиенту.
+ */
+export const PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT = 'payment_review_client_notified';
+
+/**
  * Записать событие в append-only `order_events` БЕЗ смены статуса заказа — для
  * не-переходных событий (напоминание о продлении, уведомление). `orders.status`
  * не трогается, поэтому `from_status`/`to_status` остаются null. Только INSERT

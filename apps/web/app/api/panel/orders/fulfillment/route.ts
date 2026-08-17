@@ -9,8 +9,9 @@ import {
   canCompleteManualFulfillment,
   canStartManualFulfillment,
   eventTypeFor,
-  manualFulfillmentActionSchema,
-  manualFulfillmentCommentSchema,
+  MANUAL_FULFILLMENT_ACTIONS,
+  MANUAL_FULFILLMENT_COMMENT_MAX,
+  MANUAL_FULFILLMENT_COMMENT_MIN,
   requiredStatusFor,
   targetStatusFor,
   type ManualFulfillmentAction,
@@ -41,11 +42,20 @@ export const maxDuration = 15;
 const log = childLogger('panel.fulfillment');
 const dbLog = childLogger('db');
 
+// Граница запроса (инвариант 5) живёт здесь, а не в `lib/panel/fulfillment.ts`:
+// тот модуль читает и клиентский компонент, и zod уехал бы в браузер ради двух
+// чисел. Само перечисление действий берётся оттуда — копии нет.
 const bodySchema = z.object({
   shortId: orderShortIdSchema,
-  action: manualFulfillmentActionSchema,
+  action: z.enum(MANUAL_FULFILLMENT_ACTIONS),
   comment: z.string().optional(),
 });
+
+const commentSchema = z
+  .string()
+  .trim()
+  .min(MANUAL_FULFILLMENT_COMMENT_MIN, 'нужно описать, что именно выдали')
+  .max(MANUAL_FULFILLMENT_COMMENT_MAX);
 
 export async function POST(req: Request): Promise<Response> {
   // Гейт Origin ПЕРВЫМ: чужой запрос не должен даже доходить до чтения сессии.
@@ -71,7 +81,7 @@ export async function POST(req: Request): Promise<Response> {
   // выдали руками. На втором шаге его требовать незачем — причина уже записана.
   let comment: string | null = null;
   if (body.action === 'start') {
-    const parsedComment = manualFulfillmentCommentSchema.safeParse(body.comment ?? '');
+    const parsedComment = commentSchema.safeParse(body.comment ?? '');
     if (!parsedComment.success) {
       return Response.json({ ok: false, error: 'comment_required' }, { status: 400 });
     }

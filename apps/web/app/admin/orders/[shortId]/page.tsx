@@ -7,11 +7,13 @@ import { LocalTime } from '@/components/panel/LocalTime';
 import { ManualFulfillment } from '@/components/panel/ManualFulfillment';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
+  cardStatusLabel,
   formatKopecks,
   formatOriginalAmount,
   formatUsdCents,
   orderStatusLabel,
   orderStatusTone,
+  paymentStatusLabel,
   priceBreakdown,
   providerStatusLabel,
 } from '@/lib/panel/format';
@@ -145,7 +147,7 @@ export default async function PanelOrderPage({
               <dt>Номер</dt>
               <dd>{detail.card.panMasked}</dd>
               <dt>Статус</dt>
-              <dd>{detail.card.status}</dd>
+              <dd>{cardStatusLabel(detail.card.status)}</dd>
               <dt>Баланс</dt>
               <dd>{formatUsdCents(detail.card.balanceUsdCents)}</dd>
               <dt>Выпущена</dt>
@@ -221,7 +223,7 @@ export default async function PanelOrderPage({
                       {payment.providerInvoiceNumber ?? payment.providerRef}
                     </td>
                     <td>{formatKopecks(payment.amountRubKopecks)}</td>
-                    <td>{payment.status}</td>
+                    <td>{paymentStatusLabel(payment.status)}</td>
                     <td>
                       {providerStatusLabel(payment.lastProviderStatus)}
                       {payment.lastProviderStatusAt ? (

@@ -24,38 +24,121 @@ import { getPaySpaceClient, isPaySpaceConfigured } from '@/lib/pay-space';
 
 const log = childLogger('panel.vcc-balance');
 
+/**
+ * Бюджет ОДНОЙ фазы таймера клиента (заголовки, затем тело), заходов — один.
+ * Потолок ожидания страницы, значит, вдвое больше этого числа.
+ *
+ * Зачем свой: дефолт клиента — 60 с на фазу и два захода, то есть до четырёх
+ * минут. Такая цена оправдана при выпуске карты (рубли уже приняты), но не на
+ * экране, где баланс — справочная строка рядом с холдами.
+ */
+const BALANCE_TIMEOUT_MS = 3000;
+
+/**
+ * Сколько живёт удачно прочитанное значение.
+ *
+ * Экран холдов обновляется сам раз в 25 секунд (`LiveRefresh`), то есть одна
+ * открытая вкладка без кэша била бы в чужой API 144 раза в час — ради числа,
+ * которое меняется при пополнении раз в сутки (T+1). Кэш убирает и это, и
+ * поток одинаковых отказов при медленном провайдере.
+ */
+const BALANCE_CACHE_TTL_MS = 60_000;
+
+/** Насколько старое значение ещё имеет смысл показывать вместо прочерка. */
+const BALANCE_STALE_MAX_MS = 30 * 60_000;
+
+export type PanelVccBalanceReading = {
+  balanceUsdCents: number;
+  pendingUsdCents: number;
+  /** Порог из env. `0` — алёрт выключен владельцем, подсветки нет. */
+  thresholdUsdCents: number;
+  low: boolean;
+  /** Когда значение реально получено от провайдера. */
+  readAt: Date;
+};
+
 export type PanelVccBalance =
-  | {
-      state: 'ok';
-      balanceUsdCents: number;
-      pendingUsdCents: number;
-      /** Порог из env. `0` — алёрт выключен владельцем, подсветки нет. */
-      thresholdUsdCents: number;
-      low: boolean;
-    }
+  | ({ state: 'ok' } & PanelVccBalanceReading)
+  /**
+   * Свежее значение получить не удалось, но недавнее есть. Показываем ЕГО с
+   * пометкой: экран заводился ради того, чтобы увидеть нехватку заранее, и
+   * «баланс не получен» вместо числа — ровно потеря этой возможности.
+   */
+  | ({ state: 'stale' } & PanelVccBalanceReading)
   | { state: 'not_configured' }
   | { state: 'unavailable' };
 
-export async function readVccBalanceForPanel(): Promise<PanelVccBalance> {
+type CachedReading = { balanceUsdCents: number; pendingUsdCents: number; readAt: number };
+
+let cached: CachedReading | null = null;
+
+/** Только для тестов: сбросить кэш между сценариями. */
+export function resetVccBalanceCacheForTests(): void {
+  cached = null;
+}
+
+export async function readVccBalanceForPanel(now: Date = new Date()): Promise<PanelVccBalance> {
   if (!isPaySpaceConfigured()) return { state: 'not_configured' };
 
   const thresholdUsdCents = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
+  const nowMs = now.getTime();
+
+  if (cached && nowMs - cached.readAt < BALANCE_CACHE_TTL_MS) {
+    return reading('ok', cached, thresholdUsdCents);
+  }
+
   try {
-    const { balanceUsdCents, pendingUsdCents } = await getPaySpaceClient().getVccBalance();
-    return {
-      state: 'ok',
-      balanceUsdCents,
-      pendingUsdCents,
-      thresholdUsdCents,
-      // Порог `0` означает «алёрт выключен» (решение владельца) — тогда и
-      // подсвечивать нечего: любое значение формально «выше нуля».
-      low: thresholdUsdCents > 0 && balanceUsdCents < thresholdUsdCents,
-    };
+    const { balanceUsdCents, pendingUsdCents } = await getPaySpaceClient().getVccBalance({
+      timeoutMs: BALANCE_TIMEOUT_MS,
+      attempts: 1,
+    });
+    cached = { balanceUsdCents, pendingUsdCents, readAt: nowMs };
+    return reading('ok', cached, thresholdUsdCents);
   } catch (err) {
-    // Таймаут и сетевые сбои клиент PaySpace уже нормализует; здесь важно лишь
-    // не уронить страницу и оставить след для разбора.
-    log.warn({ event: 'panel.vcc_balance.unavailable', err });
-    Sentry.captureException(err, { tags: { source: 'panel.vcc-balance' } });
+    // ⚠️ Сигналим ИЗБИРАТЕЛЬНО. Таймаут и сетевой сбой на этом пути — обычное
+    // «провайдер сегодня медленный», а страница живая: `captureException` на
+    // каждом отказе давал бы сотню Sentry-ошибок в час с одной вкладки. Именно
+    // так был заглушён алёрт баланса в прошлый раз, и об этом же предупреждает
+    // запись в `docs/BACKLOG.md`. В Sentry уходит НЕОЖИДАННОЕ — дрейф контракта
+    // и отказ самого провайдера; про нехватку денег кричит крон-алёрт, а не
+    // экран.
+    if (isSlowProviderError(err)) {
+      log.warn({ event: 'panel.vcc_balance.slow', timeoutMs: BALANCE_TIMEOUT_MS });
+    } else {
+      log.warn({ event: 'panel.vcc_balance.unavailable', err });
+      Sentry.captureException(err, { tags: { source: 'panel.vcc-balance' } });
+    }
+
+    if (cached && nowMs - cached.readAt < BALANCE_STALE_MAX_MS) {
+      return reading('stale', cached, thresholdUsdCents);
+    }
     return { state: 'unavailable' };
   }
+}
+
+function reading(
+  state: 'ok' | 'stale',
+  value: CachedReading,
+  thresholdUsdCents: number,
+): PanelVccBalance {
+  return {
+    state,
+    balanceUsdCents: value.balanceUsdCents,
+    pendingUsdCents: value.pendingUsdCents,
+    thresholdUsdCents,
+    // Порог `0` означает «алёрт выключен» (решение владельца) — тогда и
+    // подсвечивать нечего: любое значение формально «выше нуля».
+    low: thresholdUsdCents > 0 && value.balanceUsdCents < thresholdUsdCents,
+    readAt: new Date(value.readAt),
+  };
+}
+
+/**
+ * «Провайдер не успел» — это наш собственный дедлайн (AbortError) или обрыв
+ * транспорта. Отличается от «провайдер ответил ошибкой» и от дрейфа контракта:
+ * те требуют человека, а этот — терпения.
+ */
+function isSlowProviderError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  return err instanceof TypeError && /fetch failed|terminated|network|socket/i.test(err.message);
 }

@@ -1,9 +1,16 @@
-import { and, asc, desc, eq, inArray, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
 
-import { FREEKASSA_ORDER_STATUS, PURCHASED_ORDER_STATUSES, type OrderStatus } from '@oplati/types';
+import {
+  FREEKASSA_ORDER_STATUS,
+  type CardStatus,
+  type OrderStatus,
+  type PaymentStatus,
+} from '@oplati/types';
 
 import { cards, orderEvents, orders, payments, services, staff, users } from '../schema.ts';
 import type { DB } from '../index.ts';
+import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
+import { PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT } from './orders.ts';
 
 /**
  * Выборки админ-панели: список заказов и карточка заказа.
@@ -19,14 +26,6 @@ import type { DB } from '../index.ts';
  * и разовый показ в кабинете), и панель третьим не становится. В `cards` полного
  * PAN и нет: он не сохраняется вовсе.
  */
-
-/** Статусы «покупка состоялась» в виде SQL-списка — один источник на проект. */
-function purchasedStatusesSql() {
-  return sql`(${sql.join(
-    PURCHASED_ORDER_STATUSES.map((s) => sql`${s}`),
-    sql`, `,
-  )})`;
-}
 
 /** Потолок строк на выборку. Экран панели читают глазами, не выгружают. */
 export const PANEL_MAX_ROWS = 100;
@@ -214,7 +213,8 @@ export type PanelOrderPayment = {
   providerRef: string;
   providerInvoiceNumber: string | null;
   amountRubKopecks: number;
-  status: string;
+  /** Enum, а не `string`: экран обязан подписать КАЖДОЕ значение (см. format.ts). */
+  status: PaymentStatus;
   /** Числовой код провайдера из последнего опроса (7 = холд антифрода). */
   lastProviderStatus: number | null;
   lastProviderStatusAt: Date | null;
@@ -238,7 +238,7 @@ export type PanelOrderEvent = {
 export type PanelOrderCard = {
   id: string;
   panMasked: string;
-  status: string;
+  status: CardStatus;
   balanceUsdCents: number;
   createdAt: Date;
 };
@@ -430,7 +430,7 @@ export type PanelClientOrder = {
 export type PanelClientCard = {
   id: string;
   panMasked: string;
-  status: string;
+  status: CardStatus;
   balanceUsdCents: number;
   createdAt: Date;
 };
@@ -462,11 +462,11 @@ export type PanelClientDetail = {
   };
   orders: PanelClientOrder[];
   /**
-   * Заказов у клиента ВСЕГО и сумма состоявшихся — считаются в базе, а не по
-   * срезу `orders`: список режется потолком, и складывать его значило бы молча
-   * занижать денежную цифру у клиента со 100+ заказами.
+   * Заказов и карт у клиента ВСЕГО и сумма состоявшихся — считаются в базе, а
+   * не по срезу `orders`/`cards`: списки режутся потолком, и складывать их
+   * значило бы молча занижать цифры у клиента со 100+ заказами.
    */
-  totals: { ordersCount: number; purchasedRubKopecks: number };
+  totals: { ordersCount: number; purchasedRubKopecks: number; cardsCount: number };
   cards: PanelClientCard[];
   /** Кто привёл этого клиента. */
   referredBy: PanelClientReferralLink | null;
@@ -524,14 +524,21 @@ export async function getClientDetailForPanel(
       .where(eq(orders.userId, userId))
       .orderBy(desc(orders.createdAt), desc(orders.id))
       .limit(PANEL_MAX_ROWS),
-    // Итоги — отдельным запросом по ВСЕМ заказам клиента. Набор «покупка
-    // состоялась» берётся из `PURCHASED_ORDER_STATUSES`: своя копия статусов
-    // — ровно то, против чего эта константа и заведена.
-    db.execute<{ orders_count: string | number; purchased_sum: string | number | null }>(sql`
+    // Итоги — отдельным запросом по ВСЕМ заказам и картам клиента, а не по
+    // видимому срезу: списки режутся потолком, и складывать их значило бы молча
+    // занижать цифры у клиента со 100+ заказами. Набор «покупка состоялась»
+    // берётся из общего `PURCHASED_STATUSES_SQL` — своя копия статусов ровно
+    // то, против чего этот фрагмент и заведён.
+    db.execute<{
+      orders_count: string | number;
+      purchased_sum: string | number | null;
+      cards_count: string | number;
+    }>(sql`
       SELECT count(*) AS orders_count,
              COALESCE(SUM(amount_rub) FILTER (
-               WHERE status IN ${purchasedStatusesSql()}
-             ), 0) AS purchased_sum
+               WHERE status IN ${PURCHASED_STATUSES_SQL}
+             ), 0) AS purchased_sum,
+             (SELECT count(*) FROM cards WHERE user_id = ${userId}) AS cards_count
       FROM orders WHERE user_id = ${userId}
     `),
     db
@@ -584,6 +591,7 @@ export async function getClientDetailForPanel(
     totals: {
       ordersCount: Number(totalsRows[0]?.orders_count ?? 0),
       purchasedRubKopecks: Number(totalsRows[0]?.purchased_sum ?? 0),
+      cardsCount: Number(totalsRows[0]?.cards_count ?? 0),
     },
     orders: orderRows.map((row) => ({
       id: row.id,
@@ -642,6 +650,14 @@ export type PanelHoldRow = {
   lastProviderStatus: number | null;
   /** Когда статус у провайдера сменился в последний раз. */
   lastProviderStatusAt: Date | null;
+  /**
+   * Когда клиенту РЕАЛЬНО ушло автосообщение о проверке банка (`null` — не
+   * уходило). Читается фактом из журнала, а не выводится из статуса заказа:
+   * отправка в `poll-payment` best-effort, её отказ (403 «бот заблокирован
+   * пользователем») гасится log.warn — и экран уверял бы менеджера, что клиент
+   * предупреждён, ровно там, где клиент сидит в тишине.
+   */
+  clientNotifiedAt: Date | null;
 };
 
 /**
@@ -657,6 +673,12 @@ export async function listHoldsForPanel(
   db: DB,
   limit?: number,
 ): Promise<{ items: PanelHoldRow[]; hasMore: boolean }> {
+  // Дедуп идёт в JS, поэтому строк берём с запасом: несколько платежей у заказа
+  // и одна строка сверх страницы (по ней и виден признак «есть ещё»).
+  const sqlLimit = clampPanelLimit(limit) * 3 + 1;
+  // Плюс ещё одна — ТОЛЬКО чтобы отличить «выбрали всё» от «упёрлись в потолок».
+  // Без неё `rows.length === sqlLimit` означало и то и другое, и экран говорил
+  // «показаны не все» там, где показаны все.
   const rows = await db
     .select({
       orderId: orders.id,
@@ -691,17 +713,23 @@ export async function listHoldsForPanel(
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
     // ним и выбирается строка ниже.
     .orderBy(desc(orders.createdAt), desc(orders.id), desc(payments.createdAt))
-    // Дедуп идёт в JS, поэтому потолок берём с запасом на несколько платежей у
-    // заказа и на одну строку сверх страницы (признак «есть ещё»).
-    .limit(clampPanelLimit(limit) * 3 + 1);
+    .limit(sqlLimit + 1);
+
+  const truncatedBySqlLimit = rows.length > sqlLimit;
 
   // У заказа может быть несколько платежей (частичный UNIQUE покрывает только
   // pending): показываем строку заказа один раз. Платежи отсортированы свежими
-  // вперёд, поэтому берём ПЕРВЫЙ со статусом провайдера — то есть последнее,
-  // что провайдер о заказе сказал. Прежняя версия брала любой ненулевой и на
-  // паре «первый счёт 8, перевыставленный 7» показывала устаревший код.
+  // вперёд, поэтому берём ПЕРВЫЙ СО СТАТУСОМ ПРОВАЙДЕРА. Прежняя версия брала
+  // любой ненулевой и на паре «первый счёт 8, перевыставленный 7» показывала
+  // устаревший код.
+  //
+  // ⚠️ Правило именно такое, а не «самый свежий платёж»: свежий счёт может быть
+  // ещё не опрошен (`last_provider_status IS NULL`), и строка тогда потеряла бы
+  // и причину попадания на экран, и номер операции, по которому в поддержку
+  // Freekassa задают вопрос. Держать деньги банк может только по той операции,
+  // которую провайдер и пометил, — её и показываем.
   const byOrder = new Map<string, PanelHoldRow>();
-  for (const row of rows) {
+  for (const row of rows.slice(0, sqlLimit)) {
     const existing = byOrder.get(row.orderId);
     if (existing && existing.lastProviderStatus !== null) continue;
     byOrder.set(row.orderId, {
@@ -720,10 +748,48 @@ export async function listHoldsForPanel(
       providerRef: row.providerRef,
       lastProviderStatus: row.lastProviderStatus,
       lastProviderStatusAt: row.lastProviderStatusAt,
+      // Заполняется вторым запросом ниже: пусто ровно там, где факта нет.
+      clientNotifiedAt: null,
     });
   }
 
   const items = [...byOrder.values()];
-  const max = clampPanelLimit(limit);
-  return { items: items.slice(0, max), hasMore: items.length > max };
+  const maxRows = clampPanelLimit(limit);
+  const page = items.slice(0, maxRows);
+  await attachClientNotifiedAt(db, page);
+  // «Есть ещё» — не только когда заказов набралось больше страницы. Запас в три
+  // платежа на заказ может и не покрыть заказ с длинной историей перевыставлений:
+  // упёршись в потолок SQL, мы просто НЕ ЗНАЕМ, что дальше, и молчать об этом
+  // нельзя — пустой хвост читается как «холдов больше нет».
+  return { items: page, hasMore: items.length > maxRows || truncatedBySqlLimit };
+}
+
+/**
+ * Дописывает факт доставки автосообщения о проверке банка.
+ *
+ * Отдельным запросом, а не подзапросом в общей выборке: сырой `sql` вернул бы
+ * timestamptz как есть, и тип значения зависел бы от драйвера (PGlite в тестах
+ * и postgres-js на проде расходятся — этот класс расхождений уже стоил нам
+ * инцидента 2026-08-15). Через builder дату разбирает тот же маппер, что и
+ * везде. Цена — один лишний round-trip на экран максимум в сто строк.
+ */
+async function attachClientNotifiedAt(db: DB, rows: PanelHoldRow[]): Promise<void> {
+  if (rows.length === 0) return;
+
+  const notified = await db
+    .select({ orderId: orderEvents.orderId, at: max(orderEvents.createdAt) })
+    .from(orderEvents)
+    .where(
+      and(
+        inArray(
+          orderEvents.orderId,
+          rows.map((r) => r.orderId),
+        ),
+        eq(orderEvents.eventType, PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT),
+      ),
+    )
+    .groupBy(orderEvents.orderId);
+
+  const byOrderId = new Map(notified.map((n) => [n.orderId, n.at]));
+  for (const row of rows) row.clientNotifiedAt = byOrderId.get(row.orderId) ?? null;
 }

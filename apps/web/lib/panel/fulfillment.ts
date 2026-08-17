@@ -1,9 +1,12 @@
-import { z } from 'zod';
-
 import type { OrderStatus } from '@oplati/types';
 
 /**
  * Ручное исполнение заказа (тикет 06) — правила, отделённые от Next и от БД.
+ *
+ * ⚠️ Модуль читает и КЛИЕНТСКИЙ компонент (кнопки на карточке заказа), поэтому
+ * здесь нет ни zod, ни чего-либо ещё тяжёлого: за две константы длины
+ * комментария браузер не должен тянуть схемную библиотеку. Разбор тела запроса
+ * живёт на границе — в route-handler'е.
  *
  * Случай, породивший требование: 2026-08-14 заказ ORD-J6TBP — клиент заплатил
  * 11 680 ₽, на выпуск карты нужно было ~$124, на VCC-субаккаунте лежало $89.50.
@@ -18,12 +21,6 @@ import type { OrderStatus } from '@oplati/types';
 /** Комментарий обязателен на первом шаге: журнал без причины бесполезен. */
 export const MANUAL_FULFILLMENT_COMMENT_MIN = 10;
 export const MANUAL_FULFILLMENT_COMMENT_MAX = 500;
-
-export const manualFulfillmentCommentSchema = z
-  .string()
-  .trim()
-  .min(MANUAL_FULFILLMENT_COMMENT_MIN, 'нужно описать, что именно выдали')
-  .max(MANUAL_FULFILLMENT_COMMENT_MAX);
 
 /** Типы событий журнала. Строки фиксированы: по ним потом читают историю. */
 export const MANUAL_FULFILLMENT_STARTED = 'manual_fulfillment_started';
@@ -55,9 +52,13 @@ export function canCompleteManualFulfillment(status: OrderStatus): boolean {
   return status === 'in_fulfillment';
 }
 
-export type ManualFulfillmentAction = 'start' | 'complete';
+/**
+ * Действия и их тип — из одного массива: `z.enum` на границе строит схему
+ * ИЗ НЕГО, поэтому «добавили действие, забыли схему» физически не набирается.
+ */
+export const MANUAL_FULFILLMENT_ACTIONS = ['start', 'complete'] as const;
 
-export const manualFulfillmentActionSchema = z.enum(['start', 'complete']);
+export type ManualFulfillmentAction = (typeof MANUAL_FULFILLMENT_ACTIONS)[number];
 
 /**
  * Какой статус ожидается для действия. Вызывающий сверяет его ДО перехода,

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cardStatusLabel,
   formatAge,
   formatKopecks,
   formatOriginalAmount,
   formatUsdCents,
+  paymentStatusLabel,
   priceBreakdown,
   orderStatusLabel,
   orderStatusTone,
@@ -146,5 +148,43 @@ describe('formatOriginalAmount', () => {
 
   it('нет суммы — прочерк', () => {
     expect(formatOriginalAmount(null, 'USD')).toBe('—');
+  });
+});
+
+describe('cardStatusLabel / paymentStatusLabel', () => {
+  it('каждый статус карты подписан', () => {
+    // `recycled` менеджеру не говорит ничего: это закрытая по сроку жизни
+    // карта, а не сбой, и решение по заказу принимают по этой строке.
+    expect(cardStatusLabel('active')).toBe('активна');
+    expect(cardStatusLabel('idle')).toBe('простаивает');
+    expect(cardStatusLabel('recycled')).toBe('закрыта');
+  });
+
+  it('каждый статус платежа подписан', () => {
+    expect(paymentStatusLabel('succeeded')).toBe('оплачен');
+    expect(paymentStatusLabel('failed')).toBe('не прошёл');
+    expect(paymentStatusLabel('refunded')).toBe('возвращён');
+  });
+
+  it('«pending» на холде — «ждёт подтверждения», а не «ждёт оплаты»', () => {
+    // При антифрод-холде деньги у клиента УЖЕ списаны, а строка платежа
+    // остаётся pending: claim не проходил. «Ждёт оплаты» на экране холдов было
+    // бы прямой ложью ровно в том случае, ради которого экран и заведён.
+    expect(paymentStatusLabel('pending')).toBe('ждёт подтверждения');
+  });
+
+  it('незнакомый статус показывается как есть, а не роняет страницу', () => {
+    // Новое значение enum'а появляется в БД раньше, чем словарь панели.
+    expect(cardStatusLabel('frozen')).toBe('frozen');
+    expect(paymentStatusLabel('chargeback')).toBe('chargeback');
+  });
+
+  it('ключ прототипа не выдаётся за подпись', () => {
+    // `dict['toString']` у объектного литерала вернул бы ФУНКЦИЮ там, где тип
+    // обещает строку. Для enum'а базы это теория, но тот же приём словаря
+    // используется для кода ошибки из тела ответа — там вход внешний.
+    expect(cardStatusLabel('toString')).toBe('toString');
+    expect(paymentStatusLabel('constructor')).toBe('constructor');
+    expect(orderStatusLabel('hasOwnProperty')).toBe('hasOwnProperty');
   });
 });

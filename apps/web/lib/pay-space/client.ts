@@ -363,12 +363,24 @@ export class PaySpaceClient {
     return { cardNo: data.cardNo, cvv: data.cvv, expDate: data.expDate };
   }
 
-  /** Баланс VCC-аккаунта (GET /vcc/user/balance/) — наш фонд под выпуск карт. */
-  async getVccBalance(): Promise<VccBalanceResult> {
+  /**
+   * Баланс VCC-аккаунта (GET /vcc/user/balance/) — наш фонд под выпуск карт.
+   *
+   * `opts` — дедлайн ВЫЗЫВАЮЩЕГО. Дефолт (60 с на фазу таймера, два захода)
+   * рассчитан на выпуск карты, где рубли уже приняты и ждать правильно. Экран
+   * панели ждать столько не может, поэтому он передаёт свой короткий бюджет и
+   * одну попытку.
+   */
+  async getVccBalance(opts?: {
+    timeoutMs?: number;
+    attempts?: number;
+  }): Promise<VccBalanceResult> {
     const data = await this.request({
       method: 'GET',
       path: '/vcc/user/balance/',
       schema: paySpaceUserBalanceDataSchema,
+      timeoutMs: opts?.timeoutMs,
+      maxAttempts: opts?.attempts,
     });
     return {
       balanceUsdCents: dollarStringToUsdCents(data.balance),
@@ -416,6 +428,13 @@ export class PaySpaceClient {
      * такие НЕ ретраим на таймаут/сбой, чтобы не выпустить вторую карту.
      */
     idempotent?: boolean;
+    /**
+     * Бюджет ОДНОЙ фазы таймера (заголовки, затем тело). Задаёт вызывающий,
+     * которому дефолтные 60 с не подходят, — сегодня это экран панели.
+     */
+    timeoutMs?: number;
+    /** Своё число заходов. Ниже `idempotent:false` всё равно оставит один. */
+    maxAttempts?: number;
   }): Promise<T> {
     const query = opts.query ?? {};
     const search = canonicalQuery(query);
@@ -424,12 +443,21 @@ export class PaySpaceClient {
     const bodyText = opts.method === 'GET' || !opts.body ? '' : JSON.stringify(opts.body);
     // Не-идемпотентный POST выполняем ровно один раз (без повторов на 5xx/сеть/
     // таймаут): повтор мог бы создать дубль-карту и потерять её фондирование.
-    const maxAttempts = opts.idempotent === false ? 1 : MAX_RETRIES;
+    // Гейт идемпотентности сильнее просьбы вызывающего: попросить больше
+    // заходов у `createCard` нельзя ни намеренно, ни по недосмотру.
+    // ⚠️ `Math.max(1, NaN)` — это `NaN`, а цикл `attempt < NaN` не выполняется
+    // НИ РАЗУ: испорченное число превратило бы вызов в мгновенный отказ без
+    // единого запроса, неотличимый от падения провайдера. Поэтому нормализуем.
+    const maxAttempts = opts.idempotent === false ? 1 : clampAttempts(opts.maxAttempts);
+    const timeoutMs =
+      opts.timeoutMs !== undefined && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+        ? opts.timeoutMs
+        : DEFAULT_TIMEOUT_MS;
 
     let lastError: unknown;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const controller = new AbortController();
-      let timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       this.log.debug({ event: 'paypace.request', method: opts.method, path: opts.path, attempt });
 
       try {
@@ -464,7 +492,7 @@ export class PaySpaceClient {
         // профинансирована, но её PAN мы выбросили. Обрыв прилетит как
         // AbortError и разберётся общим catch ниже.
         clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+        timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const respText = await resp.text();
         clearTimeout(timeoutId);
 
@@ -579,4 +607,14 @@ export class PaySpaceClient {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Просьба вызывающего о числе заходов — в допустимые рамки. Потолок тот же, что
+ * у дефолта: «побольше повторов» у платёжного провайдера означает удержание
+ * очереди и лишние обращения к деньгам, а не надёжность.
+ */
+function clampAttempts(requested: number | undefined): number {
+  if (requested === undefined || !Number.isFinite(requested)) return MAX_RETRIES;
+  return Math.min(Math.max(Math.floor(requested), 1), MAX_RETRIES);
 }

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { getDb, listHoldsForPanel } from '@oplati/db';
+import { FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
@@ -25,8 +26,12 @@ import { readVccBalanceForPanel } from '@/lib/panel/vcc-balance';
 
 export const dynamic = 'force-dynamic';
 
-/** Статус `7` — холд антифрода, подтверждён поддержкой Freekassa 2026-08-14. */
-const ANTIFRAUD_HOLD = 7;
+/**
+ * Статус `7` — холд антифрода, подтверждён поддержкой Freekassa 2026-08-14.
+ * Берётся из `@oplati/types`, а не переписывается числом: своя копия кода — то
+ * самое незадекларированное зеркало, которое разъезжается молча.
+ */
+const ANTIFRAUD_HOLD = FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD;
 
 export default async function PanelHoldsPage() {
   const access = await panelPageAccess('holds');
@@ -48,7 +53,7 @@ export default async function PanelHoldsPage() {
     <PanelShell actor={access.actor} current="/admin/holds">
       <section className="panel-card" style={{ marginBottom: 16 }}>
         <h2 className="panel-title">Карточный счёт</h2>
-        {balance.state === 'ok' ? (
+        {balance.state === 'ok' || balance.state === 'stale' ? (
           <p>
             <span
               className={`panel-status panel-status--${balance.low ? 'danger' : 'ok'}`}
@@ -63,6 +68,18 @@ export default async function PanelHoldsPage() {
               {balance.thresholdUsdCents > 0
                 ? `порог ${formatUsdCents(balance.thresholdUsdCents)}`
                 : 'порог не задан — предупреждение выключено'}
+              {/* Устаревшее число лучше прочерка: экран заводился ради того,
+                  чтобы увидеть нехватку заранее. Но молчать о возрасте нельзя —
+                  по этой цифре решают, хватит ли денег на следующий заказ. */}
+              {balance.state === 'stale' ? (
+                <>
+                  {' · '}
+                  <span className="panel-status panel-status--warn">
+                    данные на <LocalTime iso={balance.readAt.toISOString()} />, PaySpace не
+                    отвечает
+                  </span>
+                </>
+              ) : null}
             </span>
           </p>
         ) : balance.state === 'unavailable' ? (
@@ -71,7 +88,7 @@ export default async function PanelHoldsPage() {
         ) : (
           <p className="panel-muted">PaySpace не настроен в этом окружении.</p>
         )}
-        {balance.state === 'ok' && balance.low ? (
+        {(balance.state === 'ok' || balance.state === 'stale') && balance.low ? (
           <p className="panel-error" style={{ marginTop: 8 }}>
             Ниже порога. Пополнение приходит на следующий день, а каждая новая карта
             списывает сумму заказа с буфером и надбавкой за выпуск.
@@ -135,13 +152,32 @@ export default async function PanelHoldsPage() {
                     </td>
                     <td className="panel-muted">
                       {/* Чтобы менеджер не дублировал руками то, что автомат уже
-                          отправил. Клиенту без Telegram не уходит ничего. */}
-                      {!reach.reachable
-                        ? 'нечем — нет Telegram'
-                        : hold.orderStatus === 'payment_review' &&
-                            hold.lastProviderStatus === ANTIFRAUD_HOLD
-                          ? 'автосообщение о проверке банка'
-                          : '—'}
+                          отправил, — и, что важнее, чтобы он УВИДЕЛ клиента, до
+                          которого сообщение не дошло. Поэтому здесь факт
+                          доставки из журнала заказа, а не вывод из статусов:
+                          отправка best-effort, «бот заблокирован» гасится
+                          логом. */}
+                      {hold.clientNotifiedAt ? (
+                        <LocalTime iso={hold.clientNotifiedAt.toISOString()} />
+                      ) : !reach.reachable ? (
+                        'нечем — нет Telegram'
+                      ) : hold.orderStatus === 'payment_review' &&
+                        hold.lastProviderStatus === ANTIFRAUD_HOLD ? (
+                        // Формулировка намеренно осторожная. Отметка появилась
+                        // 18 августа, у заказов, попавших на холд раньше, её
+                        // нет физически (журнал append-only, бэкфилла не
+                        // бывает) — сказать «не ушло» значило бы отправить
+                        // менеджера дублировать уже полученное клиентом
+                        // сообщение.
+                        <span
+                          className="panel-status panel-status--warn"
+                          title="Отметка об автосообщении ведётся с 18 августа. Для более старых холдов её нет, даже если сообщение ушло."
+                        >
+                          нет отметки
+                        </span>
+                      ) : (
+                        '—'
+                      )}
                     </td>
                   </tr>
                 );
