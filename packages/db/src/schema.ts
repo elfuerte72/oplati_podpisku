@@ -352,6 +352,12 @@ export const orders = pgTable(
     paidAtIdx: index('orders_paid_at_idx')
       .on(t.paidAt)
       .where(sql`${t.paidAt} IS NOT NULL`),
+    // Список заказов в админ-панели: `ORDER BY created_at DESC LIMIT 50` без
+    // фильтра — самый частый запрос панели, и он ПОВТОРЯЕТСЯ каждые 25 секунд
+    // на каждую открытую вкладку (живое обновление). Без индекса это полная
+    // сортировка вечно растущей таблицы в том же процессе, который принимает
+    // вебхуки Freekassa и Telegram. Тот же мотив, что у `payments_created_at_idx`.
+    createdAtIdx: index('orders_created_at_idx').on(t.createdAt),
     serviceOrCustom: check(
       'orders_service_or_custom',
       sql`${t.serviceId} IS NOT NULL OR ${t.customServiceDescription} IS NOT NULL`,

@@ -79,6 +79,14 @@ import {
   upsertVpnSubscription,
 } from './repositories/vpn-subscriptions.ts';
 import {
+  PANEL_DEFAULT_ROWS,
+  PANEL_MAX_ROWS,
+  clampPanelLimit,
+  clampPanelOffset,
+  getOrderDetailForPanel,
+  listOrdersForPanel,
+} from './repositories/panel.ts';
+import {
   claimStaffTotpStep,
   confirmStaffTotp,
   findStaffById,
@@ -2808,5 +2816,316 @@ describe('staff (вход в админ-панель: Telegram + TOTP)', () => {
 
     expect(ids).toContain(active.id);
     expect(ids).toContain(disabled.id);
+  });
+});
+
+describe('панель: список заказов и карточка заказа (тикет 03)', () => {
+  let panelUserA: string;
+  let panelUserB: string;
+  let panelServiceId: string;
+  let ordA1: { id: string; shortId: string };
+  let ordA2: { id: string; shortId: string };
+  let ordB1: { id: string; shortId: string };
+
+  beforeAll(async () => {
+    const a = await makeUser({
+      telegramId: 'tg-panel-a',
+      displayName: 'Клиент А',
+      email: 'a@example.com',
+    });
+    const b = await makeUser({
+      telegramId: null,
+      webSessionId: 'web-panel-b',
+      displayName: 'Клиент Б',
+    });
+    panelUserA = a.id;
+    panelUserB = b.id;
+
+    const svc = await db
+      .insert(schema.services)
+      .values({ slug: 'panel-spotify', name: 'Spotify', category: 'music' })
+      .returning();
+    panelServiceId = firstOf(svc, 'service insert').id;
+
+    ordA1 = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'pending_payment',
+      serviceId: panelServiceId,
+      amountRub: 123400,
+      originalAmount: 1500,
+      originalCurrency: 'USD',
+      cardIssueFeeKopecks: 32000,
+      commissionPercent: 30,
+    });
+    ordA2 = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'completed',
+      customServiceDescription: 'Подписка на что-то своё',
+      amountRub: 50000,
+      originalAmount: 600,
+      originalCurrency: 'USD',
+    });
+    ordB1 = await createDraftOrder(db, {
+      userId: panelUserB,
+      status: 'failed',
+      serviceId: panelServiceId,
+      amountRub: 777700,
+      originalAmount: 9000,
+      originalCurrency: 'USD',
+    });
+  });
+
+  it('список отдаёт всё, что нужно строке таблицы', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: ordA1.shortId });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      shortId: ordA1.shortId,
+      status: 'pending_payment',
+      amountRubKopecks: 123400,
+      serviceName: 'Spotify',
+      client: { id: panelUserA, displayName: 'Клиент А', telegramId: 'tg-panel-a' },
+    });
+    expect(rows[0]?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it('сервис вне каталога подписан своим описанием, а не пустотой', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: ordA2.shortId });
+
+    expect(rows[0]?.serviceName).toBe('Подписка на что-то своё');
+  });
+
+  it('фильтр по статусу отбирает только его', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { statuses: ['failed'] });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordB1.shortId);
+    expect(rows.every((r) => r.status === 'failed')).toBe(true);
+  });
+
+  it('поиск находит по telegram_id клиента', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: 'tg-panel-a' });
+
+    const ids = rows.map((r) => r.shortId);
+    expect(ids).toContain(ordA1.shortId);
+    expect(ids).toContain(ordA2.shortId);
+    expect(ids).not.toContain(ordB1.shortId);
+  });
+
+  it('поиск по email клиента', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: 'a@example.com' });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordA1.shortId);
+  });
+
+  it('поиск регистронезависим и терпит лишние пробелы', async () => {
+    const { items: rows } = await listOrdersForPanel(db, {
+      query: `  ${ordA1.shortId.toLowerCase()} `,
+    });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordA1.shortId);
+  });
+
+  it('свежие заказы первыми', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { limit: 100 });
+    const times = rows.map((r) => r.createdAt.getTime());
+
+    expect([...times].sort((x, y) => y - x)).toEqual(times);
+  });
+
+  it('размер страницы приводится к допустимому — проверяем САМ кламп', async () => {
+    // Интеграционная проверка «строк не больше ста» на маленькой базе ничего не
+    // доказывает: она зелёная и при потолке в сто тысяч. Поэтому проверяется
+    // функция, а не следствие.
+    expect(clampPanelLimit(10_000)).toBe(PANEL_MAX_ROWS);
+    expect(clampPanelLimit(0)).toBe(1);
+    expect(clampPanelLimit(-5)).toBe(1);
+    expect(clampPanelLimit(undefined)).toBe(PANEL_DEFAULT_ROWS);
+    // NaN проходил бы в LIMIT и ронял запрос.
+    expect(clampPanelLimit(Number.NaN)).toBe(PANEL_DEFAULT_ROWS);
+    expect(clampPanelLimit(7.9)).toBe(7);
+
+    expect(clampPanelOffset(undefined)).toBe(0);
+    expect(clampPanelOffset(-3)).toBe(0);
+    expect(clampPanelOffset(Number.NaN)).toBe(0);
+    expect(clampPanelOffset(25)).toBe(25);
+  });
+
+  it('запрошенный сверх потолка размер не вытягивает всю таблицу', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { limit: 10_000 });
+
+    expect(rows.length).toBeLessThanOrEqual(PANEL_MAX_ROWS);
+  });
+
+  it('смещение листает, а не повторяет', async () => {
+    const first = await listOrdersForPanel(db, { limit: 2 });
+    const second = await listOrdersForPanel(db, { limit: 2, offset: 2 });
+
+    const firstIds = first.items.map((r) => r.id);
+    expect(second.items.every((r) => !firstIds.includes(r.id))).toBe(true);
+  });
+
+  it('пустой результат — это пустой список, а не ошибка', async () => {
+    expect(await listOrdersForPanel(db, { query: 'ничего-такого-нет' })).toEqual({
+      items: [],
+      hasMore: false,
+    });
+  });
+
+  it('карточка заказа собирает всё: цену, события, платежи', async () => {
+    const { payment } = await upsertPaymentByProviderRef(db, {
+      orderId: ordA1.id,
+      provider: 'freekassa',
+      providerRef: `panel-inv-${++seq}`,
+      amountRub: 123400,
+    });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    expect(detail).not.toBeNull();
+    expect(detail?.order).toMatchObject({
+      shortId: ordA1.shortId,
+      amountRubKopecks: 123400,
+      cardIssueFeeKopecks: 32000,
+      commissionPercent: 30,
+    });
+    expect(detail?.client.id).toBe(panelUserA);
+    expect(detail?.serviceName).toBe('Spotify');
+    expect(detail?.events.length).toBeGreaterThan(0);
+    expect(detail?.payments[0]).toMatchObject({
+      provider: 'freekassa',
+      amountRubKopecks: 123400,
+      lastProviderStatus: 7,
+    });
+  });
+
+  it('события карточки идут в хронологии', async () => {
+    const detail = await getOrderDetailForPanel(db, ordA2.shortId);
+    const times = (detail?.events ?? []).map((e) => e.createdAt.getTime());
+
+    expect([...times].sort((x, y) => x - y)).toEqual(times);
+  });
+
+  it('карта показывается ТОЛЬКО маскированной', async () => {
+    const card = firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: panelUserA,
+          providerCardId: `panel-card-${++seq}`,
+          panMasked: '444444******1234',
+          balanceUsdCents: 1500,
+        })
+        .returning(),
+      'card insert',
+    );
+    await db.update(schema.orders).set({ cardId: card.id }).where(eq(schema.orders.id, ordA1.id));
+
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    expect(detail?.card).toMatchObject({ panMasked: '444444******1234', balanceUsdCents: 1500 });
+    // Полный PAN/CVC панель не показывает НИКОГДА: санкционированных каналов
+    // выдачи ровно два, и панель третьим не становится.
+    expect(JSON.stringify(detail)).not.toContain('4444444444441234');
+    // Ассерт на ТОЧНЫЙ набор полей, а не «нет pan/cvc»: таких колонок в `cards`
+    // нет вовсе, и отрицание выполнялось бы само собой. Здесь же любое новое
+    // поле карты придётся осознанно внести в список — вместе с решением,
+    // можно ли его показывать.
+    expect(Object.keys(detail?.card ?? {}).sort()).toEqual([
+      'balanceUsdCents',
+      'createdAt',
+      'id',
+      'panMasked',
+      'status',
+    ]);
+  });
+
+
+  it('карточка находится по номеру в любом регистре', async () => {
+    const upper = await getOrderDetailForPanel(db, ordA1.shortId);
+    const lower = await getOrderDetailForPanel(db, ordA1.shortId.toLowerCase());
+    const padded = await getOrderDetailForPanel(db, `  ${ordA1.shortId}  `);
+
+    expect(upper?.order.id).toBe(ordA1.id);
+    expect(lower?.order.id).toBe(ordA1.id);
+    expect(padded?.order.id).toBe(ordA1.id);
+  });
+
+  it('спецсимволы LIKE в поиске — литералы, а не подстановочные знаки', async () => {
+    // Оператор ищет «100%» или «ivan_petrov»: без экранирования `%` и `_`
+    // выдача не соответствует запросу, а «%» вообще возвращает всё подряд.
+    const { items } = await listOrdersForPanel(db, { query: '%' });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('сортировка задаётся вызывающим и по умолчанию — свежие первыми', async () => {
+    const newest = await listOrdersForPanel(db, { limit: 100 });
+    const oldest = await listOrdersForPanel(db, { limit: 100, sort: 'oldest' });
+
+    const newestTimes = newest.items.map((r) => r.createdAt.getTime());
+    const oldestTimes = oldest.items.map((r) => r.createdAt.getTime());
+    expect([...newestTimes].sort((x, y) => y - x)).toEqual(newestTimes);
+    expect([...oldestTimes].sort((x, y) => x - y)).toEqual(oldestTimes);
+  });
+
+  it('усечение выборки НЕ молчаливое: hasMore говорит, что строки остались', async () => {
+    const page = await listOrdersForPanel(db, { limit: 1 });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('когда строк меньше потолка, hasMore ложь', async () => {
+    const page = await listOrdersForPanel(db, { query: ordB1.shortId });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('история заказа со 100+ событиями показывает СВЕЖИЕ, а не первые', async () => {
+    const noisy = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'draft',
+      customServiceDescription: 'заказ с длинной историей',
+      amountRub: 10000,
+      originalAmount: 100,
+      originalCurrency: 'USD',
+    });
+    for (let i = 0; i < 105; i++) {
+      await appendOrderEvent(db, {
+        orderId: noisy.id,
+        eventType: `noise_${String(i).padStart(3, '0')}`,
+        actorType: 'system',
+      });
+    }
+
+    const detail = await getOrderDetailForPanel(db, noisy.shortId);
+    const types = (detail?.events ?? []).map((e) => e.eventType);
+
+    // Последнее событие обязано быть видно: ради него карточку и открывают.
+    expect(types).toContain('noise_104');
+    expect(types.length).toBeLessThanOrEqual(100);
+    // И порядок остаётся хронологическим (сверху вниз).
+    const times = (detail?.events ?? []).map((e) => e.createdAt.getTime());
+    expect([...times].sort((x, y) => x - y)).toEqual(times);
+  });
+
+  it('сырое тело ответа провайдера в панель не тянется', async () => {
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    // `payments.raw_payload` несёт контакты плательщика (антифрод-трек) — в
+    // процессе панели ему делать нечего.
+    expect(Object.keys(detail?.payments[0] ?? {})).not.toContain('rawPayload');
+  });
+
+  it('несуществующий номер заказа — null, а не исключение', async () => {
+    expect(await getOrderDetailForPanel(db, 'ORD-НЕТУ')).toBeNull();
+  });
+
+  it('клиент только с сайта отдаётся без telegram_id — панель покажет это явно', async () => {
+    const detail = await getOrderDetailForPanel(db, ordB1.shortId);
+
+    expect(detail?.client).toMatchObject({ id: panelUserB, telegramId: null });
   });
 });

@@ -64,6 +64,46 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(out?.request?.query_string).toBe('s=[REDACTED]&tags=alerts&status=ok');
   });
 
+  it('редактирует поиск панели: ?q= несёт контакт клиента', () => {
+    const out = beforeSend({
+      request: { query_string: 'q=ivan%40example.com&s2=1' },
+    } as never);
+
+    expect(out?.request?.query_string).toBe('q=[REDACTED]&s2=1');
+  });
+
+  it('чистит строку запроса и в request.url — она несёт те же параметры', () => {
+    // Раньше денилист стоял только на `query_string`, а `url` уезжал целиком:
+    // обход был бесплатным и незаметным.
+    const out = beforeSend({
+      request: {
+        url: 'https://admin.oplatishka.com/admin/orders?q=ivan%40example.com&s=live',
+        query_string: 'q=ivan%40example.com&s=live',
+      },
+    } as never);
+
+    expect(out?.request?.url).toBe(
+      'https://admin.oplatishka.com/admin/orders?q=[REDACTED]&s=[REDACTED]',
+    );
+    expect(JSON.stringify(out)).not.toContain('ivan');
+  });
+
+  it('url без строки запроса не портится', () => {
+    const out = beforeSend({
+      request: { url: 'https://admin.oplatishka.com/admin/orders' },
+    } as never);
+
+    expect(out?.request?.url).toBe('https://admin.oplatishka.com/admin/orders');
+  });
+
+  it('параметры, лишь СОДЕРЖАЩИЕ q, не задеваются', () => {
+    const out = beforeSend({
+      request: { query_string: 'seq=7&uniq=abc' },
+    } as never);
+
+    expect(out?.request?.query_string).toBe('seq=7&uniq=abc');
+  });
+
   it('редактирует s= в середине query_string по границе параметра', () => {
     const event = makeEvent({
       request: { query_string: 'foo=1&s=secret2&bar=2' },

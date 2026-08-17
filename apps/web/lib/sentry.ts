@@ -53,6 +53,36 @@ function scrubText(text: string): string {
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED]');
 }
 
+/**
+ * Денилист параметров строки запроса.
+ *
+ * `q` — поиск в админ-панели: плейсхолдер прямо предлагает искать по email и
+ * телефону, то есть параметр по построению несёт контакт клиента (режим PAN,
+ * как `users.email`/`users.phone` в антифрод-треке).
+ */
+function scrubQueryString(query: string): string {
+  return (
+    query
+      .replace(
+        /(content|message|text|email|phone|card|password|token|signature|init_?data)=[^&]*/gi,
+        '$1=[REDACTED]',
+      )
+      // `?s=` — секрет алёрт-вебхука Sentry (/api/alerts/sentry). Отдельным
+      // выражением с якорем на границу параметра, чтобы не задевать `tags=` и т.п.
+      .replace(/(^|[?&])s=[^&]*/gi, '$1s=[REDACTED]')
+      // `?q=` — по той же схеме: якорь на границу параметра, иначе выражение
+      // задело бы `seq=`, `uniq=` и прочее.
+      .replace(/(^|[?&])q=[^&]*/gi, '$1q=[REDACTED]')
+  );
+}
+
+/** Тот же денилист для строки запроса внутри полного URL. */
+function scrubUrl(url: string): string {
+  const cut = url.indexOf('?');
+  if (cut === -1) return url;
+  return `${url.slice(0, cut)}?${scrubQueryString(url.slice(cut + 1))}`;
+}
+
 export type SentryEvent = SentryTypes.ErrorEvent;
 export type SentryHint = SentryTypes.EventHint;
 
@@ -63,14 +93,16 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
       event.request.data = scrubPii(event.request.data) as typeof event.request.data;
     }
     if (event.request.query_string && typeof event.request.query_string === 'string') {
-      event.request.query_string = event.request.query_string
-        .replace(
-          /(content|message|text|email|phone|card|password|token|signature|init_?data)=[^&]*/gi,
-          '$1=[REDACTED]',
-        )
-        // `?s=` — секрет алёрт-вебхука Sentry (/api/alerts/sentry). Отдельным
-        // выражением с якорем на границу параметра, чтобы не задевать `tags=` и т.п.
-        .replace(/(^|[?&])s=[^&]*/gi, '$1s=[REDACTED]');
+      event.request.query_string = scrubQueryString(event.request.query_string);
+    }
+    // URL несёт ТУ ЖЕ строку запроса, а чистился только `query_string` — то есть
+    // денилист обходился сам собой (находка ревью пачки 2 админ-панели).
+    // Поводом стал поиск в панели: менеджер ищет клиента по email или телефону,
+    // строка уезжает в `?q=`, и любая ошибка рендера отправляла бы контакт
+    // клиента во внешний сервис — а `LiveRefresh` повторяет тот же адрес каждые
+    // 25 секунд.
+    if (typeof event.request.url === 'string') {
+      event.request.url = scrubUrl(event.request.url);
     }
     if (event.request.headers) {
       const headers = event.request.headers as Record<string, string>;

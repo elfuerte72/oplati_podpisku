@@ -260,6 +260,13 @@
       "when": 1786981655224,
       "tag": "0036_silent_george_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786984500077,
+      "tag": "0037_thick_quicksilver",
+      "breakpoints": true
     }
   ]
 }

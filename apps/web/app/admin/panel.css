@@ -242,3 +242,68 @@
     width: 100%;
   }
 }
+
+/* ── Статусы, списки определений, хронология ─────────────────────────── */
+
+.panel-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--panel-border);
+  white-space: nowrap;
+}
+.panel-status--danger {
+  color: #ffd9d3;
+  border-color: var(--panel-danger);
+  background: rgba(216, 96, 79, 0.14);
+}
+.panel-status--warn {
+  color: #ffe6bd;
+  border-color: var(--panel-warn);
+  background: rgba(216, 164, 79, 0.14);
+}
+.panel-status--ok {
+  color: #cdf3dd;
+  border-color: var(--panel-ok);
+  background: rgba(79, 184, 122, 0.14);
+}
+.panel-status--muted {
+  color: var(--panel-muted);
+}
+
+/* Сетка карточек: на телефоне одна колонка (панель читают и с телефона). */
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.panel-dl {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 6px 12px;
+  margin: 12px 0 0;
+}
+.panel-dl dt {
+  color: var(--panel-muted);
+}
+.panel-dl dd {
+  margin: 0;
+}
+
+.panel-timeline {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.panel-timeline li {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.panel-timeline li:last-child {
+  border-bottom: none;
+}
