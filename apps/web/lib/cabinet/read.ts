@@ -57,6 +57,7 @@ import {
 const INTERNAL_EVENT_TYPES = new Set<string>([
   'payment_review_client_notified',
   'renewal_reminder_sent',
+  'payment_reminder_sent',
 ]);
 
 /** Человекочитаемые ярлыки событий `order_events` для таймлайна кабинета. */
@@ -181,12 +182,22 @@ function mapPayment(payment: PaymentRow): PaymentView {
   };
 }
 
+/**
+ * Служебное ли это событие. Отдельной функцией, чтобы денилист проверялся
+ * ПРЯМО: через `isClientVisibleOrderEvent` он не проверяется вовсе — событие
+ * без ярлыка и так скрыто вторым эшелоном, и тест не заметил бы удаления
+ * строки из списка (находка ревью).
+ */
+export function isInternalOrderEvent(eventType: string): boolean {
+  return INTERNAL_EVENT_TYPES.has(eventType);
+}
+
 /** Показываем ли событие клиенту (см. `INTERNAL_EVENT_TYPES`). */
 export function isClientVisibleOrderEvent(event: {
   eventType: string;
   toStatus: string | null;
 }): boolean {
-  if (INTERNAL_EVENT_TYPES.has(event.eventType)) return false;
+  if (isInternalOrderEvent(event.eventType)) return false;
   // Событие без ярлыка И без смены статуса подписать нечем — «Событие» в
   // истории заказа не значит ничего и только пугает.
   return Boolean(EVENT_LABELS[event.eventType] ?? event.toStatus);

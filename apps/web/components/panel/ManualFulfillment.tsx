@@ -9,7 +9,7 @@ import {
   type ManualFulfillmentAction,
 } from '@/lib/panel/fulfillment';
 
-import { PANEL_BUSY_ATTRIBUTE } from './LiveRefresh';
+import { markPanelBusy } from './LiveRefresh';
 
 /**
  * Кнопки ручного исполнения заказа (тикет 06).
@@ -53,7 +53,7 @@ export function ManualFulfillment({
 
     setBusy(true);
     setError(null);
-    document.body.setAttribute(PANEL_BUSY_ATTRIBUTE, '1');
+    const releaseBusy = markPanelBusy();
     try {
       const res = await fetch('/api/panel/orders/fulfillment', {
         method: 'POST',
@@ -82,7 +82,7 @@ export function ManualFulfillment({
       setError(FALLBACK_ERROR);
     } finally {
       setBusy(false);
-      document.body.removeAttribute(PANEL_BUSY_ATTRIBUTE);
+      releaseBusy();
     }
   }
 

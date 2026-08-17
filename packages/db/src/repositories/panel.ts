@@ -10,7 +10,10 @@ import {
 import { cards, orderEvents, orders, payments, services, staff, users } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
-import { PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT } from './orders.ts';
+import {
+  PAYMENT_REMINDER_SENT_EVENT,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+} from './orders.ts';
 
 /**
  * Выборки админ-панели: список заказов и карточка заказа.
@@ -774,22 +777,192 @@ export async function listHoldsForPanel(
  * везде. Цена — один лишний round-trip на экран максимум в сто строк.
  */
 async function attachClientNotifiedAt(db: DB, rows: PanelHoldRow[]): Promise<void> {
-  if (rows.length === 0) return;
+  const byOrderId = await latestEventAtByOrder(
+    db,
+    rows.map((r) => r.orderId),
+    PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  );
+  for (const row of rows) row.clientNotifiedAt = byOrderId.get(row.orderId) ?? null;
+}
 
-  const notified = await db
+/** Когда по каждому заказу последний раз случалось событие данного типа. */
+async function latestEventAtByOrder(
+  db: DB,
+  orderIds: readonly string[],
+  eventType: string,
+): Promise<Map<string, Date | null>> {
+  // Пустой список отдельным случаем: `inArray(col, [])` разворачивается в
+  // `IN ()` — синтаксическую ошибку.
+  if (orderIds.length === 0) return new Map();
+
+  const rows = await db
     .select({ orderId: orderEvents.orderId, at: max(orderEvents.createdAt) })
     .from(orderEvents)
-    .where(
-      and(
-        inArray(
-          orderEvents.orderId,
-          rows.map((r) => r.orderId),
-        ),
-        eq(orderEvents.eventType, PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT),
-      ),
-    )
+    .where(and(inArray(orderEvents.orderId, [...orderIds]), eq(orderEvents.eventType, eventType)))
     .groupBy(orderEvents.orderId);
 
-  const byOrderId = new Map(notified.map((n) => [n.orderId, n.at]));
-  for (const row of rows) row.clientNotifiedAt = byOrderId.get(row.orderId) ?? null;
+  return new Map(rows.map((r) => [r.orderId, r.at]));
+}
+
+// ─── Недожатые заказы (тикет 07) ──────────────────────────────────────────
+
+/**
+ * Статусы «клиент оформил, но не заплатил». Оба — намеренно:
+ * `ready_for_payment` (счёт даже не выставлялся) и `pending_payment` (счёт
+ * есть, оплаты нет). Из 138 просроченных заказов 97 не дошли до счёта — вторая
+ * половина потери живёт именно в первом статусе, и прятать её нельзя.
+ */
+export const PANEL_PENDING_ORDER_STATUSES = ['ready_for_payment', 'pending_payment'] as const;
+
+/** Тот же список SQL-фрагментом — собирается ИЗ него, копии значений нет. */
+const PENDING_STATUSES_SQL = sql`(${sql.join(
+  PANEL_PENDING_ORDER_STATUSES.map((s) => sql`${s}`),
+  sql`, `,
+)})`;
+
+export type PanelPendingOrder = {
+  orderId: string;
+  shortId: string;
+  status: OrderStatus;
+  amountRubKopecks: number | null;
+  createdAt: Date;
+  /** Срок ЗАКАЗА (фиксация цены либо срок счёта — их выравнивает payments). */
+  expiresAt: Date | null;
+  serviceName: string | null;
+  client: PanelHoldClient;
+  /** Живой (pending) счёт заказа, если он есть. */
+  invoice: {
+    paymentId: string;
+    expiresAt: Date | null;
+    /** Ссылка на оплату из снимка инвойса. Без неё отправлять нечего. */
+    paymentUrl: string | null;
+    /**
+     * Кто выставил счёт. Нужен НЕ для витрины: у шлюзов разная надбавка
+     * покупателя, и напоминание обязано назвать ту же цену, что клиент увидит
+     * на странице оплаты. Берётся у счёта, а не у текущего
+     * `PAYMENT_PRIMARY_PROVIDER`: переключение шлюза не меняет условия по уже
+     * выставленному счёту.
+     */
+    provider: string;
+  } | null;
+  /** Когда менеджер напоминал в последний раз (дедуп — сутки). */
+  lastRemindedAt: Date | null;
+};
+
+/**
+ * Заказы, которые клиент оформил и не оплатил (спека §5.5).
+ *
+ * Самая большая денежная потеря на сегодня. Поток около одного заказа в день,
+ * поэтому ценность экрана не в объёме, а в том, что ни одна строка не теряется
+ * молча — отсюда и явный признак усечения.
+ *
+ * Ссылка на оплату достаётся ЗДЕСЬ, выражением по `raw_payload`: отдельной
+ * колонки под неё нет, а разбирать снимок инвойса в двух местах (список и
+ * операция) значило бы завести зеркало на денежном пути.
+ */
+export async function listPendingOrdersForPanel(
+  db: DB,
+  opts: { limit?: number; shortId?: string; userId?: string } = {},
+): Promise<{ items: PanelPendingOrder[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+  // Фильтры сужают ту же выборку, а не заводят вторую:
+  //   `shortId` — для ОПЕРАЦИИ (она обязана решать «живой ли счёт» тем же кодом,
+  //     что и экран, но искать заказ перебором страницы нельзя: за потолком
+  //     списка напоминание отдавало бы «заказ не найден» вместо отправки);
+  //   `userId` — точка изоляции для тестов и будущей карточки клиента. Без неё
+  //     проверка «есть ещё» на общей базе тождественно истинна и не значит
+  //     ничего (находка ревью).
+  const conditions = [inArray(orders.status, [...PANEL_PENDING_ORDER_STATUSES])];
+  if (opts.shortId) conditions.push(ilike(orders.shortId, opts.shortId));
+  if (opts.userId) conditions.push(eq(orders.userId, opts.userId));
+
+  const rows = await db
+    .select({
+      orderId: orders.id,
+      shortId: orders.shortId,
+      status: orders.status,
+      amountRub: orders.amountRub,
+      createdAt: orders.createdAt,
+      expiresAt: orders.expiresAt,
+      customServiceDescription: orders.customServiceDescription,
+      serviceName: services.name,
+      clientId: users.id,
+      clientDisplayName: users.displayName,
+      clientTelegramId: users.telegramId,
+      paymentId: payments.id,
+      paymentExpiresAt: payments.expiresAt,
+      paymentProvider: payments.provider,
+      // `-> 'invoice' ->> 'paymentLink'` — конверт снимка инвойса общий для
+      // обоих шлюзов (см. lib/payments/gateway.ts), поэтому список не знает,
+      // кто выставил счёт.
+      paymentUrl: sql<
+        string | null
+      >`${payments.rawPayload} -> 'invoice' ->> 'paymentLink'`,
+    })
+    .from(orders)
+    .innerJoin(users, eq(orders.userId, users.id))
+    .leftJoin(services, eq(orders.serviceId, services.id))
+    // Только ЖИВОЙ счёт: терминальные платежи прошлых попыток к напоминанию
+    // отношения не имеют, а частичный UNIQUE гарантирует, что живой один.
+    .leftJoin(payments, and(eq(payments.orderId, orders.id), eq(payments.status, 'pending')))
+    .where(and(...conditions))
+    // Старые сверху: они горят. Возраст и есть причина, по которой экран нужен.
+    .orderBy(asc(orders.createdAt), asc(orders.id))
+    .limit(maxRows + 1);
+
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((row) => ({
+    orderId: row.orderId,
+    shortId: row.shortId,
+    status: row.status,
+    amountRubKopecks: row.amountRub,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    serviceName: row.serviceName ?? row.customServiceDescription,
+    client: {
+      id: row.clientId,
+      displayName: row.clientDisplayName,
+      telegramId: row.clientTelegramId,
+    },
+    invoice: row.paymentId
+      ? {
+          paymentId: row.paymentId,
+          expiresAt: row.paymentExpiresAt,
+          paymentUrl: row.paymentUrl,
+          provider: row.paymentProvider ?? '',
+        }
+      : null,
+    lastRemindedAt: null as Date | null,
+  }));
+
+  const remindedAt = await latestEventAtByOrder(
+    db,
+    items.map((i) => i.orderId),
+    PAYMENT_REMINDER_SENT_EVENT,
+  );
+  for (const item of items) item.lastRemindedAt = remindedAt.get(item.orderId) ?? null;
+
+  return { items, hasMore };
+}
+
+/**
+ * Сколько всего недожатых заказов и на какую сумму.
+ *
+ * Отдельным запросом, потому что рабочий стол показывает ПЯТЬ строк, а число и
+ * деньги обязан называть настоящие: «5+ на 50 000 ₽» при сорока заказах на
+ * 200 000 ₽ — то же занижение по видимому срезу, которое пачка 3 уже запретила
+ * себе на карточке клиента.
+ */
+export async function countPendingOrdersForPanel(
+  db: DB,
+): Promise<{ count: number; sumKopecks: number }> {
+  const rows = await db.execute<{ cnt: string | number; total: string | number | null }>(sql`
+    SELECT count(*) AS cnt, COALESCE(SUM(amount_rub), 0) AS total
+    FROM orders
+    WHERE status IN ${PENDING_STATUSES_SQL}
+  `);
+  return {
+    count: Number(rows[0]?.cnt ?? 0),
+    sumKopecks: Number(rows[0]?.total ?? 0),
+  };
 }

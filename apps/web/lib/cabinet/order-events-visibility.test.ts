@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isClientVisibleOrderEvent } from './read';
+import { isClientVisibleOrderEvent, isInternalOrderEvent } from './read';
 
 /**
  * Что клиент видит в истории своего заказа.
@@ -35,6 +35,21 @@ describe('isClientVisibleOrderEvent', () => {
     expect(isClientVisibleOrderEvent({ eventType: 'renewal_reminder_sent', toStatus: null })).toBe(
       false,
     );
+    // Напоминание об оплате из панели (тикет 07) — та же природа: клиент
+    // получил его сообщением в Telegram, в истории заказа ему место не нужно.
+    expect(isClientVisibleOrderEvent({ eventType: 'payment_reminder_sent', toStatus: null })).toBe(
+      false,
+    );
+  });
+
+  it('денилист проверяется ПРЯМО, а не через фолбэк', () => {
+    // Через `isClientVisibleOrderEvent` эти строки не проверяются: событие без
+    // ярлыка скрыто и так. Стоит кому-то подписать его в общем словаре — и
+    // клиент увидит наше внутреннее действие в истории заказа.
+    expect(isInternalOrderEvent('payment_review_client_notified')).toBe(true);
+    expect(isInternalOrderEvent('payment_reminder_sent')).toBe(true);
+    expect(isInternalOrderEvent('renewal_reminder_sent')).toBe(true);
+    expect(isInternalOrderEvent('payment_succeeded')).toBe(false);
   });
 
   it('незнакомое событие без статуса не показывается вовсе', () => {

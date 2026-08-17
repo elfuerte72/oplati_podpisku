@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, lt, sql } from 'drizzle-orm';
 
 import {
   orders,
@@ -589,6 +589,75 @@ export async function claimRenewalReminder(db: DBLike, orderId: string): Promise
  * менеджеру писать клиенту НАДО — цена расхождения тут молчание к клиенту.
  */
 export const PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT = 'payment_review_client_notified';
+
+/**
+ * Менеджер напомнил клиенту об оплате из панели (тикет 07). Он же — замок
+ * суточного дедупа, см. `claimPaymentReminder`.
+ */
+export const PAYMENT_REMINDER_SENT_EVENT = 'payment_reminder_sent';
+
+/**
+ * Напоминание НЕ доставлено (Telegram отказал — обычно «бот заблокирован»).
+ *
+ * Отдельное событие, потому что отменить занятое окно нечем: `order_events`
+ * append-only. Без этой записи экран показывал бы «напоминали в 14:20» там, где
+ * клиент не получил ничего, — та же ложь, что «клиенту ушло» на экране холдов.
+ */
+export const PAYMENT_REMINDER_FAILED_EVENT = 'payment_reminder_failed';
+
+/**
+ * Атомарно «занять» право напомнить об оплате: не чаще одного раза в
+ * `cooldownMs` на заказ.
+ *
+ * Возвращает `true` только тому, кто занял окно первым. Держится на
+ * `SELECT ... FOR UPDATE` по строке заказа: без лока схема «прочитали последнюю
+ * отметку → отправили → записали» атомарной НЕ является, и две вкладки (или два
+ * менеджера) успевают пройти гейт одновременно — клиент получает два одинаковых
+ * платёжных документа от официального бота. Тот же урок, что у
+ * `claimRenewalReminder`, где окно выборки шире шага крона давало 3-4 дубля.
+ *
+ * ⚠️ Порядок «занять → отправить» означает at-most-once: сорванная отправка
+ * съедает суточное окно, потому что вернуть занятое нечем (append-only). Это
+ * осознанный размен — дубль платёжной ссылки хуже пропущенного напоминания, —
+ * и он не молчит: неудачу пишет `PAYMENT_REMINDER_FAILED_EVENT`, и экран
+ * показывает её вместо времени отправки.
+ */
+export async function claimPaymentReminder(
+  db: DB,
+  input: { orderId: string; cooldownMs: number; actorId?: string | null },
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - input.cooldownMs);
+  return await db.transaction(async (tx) => {
+    const locked = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, input.orderId))
+      .for('update')
+      .limit(1);
+    if (!locked[0]) return false;
+
+    const recent = await tx
+      .select({ id: orderEvents.id })
+      .from(orderEvents)
+      .where(
+        and(
+          eq(orderEvents.orderId, input.orderId),
+          eq(orderEvents.eventType, PAYMENT_REMINDER_SENT_EVENT),
+          gte(orderEvents.createdAt, cutoff),
+        ),
+      )
+      .limit(1);
+    if (recent[0]) return false;
+
+    await tx.insert(orderEvents).values({
+      orderId: input.orderId,
+      actorType: 'operator',
+      actorId: input.actorId ?? null,
+      eventType: PAYMENT_REMINDER_SENT_EVENT,
+    });
+    return true;
+  });
+}
 
 /**
  * Записать событие в append-only `order_events` БЕЗ смены статуса заказа — для

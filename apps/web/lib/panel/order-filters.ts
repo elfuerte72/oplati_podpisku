@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { PanelOrderSort } from '@oplati/db';
+import { PANEL_PENDING_ORDER_STATUSES, type PanelOrderSort } from '@oplati/db';
 import { orderStatus, type OrderStatus } from '@oplati/types';
 
 /**
@@ -21,7 +21,9 @@ export const STATUS_PRESETS = [
     title: 'В работе',
     statuses: ['ready_for_payment', 'pending_payment', 'payment_review', 'paid', 'in_fulfillment'],
   },
-  { key: 'unpaid', title: 'Недожатые', statuses: ['ready_for_payment', 'pending_payment'] },
+  // Тот же набор, что у экрана `/admin/pending`: два определения «недожатых» в
+  // одной панели означали бы два разных списка под одним словом.
+  { key: 'unpaid', title: 'Недожатые', statuses: PANEL_PENDING_ORDER_STATUSES },
   { key: 'review', title: 'Холд банка', statuses: ['payment_review'] },
   { key: 'failed', title: 'Провалились', statuses: ['failed'] },
   { key: 'completed', title: 'Выполнены', statuses: ['completed'] },

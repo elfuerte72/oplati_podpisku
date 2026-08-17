@@ -27,6 +27,8 @@ import { deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  claimPaymentReminder,
   claimRenewalReminder,
   countRefundishHistoryByUser,
   createDraftOrder,
@@ -92,6 +94,8 @@ import {
   getClientDetailForPanel,
   getOrderDetailForPanel,
   listHoldsForPanel,
+  listPendingOrdersForPanel,
+  countPendingOrdersForPanel,
   listOrdersForPanel,
 } from './repositories/panel.ts';
 import {
@@ -3410,6 +3414,168 @@ describe('панель: карточка клиента (тикет 04)', () => 
     // IP нужен антифрод-треку при выставлении счёта; на экране это лишняя PII,
     // которую менеджеру не с чем сопоставить.
     expect(JSON.stringify(detail)).not.toContain('203.0.113.77');
+  });
+});
+
+describe('панель: недожатые заказы (тикет 07)', () => {
+  /** Заказ с живым счётом и ссылкой на оплату в снимке инвойса. */
+  async function makeOrderWithLiveInvoice(userId: string, paymentUrl: string | null) {
+    const order = await createDraftOrder(db, {
+      userId,
+      status: 'pending_payment',
+      customServiceDescription: 'pending order',
+      amountRub: 50_000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    const { payment } = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `pending-${++seq}`,
+      amountRub: 50_000,
+      rawPayload: paymentUrl
+        ? { invoice: { id: 'inv-1', paymentLink: paymentUrl } }
+        : { invoice: { id: 'inv-1' } },
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return { order, payment };
+  }
+
+  it('заказ со счётом отдаёт ссылку на оплату из снимка инвойса', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/inv-1');
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    // Отдельной колонки под ссылку нет: она лежит в снимке инвойса, и
+    // доставать её обязано ОДНО место — иначе список и операция разъедутся.
+    expect(row?.invoice?.paymentUrl).toBe('https://pay.example/inv-1');
+    expect(row?.client.telegramId).toBe(user.telegramId);
+  });
+
+  it('черновик без счёта в списке ЕСТЬ, но счёта у него нет', async () => {
+    // 97 из 138 просроченных заказов до счёта не дошли — прятать эту половину
+    // потери нельзя, хотя напоминать по ней нечем.
+    const user = await makeUser({ telegramId: `tg-pending-draft-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'draft order',
+      amountRub: 30_000,
+      originalAmount: 300,
+      originalCurrency: 'USD',
+    });
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.status).toBe('ready_for_payment');
+    expect(row?.invoice).toBeNull();
+  });
+
+  it('терминальный счёт живым не считается', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-dead-${++seq}` });
+    const { order, payment } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/dead');
+    await claimPaymentTerminal(db, payment.id);
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.orderId === order.id)?.invoice).toBeNull();
+  });
+
+  it('оплаченный заказ с экрана уходит', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-paid-${++seq}` });
+    const { order, payment } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/paid');
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+
+    // Фильтр по клиенту: без него собственный заказ теста однажды окажется за
+    // потолком страницы, и отрицательный ассерт замолчит, ничего не покрасив.
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('когда напоминали — читается из журнала заказа', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-remind-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/remind');
+
+    const before = await listPendingOrdersForPanel(db, { userId: user.id });
+    expect(before.items.find((r) => r.orderId === order.id)?.lastRemindedAt).toBeNull();
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_SENT_EVENT,
+      actorType: 'operator',
+    });
+
+    const after = await listPendingOrdersForPanel(db, { userId: user.id });
+    expect(after.items.find((r) => r.orderId === order.id)?.lastRemindedAt).toBeInstanceOf(Date);
+  });
+
+  it('усечение списка не молчит — и не кричит, когда всё влезло', async () => {
+    // ⚠️ Обе стороны пиннятся НА ИЗОЛИРОВАННОЙ выборке. На общей базе файла
+    // (десятки недожатых заказов) `hasMore` истинно тождественно: мутация
+    // «всегда true» проходила бы весь прогон, а экран врал бы «показаны не все»
+    // каждый день (находка ревью).
+    const user = await makeUser({ telegramId: `tg-pending-page-${++seq}` });
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/a');
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/b');
+
+    const page = await listPendingOrdersForPanel(db, { userId: user.id, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+
+    const full = await listPendingOrdersForPanel(db, { userId: user.id, limit: 5 });
+    expect(full.items).toHaveLength(2);
+    expect(full.hasMore).toBe(false);
+
+    // Старые сверху: возраст и есть причина, по которой экран нужен.
+    const times = full.items.map((i) => i.createdAt.getTime());
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it('итоги считаются по ВСЕМ недожатым, а не по видимым пяти', async () => {
+    const before = await countPendingOrdersForPanel(db);
+    const user = await makeUser({ telegramId: `tg-pending-totals-${++seq}` });
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/t1');
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/t2');
+
+    const after = await countPendingOrdersForPanel(db);
+
+    // Рабочий стол показывает пять строк, а число и деньги обязан называть
+    // настоящие: «5+ на 50 000 ₽» при сорока заказах занижает ровно то, ради
+    // чего блок существует.
+    expect(after.count).toBe(before.count + 2);
+    expect(after.sumKopecks).toBe(before.sumKopecks + 100_000);
+  });
+
+  it('дедуп напоминания атомарен: второй одновременный claim не проходит', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-claim-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/claim');
+
+    // Две вкладки жмут «Напомнить» одновременно. Схема «прочитали отметку →
+    // отправили → записали» пропускала обоих, и клиент получал два одинаковых
+    // платёжных документа от официального бота.
+    const [first, second] = await Promise.all([
+      claimPaymentReminder(db, { orderId: order.id, cooldownMs: 24 * 60 * 60 * 1000 }),
+      claimPaymentReminder(db, { orderId: order.id, cooldownMs: 24 * 60 * 60 * 1000 }),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    const events = await getOrderEventsByOrderId(db, order.id);
+    expect(events.filter((e) => e.eventType === 'payment_reminder_sent')).toHaveLength(1);
+  });
+
+  it('через сутки окно открывается снова', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-claim2-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/claim2');
+
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(true);
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(false);
+    // Окно меряется от отметки: с нулевым окном прошлая запись уже не мешает.
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 0 })).toBe(true);
   });
 });
 
