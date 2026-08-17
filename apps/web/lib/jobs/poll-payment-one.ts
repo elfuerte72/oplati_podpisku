@@ -29,6 +29,7 @@ import {
   processInvoicePaid,
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 
 /**
  * Опрос ОДНОГО pending-платежа у его шлюза — общий примитив двух cron'ов.
@@ -392,6 +393,16 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
   if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
   pruneUnknownStatusDedup(now);
   unknownStatusAlertedAt.set(dedupKey, now);
+
+  // Менеджеру — СРАЗУ (тикет 11): раньше про холд узнавали через семь дней и
+  // только владелец, через сторож `payment-review-watch`. Дедуп у обоих каналов
+  // свой, но ключ один и тот же платёж.
+  await notifyStaff(
+    `Холд банка по операции ${providerOrderId} на ${(payment.amountRub / 100).toFixed(2)} RUB. ` +
+      `Деньги списаны, карта не выпущена — исход решает провайдер. ` +
+      `Заказ виден в панели: /admin/holds`,
+    { dedupKey: `hold:${payment.id}`, capability: 'holds' },
+  );
 
   await notifyOps(
     `Антифрод-холд Freekassa (статус 7): банк поставил перевод на проверку. ` +

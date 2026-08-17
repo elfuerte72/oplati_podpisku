@@ -33,6 +33,10 @@ const h = vi.hoisted(() => ({
   transitionOrderMock: vi.fn((..._args: unknown[]) => Promise.resolve({})),
   botSendMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
   appendEventMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  notifyStaffMock: vi.fn((..._args: unknown[]) =>
+    Promise.resolve({ delivered: 1, failed: 0, deduped: false }),
+  ),
+  stuckPaidMock: vi.fn((..._args: unknown[]) => Promise.resolve<unknown[]>([])),
   getOrderByIdMock: vi.fn((..._args: unknown[]) =>
     Promise.resolve<unknown>({ id: 'order-1', userId: 'user-1', status: 'payment_review' }),
   ),
@@ -41,7 +45,7 @@ const h = vi.hoisted(() => ({
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   findPendingPaymentsForPoll: vi.fn(async () => h.pending),
-  findStuckPaidOrders: vi.fn(async () => []),
+  findStuckPaidOrders: h.stuckPaidMock,
   findStuckInFulfillmentOrders: vi.fn(async () => []),
   setPaymentProviderStatus: h.setProviderStatusMock,
   transitionOrder: h.transitionOrderMock,
@@ -90,6 +94,8 @@ vi.mock('./issue-card.ts', () => ({ issueCard: vi.fn(async () => {}) }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+
+vi.mock('../alerts/notify-staff.ts', () => ({ notifyStaff: h.notifyStaffMock }));
 
 import { captureException } from '@sentry/nextjs';
 
@@ -146,6 +152,8 @@ describe('pollPayments — добор по провайдерам', () => {
       userId: 'user-1',
       status: 'payment_review',
     });
+    h.stuckPaidMock.mockResolvedValue([]);
+    h.notifyStaffMock.mockResolvedValue({ delivered: 1, failed: 0, deduped: false });
   });
 
   it('оплаченный счёт Freekassa восстанавливается (уведомление потеряно)', async () => {
@@ -604,5 +612,87 @@ describe('pollPayments — добор по провайдерам', () => {
     await pollPayments();
 
     expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pollPayments — уведомления менеджеру (тикет 11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetUnknownStatusAlertDedupForTests();
+    h.pending = [];
+    h.freekassaConfigured = true;
+    h.loveAndPayConfigured.value = true;
+    h.paySpaceConfigured = true;
+    h.findOrderMock.mockResolvedValue(null);
+    h.stuckPaidMock.mockResolvedValue([]);
+    h.notifyStaffMock.mockResolvedValue({ delivered: 1, failed: 0, deduped: false });
+  });
+
+  it('холд банка уходит менеджеру СРАЗУ, а не через семь дней', async () => {
+    // Раньше про холд узнавали только через сторож `payment-review-watch` и
+    // только владелец — на восьмой день.
+    h.paySpaceConfigured = false;
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-1',
+      userId: 'user-1',
+      status: 'payment_review',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).toHaveBeenCalledWith(
+      expect.stringContaining('Холд банка'),
+      expect.objectContaining({ capability: 'holds' }),
+    );
+  });
+
+  it('застрявший заказ: пишем менеджеру, только когда ПОВТОР НЕ ПОМОГ', async () => {
+    // Крон сам чинит зависшие в `paid` заказы. Уведомлять о каждом застревании
+    // значило бы звать человека к уже починенному.
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'failed',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).toHaveBeenCalledWith(
+      expect.stringContaining('ORD-STUCK'),
+      expect.objectContaining({ capability: 'orders', dedupKey: 'stuck:order-9' }),
+    );
+  });
+
+  it('повтор ПОМОГ — менеджера не беспокоим', async () => {
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'completed',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).not.toHaveBeenCalled();
+  });
+
+  it('заказ ещё в работе после повтора — тоже молчим', async () => {
+    // `in_fulfillment` означает «выпуск идёт прямо сейчас»: звать человека рано.
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'in_fulfillment',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).not.toHaveBeenCalled();
   });
 });

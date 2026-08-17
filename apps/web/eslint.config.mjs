@@ -19,7 +19,13 @@ const eslintConfig = defineConfig([
     // обоснование в комментарии файла зелёный прогон не проверяет, а линт
     // проверяет. Список сверять с импортами файлов под 'use client'
     // (components/panel/*): защищать не тот файл — самообман.
-    files: ["lib/panel/fulfillment.ts", "lib/panel/live.ts", "lib/panel/format.ts"],
+    files: [
+      "lib/panel/fulfillment.ts",
+      "lib/panel/live.ts",
+      "lib/panel/format.ts",
+      "lib/panel/support.ts",
+      "lib/retention-policy.ts",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",

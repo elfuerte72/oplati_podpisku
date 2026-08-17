@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import { staff } from '../schema.ts';
 import type { DB } from '../index.ts';
@@ -273,6 +273,26 @@ export async function setStaffActiveByTelegramId(
 }
 
 /** Весь персонал, включая отключённых — экран `/admin/staff` показывает и их. */
+/**
+ * Получатели уведомлений: только то, что нужно для отправки.
+ *
+ * Отдельно от `listStaff`, который отдаёт строку целиком — вместе с
+ * `totp_secret`. Второй фактор всего персонала не должен оказываться в памяти
+ * функции, чья работа — сформатировать текст для Telegram.
+ */
+export async function listStaffRecipients(
+  db: DB,
+): Promise<{ id: string; telegramId: string; role: StaffRole }[]> {
+  const rows = await db
+    .select({ id: staff.id, telegramId: staff.telegramId, role: staff.role })
+    .from(staff)
+    .where(and(eq(staff.isActive, true), isNotNull(staff.telegramId)))
+    .orderBy(asc(staff.createdAt));
+  return rows
+    .filter((r): r is { id: string; telegramId: string; role: StaffRole } => r.telegramId !== null)
+    .map((r) => ({ id: r.id, telegramId: r.telegramId, role: r.role }));
+}
+
 export async function listStaff(db: DB): Promise<StaffMember[]> {
   const rows = await db.select().from(staff).orderBy(asc(staff.createdAt));
   return rows.map(mapRow);

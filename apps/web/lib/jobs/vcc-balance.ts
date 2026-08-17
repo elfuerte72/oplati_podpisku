@@ -2,6 +2,7 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
+import { notifyStaff } from '../alerts/notify-staff.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
@@ -19,21 +20,129 @@ const log = childLogger('vcc-balance');
  *
  * Это мониторинг: ошибка проверки баланса не должна влиять на основной результат
  * cron'а (ловим и алёртим отдельно, ничего не бросаем наружу).
+ *
+ * ⚠️ ИСТОРИЯ, из-за которой алёрт устроен именно так (`docs/BACKLOG.md`).
+ * 28 июля порог выставили в `0` — то есть выключили молча, потому что правило
+ * начало повторяться и забивать канал. 14 августа риск сработал: заказ на
+ * 11 680 ₽ упал с `insufficient_sub_balance` ($89.50 при нужных ~$124), и
+ * предупредить было нечему. Отсюда четыре требования владельца, и все четыре
+ * держатся кодом ниже:
+ *
+ *   1. доставка В ЛИЧКУ, а не только в Sentry (`notifyStaff` — бот входа);
+ *   2. дедуп: критическое — раз в час, предупреждение — раз в сутки; крон
+ *      бежит каждые 5 минут, и без окна алёрт умирает второй раз;
+ *   3. порог ОТНОСИТЕЛЬНЫЙ — от заказа, который клиент может оформить прямо
+ *      сейчас, а не плоское число: $89.50 больше дефолтных $50, и даже со
+ *      включённым алёртом предупреждения бы не было. Уровней ДВА, см. ниже;
+ *   4. выключение — ЯВНЫМ флагом, а не нулём в пороге, который выглядит как
+ *      «настроено».
  */
-export async function alertOnLowVccBalance(): Promise<void> {
+
+/**
+ * Явный выключатель. `VCC_BALANCE_ALERT_DISABLED=1` — «мы знаем и приняли»;
+ * ноль в пороге больше выключением НЕ является: он читался как «настроено».
+ */
+function isAlertDisabled(): boolean {
+  return serverEnv.VCC_BALANCE_ALERT_DISABLED === true;
+}
+
+/**
+ * Пороги ДВУХ уровней. Один порог этот вопрос не описывает, а выбор между
+ * «считать от самого дорогого заказа» и «не шуметь» ложный:
+ *
+ *   - `critical` — не хватает даже на ТИПОВОЙ заказ ($100 + буфер + fee). Это
+ *     авария: следующий же оплаченный заказ упадёт, как 14 августа;
+ *   - `low` — не хватает на САМЫЙ дорогой заказ, который клиент может оформить
+ *     прямо сейчас (витринный кап $1200). Это не авария, а предупреждение:
+ *     держать полторы тысячи долларов на счёте владелец не обязан, но знать,
+ *     что крупный заказ сейчас не пройдёт, — да.
+ *
+ * Разные уровни и шумят по-разному (см. `alertOnLowVccBalance`): критический —
+ * раз в час, предупреждение — раз в сутки. Вечно красный алёрт читать
+ * перестают, и это уже случалось.
+ */
+export function vccAlertThresholdsUsdCents(): { critical: number; low: number } {
+  const bufferPercent = serverEnv.PAYSPACE_CARD_BUFFER_PERCENT;
+  const fee = serverEnv.CARD_ISSUE_FEE_USD_CENTS;
+  const withBuffer = (usdCents: number) =>
+    Math.ceil(usdCents * (1 + bufferPercent / 100)) + fee;
+
+  // Явно заданный порог — это право владельца назвать свою цифру; тогда он и
+  // есть критический уровень.
+  // ⚠️ Явно заданный порог ОТМЕНЯЕТ второй уровень: владелец, назвавший свою
+  // цифру, получает ровно её. Иначе он всё равно ловил бы предупреждение о
+  // недостижимом для себя $1444 и шёл выключать алёрт целиком — то есть код
+  // подталкивал бы ровно к тому, чего тикет избегает.
+  const explicit = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
+  if (explicit > 0) return { critical: explicit, low: explicit };
+  const critical = withBuffer(TYPICAL_ORDER_USD_CENTS);
+  return { critical, low: Math.max(critical, withBuffer(MAX_ORDER_USD_CENTS)) };
+}
+
+/**
+ * Типовой заказ ($100) и витринный кап ($1200).
+ *
+ * ⚠️ Кап — зеркало `HIGH_VALUE_SERVICE_SLUGS` (инвариант 10). Держим числом
+ * ЗДЕСЬ осознанно: тянуть каталог из базы ради порога алёрта значит поставить
+ * мониторинг в зависимость от той самой базы, за которой он следит.
+ */
+const TYPICAL_ORDER_USD_CENTS = 10_000;
+const MAX_ORDER_USD_CENTS = 120_000;
+
+/** Ключ дедупа предупреждения — с датой: не чаще раза в сутки. */
+function dailyKey(now: Date): string {
+  return `vcc_balance_low:${now.toISOString().slice(0, 10)}`;
+}
+
+export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void> {
   if (!isPaySpaceConfigured()) return;
-  const threshold = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
+  if (isAlertDisabled()) {
+    log.debug({ event: 'vcc_balance.alert_disabled' });
+    return;
+  }
+
+  const { critical, low } = vccAlertThresholdsUsdCents();
   try {
     const { balanceUsdCents } = await getPaySpaceClient().getVccBalance();
-    if (balanceUsdCents < threshold) {
-      log.warn({ event: 'vcc_balance.low', balanceUsdCents, threshold });
-      Sentry.captureMessage('PaySpace VCC balance низкий — пополнить (T+1)', {
-        level: 'warning',
-        tags: { source: 'vcc-balance', alert: 'low_vcc_balance' },
-        extra: { balanceUsdCents, threshold },
-      });
-    } else {
+    if (balanceUsdCents >= low) {
       log.info({ event: 'vcc_balance.ok', balanceUsdCents });
+      return;
+    }
+
+    const isCritical = balanceUsdCents < critical;
+    const threshold = isCritical ? critical : low;
+    log.warn({ event: 'vcc_balance.low', balanceUsdCents, threshold, critical: isCritical });
+
+    const usd = (cents: number) => (cents / 100).toFixed(2);
+    const res = await notifyStaff(
+      isCritical
+        ? `Критически мало на карточном счёте PaySpace: ${usd(balanceUsdCents)} USD. ` +
+            `На типовой заказ нужно ${usd(critical)} USD — следующий оплаченный заказ ` +
+            `упадёт при выпуске карты, а пополнение приходит только на следующий день.`
+        : `На карточном счёте PaySpace ${usd(balanceUsdCents)} USD: на типовой заказ хватает, ` +
+            `на самый дорогой (нужно ${usd(low)} USD) — нет. Пополнение приходит T+1.`,
+      // Критическое — раз в час, предупреждение — раз в сутки: вечно
+      // повторяющееся сообщение перестают читать, и алёрт умирает второй раз.
+      {
+        dedupKey: isCritical ? 'vcc_balance_critical' : dailyKey(now),
+        // ⚠️ Окно ЗАДАЁТСЯ явно. Ключ с датой сам по себе суток не держит:
+        // окно у экземпляра одно, и через час тот же ключ снова свободен —
+        // менеджер получил бы два десятка одинаковых DM в сутки о нормальном
+        // и длительном состоянии.
+        dedupWindowMs: isCritical ? undefined : 24 * 60 * 60 * 1000,
+        capability: 'holds',
+      },
+    );
+
+    // ⚠️ Sentry — ПОД ТЕМ ЖЕ дедупом, что и личка. Без этого крон писал бы
+    // событие каждые 5 минут (288 в сутки) в общий проект с общими правилами
+    // алертов — то есть чинили бы канал в Telegram, а топили Sentry.
+    if (!res.deduped) {
+      Sentry.captureMessage('PaySpace VCC balance низкий — пополнить (T+1)', {
+        level: isCritical ? 'error' : 'warning',
+        tags: { source: 'vcc-balance', alert: 'low_vcc_balance' },
+        extra: { balanceUsdCents, threshold, critical: isCritical },
+      });
     }
   } catch (err) {
     log.error({ event: 'vcc_balance.check_error', err });

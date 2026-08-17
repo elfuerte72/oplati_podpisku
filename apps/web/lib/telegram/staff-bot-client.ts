@@ -39,12 +39,32 @@ export function getStaffBot(): Bot | null {
   return _bot;
 }
 
-/** Отправить сообщение сотруднику. Бросает — вызывающий решает, что с этим. */
+/**
+ * Бот персонала не настроен (нет токена). Отдельный класс, потому что это
+ * АВАРИЯ КОНФИГУРАЦИИ, а не отказ Telegram, и вызывающий обязан отличать одно
+ * от другого.
+ */
+export class StaffBotNotConfiguredError extends Error {
+  constructor() {
+    super('TELEGRAM_LOGIN_BOT_TOKEN не задан — бот персонала недоступен');
+    this.name = 'StaffBotNotConfiguredError';
+  }
+}
+
+/**
+ * Отправить сообщение сотруднику. Бросает — вызывающий решает, что с этим.
+ *
+ * ⚠️ Незаданный токен тоже БРОСАЕТ, а не молчит. Прежняя версия писала warn и
+ * возвращала `void`, то есть «ничего не отправлено» было неотличимо от
+ * «отправлено»: обращение клиента считалось доставленным, клиент получал
+ * «передали в поддержку», в панели горело «доставлено», а сообщение не уходило
+ * никуда. Это единственный канал связи с клиентом — молчать здесь нельзя.
+ */
 export async function sendStaffMessage(chatId: number | string, text: string): Promise<void> {
   const bot = getStaffBot();
   if (!bot) {
-    log.warn({ event: 'telegram.staff_bot.not_configured' });
-    return;
+    log.error({ event: 'telegram.staff_bot.not_configured' });
+    throw new StaffBotNotConfiguredError();
   }
   await bot.api.sendMessage(chatId, text);
 }

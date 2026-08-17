@@ -394,6 +394,23 @@ export const paymentGateway = z.enum(['loveandpay', 'freekassa']);
 export type PaymentGateway = z.infer<typeof paymentGateway>;
 
 export const cardStatus = z.enum(['active', 'idle', 'recycled']);
+/**
+ * Ключи meta сообщения бота, помечающие ПОДАННОЕ обращение в поддержку.
+ *
+ * Живут в общем пакете, потому что читателей двое и они в разных местах:
+ * пишет бот (`apps/web/lib/telegram/support-flow.ts`), читает панель
+ * (`packages/db/src/repositories/panel.ts`). Копия строки в каждом месте была
+ * бы зеркалом, разъезд которого даёт ПУСТОЙ экран поддержки при живом потоке
+ * обращений — молча и без единого падения.
+ *
+ * ⚠️ Отличать поданное обращение от НАЧАТОГО (бот попросил описать проблему)
+ * больше нечем: у обоих `source: 'support'`.
+ */
+export const SUPPORT_REQUEST_META_KEY = 'support_request';
+
+/** Дошло ли обращение до оператора. Недоставленное — авария конфигурации. */
+export const SUPPORT_DELIVERED_META_KEY = 'support_delivered';
+
 export type CardStatus = z.infer<typeof cardStatus>;
 
 export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);

@@ -23,7 +23,7 @@ import {
   stripOldPaymentPayloads,
   upsertPaymentByProviderRef,
 } from './repositories/payments.ts';
-import { deleteOldMessages } from './repositories/messages.ts';
+import { appendMessage, deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
@@ -96,6 +96,10 @@ import {
   listHoldsForPanel,
   listPendingOrdersForPanel,
   countPendingOrdersForPanel,
+  listSupportRequestsForPanel,
+  countUnansweredSupportRequests,
+  getSupportThreadForPanel,
+  claimSupportConversation,
   listOrdersForPanel,
 } from './repositories/panel.ts';
 import {
@@ -3414,6 +3418,343 @@ describe('панель: карточка клиента (тикет 04)', () => 
     // IP нужен антифрод-треку при выставлении счёта; на экране это лишняя PII,
     // которую менеджеру не с чем сопоставить.
     expect(JSON.stringify(detail)).not.toContain('203.0.113.77');
+  });
+});
+
+describe('панель: поддержка (тикет 10)', () => {
+  // Сотрудники заводятся один раз на блок: `messages.staff_id` — настоящий FK,
+  // и выдуманный uuid отвергнет база.
+  let SUPPORT_STAFF_ID = '';
+  let OTHER_STAFF_ID = '';
+
+  beforeAll(async () => {
+    const first = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-support-${++seq}`,
+      email: `support-${seq}@example.com`,
+      displayName: 'Менеджер поддержки',
+      role: 'operator',
+    });
+    const second = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-support-2-${++seq}`,
+      email: `support2-${seq}@example.com`,
+      displayName: 'Второй менеджер',
+      role: 'operator',
+    });
+    SUPPORT_STAFF_ID = first.id;
+    OTHER_STAFF_ID = second.id;
+  });
+
+  async function makeSupportRequest(
+    userId: string,
+    opts: { delivered?: boolean; text?: string } = {},
+  ) {
+    const conversation = await createConversation(db, { userId, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: opts.text ?? 'не проходит оплата, помогите',
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: opts.delivered ?? true },
+    });
+    return conversation;
+  }
+
+  it('обращение попадает в список, ответа пока нет', async () => {
+    const user = await makeUser({ telegramId: `tg-support-${++seq}`, displayName: 'Клиент' });
+    const conversation = await makeSupportRequest(user.id);
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.conversationId === conversation.id);
+
+    expect(row?.client.displayName).toBe('Клиент');
+    expect(row?.lastRequestAt).toBeInstanceOf(Date);
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(row?.lastRequestDelivered).toBe(true);
+  });
+
+  it('начатое обращение (бот только спросил) обращением НЕ считается', async () => {
+    // У приглашения «опиши проблему» тот же `source: 'support'`, что и у
+    // поданного обращения. Без явной отметки экран показывал бы как обращение
+    // каждое нажатие кнопки.
+    const user = await makeUser({ telegramId: `tg-support-ask-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Опиши проблему',
+      meta: { source: 'support', awaiting_support_message: true },
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('недоставленное оператору обращение помечается', async () => {
+    // Не доставили — это наша авария конфигурации, и она обязана быть видна:
+    // клиент считает, что написал, а обращение никуда не ушло.
+    const user = await makeUser({ telegramId: `tg-support-fail-${++seq}` });
+    const conversation = await makeSupportRequest(user.id, { delivered: false });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      false,
+    );
+  });
+
+  it('ответ оператора виден в списке', async () => {
+    const user = await makeUser({ telegramId: `tg-support-answered-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'Разобрались, счёт перевыставлен',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(
+      items.find((r) => r.conversationId === conversation.id)?.lastOperatorReplyAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('старый ответ НЕ закрывает новое обращение того же клиента', async () => {
+    // Разговор один на клиента: «когда-то отвечали» означало бы, что повторное
+    // обращение постоянного клиента навсегда числится отвеченным и не попадает
+    // в счётчик «без ответа» на рабочем столе.
+    const user = await makeUser({ telegramId: `tg-support-again-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    const reply = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили на первое',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, reply.id));
+
+    const second = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: true },
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 120_000) })
+      .where(eq(schema.messages.id, second.id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.conversationId === conversation.id)?.lastOperatorReplyAt).toBeNull();
+  });
+
+  it('свежие обращения сверху, отметка доставки — от ПОСЛЕДНЕГО', async () => {
+    // Все проверки этого блока раньше делались на выборке из одной строки, где
+    // и порядок, и «последний из нескольких» выполняются тождественно (находка
+    // ревью). Здесь у клиента ДВА обращения и два разговора.
+    const user = await makeUser({ telegramId: `tg-support-order-${++seq}` });
+    const older = await makeSupportRequest(user.id, { delivered: false, text: 'первое' });
+    const newer = await makeSupportRequest(user.id, { delivered: true, text: 'второе' });
+    // Возраст задаём явно: несколько INSERT'ов подряд ложатся в одну отметку.
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(schema.messages.conversationId, older.id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.map((i) => i.conversationId)).toEqual([newer.id, older.id]);
+    // У каждого разговора — СВОЙ исход доставки, а не исход соседа.
+    expect(items[0]?.lastRequestDelivered).toBe(true);
+    expect(items[1]?.lastRequestDelivered).toBe(false);
+  });
+
+  it('повторное обращение в ТОМ ЖЕ разговоре берёт свежую отметку', async () => {
+    // У клиента, написавшего дважды, экран обязан показывать исход ПОСЛЕДНЕГО
+    // обращения: старый успех рядом со свежим провалом читается как «дошло».
+    const user = await makeUser({ telegramId: `tg-support-repeat-${++seq}` });
+    const conversation = await makeSupportRequest(user.id, { delivered: true });
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: false },
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      false,
+    );
+  });
+
+  it('усечение списка обращений не молчит — и не кричит без повода', async () => {
+    const user = await makeUser({ telegramId: `tg-support-page-${++seq}` });
+    await makeSupportRequest(user.id);
+    await makeSupportRequest(user.id);
+
+    const page = await listSupportRequestsForPanel(db, { userId: user.id, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+
+    const full = await listSupportRequestsForPanel(db, { userId: user.id, limit: 5 });
+    expect(full.items).toHaveLength(2);
+    expect(full.hasMore).toBe(false);
+  });
+
+  it('«кто ведёт» показывает имя сотрудника, а не прочерк', async () => {
+    const user = await makeUser({ telegramId: `tg-support-owner-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    await claimSupportConversation(db, {
+      conversationId: conversation.id,
+      staffId: SUPPORT_STAFF_ID,
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.assignedOperatorName).toBe(
+      'Менеджер поддержки',
+    );
+  });
+
+  it('обращения ДО появления отметки не выдаются за недоставленные', async () => {
+    // У старых строк meta без ключа: «не знаем» — не повод писать напраслину.
+    const user = await makeUser({ telegramId: `tg-support-legacy-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true },
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      true,
+    );
+  });
+
+  it('неотвеченные обращения считаются по ВСЕЙ базе', async () => {
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-count-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    // Ответ должен быть ПОЗЖЕ обращения; соседние INSERT'ы ложатся в одну
+    // отметку `now()`, и «позже» переставало быть определено.
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    // Ответ снимает обращение со счётчика — иначе цифра на столе не спадает
+    // никогда и её перестают читать.
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+  });
+
+  it('лента отдаёт КОНЕЦ переписки и говорит про обрыв', async () => {
+    const user = await makeUser({ telegramId: `tg-support-thread-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    for (let i = 0; i < 5; i++) {
+      const { id } = await appendMessage(db, {
+        conversationId: conversation.id,
+        role: 'user',
+        content: `сообщение ${i}`,
+      });
+      // Время задаём явно: несколько INSERT'ов подряд ложатся в одну отметку
+      // `now()`, и «последние три» переставали быть определены — тест зеленел
+      // бы от случая, а не от правила.
+      await db
+        .update(schema.messages)
+        .set({ createdAt: new Date(Date.now() + (i + 1) * 1000) })
+        .where(eq(schema.messages.id, id));
+    }
+
+    const thread = await getSupportThreadForPanel(db, conversation.id, 3);
+
+    expect(thread?.messages).toHaveLength(3);
+    // Читают сверху вниз, а показывать надо последние: порядок хронологический.
+    expect(thread?.messages.at(-1)?.content).toBe('сообщение 4');
+    expect(thread?.hasMore).toBe(true);
+  });
+
+  it('короткая переписка про обрыв не сочиняет', async () => {
+    const user = await makeUser({ telegramId: `tg-support-short-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    const thread = await getSupportThreadForPanel(db, conversation.id, 50);
+
+    expect(thread?.hasMore).toBe(false);
+    expect(thread?.messages).toHaveLength(2);
+  });
+
+  it('несуществующий диалог — null, а не пустая лента', async () => {
+    expect(
+      await getSupportThreadForPanel(db, '00000000-0000-4000-8000-00000000dead'),
+    ).toBeNull();
+  });
+
+  it('подключение закрепляет диалог, второй сотрудник получает отказ', async () => {
+    const user = await makeUser({ telegramId: `tg-support-claim-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('claimed');
+    // Двое, отвечающие одному клиенту, — то, ради чего кнопка и существует.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: OTHER_STAFF_ID,
+      }),
+    ).toBe('taken');
+    // Повторное нажатие ТЕМ ЖЕ сотрудником отказом не является.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('claimed');
+    // Несуществующий диалог — это НЕ «занято коллегой»: одинаковый ответ
+    // отправлял бы менеджера искать несуществующего человека.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: '00000000-0000-4000-8000-00000000dead',
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('not_found');
+
+    const thread = await getSupportThreadForPanel(db, conversation.id);
+    expect(thread?.handoffMode).toBe('operator');
+    expect(thread?.assignedOperatorId).toBe(SUPPORT_STAFF_ID);
   });
 });
 

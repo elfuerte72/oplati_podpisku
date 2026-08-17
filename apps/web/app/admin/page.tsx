@@ -2,9 +2,11 @@ import Link from 'next/link';
 
 import {
   countPendingOrdersForPanel,
+  countUnansweredSupportRequests,
   getDb,
   listHoldsForPanel,
   listPendingOrdersForPanel,
+  listSupportRequestsForPanel,
 } from '@oplati/db';
 
 import { PanelShell } from '@/components/panel/PanelShell';
@@ -24,7 +26,10 @@ import { readVccBalanceForPanel } from '@/lib/panel/vcc-balance';
  *
  * ⚠️ Графиков здесь нет ни одного: на вопрос «как идут дела» отвечает Metabase.
  *
- * Блок «новые обращения» приедет тикетом 10.
+ * Каждый блок спрашивается ТОЛЬКО при праве на соответствующий раздел, и
+ * «не смотрели» отличается от «ноль»: иначе роль без доступа читала бы
+ * «всё спокойно» как утверждение о том, чего мы не проверяли.
+ *
  */
 
 export const dynamic = 'force-dynamic';
@@ -39,8 +44,9 @@ export default async function PanelHomePage() {
 
   const canPending = canAccess(actor.role, 'pending');
   const canHolds = canAccess(actor.role, 'holds');
+  const canSupport = canAccess(actor.role, 'support');
 
-  const [pending, pendingTotals, holds, balance] = await Promise.all([
+  const [pending, pendingTotals, holds, balance, support, unansweredCount] = await Promise.all([
     canPending ? listPendingOrdersForPanel(db, { limit: 5 }) : Promise.resolve(null),
     // Число и деньги — из БАЗЫ, а не по пяти видимым строкам: «5+ на 50 000 ₽»
     // при сорока заказах на 200 000 ₽ занижает ровно то, ради чего блок и
@@ -48,6 +54,12 @@ export default async function PanelHomePage() {
     canPending ? countPendingOrdersForPanel(db) : Promise.resolve(null),
     canHolds ? listHoldsForPanel(db, 5) : Promise.resolve(null),
     canHolds ? readVccBalanceForPanel() : Promise.resolve(null),
+    canSupport ? listSupportRequestsForPanel(db, { limit: 5 }) : Promise.resolve(null),
+    // Счётчик — из БАЗЫ: «новых» может не оказаться среди пяти свежих строк
+    // (клиент написал вчера, ему не ответили, сегодня пришло пять отвеченных),
+    // и стол утверждал бы «все обращения отвечены» ровно в том случае, ради
+    // которого блок и заведён.
+    canSupport ? countUnansweredSupportRequests(db) : Promise.resolve(null),
   ]);
 
   const balanceLow =
@@ -60,6 +72,7 @@ export default async function PanelHomePage() {
     pendingCount: pendingTotals?.count ?? null,
     holdsCount: holds ? holds.items.length : null,
     balanceLow,
+    unansweredSupportCount: unansweredCount,
   });
 
   return (
@@ -124,6 +137,25 @@ export default async function PanelHomePage() {
             )}
             <p style={{ marginTop: 8 }}>
               <Link href="/admin/holds">Открыть список</Link>
+            </p>
+          </section>
+        ) : null}
+
+        {canSupport ? (
+          <section className="panel-card">
+            <h2 className="panel-title">Новые обращения</h2>
+            {unansweredCount !== null && unansweredCount > 0 ? (
+              <p>
+                <span className="panel-status panel-status--warn" style={{ fontSize: 16 }}>
+                  {unansweredCount}
+                </span>{' '}
+                <span className="panel-muted">без ответа</span>
+              </p>
+            ) : (
+              <p className="panel-empty">Все обращения отвечены.</p>
+            )}
+            <p style={{ marginTop: 8 }}>
+              <Link href="/admin/support">Открыть список</Link>
             </p>
           </section>
         ) : null}

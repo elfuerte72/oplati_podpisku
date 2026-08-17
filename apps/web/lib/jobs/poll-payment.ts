@@ -7,10 +7,12 @@ import {
   findStuckInFulfillmentOrders,
   findStuckPaidOrders,
   getDb,
+  getOrderById,
 } from '@oplati/db';
 
 import { childLogger } from '../logger.ts';
 import { isPaySpaceConfigured } from '../pay-space/index.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 import { issueCard } from './issue-card.ts';
 import { pollPaymentOnce } from './poll-payment-one.ts';
 import { alertOnStalePaymentReview } from './payment-review-watch.ts';
@@ -146,6 +148,25 @@ export async function pollPayments(): Promise<{
               tags: { source: 'cron.poll-payment', step: 'refulfill' },
               extra: { orderId: order.id },
             });
+          }
+
+          // ⚠️ Менеджеру пишем, только если ПОВТОР НЕ ПОМОГ (тикет 11): сам
+          // факт застревания лечится этим же кроном, и уведомлять о каждом
+          // значило бы звать человека к уже починенному. Проверяем ФАКТ —
+          // статус заказа после попытки, а не отсутствие исключения:
+          // `issueCard` ловит свои ошибки сам и уводит заказ в `failed` молча.
+          try {
+            const after = await getOrderById(db, order.id);
+            if (after && after.status !== 'completed' && after.status !== 'in_fulfillment') {
+              await notifyStaff(
+                `Заказ ${after.shortId} застрял после оплаты: автоматический повтор выпуска ` +
+                  `карты не помог, статус «${after.status}». Нужна ручная проверка — ` +
+                  `/admin/orders/${after.shortId}`,
+                { dedupKey: `stuck:${order.id}`, capability: 'orders' },
+              );
+            }
+          } catch (err) {
+            log.error({ event: 'cron.poll_payment.stuck_notify_failed', orderId: order.id, err });
           }
         }
       }

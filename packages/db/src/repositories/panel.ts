@@ -2,12 +2,24 @@ import { and, asc, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
 
 import {
   FREEKASSA_ORDER_STATUS,
+  SUPPORT_DELIVERED_META_KEY,
+  SUPPORT_REQUEST_META_KEY,
   type CardStatus,
   type OrderStatus,
   type PaymentStatus,
 } from '@oplati/types';
 
-import { cards, orderEvents, orders, payments, services, staff, users } from '../schema.ts';
+import {
+  cards,
+  conversations,
+  messages,
+  orderEvents,
+  orders,
+  payments,
+  services,
+  staff,
+  users,
+} from '../schema.ts';
 import type { DB } from '../index.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import {
@@ -965,4 +977,264 @@ export async function countPendingOrdersForPanel(
     count: Number(rows[0]?.cnt ?? 0),
     sumKopecks: Number(rows[0]?.total ?? 0),
   };
+}
+
+// ─── Поддержка (тикет 10) ─────────────────────────────────────────────────
+
+// Ключи отметки «обращение подано» — общие с писателем (`@oplati/types`):
+// зеркала здесь нет, значение одно на оба пакета.
+
+export type PanelSupportRequest = {
+  conversationId: string;
+  client: PanelHoldClient;
+  /** Когда клиент обратился в последний раз. */
+  lastRequestAt: Date;
+  /** Дошло ли последнее обращение до оператора (false — авария конфигурации). */
+  lastRequestDelivered: boolean;
+  /**
+   * Когда оператор ответил НА ПОСЛЕДНЕЕ обращение (`null` — не ответил).
+   * Именно на последнее: разговор один на клиента, и «когда-то отвечали»
+   * означало бы, что повторное обращение постоянного клиента навсегда
+   * числится отвеченным.
+   */
+  lastOperatorReplyAt: Date | null;
+  /** Кто ведёт диалог. */
+  assignedOperatorName: string | null;
+  handoffMode: string;
+};
+
+/**
+ * Обращения в поддержку (спека §5.6). Единица — РАЗГОВОР, а не сообщение:
+ * «кто ведёт» и «подключиться» живут на `conversations`.
+ *
+ * Свежие сверху: у обращения ценность падает с каждым часом молчания.
+ */
+export async function listSupportRequestsForPanel(
+  db: DB,
+  opts: { limit?: number; userId?: string } = {},
+): Promise<{ items: PanelSupportRequest[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+
+  // ⚠️ Идём ОТ СООБЩЕНИЙ, а не от разговоров. LATERAL по всей таблице
+  // `conversations` выполнялся бы для каждой её строки, а она не чистится
+  // ретеншеном и растёт бессрочно — при живом обновлении раз в 25 секунд это
+  // линейная по всей истории стоимость на каждой открытой вкладке. Обращения
+  // живут в `messages`, и там есть индекс `(conversation_id, created_at)`.
+  const conditions = [sql`(m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'`];
+  if (opts.userId) conditions.push(sql`c.user_id = ${opts.userId}`);
+
+  const rows = await db.execute<{
+    conversation_id: string;
+    user_id: string;
+    display_name: string | null;
+    telegram_id: string | null;
+    last_request_at: Date | string;
+    last_delivered: boolean | string | null;
+    last_reply_at: Date | string | null;
+    operator_name: string | null;
+    handoff_mode: string;
+  }>(sql`
+    WITH requests AS (
+      SELECT m.conversation_id,
+             max(m.created_at) AS last_request_at,
+             (array_agg(m.meta ->> ${SUPPORT_DELIVERED_META_KEY}
+                        ORDER BY m.created_at DESC))[1] AS last_delivered
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE ${sql.join(conditions, sql` AND `)}
+      GROUP BY m.conversation_id
+      ORDER BY max(m.created_at) DESC
+      LIMIT ${maxRows + 1}
+    )
+    SELECT c.id AS conversation_id,
+           u.id AS user_id,
+           u.display_name,
+           u.telegram_id,
+           r.last_request_at,
+           r.last_delivered,
+           -- Ответ ПОСЛЕ последнего обращения, а не любой в истории: разговор
+           -- один на клиента, и постоянный клиент, которому когда-то отвечали,
+           -- иначе навсегда числился бы отвеченным.
+           (SELECT max(o.created_at) FROM messages o
+             WHERE o.conversation_id = c.id
+               AND o.role = 'operator'
+               AND o.created_at > r.last_request_at) AS last_reply_at,
+           s.display_name AS operator_name,
+           c.handoff_mode
+    FROM requests r
+    JOIN conversations c ON c.id = r.conversation_id
+    JOIN users u ON u.id = c.user_id
+    LEFT JOIN staff s ON s.id = c.assigned_operator_id
+    ORDER BY r.last_request_at DESC
+  `);
+
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((row) => ({
+    conversationId: row.conversation_id,
+    client: {
+      id: row.user_id,
+      displayName: row.display_name,
+      telegramId: row.telegram_id,
+    },
+    lastRequestAt: new Date(row.last_request_at),
+    // `null` в отметке — обращения ДО появления признака (18 августа): про них
+    // мы не знаем, дошли ли они, и «не доставлено» было бы напраслиной.
+    lastRequestDelivered: row.last_delivered === null ? true : String(row.last_delivered) === 'true',
+    lastOperatorReplyAt: row.last_reply_at === null ? null : new Date(row.last_reply_at),
+    assignedOperatorName: row.operator_name,
+    handoffMode: row.handoff_mode,
+  }));
+
+  return { items, hasMore };
+}
+
+export type PanelSupportMessage = {
+  id: string;
+  role: string;
+  content: string;
+  /** Имя сотрудника для строк оператора. */
+  staffName: string | null;
+  createdAt: Date;
+};
+
+export type PanelSupportThread = {
+  conversationId: string;
+  client: PanelHoldClient & { id: string };
+  assignedOperatorId: string | null;
+  assignedOperatorName: string | null;
+  handoffMode: string;
+  messages: PanelSupportMessage[];
+  /**
+   * Сообщений больше, чем показано. Переписка старше 90 дней удаляется кроном
+   * `retention` — обрыв ленты объясняется на экране, а не выглядит потерей.
+   */
+  hasMore: boolean;
+};
+
+/** Лента переписки для карточки обращения. Старые → новые, как её читают. */
+export async function getSupportThreadForPanel(
+  db: DB,
+  conversationId: string,
+  limit?: number,
+): Promise<PanelSupportThread | null> {
+  const maxRows = clampPanelLimit(limit);
+
+  const headRows = await db
+    .select({
+      conversationId: conversations.id,
+      handoffMode: conversations.handoffMode,
+      assignedOperatorId: conversations.assignedOperatorId,
+      operatorName: staff.displayName,
+      clientId: users.id,
+      clientDisplayName: users.displayName,
+      clientTelegramId: users.telegramId,
+    })
+    .from(conversations)
+    .innerJoin(users, eq(conversations.userId, users.id))
+    .leftJoin(staff, eq(conversations.assignedOperatorId, staff.id))
+    .where(eq(conversations.id, conversationId))
+    .limit(1);
+
+  const head = headRows[0];
+  if (!head) return null;
+
+  // Свежие первыми в SQL, разворот в JS: LIMIT по хвосту — единственный способ
+  // показать КОНЕЦ длинной переписки, а читают её сверху вниз.
+  const rows = await db
+    .select({
+      id: messages.id,
+      role: messages.role,
+      content: messages.content,
+      staffName: staff.displayName,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .leftJoin(staff, eq(messages.staffId, staff.id))
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(maxRows + 1);
+
+  const hasMore = rows.length > maxRows;
+  const page = rows.slice(0, maxRows).reverse();
+
+  return {
+    conversationId: head.conversationId,
+    client: {
+      id: head.clientId,
+      displayName: head.clientDisplayName,
+      telegramId: head.clientTelegramId,
+    },
+    assignedOperatorId: head.assignedOperatorId,
+    assignedOperatorName: head.operatorName,
+    handoffMode: head.handoffMode,
+    messages: page.map((row) => ({
+      id: row.id,
+      role: row.role,
+      content: row.content,
+      staffName: row.staffName,
+      createdAt: row.createdAt,
+    })),
+    hasMore,
+  };
+}
+
+/**
+ * «Подключиться к диалогу»: закрепить обращение за сотрудником.
+ *
+ * ⚠️ Занимает диалог ТОЛЬКО если он свободен либо уже за этим же сотрудником —
+ * иначе двое отвечают одному клиенту, а на экране видно имя первого. Возвращает
+ * `false` проигравшему: это не ошибка, а «занято коллегой».
+ */
+export async function claimSupportConversation(
+  db: DB,
+  input: { conversationId: string; staffId: string },
+): Promise<'claimed' | 'taken' | 'not_found'> {
+  const rows = await db.execute<{ id: string }>(sql`
+    UPDATE conversations
+       SET handoff_mode = 'operator',
+           assigned_operator_id = ${input.staffId},
+           updated_at = now()
+     WHERE id = ${input.conversationId}
+       AND (assigned_operator_id IS NULL OR assigned_operator_id = ${input.staffId})
+    RETURNING id
+  `);
+  if (rows.length > 0) return 'claimed';
+
+  // Отличаем «занято коллегой» от «диалога нет»: одинаковый ответ отправлял бы
+  // менеджера искать несуществующего коллегу.
+  const exists = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(eq(conversations.id, input.conversationId))
+    .limit(1);
+  return exists.length > 0 ? 'taken' : 'not_found';
+}
+
+/**
+ * Сколько обращений ждут ответа оператора — по ВСЕЙ базе, а не по видимому
+ * срезу.
+ *
+ * Рабочий стол показывает пять свежих строк. Считать «неотвеченные» по ним
+ * значит утверждать «все обращения отвечены» ровно в случае, который экран и
+ * должен ловить: клиент написал вчера, ему не ответили, сегодня пришло пять
+ * новых и отвеченных.
+ */
+export async function countUnansweredSupportRequests(db: DB): Promise<number> {
+  const rows = await db.execute<{ cnt: string | number }>(sql`
+    SELECT count(*) AS cnt
+    FROM conversations c
+    JOIN LATERAL (
+      SELECT max(m.created_at) AS last_request_at
+      FROM messages m
+      WHERE m.conversation_id = c.id
+        AND (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
+    ) r ON r.last_request_at IS NOT NULL
+    WHERE NOT EXISTS (
+      SELECT 1 FROM messages o
+      WHERE o.conversation_id = c.id
+        AND o.role = 'operator'
+        AND o.created_at > r.last_request_at
+    )
+  `);
+  return Number(rows[0]?.cnt ?? 0);
 }

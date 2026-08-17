@@ -2,7 +2,7 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { serverEnv } from '@/lib/env.server';
+import { vccAlertThresholdsUsdCents } from '@/lib/jobs/vcc-balance';
 import { childLogger } from '@/lib/logger';
 import { getPaySpaceClient, isPaySpaceConfigured } from '@/lib/pay-space';
 
@@ -13,10 +13,12 @@ import { getPaySpaceClient, isPaySpaceConfigured } from '@/lib/pay-space';
  * (нужно было ~$124, лежало $89.50). Пополнение приходит T+1, поэтому ценность
  * не в самом числе, а в том, чтобы увидеть его ЗАРАНЕЕ.
  *
- * ⚠️ Порог берётся из существующего места — `PAYSPACE_MIN_VCC_BALANCE_USD_CENTS`,
- * того же, что питает алёрт (`lib/jobs/vcc-balance.ts`). Второй константы не
- * заводим: разъехавшись, они означали бы, что экран и алёрт спорят о том, когда
- * бить тревогу.
+ * ⚠️ Порог считается ТОЙ ЖЕ функцией, что питает алёрт
+ * (`vccAlertThresholdsUsdCents` в `lib/jobs/vcc-balance.ts`), а не читается из
+ * env напрямую. Своё чтение переменной означало бы, что экран и алёрт спорят о
+ * том, когда бить тревогу: тикет 11 переопределил `0` как «считать
+ * относительно», и панель с прежним «0 = выключено» показывала бы «всё
+ * спокойно» при нулевом счёте — ровно в тот момент, когда крон уже кричит.
  *
  * ⚠️ Никогда не бросает: недоступный провайдер — это «баланс не получен» на
  * экране, а не пятисотка вместо списка холдов.
@@ -50,7 +52,7 @@ const BALANCE_STALE_MAX_MS = 30 * 60_000;
 export type PanelVccBalanceReading = {
   balanceUsdCents: number;
   pendingUsdCents: number;
-  /** Порог из env. `0` — алёрт выключен владельцем, подсветки нет. */
+  /** Критический порог — тот же, что у алёрта. */
   thresholdUsdCents: number;
   low: boolean;
   /** Когда значение реально получено от провайдера. */
@@ -80,7 +82,11 @@ export function resetVccBalanceCacheForTests(): void {
 export async function readVccBalanceForPanel(now: Date = new Date()): Promise<PanelVccBalance> {
   if (!isPaySpaceConfigured()) return { state: 'not_configured' };
 
-  const thresholdUsdCents = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
+  // Подсвечиваем по КРИТИЧЕСКОМУ уровню: «не хватает на типовой заказ» —
+  // это состояние, требующее действия сегодня. Второй уровень (не хватает на
+  // самый дорогой заказ) нормален и длителен, и красить им экран целый день
+  // значит приучить смотреть мимо.
+  const thresholdUsdCents = vccAlertThresholdsUsdCents().critical;
   const nowMs = now.getTime();
 
   if (cached && nowMs - cached.readAt < BALANCE_CACHE_TTL_MS) {
@@ -126,9 +132,7 @@ function reading(
     balanceUsdCents: value.balanceUsdCents,
     pendingUsdCents: value.pendingUsdCents,
     thresholdUsdCents,
-    // Порог `0` означает «алёрт выключен» (решение владельца) — тогда и
-    // подсвечивать нечего: любое значение формально «выше нуля».
-    low: thresholdUsdCents > 0 && value.balanceUsdCents < thresholdUsdCents,
+    low: value.balanceUsdCents < thresholdUsdCents,
     readAt: new Date(value.readAt),
   };
 }

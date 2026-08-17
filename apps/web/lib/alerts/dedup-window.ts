@@ -19,18 +19,41 @@ export class DedupWindow {
 
   /**
    * true — окно свободно, событие фиксируется за вызывающим (слать можно);
-   * false — в окне уже слали. Заодно чистит протухшие записи: событие редкое,
+   * false — в окне уже слали.
+   *
+   * `windowMs` можно переопределить на вызов: у разных событий разная цена
+   * повтора, а окно у экземпляра одно. Без этого «раз в сутки» и «раз в час»
+   * отличались бы только текстом ключа — и оба шумели бы раз в час.
+   */
+  shouldSend(key: string, now: number = Date.now(), windowMs: number = this.windowMs): boolean {
+    if (!this.isFree(key, now, windowMs)) return false;
+    this.record(key, now, windowMs);
+    return true;
+  }
+
+  /**
+   * Свободно ли окно — БЕЗ фиксации за вызывающим.
+   *
+   * Нужно там, где отправка может не состояться: занять окно до попытки значит
+   * получить час молчания при живой аварии (база моргнула, все получатели дали
+   * 403). Вызывающий проверяет `isFree`, отправляет и фиксирует `record` только
+   * по факту доставки.
+   */
+  isFree(key: string, now: number = Date.now(), windowMs: number = this.windowMs): boolean {
+    const last = this.sentAt.get(key) ?? 0;
+    return now - last >= windowMs;
+  }
+
+  /**
+   * Зафиксировать отправку. Заодно чистит протухшие записи: событие редкое,
    * отдельный таймер ради него не нужен, а без чистки Map росла бы всё время
    * жизни процесса.
    */
-  shouldSend(key: string, now: number = Date.now()): boolean {
-    const last = this.sentAt.get(key) ?? 0;
-    if (now - last < this.windowMs) return false;
+  record(key: string, now: number = Date.now(), windowMs: number = this.windowMs): void {
     for (const [k, at] of this.sentAt) {
-      if (now - at >= this.windowMs) this.sentAt.delete(k);
+      if (now - at >= windowMs) this.sentAt.delete(k);
     }
     this.sentAt.set(key, now);
-    return true;
   }
 
   /** Только для unit-тестов. */

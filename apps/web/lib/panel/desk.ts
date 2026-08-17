@@ -20,6 +20,8 @@ export type DeskSignals = {
   holdsCount: number | null;
   /** Баланс карточного счёта ниже порога. `null` — не смотрели/не получили. */
   balanceLow: boolean | null;
+  /** Обращений без ответа оператора. `null` — не смотрели. */
+  unansweredSupportCount: number | null;
 };
 
 /**
@@ -37,6 +39,11 @@ export type DeskSignals = {
  */
 export function isDeskQuiet(signals: DeskSignals): boolean {
   if (signals.pendingCount === null || signals.holdsCount === null) return false;
-  if (signals.balanceLow === null) return false;
-  return signals.pendingCount === 0 && signals.holdsCount === 0 && !signals.balanceLow;
+  if (signals.balanceLow === null || signals.unansweredSupportCount === null) return false;
+  return (
+    signals.pendingCount === 0 &&
+    signals.holdsCount === 0 &&
+    signals.unansweredSupportCount === 0 &&
+    !signals.balanceLow
+  );
 }

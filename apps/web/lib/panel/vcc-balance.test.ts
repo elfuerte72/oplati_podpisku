@@ -18,14 +18,10 @@ vi.mock('@/lib/pay-space', () => ({
   getPaySpaceClient: () => ({ getVccBalance: h.getVccBalance }),
 }));
 
-vi.mock('@/lib/env.server', () => ({
-  serverEnv: new Proxy(
-    {},
-    {
-      get: (_t, prop: string) =>
-        prop === 'PAYSPACE_MIN_VCC_BALANCE_USD_CENTS' ? h.threshold : undefined,
-    },
-  ),
+// Порог экран берёт ТОЙ ЖЕ функцией, что и алёрт: своё чтение env означало бы
+// спор экрана с кроном о том, когда бить тревогу.
+vi.mock('@/lib/jobs/vcc-balance', () => ({
+  vccAlertThresholdsUsdCents: () => ({ critical: h.threshold, low: h.threshold * 10 }),
 }));
 
 vi.mock('@sentry/nextjs', () => ({
@@ -94,17 +90,21 @@ describe('readVccBalanceForPanel', () => {
     });
   });
 
-  it('порог 0 — это «алёрт выключен», а не «всё всегда хорошо»', async () => {
-    // На проде порог сейчас 0 (решение владельца). Подсвечивать нечего:
-    // любое значение формально выше нуля, и «зелёный» ввёл бы в заблуждение.
-    h.threshold = 0;
+  it('экран подсвечивает по ТОМУ ЖЕ порогу, что бьёт крон', async () => {
+    // Тикет 11 переопределил `0` в env как «считать относительно». Экран со
+    // своим прежним «0 = выключено» показывал бы «всё спокойно» при пустом
+    // счёте — ровно тогда, когда крон уже кричит.
+    h.threshold = 12_400;
     h.getVccBalance.mockImplementation(async () => ({
       balanceUsdCents: 1,
       pendingUsdCents: 0,
       currency: 'USD',
     }));
 
-    expect(await readVccBalanceForPanel(NOW)).toMatchObject({ low: false, thresholdUsdCents: 0 });
+    expect(await readVccBalanceForPanel(NOW)).toMatchObject({
+      low: true,
+      thresholdUsdCents: 12_400,
+    });
   });
 
   it('недоступный провайдер не роняет страницу', async () => {
