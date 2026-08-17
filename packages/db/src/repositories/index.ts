@@ -206,3 +206,20 @@ export {
   type AnalyticsEventInsert,
   type AnalyticsDictionaryRow,
 } from './analytics.ts';
+
+export {
+  ASSIGNABLE_STAFF_ROLES,
+  claimStaffTotpStep,
+  confirmStaffTotp,
+  findStaffById,
+  findStaffByTelegramId,
+  listStaff,
+  resetStaffTotpByTelegramId,
+  setStaffActiveByTelegramId,
+  startStaffTotpEnrollment,
+  touchStaffLastLogin,
+  upsertStaffByTelegramId,
+  type StaffMember,
+  type StaffRole,
+  type UpsertStaffInput,
+} from './staff.ts';

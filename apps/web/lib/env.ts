@@ -186,6 +186,38 @@ const serverEnvSchema = z.object({
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
 
+  // ─── Админ-панель (`/admin`) ─────────────────────────────────────────────
+  //
+  // Вход — Telegram Login Widget (первый фактор) + TOTP (второй). Паролей нет.
+  // Бот входа ОТДЕЛЬНЫЙ от клиентского (`@oplatishkaasupport_bot`): утечка
+  // клиентского токена не должна отдавать первый фактор входа персонала, а
+  // alert-бот остаётся на авариях инфраструктуры.
+  //
+  // ⚠️ Имя бота говорит «support», но это бот ПЕРСОНАЛА: он же доставляет
+  // уведомления менеджеру. Клиентская поддержка живёт в `@oplatishkaa_bot`.
+  //
+  // Не заданы → панель отвечает «вход не настроен» и никого не пускает. Это
+  // осознанный fail-closed: панель видит заказы, клиентов и деньги.
+  TELEGRAM_LOGIN_BOT_TOKEN: optionalEnvString(),
+  // Нужен виджету на странице входа (атрибут `data-telegram-login`).
+  TELEGRAM_LOGIN_BOT_USERNAME: optionalEnvString(
+    z.string().regex(/^[A-Za-z0-9_]{4,64}$/, 'must be a Telegram bot username without @'),
+  ),
+  // Свой секрет вебхука бота персонала — НЕ общий с клиентским ботом: общий
+  // означал бы, что компрометация одного открывает точку приёма другого.
+  TELEGRAM_LOGIN_BOT_WEBHOOK_SECRET: optionalEnvString(),
+  // Подпись cookie сессии панели. Минимум 32 символа: короткий секрет здесь —
+  // это подделка сессии перебором, а сессия панели видит всё.
+  ADMIN_SESSION_SECRET: optionalEnvString(
+    z.string().min(32, 'must be at least 32 characters'),
+  ),
+  // Хост, на котором живёт панель (`admin.oplatishka.com`). Задан — `/admin` и
+  // `/api/panel` на любом другом хосте отдают 404. Это ЗАЩИТА В ГЛУБИНУ поверх
+  // маршрутизации Traefik, а не замена ей: ошибка в конфиге прокси не должна
+  // означать открытую панель. Не задан → гейт по хосту выключен (локальная
+  // разработка, где хост `localhost:3000`).
+  PANEL_HOST: optionalEnvString(),
+
   // Love & Pay (MVP) — RUB-acquiring; preview = pk_test_*, prod = pk_live_*
   LOVEANDPAY_API_KEY: optionalEnvString(),
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),

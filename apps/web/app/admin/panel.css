@@ -1,0 +1,244 @@
+/*
+ * Оформление админ-панели — служебное тёмное, изолированное по разделу.
+ *
+ * ⚠️ `app/globals.css` (комикс-UI сайта, 285 строк) НЕ трогается: панель и сайт
+ * живут в одном приложении, и подмена глобальных токенов сломала бы витрину.
+ * Всё здесь висит под `.panel`, поэтому за пределы `/admin` не протекает.
+ *
+ * Плотные таблицы и ничего лишнего: панель отвечает на вопрос «что мне сделать
+ * сейчас», а не украшает.
+ */
+
+.panel {
+  --panel-bg: #101216;
+  --panel-surface: #171a20;
+  --panel-surface-2: #1e222a;
+  --panel-border: #2a2f39;
+  --panel-text: #e6e8ec;
+  --panel-muted: #9aa1ad;
+  --panel-accent: #4f9dd8;
+  --panel-danger: #d8604f;
+  --panel-warn: #d8a44f;
+  --panel-ok: #4fb87a;
+
+  min-height: 100%;
+  background: var(--panel-bg);
+  color: var(--panel-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.panel a {
+  color: var(--panel-accent);
+  text-decoration: none;
+}
+.panel a:hover {
+  text-decoration: underline;
+}
+
+.panel-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--panel-border);
+  background: var(--panel-surface);
+}
+
+.panel-brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.panel-nav {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.panel-nav a {
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--panel-muted);
+}
+.panel-nav a:hover {
+  background: var(--panel-surface-2);
+  color: var(--panel-text);
+  text-decoration: none;
+}
+.panel-nav a[aria-current="page"] {
+  background: var(--panel-surface-2);
+  color: var(--panel-text);
+}
+
+.panel-actor {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--panel-muted);
+}
+
+.panel-main {
+  flex: 1;
+  padding: 20px 16px 48px;
+}
+
+/* Ширину не зажимаем: таблицы заказов шире типографской колонки. */
+.panel-content {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.panel-card {
+  background: var(--panel-surface);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.panel-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.panel-muted {
+  color: var(--panel-muted);
+}
+
+.panel-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--panel-muted);
+}
+
+.panel-error {
+  border: 1px solid var(--panel-danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #ffd9d3;
+  background: rgba(216, 96, 79, 0.12);
+}
+
+.panel-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-surface-2);
+  color: var(--panel-text);
+  font: inherit;
+  cursor: pointer;
+}
+.panel-button:hover {
+  border-color: var(--panel-accent);
+}
+.panel-button[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.panel-input {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  color: var(--panel-text);
+  font: inherit;
+}
+.panel-input:focus {
+  outline: 2px solid var(--panel-accent);
+  outline-offset: 1px;
+}
+
+.panel-code-input {
+  font-size: 24px;
+  letter-spacing: 0.4em;
+  text-align: center;
+  width: 100%;
+  max-width: 260px;
+}
+
+.panel-secret {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  word-break: break-all;
+}
+
+/* ── Вход ────────────────────────────────────────────────────────────── */
+
+.panel-login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.panel-login-card {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Таблицы ─────────────────────────────────────────────────────────── */
+
+.panel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-table th,
+.panel-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--panel-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.panel-table th {
+  color: var(--panel-muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.panel-table tbody tr:hover {
+  background: var(--panel-surface-2);
+}
+
+/* Горизонтальная прокрутка вместо перелома вёрстки: панель читают с телефона. */
+.panel-table-scroll {
+  overflow-x: auto;
+}
+
+@media (max-width: 720px) {
+  .panel-header {
+    gap: 8px;
+  }
+  .panel-actor {
+    margin-left: 0;
+    width: 100%;
+  }
+}

@@ -57,6 +57,20 @@ export function withFloodRetry(bot: Bot): Bot {
   return bot;
 }
 
+/**
+ * Числовой id бота — префикс токена до двоеточия. Не секрет (виден в любой
+ * ссылке `t.me`), но однозначно разделяет прод и dev в ОБЩЕМ Redis: без него
+ * два контура гасили бы ключи друг друга (дедуп апдейтов, дедуп подсказок).
+ *
+ * Живёт здесь, а не рядом с потребителем: потребителей уже двое
+ * (`app/api/bot/route.ts` и `silent-hint.ts`), а копия формата ключа — зеркало,
+ * которое разъезжается молча.
+ */
+export function botIdFromToken(token: string | undefined): string {
+  const id = token?.split(':')[0];
+  return id && /^\d+$/.test(id) ? id : 'unknown';
+}
+
 export function getBot(): Bot {
   if (_bot) return _bot;
   const token = serverEnv.TELEGRAM_BOT_TOKEN;

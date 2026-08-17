@@ -7,6 +7,7 @@ import { claimOnce, extendClaim } from '@/lib/dedup';
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
+import { botIdFromToken } from '@/lib/telegram/bot';
 import { handleTelegramUpdate } from '@/lib/telegram/handle-update';
 
 /**
@@ -133,15 +134,6 @@ const IN_FLIGHT_TTL_SECONDS = 100;
  * 10 минут покрывают окно с запасом и не превращают Redis в архив.
  */
 const DONE_TTL_SECONDS = 600;
-
-/**
- * Числовой id бота — префикс токена до двоеточия. Не секрет (виден в любой
- * ссылке `t.me`), но однозначно разделяет прод и dev в общем Redis.
- */
-function botIdFromToken(token: string | undefined): string {
-  const id = token?.split(':')[0];
-  return id && /^\d+$/.test(id) ? id : 'unknown';
-}
 
 /**
  * Что обязано быть задано, чтобы бот вообще работал.

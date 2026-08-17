@@ -79,6 +79,18 @@ import {
   upsertVpnSubscription,
 } from './repositories/vpn-subscriptions.ts';
 import {
+  claimStaffTotpStep,
+  confirmStaffTotp,
+  findStaffById,
+  findStaffByTelegramId,
+  listStaff,
+  resetStaffTotpByTelegramId,
+  setStaffActiveByTelegramId,
+  startStaffTotpEnrollment,
+  touchStaffLastLogin,
+  upsertStaffByTelegramId,
+} from './repositories/staff.ts';
+import {
   deleteOldAnalyticsEvents,
   insertAnalyticsEvents,
   syncAnalyticsDictionary,
@@ -2570,5 +2582,231 @@ describe('RLS: инварианты 7 и 8 под ролью anon', () => {
   it('серверное подключение видит и скрытый каталог (seed идёт мимо public-read policy)', async () => {
     const rows = await db.execute(sql`SELECT 1 FROM services WHERE slug = 'rls-hidden'`);
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('staff (вход в админ-панель: Telegram + TOTP)', () => {
+  async function makeStaff(over: Partial<typeof schema.staff.$inferInsert> = {}) {
+    const n = ++seq;
+    const rows = await db
+      .insert(schema.staff)
+      .values({
+        email: `staff-${n}@example.com`,
+        displayName: `Сотрудник ${n}`,
+        telegramId: `tg-staff-${n}`,
+        role: 'admin',
+        ...over,
+      })
+      .returning();
+    return firstOf(rows, 'staff insert');
+  }
+
+  it('поиск по telegram_id находит сотрудника и отдаёт всё нужное для входа', async () => {
+    const created = await makeStaff({ role: 'operator' });
+
+    const found = await findStaffByTelegramId(db, created.telegramId!);
+
+    expect(found).toMatchObject({
+      id: created.id,
+      role: 'operator',
+      isActive: true,
+      totpSecret: null,
+      totpConfirmedAt: null,
+    });
+  });
+
+  it('неизвестный telegram_id — null (отказ без подробностей строит вызывающий)', async () => {
+    expect(await findStaffByTelegramId(db, 'tg-staff-нет-такого')).toBeNull();
+  });
+
+  it('отключённый сотрудник ВИДЕН репозиторию — решение об отказе принимает панель', async () => {
+    const created = await makeStaff({ isActive: false });
+
+    const found = await findStaffByTelegramId(db, created.telegramId!);
+
+    expect(found?.isActive).toBe(false);
+  });
+
+  it('два сотрудника с одним telegram_id невозможны — иначе «кто вошёл» решает планировщик', async () => {
+    await makeStaff({ telegramId: 'tg-staff-dup' });
+
+    await expect(makeStaff({ telegramId: 'tg-staff-dup' })).rejects.toSatisfy((err: unknown) =>
+      pgErrorMatches(err, /duplicate key|unique/i),
+    );
+  });
+
+  it('привязка TOTP: секрет пишется новичку', async () => {
+    const created = await makeStaff();
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    expect(ok).toBe(true);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET1');
+  });
+
+  it('привязка не доведена до кода — следующий вход выдаёт НОВЫЙ секрет', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET2' });
+
+    expect(ok).toBe(true);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET2');
+  });
+
+  it('подтверждённый TOTP перевыдать нельзя — иначе угон Telegram сбрасывал бы второй фактор', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'SECRET1' });
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'EVIL' });
+
+    expect(ok).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET1');
+  });
+
+  it('подтверждение TOTP срабатывает один раз', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    const args = { staffId: created.id, expectedSecret: 'SECRET1' };
+    expect(await confirmStaffTotp(db, args)).toBe(true);
+    expect(await confirmStaffTotp(db, args)).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpConfirmedAt).toBeInstanceOf(Date);
+  });
+
+  it('подтвердить TOTP без секрета невозможно', async () => {
+    const created = await makeStaff();
+
+    expect(
+      await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'SECRET1' }),
+    ).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpConfirmedAt).toBeNull();
+  });
+
+  it('успешный вход отмечается временем', async () => {
+    const created = await makeStaff();
+    expect(created.lastLoginAt).toBeNull();
+
+    await touchStaffLastLogin(db, created.id);
+
+    expect((await findStaffById(db, created.id))?.lastLoginAt).toBeInstanceOf(Date);
+  });
+
+  it('заведение сотрудника идемпотентно по telegram_id — повтор скрипта не плодит строк', async () => {
+    const first = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-upsert',
+      email: 'upsert@example.com',
+      displayName: 'Владелец',
+      role: 'admin',
+    });
+    const second = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-upsert',
+      email: 'upsert@example.com',
+      displayName: 'Владелец (переименован)',
+      role: 'admin',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.displayName).toBe('Владелец (переименован)');
+  });
+
+  it('повторное заведение НЕ сбрасывает второй фактор — иначе скрипт молча снимал бы защиту', async () => {
+    const created = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-keep-totp',
+      email: 'keep-totp@example.com',
+      displayName: 'Сотрудник',
+      role: 'operator',
+    });
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'KEEPME' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'KEEPME' });
+
+    await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-keep-totp',
+      email: 'keep-totp@example.com',
+      displayName: 'Сотрудник',
+      role: 'admin',
+    });
+
+    const after = await findStaffById(db, created.id);
+    expect(after?.totpSecret).toBe('KEEPME');
+    expect(after?.totpConfirmedAt).toBeInstanceOf(Date);
+    expect(after?.role).toBe('admin');
+  });
+
+  it('перевыдача TOTP потерявшему телефон стирает и секрет, и подтверждение', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'OLD' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'OLD' });
+
+    const reset = await resetStaffTotpByTelegramId(db, created.telegramId!);
+
+    expect(reset).toBe(true);
+    const after = await findStaffById(db, created.id);
+    expect(after?.totpSecret).toBeNull();
+    expect(after?.totpConfirmedAt).toBeNull();
+  });
+
+  it('отключение доступа работает по telegram_id', async () => {
+    const created = await makeStaff();
+
+    expect(await setStaffActiveByTelegramId(db, created.telegramId!, false)).toBe(true);
+    expect((await findStaffById(db, created.id))?.isActive).toBe(false);
+  });
+
+  it('подтверждение сверяет секрет: соседняя вкладка перевыдала — чужой не подтверждается', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'S1' });
+    // Вкладка B прошла первый фактор заново и перезаписала секрет.
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'S2' });
+
+    // Вкладка A досчитала код от S1 и пытается подтвердить.
+    const confirmed = await confirmStaffTotp(db, {
+      staffId: created.id,
+      expectedSecret: 'S1',
+    });
+
+    expect(confirmed).toBe(false);
+    const after = await findStaffById(db, created.id);
+    // Иначе подтверждённым стал бы S2, которым никто владения не доказал, —
+    // и сотрудник заперт до ручного reset-totp.
+    expect(after?.totpConfirmedAt).toBeNull();
+    expect(after?.totpSecret).toBe('S2');
+  });
+
+  it('окно TOTP занимается один раз — код не переигрывается', async () => {
+    const created = await makeStaff();
+
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1000 })).toBe(true);
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1000 })).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpLastStep).toBe(1000);
+  });
+
+  it('старое окно из допуска +-1 тоже не принимается повторно', async () => {
+    const created = await makeStaff();
+    await claimStaffTotpStep(db, { staffId: created.id, step: 1000 });
+
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 999 })).toBe(false);
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1001 })).toBe(true);
+  });
+
+  it('перевыдача TOTP сбрасывает и занятое окно — новый секрет начинает с чистого листа', async () => {
+    const created = await makeStaff();
+    await claimStaffTotpStep(db, { staffId: created.id, step: 5000 });
+
+    await resetStaffTotpByTelegramId(db, created.telegramId!);
+
+    expect((await findStaffById(db, created.id))?.totpLastStep).toBeNull();
+  });
+
+  it('список персонала отдаёт всех, включая отключённых', async () => {
+    const active = await makeStaff();
+    const disabled = await makeStaff({ isActive: false });
+
+    const list = await listStaff(db);
+    const ids = list.map((s) => s.id);
+
+    expect(ids).toContain(active.id);
+    expect(ids).toContain(disabled.id);
   });
 });

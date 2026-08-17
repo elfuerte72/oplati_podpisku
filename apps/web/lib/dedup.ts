@@ -111,6 +111,26 @@ export async function claimOnce(key: string, ttlSeconds: number): Promise<boolea
 }
 
 /**
+ * Отпускает взятый ключ: работа НЕ состоялась, и право должно вернуться.
+ *
+ * Нужно там, где claim охраняет побочный эффект, который может не случиться
+ * (подсказка «бот не молчит»: Telegram ответил ошибкой). Без возврата права
+ * несостоявшаяся отправка запирала бы событие на весь TTL.
+ *
+ * Не бросает: не сняли ключ — худшее следствие в том, что повтор произойдёт
+ * позже, по истечении срока.
+ */
+export async function releaseClaim(key: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await withTimeout(redis.del(key));
+  } catch (err) {
+    log.warn({ event: 'dedup.release_failed', key, err });
+  }
+}
+
+/**
  * Продлевает уже взятый ключ: работа доведена до конца, повторять её не надо
  * даже если источник ретраит позже.
  *
