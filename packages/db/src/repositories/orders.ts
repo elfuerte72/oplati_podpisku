@@ -485,18 +485,41 @@ export async function findStuckPaidOrders(
  * нельзя авто-перевыпускать (риск двойного fee+суммы) — их разбирает оператор по
  * кабинету PaySpace. Эта функция только НАХОДИТ их для алёрта в `poll-payment`.
  *
- * `paidAt` как прокси времени входа в fulfillment: `in_fulfillment` следует за
- * `paid` в пределах секунд, отдельной метки времени для статуса нет.
+ * ⚠️ Время входа в статус берётся из `order_events`, а НЕ из `paid_at`.
+ * Прежде `paid_at` работал прокси («`in_fulfillment` следует за `paid` в
+ * пределах секунд»), но с ручной выдачей (тикет 06 админ-панели) это перестало
+ * быть правдой: оператор берёт в работу заказ, оплаченный НЕСКОЛЬКО ДНЕЙ назад,
+ * и по старому условию он попадал в «зависшие» с первой же секунды — Sentry
+ * `error` каждые пять минут всё время, пока идёт ручная работа. Настоящий
+ * случай (карта выпущена у провайдера, но не записана) утонул бы в этом шуме.
+ *
+ * Побочно чинится зеркальная дыра: заказ, попавший в `in_fulfillment` без
+ * `paid_at`, по прежнему условию не алёртился НИКОГДА (`NULL < cutoff` — NULL).
+ *
+ * `COALESCE` на `paid_at` — страховка для строк без события перехода (данные
+ * до появления журнала): такой заказ не должен молча выпасть из наблюдения.
  */
 export async function findStuckInFulfillmentOrders(
   db: DB,
   input: { olderThanMs: number },
 ): Promise<OrderRow[]> {
   const cutoff = new Date(Date.now() - input.olderThanMs);
+  // ISO-строка, а не Date: postgres-js падает на Date в raw-`sql`-фрагменте
+  // (инцидент 2026-08-15), а PGlite это переваривает — регресс был бы невидим.
+  const cutoffIso = cutoff.toISOString();
   return await db
     .select()
     .from(orders)
-    .where(and(eq(orders.status, 'in_fulfillment'), lt(orders.paidAt, cutoff)))
+    .where(
+      and(
+        eq(orders.status, 'in_fulfillment'),
+        sql`COALESCE(
+          (SELECT max(e.created_at) FROM order_events e
+            WHERE e.order_id = ${orders.id} AND e.to_status = 'in_fulfillment'),
+          ${orders.paidAt}
+        ) < ${cutoffIso}::timestamptz`,
+      ),
+    )
     .orderBy(asc(orders.paidAt))
     .limit(STUCK_BATCH_LIMIT);
 }

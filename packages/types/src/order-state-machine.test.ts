@@ -46,6 +46,31 @@ describe('state machine', () => {
     expect(isAllowedTransition('refunded', 'paid')).toBe(false);
   });
 
+  it('failed → in_fulfillment: ручная выдача возвращает заказ в работу', () => {
+    // Тикет 06 админ-панели. Случай ORD-J6TBP от 14 августа: клиент заплатил
+    // 11 680 ₽, карту выпустить не смогли (не хватило баланса субаккаунта),
+    // реквизиты отправили руками — а заказ остался `failed`, то есть вне
+    // выручки (PURCHASED_ORDER_STATUSES) и с погашенной комиссией партнёра.
+    expect(isAllowedTransition('failed', 'in_fulfillment')).toBe(true);
+  });
+
+  it('ручная выдача идёт ДВУМЯ шагами, а не прыжком в completed', () => {
+    // `order_events` append-only, и по нему считается выручка: два шага честно
+    // записывают «работу начали» и «работу закончили». Прыжок сразу в
+    // `completed` такой записи не оставит.
+    expect(isAllowedTransition('failed', 'completed')).toBe(false);
+    expect(isAllowedTransition('in_fulfillment', 'completed')).toBe(true);
+  });
+
+  it('failed не становится проходным двором: остальные выходы закрыты', () => {
+    expect(isAllowedTransition('failed', 'refund_requested')).toBe(true);
+    expect(isAllowedTransition('failed', 'paid')).toBe(false);
+    expect(isAllowedTransition('failed', 'pending_payment')).toBe(false);
+    expect(isAllowedTransition('failed', 'payment_review')).toBe(false);
+    expect(isAllowedTransition('failed', 'cancelled')).toBe(false);
+    expect(isAllowedTransition('failed', 'expired')).toBe(false);
+  });
+
   it('MVP-кейсы из плана', () => {
     // План:
     //   pending_payment → paid | expired | cancelled | failed

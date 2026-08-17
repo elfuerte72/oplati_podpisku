@@ -30,6 +30,9 @@ import {
   countRefundishHistoryByUser,
   createDraftOrder,
   findExpiredPayableOrders,
+  findStuckInFulfillmentOrders,
+  getOrderById,
+  getOrderEventsByOrderId,
   findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
   transitionOrderDetailed,
@@ -57,6 +60,7 @@ import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
   reverseAccrualsForOrder,
+  findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
   findPurchasedOrdersWithReversedAccruals,
   findNegativeReferralBalances,
@@ -83,7 +87,9 @@ import {
   PANEL_MAX_ROWS,
   clampPanelLimit,
   clampPanelOffset,
+  getClientDetailForPanel,
   getOrderDetailForPanel,
+  listHoldsForPanel,
   listOrdersForPanel,
 } from './repositories/panel.ts';
 import {
@@ -3127,5 +3133,407 @@ describe('панель: список заказов и карточка зака
     const detail = await getOrderDetailForPanel(db, ordB1.shortId);
 
     expect(detail?.client).toMatchObject({ id: panelUserB, telegramId: null });
+  });
+});
+
+describe('ручная выдача провалившегося заказа (тикет 06 админ-панели)', () => {
+  /** Заказ реферала с начислением партнёру, который затем провалился. */
+  async function makeFailedOrderWithReversedAccrual() {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 200 }],
+    });
+    // Путь заказа до провала: оплачен → в работе → провалился (не хватило
+    // баланса VCC-субаккаунта на выпуск карты — случай ORD-J6TBP).
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'in_fulfillment' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'failed' });
+    // Провал гасит комиссию компенсирующей строкой (как markOrderFailed).
+    await reverseAccrualsForOrder(db, order.id);
+    return { partner, buyer, order, payment };
+  }
+
+  it('переход failed → in_fulfillment разрешён и пишет событие с автором', async () => {
+    const { order } = await makeFailedOrderWithReversedAccrual();
+
+    const res = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      actorId: '00000000-0000-4000-8000-0000000000ff',
+      eventType: 'manual_fulfillment_started',
+      payload: { comment: 'реквизиты отправили вручную' },
+    });
+
+    expect(res.transitioned).toBe(true);
+    const events = await getOrderEventsByOrderId(db, order.id);
+    const started = events.find((e) => e.eventType === 'manual_fulfillment_started');
+    expect(started).toMatchObject({
+      fromStatus: 'failed',
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+    });
+    // Кто и почему — в журнале: он append-only и по нему считается выручка.
+    expect(started?.payload).toMatchObject({ comment: 'реквизиты отправили вручную' });
+    expect(started?.actorId).toBe('00000000-0000-4000-8000-0000000000ff');
+  });
+
+  it('прыжок сразу в completed по-прежнему запрещён', async () => {
+    const { order } = await makeFailedOrderWithReversedAccrual();
+
+    await expect(
+      transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+  });
+
+  it('после двух шагов заказ снова считается состоявшимся', async () => {
+    const { order } = await makeFailedOrderWithReversedAccrual();
+
+    await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      eventType: 'manual_fulfillment_started',
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' });
+
+    const after = await getOrderById(db, order.id);
+    expect(after?.status).toBe('completed');
+    expect(PURCHASED_ORDER_STATUSES).toContain('completed');
+  });
+
+  /**
+   * Ответ на вопрос чеклиста тикета 06: реферальные начисления сами НЕ
+   * восстанавливаются. Это не сломано тикетом — так устроен ledger, и вот
+   * почему это приемлемо: расхождение НЕ теряется молча, его ловит зеркальная
+   * сверка `findPurchasedOrdersWithReversedAccruals` и показывает владельцу.
+   *
+   * Восстановление ручное намеренно: дописать `accrued` автоматически нельзя
+   * (упрётся в частичный UNIQUE), а компенсирующая строка «reversal reversal'а»
+   * в append-only ledger'е — прямой путь к двойному начислению.
+   */
+  it('комиссия партнёра НЕ восстанавливается сама — но и не теряется молча', async () => {
+    const { partner, order } = await makeFailedOrderWithReversedAccrual();
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      eventType: 'manual_fulfillment_started',
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' });
+
+    // 1. Автодобор заказ НЕ подберёт: у него есть строки ledger'а (гашение),
+    //    а `findOrdersMissingReferralAccruals` ищет заказы БЕЗ строк вовсе.
+    const missing = await findOrdersMissingReferralAccruals(db, 50);
+    expect(missing.map((m) => m.orderId)).not.toContain(order.id);
+
+    // 2. Баланс партнёра остаётся нулевым — комиссия не вернулась.
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    // 3. Но зеркальная сверка это ВИДИТ: заказ состоялся, а комиссия погашена.
+    //    Значит владелец узнает и доначислит руками, а не обнаружит потерю от
+    //    партнёра.
+    const underpaid = await findPurchasedOrdersWithReversedAccruals(db, 50);
+    expect(underpaid.map((u) => u.orderId)).toContain(order.id);
+  });
+});
+
+describe('панель: карточка клиента (тикет 04)', () => {
+  it('собирает контакты, заказы, карты и реферальные связи', async () => {
+    const partner = await makeUser({ telegramId: 'tg-client-partner', displayName: 'Партнёр' });
+    const client = await makeUser({
+      telegramId: 'tg-client-main',
+      displayName: 'Клиент',
+      email: 'client@example.com',
+      phone: '+79990001122',
+      phoneSource: 'telegram',
+      referredBy: partner.id,
+      referredBySetAt: new Date(),
+    });
+    const invited = await makeUser({
+      telegramId: 'tg-client-invited',
+      displayName: 'Приглашённый',
+      referredBy: client.id,
+      referredBySetAt: new Date(),
+    });
+    const order = await createDraftOrder(db, {
+      userId: client.id,
+      status: 'completed',
+      customServiceDescription: 'Netflix',
+      amountRub: 99900,
+      originalAmount: 1200,
+      originalCurrency: 'USD',
+    });
+    await db.insert(schema.cards).values({
+      userId: client.id,
+      providerCardId: `client-card-${++seq}`,
+      panMasked: '555555******7777',
+      balanceUsdCents: 300,
+    });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.client).toMatchObject({
+      telegramId: 'tg-client-main',
+      email: 'client@example.com',
+      phone: '+79990001122',
+      phoneSource: 'telegram',
+    });
+    expect(detail?.orders.map((o) => o.shortId)).toContain(order.shortId);
+    expect(detail?.orders[0]).toMatchObject({ serviceName: 'Netflix', amountRubKopecks: 99900 });
+    expect(detail?.cards[0]).toMatchObject({ panMasked: '555555******7777' });
+    expect(detail?.referredBy).toMatchObject({ id: partner.id, displayName: 'Партнёр' });
+    expect(detail?.referrals.map((r) => r.id)).toContain(invited.id);
+  });
+
+  it('клиент только с сайта отдаётся без telegram_id — панель скажет это прямо', async () => {
+    const webOnly = await makeUser({
+      telegramId: null,
+      webSessionId: `web-client-${++seq}`,
+      displayName: null,
+    });
+
+    const detail = await getClientDetailForPanel(db, webOnly.id);
+
+    expect(detail?.client.telegramId).toBeNull();
+    // Наружу уходит ФЛАГ, а не сам `web_session_id`: его значение — содержимое
+    // httpOnly-cookie клиента, то есть живой креденшл (им можно выдать себя за
+    // клиента). Панели достаточно знать, что человек пришёл с сайта.
+    expect(detail?.client.hasWebSession).toBe(true);
+    expect(JSON.stringify(detail)).not.toContain(webOnly.webSessionId);
+  });
+
+  it('клиент без заказов, карт и связей — пустые списки, а не ошибка', async () => {
+    const lonely = await makeUser({ telegramId: `tg-lonely-${++seq}` });
+
+    const detail = await getClientDetailForPanel(db, lonely.id);
+
+    expect(detail).not.toBeNull();
+    expect(detail?.orders).toEqual([]);
+    expect(detail?.cards).toEqual([]);
+    expect(detail?.referredBy).toBeNull();
+    expect(detail?.referrals).toEqual([]);
+  });
+
+  it('несуществующий клиент — null, а не исключение', async () => {
+    expect(
+      await getClientDetailForPanel(db, '00000000-0000-4000-8000-00000000dead'),
+    ).toBeNull();
+  });
+
+  it('карта клиента отдаётся только маскированной', async () => {
+    const client = await makeUser({ telegramId: `tg-card-client-${++seq}` });
+    await db.insert(schema.cards).values({
+      userId: client.id,
+      providerCardId: `client-card-${++seq}`,
+      panMasked: '400000******1111',
+      balanceUsdCents: 0,
+    });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(Object.keys(detail?.cards[0] ?? {}).sort()).toEqual([
+      'balanceUsdCents',
+      'createdAt',
+      'id',
+      'panMasked',
+      'status',
+    ]);
+  });
+
+  it('последний живой IP клиента в панель не отдаётся', async () => {
+    const client = await makeUser({ telegramId: `tg-ip-client-${++seq}` });
+    await touchUserLastSeenIp(db, { userId: client.id, ip: '203.0.113.77' });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    // IP нужен антифрод-треку при выставлении счёта; на экране это лишняя PII,
+    // которую менеджеру не с чем сопоставить.
+    expect(JSON.stringify(detail)).not.toContain('203.0.113.77');
+  });
+});
+
+describe('панель: антифрод-холды (тикет 05)', () => {
+  it('заказ на проверке банка попадает в список', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+    const found = rows.find((r) => r.orderId === order.id);
+
+    expect(found).toMatchObject({
+      orderStatus: 'payment_review',
+      lastProviderStatus: 7,
+      client: { telegramId: user.telegramId },
+    });
+    expect(found?.lastProviderStatusAt).toBeInstanceOf(Date);
+  });
+
+  it('платёж с отказом провайдера виден, даже если заказ ещё ждёт оплаты', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-declined-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 8 });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    expect(rows.map((r) => r.orderId)).toContain(order.id);
+  });
+
+  it('обычный заказ без холда в список не попадает', async () => {
+    const user = await makeUser({ telegramId: `tg-nohold-${++seq}` });
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    expect(rows.map((r) => r.orderId)).not.toContain(order.id);
+  });
+
+  it('разрешившийся холд уходит с экрана: оплаченный заказ не показываем', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-resolved-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    // Иначе экран «что требует внимания» копил бы уже закрытые истории.
+    expect(rows.map((r) => r.orderId)).not.toContain(order.id);
+  });
+
+  it('заказ с двумя платежами показывается ОДНОЙ строкой', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-two-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    // Первый счёт закрыт терминально — только после этого частичный UNIQUE
+    // (не более одного ЖИВОГО инвойса на заказ) пропускает второй.
+    await claimPaymentTerminal(db, payment.id);
+    const second = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `hold-second-${++seq}`,
+      amountRub: 50000,
+    });
+    await setPaymentProviderStatus(db, { paymentId: second.payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    expect(rows.filter((r) => r.orderId === order.id)).toHaveLength(1);
+  });
+
+  it('усечение списка холдов не молчит', async () => {
+    // Прежний тест утверждал `Array.isArray(...)` — тавтология при
+    // типизированном возврате, да ещё на базе, где холды уже созданы соседними
+    // тестами. Проверяем то, что действительно может сломаться.
+    const page = await listHoldsForPanel(db, 1);
+
+    expect(page.items.length).toBeLessThanOrEqual(1);
+    expect(typeof page.hasMore).toBe('boolean');
+  });
+});
+
+describe('findStuckInFulfillmentOrders — время входа В СТАТУС, а не paid_at', () => {
+  const THIRTY_MIN = 30 * 60 * 1000;
+
+  /**
+   * Состояние собирается ПРЯМЫМИ вставками: событие журнала нельзя состарить
+   * UPDATE'ом — `order_events` append-only на уровне триггера БД (инвариант 1),
+   * и это правильно. INSERT с нужным временем триггер разрешает.
+   */
+  async function makeOrderInFulfillment(input: { enteredAgoMs: number; paidAgoMs: number | null }) {
+    const user = await makeUser({ telegramId: `tg-stuck-${++seq}` });
+    // Заказ создаётся ЧЕРНОВИКОМ: `createDraftOrder` пишет стартовое событие с
+    // тем статусом, который ему передали, и оно оказалось бы свежее нашего —
+    // `max()` брал бы его, а тест проверял бы не то, что заявляет.
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'stuck-test',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    await db.execute(sql`UPDATE orders SET status = 'in_fulfillment' WHERE id = ${order.id}`);
+    if (input.paidAgoMs !== null) {
+      const paidAt = new Date(Date.now() - input.paidAgoMs).toISOString();
+      await db.execute(
+        sql`UPDATE orders SET paid_at = ${paidAt}::timestamptz WHERE id = ${order.id}`,
+      );
+    }
+    await db.insert(schema.orderEvents).values({
+      orderId: order.id,
+      actorType: 'system',
+      eventType: 'status_changed',
+      fromStatus: 'paid',
+      toStatus: 'in_fulfillment',
+      createdAt: new Date(Date.now() - input.enteredAgoMs),
+    });
+    return order;
+  }
+
+  it('заказ, давно вошедший в работу, находится', async () => {
+    const order = await makeOrderInFulfillment({
+      enteredAgoMs: 3 * 3600_000,
+      paidAgoMs: 3 * 3600_000,
+    });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
+  });
+
+  it('РУЧНАЯ выдача старого заказа не считается зависшей', async () => {
+    // Регрессия тикета 06: оператор берёт в работу заказ, оплаченный неделю
+    // назад. По прежнему условию (`paid_at < now-30мин`) он попадал в
+    // «зависшие» с первой секунды, и Sentry-алёрт летел каждые пять минут всё
+    // время ручной работы — настоящий случай утонул бы в этом шуме.
+    const order = await makeOrderInFulfillment({
+      enteredAgoMs: 1000,
+      paidAgoMs: 7 * 24 * 3600_000,
+    });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).not.toContain(order.id);
+  });
+
+  it('заказ БЕЗ paid_at тоже попадает под наблюдение', async () => {
+    // Зеркальная дыра прежнего условия: `NULL < cutoff` — это NULL, поэтому
+    // заказ без отметки оплаты не алёртился НИКОГДА.
+    const order = await makeOrderInFulfillment({ enteredAgoMs: 3 * 3600_000, paidAgoMs: null });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
+  });
+
+  it('заказ без события входа наблюдается по paid_at — страховка для старых строк', async () => {
+    const user = await makeUser({ telegramId: `tg-stuck-legacy-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'stuck-legacy',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    await db.execute(sql`UPDATE orders SET status = 'in_fulfillment' WHERE id = ${order.id}`);
+    const paidAt = new Date(Date.now() - 3 * 3600_000).toISOString();
+    await db.execute(
+      sql`UPDATE orders SET paid_at = ${paidAt}::timestamptz WHERE id = ${order.id}`,
+    );
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
   });
 });

@@ -68,6 +68,19 @@ export const redactPaths: string[] = [
   '*.payload.text',
   '*.payload.caption',
   'err.payload',
+  // Ошибка postgres-js — `Object.assign(this, x)`, то есть её перечисляемые
+  // поля сериализуются pino вместе с ней. При нарушении constraint Postgres
+  // кладёт в `detail` строку «Failing row contains (…)» — ЦЕЛУЮ строку
+  // таблицы: комментарий оператора, контакты клиента, что угодно. `query` и
+  // `params` несут тот же риск (находка ревью пачки 3 админ-панели).
+  'err.detail',
+  'err.where',
+  'err.query',
+  'err.params',
+  '*.err.detail',
+  '*.err.where',
+  '*.err.query',
+  '*.err.params',
   '*.pan',
   '*.cvc',
   '*.cvv',

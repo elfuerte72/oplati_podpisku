@@ -1,8 +1,10 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { getDb, getOrderDetailForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { ManualFulfillment } from '@/components/panel/ManualFulfillment';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
   formatKopecks,
@@ -13,6 +15,11 @@ import {
   priceBreakdown,
   providerStatusLabel,
 } from '@/lib/panel/format';
+import {
+  canCompleteManualFulfillment,
+  canStartManualFulfillment,
+} from '@/lib/panel/fulfillment';
+import { canAccess } from '@/lib/panel/permissions';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { orderShortIdSchema } from '@/lib/panel/order-filters';
 
@@ -82,9 +89,11 @@ export default async function PanelOrderPage({
           <h2 className="panel-title">Клиент</h2>
           <dl className="panel-dl">
             <dt>Имя</dt>
-            {/* Ссылка на карточку клиента появится тикетом 04 вместе с самой
-                карточкой: мёртвая ссылка в панели хуже, чем её отсутствие. */}
-            <dd>{client.displayName ?? 'без имени'}</dd>
+            <dd>
+              <Link href={`/admin/clients/${client.id}`}>
+                {client.displayName ?? 'без имени'}
+              </Link>
+            </dd>
             <dt>Telegram</dt>
             <dd>
               {client.telegramId ?? (
@@ -149,6 +158,42 @@ export default async function PanelOrderPage({
           )}
         </section>
       </div>
+
+      {/* Ручное исполнение (тикет 06). Кнопка появляется ТОЛЬКО в подходящем
+          статусе: разметка действия, которое сервер всё равно отвергнет, лишь
+          путает. Право проверяется и здесь, и в самой операции. */}
+      {canAccess(access.actor.role, 'fulfillment') &&
+      (order.status === 'failed' || canCompleteManualFulfillment(order.status)) ? (
+        <section className="panel-card" style={{ marginTop: 16 }}>
+          <h2 className="panel-title">Ручное исполнение</h2>
+          {order.status === 'failed' ? (
+            canStartManualFulfillment(order.status, detail.hasSucceededPayment) ? (
+              <>
+                <p className="panel-muted">
+                  Заказ числится провалившимся. Если его выдали руками — отметь это: пока он
+                  `failed`, он не в выручке, а комиссия партнёра по нему погашена.
+                </p>
+                <ManualFulfillment shortId={order.shortId} action="start" />
+              </>
+            ) : (
+              // Денег по заказу не было (провайдер отверг счёт) либо пришла
+              // часть. Отметить такой заказ выданным значило бы записать в
+              // выручку то, чего мы не получали.
+              <p className="panel-muted">
+                Успешного платежа по заказу нет, поэтому вручную выдать его нельзя. Если
+                деньги всё-таки пришли — сверь платёж у провайдера, прежде чем что-то менять.
+              </p>
+            )
+          ) : (
+            <>
+              <p className="panel-muted">
+                Заказ в работе. Отметь «выдал», когда клиент получил всё, что оплатил.
+              </p>
+              <ManualFulfillment shortId={order.shortId} action="complete" />
+            </>
+          )}
+        </section>
+      ) : null}
 
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">Платежи</h2>

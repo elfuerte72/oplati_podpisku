@@ -164,10 +164,9 @@ export default async function PanelOrdersPage({
                       <Link href={`/admin/orders/${order.shortId}`}>{order.shortId}</Link>
                     </td>
                     <td>
-                      {/* Ссылка на карточку клиента появится тикетом 04 вместе
-                          с самой карточкой: мёртвая ссылка в панели хуже, чем
-                          её отсутствие. */}
-                      {order.client.displayName ?? order.client.telegramId ?? 'без имени'}
+                      <Link href={`/admin/clients/${order.client.id}`}>
+                        {order.client.displayName ?? order.client.telegramId ?? 'без имени'}
+                      </Link>
                       {order.client.telegramId ? null : (
                         // 47 клиентов из 103 без Telegram: менеджеру важно
                         // видеть это в списке, а не выяснять на карточке.

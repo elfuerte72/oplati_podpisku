@@ -1,7 +1,9 @@
 import 'server-only';
 
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 
 import type { PanelActor } from './login';
@@ -75,6 +77,59 @@ export async function requirePanelActor(): Promise<PanelActor> {
   const actor = await readPanelActor();
   if (!actor) redirect('/admin/login');
   return actor;
+}
+
+/**
+ * Гейт `Origin` для МУТИРУЮЩИХ операций панели.
+ *
+ * ⚠️ `sameSite=lax` от этого НЕ защищает. Он блокирует кросс-САЙТОВЫЕ запросы, а
+ * `admin.oplatishka.com` и `www.oplatishka.com` — один registrable domain, то
+ * есть один site: cookie уедет. Инъекция на публичном сайте могла бы послать
+ * `fetch` с `content-type: text/plain` — это «простой запрос», preflight'а нет,
+ * ответ атакующему недоступен, но МУТАЦИЯ проходит, и в append-only журнале
+ * останется имя ни в чём не виноватого оператора.
+ *
+ * Поэтому два барьера:
+ *   1. `Origin` обязан совпадать с хостом панели. Браузер шлёт его на любой
+ *      POST-`fetch`, подделать из JS нельзя;
+ *   2. тело принимается только как `application/json` — этот content-type сам
+ *      по себе требует preflight, который мы не разрешаем.
+ *
+ * Отсутствующий `Origin` тоже отвергаем: браузер его ставит всегда, а curl'ом
+ * денежные операции панели проводить незачем.
+ */
+export async function assertPanelRequestOrigin(req: Request): Promise<boolean> {
+  const contentType = req.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    log.warn({ event: 'panel.guard.bad_content_type' });
+    return false;
+  }
+
+  const origin = req.headers.get('origin');
+  if (!origin) {
+    log.warn({ event: 'panel.guard.missing_origin' });
+    return false;
+  }
+
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host.split(':')[0]?.toLowerCase() ?? '';
+  } catch {
+    log.warn({ event: 'panel.guard.bad_origin' });
+    return false;
+  }
+
+  // Сверяемся с ТЕМ ЖЕ хостом, что и гейт доступа: заданный `PANEL_HOST`, иначе
+  // хост самого запроса (локальная разработка, где панель живёт на localhost).
+  const expected =
+    serverEnv.PANEL_HOST?.trim().toLowerCase() ||
+    (await headers()).get('host')?.split(':')[0]?.toLowerCase();
+
+  if (!expected || originHost !== expected) {
+    log.warn({ event: 'panel.guard.foreign_origin' });
+    return false;
+  }
+  return true;
 }
 
 /** Ответ на отказ — единый для всех операций панели. */
