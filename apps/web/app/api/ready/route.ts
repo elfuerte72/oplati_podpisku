@@ -60,7 +60,16 @@ export async function GET(): Promise<NextResponse> {
     await pingDb(db);
 
     const applied = await getAppliedMigrations(db);
-    if (applied.latestWhen === null || applied.latestWhen < EXPECTED.latestWhen) {
+    // ⚠️ Сверяем И самую свежую отметку, И ЧИСЛО применённых. По одной отметке
+    // проверка обманывается на пропуске В СЕРЕДИНЕ: применил человек только
+    // последнюю миграцию (её `when` максимален) — и readiness зелёный, хотя
+    // предыдущие не применены. Это дословно инцидент 2026-07-28, ради которого
+    // проверка и заведена, только заходящий с другой стороны.
+    if (
+      applied.latestWhen === null ||
+      applied.latestWhen < EXPECTED.latestWhen ||
+      applied.count < EXPECTED.count
+    ) {
       reasons.push('migrations_pending');
       log.error({
         event: 'api.ready.migrations_pending',

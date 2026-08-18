@@ -71,6 +71,7 @@ import {
 } from './repositories/referral-accruals.ts';
 import {
   createReferralPayout,
+  findReferralPayoutForPanel,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
 import { getMonthlyRollupInput } from './repositories/referral-progression.ts';
@@ -97,6 +98,9 @@ import {
   listPendingOrdersForPanel,
   countPendingOrdersForPanel,
   listSupportRequestsForPanel,
+  listReferralPartnersForPanel,
+  listPartnerReferralsForPanel,
+  listReferralPayoutsForPanel,
   countUnansweredSupportRequests,
   getSupportThreadForPanel,
   claimSupportConversation,
@@ -3418,6 +3422,279 @@ describe('панель: карточка клиента (тикет 04)', () => 
     // IP нужен антифрод-треку при выставлении счёта; на экране это лишняя PII,
     // которую менеджеру не с чем сопоставить.
     expect(JSON.stringify(detail)).not.toContain('203.0.113.77');
+  });
+});
+
+describe('панель: партнёры и выплаты (тикет 12)', () => {
+  /**
+   * ⚠️ Ставка начисления и ставка профиля здесь РАЗНЫЕ намеренно. Положи в обе
+   * строки одно число — и тест «ставка берётся только из `locked_rate_l1_bps`»
+   * пройдёт даже если выборка возьмёт её из `referral_accruals.rate_bps`, то
+   * есть ровно из второго места, которого по решению владельца быть не должно.
+   */
+  async function makePartnerWithAccrual(
+    over: {
+      accrualRateBps?: number;
+      lockedRateL1Bps?: number;
+      suspended?: boolean;
+      withProfile?: boolean;
+    } = {},
+  ) {
+    const partner = await makeUser({ telegramId: `tg-partner-${++seq}`, displayName: 'Партнёр' });
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [
+        {
+          beneficiaryUserId: partner.id,
+          level: 1,
+          rateBps: over.accrualRateBps ?? 400,
+          amountUsdCents: 500,
+        },
+      ],
+    });
+    if (over.withProfile ?? true) {
+      await db.insert(schema.referralPartners).values({
+        userId: partner.id,
+        lockedRateL1Bps: over.lockedRateL1Bps ?? 550,
+        suspended: over.suspended ?? false,
+      });
+    }
+    return { partner, buyer, order };
+  }
+
+  it('партнёр виден с начисленным, балансом и ЗАФИКСИРОВАННОЙ ставкой', async () => {
+    const { partner } = await makePartnerWithAccrual({ accrualRateBps: 400, lockedRateL1Bps: 550 });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.userId === partner.id);
+
+    expect(row?.accruedUsdCents).toBe(500);
+    expect(row?.balanceUsdCents).toBe(500);
+    expect(row?.referralsCount).toBe(1);
+    // Ставка — ТОЛЬКО из `locked_rate_l1_bps`, единственного источника по
+    // решению владельца от 11 августа.
+    expect(row?.lockedRateL1Bps).toBe(550);
+  });
+
+  it('отменённое начисление вычитается, а не показывается как заработок', async () => {
+    const { partner, order } = await makePartnerWithAccrual();
+    // Отмена привязана к ПРОВАЛУ заказа: гасить комиссию по живому заказу
+    // нельзя, и выборка обязана считать ровно то же, что ledger.
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'in_fulfillment' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'failed' });
+    await reverseAccrualsForOrder(db, order.id);
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+
+    expect(items.find((p) => p.userId === partner.id)?.accruedUsdCents).toBe(0);
+  });
+
+  it('заявка на вывод уменьшает баланс до решения по ней', async () => {
+    const { partner } = await makePartnerWithAccrual();
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 300 });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+
+    expect(items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(200);
+  });
+
+  it('ОТКЛОНЁННАЯ заявка возвращает деньги в баланс сама', async () => {
+    // Компенсирующая строка в append-only ledger'е тут не нужна и была бы
+    // вредна: формула баланса просто не считает отклонённые заявки.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 300 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'rejected',
+    });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    expect(items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(500);
+  });
+
+  it('приглашённые партнёра видны с их деньгами, и НЕсостоявшийся заказ в сумму не идёт', async () => {
+    const { partner, buyer } = await makePartnerWithAccrual();
+    // Второй заказ того же клиента, который деньгами не стал: без него фильтр
+    // `PURCHASED_STATUSES_SQL` тождественен «все заказы» и ничего не проверяет.
+    const failed = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await transitionOrderDetailed(db, { orderId: failed.order.id, toStatus: 'failed' });
+
+    const { items } = await listPartnerReferralsForPanel(db, partner.id, { limit: 100 });
+    const row = items.find((r) => r.userId === buyer.id);
+
+    // Заказов у клиента два, но «принёс» — только оплаченный.
+    expect(row?.ordersCount).toBe(2);
+    // Заказ оплачен (`paid` входит в PURCHASED_ORDER_STATUSES).
+    expect(row?.purchasedRubKopecks).toBe(50_000);
+  });
+
+  it('партнёр без профиля виден сразу, а не с 1-го числа следующего месяца', async () => {
+    // Строку в `referral_partners` создаёт ТОЛЬКО месячный роллап. Возьми
+    // список из неё — и партнёр, заработавший комиссию 5 августа, до 1 сентября
+    // отсутствует на экране, который вдобавок пишет «Партнёров пока нет».
+    const { partner } = await makePartnerWithAccrual({ withProfile: false });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.userId === partner.id);
+
+    expect(row?.accruedUsdCents).toBe(500);
+    expect(row?.hasProfile).toBe(false);
+    // Ставка показывается дефолтная — та же, по которой считает начисление.
+    expect(row?.lockedRateL1Bps).toBe(DEFAULT_REFERRAL_RATE_L1_BPS);
+  });
+
+  it('блокировка партнёра видна в списке и в его заявке', async () => {
+    // Гейт «заблокированному не выплачиваем» стоит в операции, но узнать о
+    // блокировке владелец должен ДО нажатия — иначе кнопка врёт.
+    const { partner } = await makePartnerWithAccrual({ suspended: true });
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const partners = await listReferralPartnersForPanel(db, { limit: 100 });
+    const payouts = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    expect(partners.items.find((p) => p.userId === partner.id)?.suspended).toBe(true);
+    expect(payouts.items.find((p) => p.payoutId === created.payoutId)?.suspended).toBe(true);
+  });
+
+  it('заявка в списке выплат несёт партнёра, сумму и его баланс', async () => {
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 200 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const { items } = await listReferralPayoutsForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.payoutId === created.payoutId);
+
+    expect(row?.amountUsdCents).toBe(200);
+    expect(row?.status).toBe('requested');
+    expect(row?.displayName).toBe('Партнёр');
+    // Баланс СЕЙЧАС — чтобы видеть, чем заявка обеспечена.
+    expect(row?.balanceUsdCents).toBe(300);
+  });
+
+  it('реквизиты выплаты наружу НЕ отдаются', async () => {
+    // В `destination` лежат маскированный номер карты или адрес кошелька, и
+    // для решения «выплатить или отклонить» они не нужны.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, {
+      userId: partner.id,
+      amountUsdCents: 100,
+      method: 'crypto_usdt',
+      destination: {
+        method: 'crypto_usdt',
+        network: 'trc20',
+        address: 'TXYZ000000000000000000000000000000',
+      },
+    });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const { items } = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    expect(JSON.stringify(items)).not.toContain('TXYZ');
+  });
+
+  it('усечение списка партнёров не молчит', async () => {
+    await makePartnerWithAccrual();
+    await makePartnerWithAccrual();
+
+    const page = await listReferralPartnersForPanel(db, { limit: 1 });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('усечение списка приглашённых и списка заявок тоже не молчит', async () => {
+    const { partner, buyer } = await makePartnerWithAccrual();
+    // Второй приглашённый с заказом — иначе усекать нечего.
+    const second = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    await makeOrderWithPendingPayment({ userId: second.id });
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+
+    const referrals = await listPartnerReferralsForPanel(db, partner.id, { limit: 1 });
+    const payouts = await listReferralPayoutsForPanel(db, { limit: 1 });
+
+    expect(referrals.items).toHaveLength(1);
+    expect(referrals.hasMore).toBe(true);
+    expect(payouts.items).toHaveLength(1);
+    expect(payouts.hasMore).toBe(true);
+    // Оба списка помещаются целиком — «есть ещё» обязано быть ложью, иначе
+    // экран вечно пишет «показаны не все» и предупреждение перестают читать.
+    expect((await listPartnerReferralsForPanel(db, partner.id, { limit: 100 })).hasMore).toBe(false);
+    expect(buyer.id).toBeTruthy();
+  });
+
+  it('по умолчанию экран заявок показывает открытые, а закрытые — по запросу', async () => {
+    // Закрытые заявки копятся навсегда и вытеснили бы живые за потолок выборки.
+    const { partner } = await makePartnerWithAccrual();
+    const open = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!open.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, { payoutId: open.payoutId, from: 'requested', to: 'rejected' });
+    const second = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 150 });
+    if (!second.ok) throw new Error('вторая заявка не создалась');
+
+    const onlyOpen = await listReferralPayoutsForPanel(db, { limit: 100, onlyOpen: true });
+    const all = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    const mine = (page: { items: { payoutId: string }[] }) =>
+      page.items.map((p) => p.payoutId).filter((id) => id === open.payoutId || id === second.payoutId);
+    expect(mine(onlyOpen)).toEqual([second.payoutId]);
+    expect(mine(all).sort()).toEqual([open.payoutId, second.payoutId].sort());
+  });
+
+  it('заявка в processing разрешается из панели, а не только SQL на проде', async () => {
+    // «Выплачено» — два перехода вне одной транзакции: упавший между ними
+    // процесс оставляет заявку здесь, и её сумма продолжает вычитаться из
+    // баланса. Машина статусов доводить такую заявку разрешает.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'processing',
+    });
+
+    const stuck = await findReferralPayoutForPanel(db, created.payoutId);
+    const finished = await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'processing',
+      to: 'paid',
+    });
+
+    expect(stuck?.status).toBe('processing');
+    expect(finished.applied).toBe(true);
+    expect(finished.status).toBe('paid');
+  });
+
+  it('несостоявшийся переход возвращает ФАКТИЧЕСКИЙ статус, а не запрошенный', async () => {
+    // Вернуть `from` — соврать о состоянии денег: панель показала бы «заявка
+    // всё ещё ждёт решения» там, где её уже кто-то отклонил.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'rejected',
+    });
+
+    const late = await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'processing',
+    });
+
+    expect(late.applied).toBe(false);
+    expect(late.status).toBe('rejected');
   });
 });
 

@@ -1,12 +1,14 @@
 import { and, asc, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
 
 import {
+  DEFAULT_REFERRAL_RATE_L1_BPS,
   FREEKASSA_ORDER_STATUS,
   SUPPORT_DELIVERED_META_KEY,
   SUPPORT_REQUEST_META_KEY,
   type CardStatus,
   type OrderStatus,
   type PaymentStatus,
+  type PayoutStatus,
 } from '@oplati/types';
 
 import {
@@ -1237,4 +1239,250 @@ export async function countUnansweredSupportRequests(db: DB): Promise<number> {
     )
   `);
   return Number(rows[0]?.cnt ?? 0);
+}
+
+// ─── Партнёры и заявки на вывод (тикет 12) ────────────────────────────────
+
+export type PanelPartner = {
+  userId: string;
+  displayName: string | null;
+  telegramId: string | null;
+  /** Сколько клиентов привёл (первый уровень — программа одноуровневая). */
+  referralsCount: number;
+  /** Начислено минус отменено, USD-центы. */
+  accruedUsdCents: number;
+  /** Доступно к выводу: начислено − отменено − заявки (кроме отклонённых). */
+  balanceUsdCents: number;
+  /**
+   * Ставка партнёра, bps. Берётся ТОЛЬКО из `referral_partners.locked_rate_l1_bps`
+   * — единственного источника по решению владельца от 11 августа. Второго места,
+   * где живёт ставка, панель не создаёт.
+   */
+  lockedRateL1Bps: number;
+  /** Антифрод-блок: исключён из начислений, вывод заморожен. */
+  suspended: boolean;
+  /**
+   * Есть ли строка в `referral_partners`. Её создаёт ТОЛЬКО месячный роллап,
+   * поэтому у заработавшего в этом месяце профиля ещё нет, а ставка и блок
+   * показываются дефолтные.
+   */
+  hasProfile: boolean;
+};
+
+/**
+ * Партнёры с деньгами (спека §5.7).
+ *
+ * ⚠️ Начисления append-only: суммы руками не правятся ни здесь, ни где-либо
+ * ещё. Гашение делается компенсирующей строкой `reversed`, как сегодня.
+ */
+export async function listReferralPartnersForPanel(
+  db: DB,
+  opts: { limit?: number } = {},
+): Promise<{ items: PanelPartner[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+
+  const rows = await db.execute<{
+    user_id: string;
+    display_name: string | null;
+    telegram_id: string | null;
+    referrals_count: string | number;
+    accrued: string | number | null;
+    payouts: string | number | null;
+    locked_rate_l1_bps: number | null;
+    suspended: boolean | null;
+  }>(sql`
+    WITH partner_ids AS (
+      SELECT DISTINCT beneficiary_user_id AS user_id FROM referral_accruals
+      UNION
+      SELECT user_id FROM referral_partners
+    )
+    SELECT i.user_id,
+           u.display_name,
+           u.telegram_id,
+           p.locked_rate_l1_bps,
+           p.suspended,
+           (SELECT count(*) FROM users r WHERE r.referred_by = i.user_id) AS referrals_count,
+           COALESCE((SELECT SUM(CASE WHEN a.status = 'accrued' THEN a.amount_usd_cents
+                                     WHEN a.status = 'reversed' THEN -a.amount_usd_cents
+                                     ELSE 0 END)
+                       FROM referral_accruals a
+                      WHERE a.beneficiary_user_id = i.user_id), 0) AS accrued,
+           COALESCE((SELECT SUM(o.amount_usd_cents) FROM referral_payouts o
+                      WHERE o.user_id = i.user_id
+                        AND o.status IN ('requested', 'processing', 'paid')), 0) AS payouts
+    FROM partner_ids i
+    JOIN users u ON u.id = i.user_id
+    LEFT JOIN referral_partners p ON p.user_id = i.user_id
+    ORDER BY accrued DESC, i.user_id
+    LIMIT ${maxRows + 1}
+  `);
+
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((row) => {
+    const accruedUsdCents = Number(row.accrued ?? 0);
+    return {
+      userId: row.user_id,
+      displayName: row.display_name,
+      telegramId: row.telegram_id,
+      referralsCount: Number(row.referrals_count ?? 0),
+      accruedUsdCents,
+      // Та же формула, что у кабинета партнёра: начислено - отменено - заявки.
+      balanceUsdCents: accruedUsdCents - Number(row.payouts ?? 0),
+      // Профиля может не быть: ставка тогда дефолтная - ровно та, по которой
+      // начисление и посчитано (`getPartnerProfile` при отсутствии строки
+      // возвращает null и расчёт падает на дефолт).
+      lockedRateL1Bps: row.locked_rate_l1_bps ?? DEFAULT_REFERRAL_RATE_L1_BPS,
+      hasProfile: row.locked_rate_l1_bps !== null,
+      suspended: row.suspended ?? false,
+    };
+  });
+
+  return { items, hasMore };
+}
+
+/** Приглашённый партнёром клиент: сколько заказов и сколько денег принёс. */
+export type PanelPartnerReferral = {
+  userId: string;
+  displayName: string | null;
+  telegramId: string | null;
+  /** Все заказы клиента, включая несостоявшиеся. */
+  ordersCount: number;
+  /** Копейки по СОСТОЯВШИМСЯ заказам (`PURCHASED_ORDER_STATUSES`). */
+  purchasedRubKopecks: number;
+};
+
+export async function listPartnerReferralsForPanel(
+  db: DB,
+  partnerUserId: string,
+  opts: { limit?: number } = {},
+): Promise<{ items: PanelPartnerReferral[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+
+  const rows = await db.execute<{
+    user_id: string;
+    display_name: string | null;
+    telegram_id: string | null;
+    orders_count: string | number;
+    purchased: string | number | null;
+  }>(sql`
+    SELECT u.id AS user_id,
+           u.display_name,
+           u.telegram_id,
+           (SELECT count(*) FROM orders o WHERE o.user_id = u.id) AS orders_count,
+           COALESCE((SELECT SUM(o.amount_rub) FROM orders o
+                      WHERE o.user_id = u.id
+                        AND o.status IN ${PURCHASED_STATUSES_SQL}), 0) AS purchased
+    FROM users u
+    WHERE u.referred_by = ${partnerUserId}
+    ORDER BY purchased DESC, u.created_at DESC
+    LIMIT ${maxRows + 1}
+  `);
+
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((row) => ({
+    userId: row.user_id,
+    displayName: row.display_name,
+    telegramId: row.telegram_id,
+    ordersCount: Number(row.orders_count ?? 0),
+    purchasedRubKopecks: Number(row.purchased ?? 0),
+  }));
+
+  return { items, hasMore };
+}
+
+export type PanelPayoutRequest = {
+  payoutId: string;
+  userId: string;
+  displayName: string | null;
+  telegramId: string | null;
+  amountUsdCents: number;
+  status: string;
+  method: string | null;
+  feeUsdCents: number | null;
+  requestedAt: Date;
+  settledAt: Date | null;
+  /** Баланс партнёра на сейчас — чтобы видеть, чем заявка обеспечена. */
+  balanceUsdCents: number;
+  /**
+   * Партнёр заблокирован антифродом. Кабинет не даёт ему подать заявку, но
+   * поданная ДО блокировки живёт в `requested` — и без пометки владелец провёл
+   * бы выплату, не зная о блоке.
+   */
+  suspended: boolean;
+};
+
+/**
+ * Заявки на вывод (спека §5.7, §6.4).
+ *
+ * ⚠️ Реквизиты (`destination`) наружу НЕ отдаются: там маскированный номер
+ * карты или адрес кошелька, и панели для решения «выплатить или отклонить» они
+ * не нужны — владелец берёт их из своего кабинета выплат.
+ */
+export async function listReferralPayoutsForPanel(
+  db: DB,
+  opts: { limit?: number; onlyOpen?: boolean } = {},
+): Promise<{ items: PanelPayoutRequest[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+  const openOnly = opts.onlyOpen
+    ? sql`WHERE p.status IN ('requested', 'processing')`
+    : sql``;
+
+  const rows = await db.execute<{
+    payout_id: string;
+    user_id: string;
+    display_name: string | null;
+    telegram_id: string | null;
+    amount_usd_cents: number;
+    status: string;
+    method: string | null;
+    fee_usd_cents: number | null;
+    requested_at: Date | string;
+    settled_at: Date | string | null;
+    balance: string | number | null;
+    suspended: boolean | null;
+  }>(sql`
+    SELECT p.id AS payout_id,
+           p.user_id,
+           u.display_name,
+           u.telegram_id,
+           rp.suspended,
+           p.amount_usd_cents,
+           p.status,
+           p.method,
+           p.fee_usd_cents,
+           p.requested_at,
+           p.settled_at,
+           COALESCE((SELECT SUM(CASE WHEN a.status = 'accrued' THEN a.amount_usd_cents
+                                     WHEN a.status = 'reversed' THEN -a.amount_usd_cents
+                                     ELSE 0 END)
+                       FROM referral_accruals a
+                      WHERE a.beneficiary_user_id = p.user_id), 0)
+           - COALESCE((SELECT SUM(o.amount_usd_cents) FROM referral_payouts o
+                        WHERE o.user_id = p.user_id
+                          AND o.status IN ('requested', 'processing', 'paid')), 0) AS balance
+    FROM referral_payouts p
+    JOIN users u ON u.id = p.user_id
+    LEFT JOIN referral_partners rp ON rp.user_id = p.user_id
+    ${openOnly}
+    ORDER BY p.requested_at DESC
+    LIMIT ${maxRows + 1}
+  `);
+
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((row) => ({
+    payoutId: row.payout_id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    telegramId: row.telegram_id,
+    amountUsdCents: Number(row.amount_usd_cents),
+    status: row.status as PayoutStatus,
+    method: row.method,
+    feeUsdCents: row.fee_usd_cents === null ? null : Number(row.fee_usd_cents),
+    requestedAt: new Date(row.requested_at),
+    settledAt: row.settled_at === null ? null : new Date(row.settled_at),
+    balanceUsdCents: Number(row.balance ?? 0),
+    suspended: row.suspended ?? false,
+  }));
+
+  return { items, hasMore };
 }
