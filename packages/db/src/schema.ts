@@ -187,10 +187,6 @@ export const linkTokens = pgTable(
 
 export const staff = pgTable('staff', {
   id: uuid('id').defaultRandom().primaryKey(),
-  // Supabase Auth user.id — мёртвое поле: Auth не используется с переезда на
-  // self-host Postgres (2026-07-24). Сносится отдельной миграцией и отдельным
-  // деплоем (тикет 13 админ-панели) — destructive-изменения в два шага.
-  authUserId: uuid('auth_user_id').unique(),
   email: text('email').notNull().unique(),
   displayName: text('display_name').notNull(),
   role: staffRoleEnum('role').notNull().default('operator'),

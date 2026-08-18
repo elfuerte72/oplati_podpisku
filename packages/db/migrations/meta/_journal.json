@@ -267,6 +267,13 @@
       "when": 1786984500077,
       "tag": "0037_thick_quicksilver",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787006789636,
+      "tag": "0038_old_shatterstar",
+      "breakpoints": true
     }
   ]
 }
