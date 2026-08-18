@@ -47,9 +47,43 @@ export function canStartManualFulfillment(
   return status === 'failed' && hasSucceededPayment;
 }
 
-/** Из какого статуса можно отметить «выдал». Существующий переход, не новый. */
-export function canCompleteManualFulfillment(status: OrderStatus): boolean {
-  return status === 'in_fulfillment';
+/**
+ * Кто привёл заказ в `in_fulfillment` — оператор или автомат.
+ *
+ * ⚠️ Статус этого не различает, а разница денежная. `issueCard` захватывает
+ * `paid → in_fulfillment` и уходит в PaySpace на десятки секунд (у `createCard`
+ * нет ретрая, но есть свои таймауты, а дальше топап и опрос). Всё это время
+ * заказ выглядит на экране ровно как взятый в ручную выдачу.
+ *
+ * Смотрим на ПОСЛЕДНИЙ вход в статус и по ВРЕМЕНИ, а не по порядку массива:
+ * заказ входит туда не один раз (автомат провалился — оператор взял руками), а
+ * события панель отдаёт то свежими вперёд, то старыми.
+ */
+export function isStartedManually(
+  events: readonly { eventType: string; toStatus: string | null; createdAt: Date }[],
+): boolean {
+  let latest: { eventType: string; createdAt: Date } | null = null;
+  for (const event of events) {
+    if (event.toStatus !== 'in_fulfillment') continue;
+    if (latest === null || event.createdAt.getTime() >= latest.createdAt.getTime()) {
+      latest = { eventType: event.eventType, createdAt: event.createdAt };
+    }
+  }
+  return latest?.eventType === MANUAL_FULFILLMENT_STARTED;
+}
+
+/**
+ * Из какого статуса можно отметить «выдал». Существующий переход, не новый.
+ *
+ * ⚠️ Одного статуса МАЛО: `completed` терминален, и отметка «выдал» по заказу,
+ * который в эту секунду выпускает карту автомат, уводит его из-под `issueCard`.
+ * Упавший следом `markOrderFailed` перевести `completed → failed` уже не
+ * сможет — машина такого ребра не знает, ошибка уйдёт в Sentry и погаснет, а
+ * заказ останется в выручке с «Выполнен» в кабинете, без карты и с
+ * напоминанием о продлении через три недели.
+ */
+export function canCompleteManualFulfillment(status: OrderStatus, startedManually: boolean): boolean {
+  return status === 'in_fulfillment' && startedManually;
 }
 
 /**

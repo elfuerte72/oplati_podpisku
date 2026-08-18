@@ -5,6 +5,7 @@ import { findReferralPayoutForPanel, getDb, transitionReferralPayout } from '@op
 
 import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
+import { isPayoutDecidable } from '@/lib/panel/payouts';
 
 /**
  * POST /api/panel/partners/payout — решение по заявке на вывод (тикет 12, §6.4).
@@ -67,9 +68,9 @@ export async function POST(req: Request): Promise<Response> {
     // вычитаться из баланса партнёра.
     const payout = await findReferralPayoutForPanel(db, body.payoutId);
     if (!payout) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
-    if (payout.status === 'paid' || payout.status === 'rejected') {
-      return conflict(payout.status);
-    }
+    // Правило «по какой заявке можно решать» — общее с экраном: разъехавшись,
+    // панель показывала бы кнопки там, где операция откажет (или наоборот).
+    if (!isPayoutDecidable(payout.status)) return conflict(payout.status);
 
     if (body.action === 'reject') {
       // Отказ. Деньги возвращаются в баланс САМИ: формула баланса считает

@@ -23,8 +23,10 @@ import {
   users,
 } from '../schema.ts';
 import type { DB } from '../index.ts';
+import { balanceExpr } from './referral-accruals.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import {
+  PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
 } from './orders.ts';
@@ -861,6 +863,16 @@ export type PanelPendingOrder = {
   } | null;
   /** Когда менеджер напоминал в последний раз (дедуп — сутки). */
   lastRemindedAt: Date | null;
+  /**
+   * Когда доставка напоминания СОРВАЛАСЬ.
+   *
+   * ⚠️ Отдельным полем, потому что окно суток занимается ДО отправки и вернуть
+   * его нечем (`order_events` append-only). Без этого экран показывал бы
+   * «напоминали в 14:20» там, где клиент не получил ничего: менеджер считает
+   * заказ обработанным, повторить не может ещё сутки, и узнать о недоставке
+   * ему неоткуда.
+   */
+  lastRemindFailedAt: Date | null;
 };
 
 /**
@@ -887,7 +899,11 @@ export async function listPendingOrdersForPanel(
   //     проверка «есть ещё» на общей базе тождественно истинна и не значит
   //     ничего (находка ревью).
   const conditions = [inArray(orders.status, [...PANEL_PENDING_ORDER_STATUSES])];
-  if (opts.shortId) conditions.push(ilike(orders.shortId, opts.shortId));
+  if (opts.shortId) conditions.push(// ⚠️ Точное сравнение, не ILIKE: `ORD-%` иначе выбрал бы СТАРЕЙШИЙ недожатый
+    // заказ (сортировка по возрастанию даты) и отправил бы его клиенту
+    // платёжную ссылку. Схема адреса такую строку сегодня не пропускает, но
+    // защита от неё не должна жить в одном месте.
+    eq(orders.shortId, opts.shortId.trim().toUpperCase()));
   if (opts.userId) conditions.push(eq(orders.userId, opts.userId));
 
   const rows = await db
@@ -947,14 +963,18 @@ export async function listPendingOrdersForPanel(
         }
       : null,
     lastRemindedAt: null as Date | null,
+    lastRemindFailedAt: null as Date | null,
   }));
 
-  const remindedAt = await latestEventAtByOrder(
-    db,
-    items.map((i) => i.orderId),
-    PAYMENT_REMINDER_SENT_EVENT,
-  );
-  for (const item of items) item.lastRemindedAt = remindedAt.get(item.orderId) ?? null;
+  const orderIds = items.map((i) => i.orderId);
+  const [remindedAt, failedAt] = await Promise.all([
+    latestEventAtByOrder(db, orderIds, PAYMENT_REMINDER_SENT_EVENT),
+    latestEventAtByOrder(db, orderIds, PAYMENT_REMINDER_FAILED_EVENT),
+  ]);
+  for (const item of items) {
+    item.lastRemindedAt = remindedAt.get(item.orderId) ?? null;
+    item.lastRemindFailedAt = failedAt.get(item.orderId) ?? null;
+  }
 
   return { items, hasMore };
 }
@@ -1222,18 +1242,23 @@ export async function claimSupportConversation(
  * новых и отвеченных.
  */
 export async function countUnansweredSupportRequests(db: DB): Promise<number> {
+  // ⚠️ Идём ОТ СООБЩЕНИЙ, как и соседний `listSupportRequestsForPanel`. LATERAL
+  // по `conversations` выполнялся для КАЖДОЙ её строки, а эта таблица
+  // ретеншеном не чистится и растёт вместе с числом клиентов навсегда. Рабочий
+  // стол обновляется раз в 25 секунд на каждой открытой вкладке, и всё это — в
+  // том же процессе, что принимает вебхуки платежей.
   const rows = await db.execute<{ cnt: string | number }>(sql`
-    SELECT count(*) AS cnt
-    FROM conversations c
-    JOIN LATERAL (
-      SELECT max(m.created_at) AS last_request_at
+    WITH requests AS (
+      SELECT m.conversation_id, max(m.created_at) AS last_request_at
       FROM messages m
-      WHERE m.conversation_id = c.id
-        AND (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
-    ) r ON r.last_request_at IS NOT NULL
+      WHERE (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
+      GROUP BY m.conversation_id
+    )
+    SELECT count(*) AS cnt
+    FROM requests r
     WHERE NOT EXISTS (
       SELECT 1 FROM messages o
-      WHERE o.conversation_id = c.id
+      WHERE o.conversation_id = r.conversation_id
         AND o.role = 'operator'
         AND o.created_at > r.last_request_at
     )
@@ -1287,7 +1312,7 @@ export async function listReferralPartnersForPanel(
     telegram_id: string | null;
     referrals_count: string | number;
     accrued: string | number | null;
-    payouts: string | number | null;
+    balance: string | number | null;
     locked_rate_l1_bps: number | null;
     suspended: boolean | null;
   }>(sql`
@@ -1307,9 +1332,7 @@ export async function listReferralPartnersForPanel(
                                      ELSE 0 END)
                        FROM referral_accruals a
                       WHERE a.beneficiary_user_id = i.user_id), 0) AS accrued,
-           COALESCE((SELECT SUM(o.amount_usd_cents) FROM referral_payouts o
-                      WHERE o.user_id = i.user_id
-                        AND o.status IN ('requested', 'processing', 'paid')), 0) AS payouts
+           ${balanceExpr(sql`i.user_id`)}::bigint AS balance
     FROM partner_ids i
     JOIN users u ON u.id = i.user_id
     LEFT JOIN referral_partners p ON p.user_id = i.user_id
@@ -1326,8 +1349,10 @@ export async function listReferralPartnersForPanel(
       telegramId: row.telegram_id,
       referralsCount: Number(row.referrals_count ?? 0),
       accruedUsdCents,
-      // Та же формула, что у кабинета партнёра: начислено - отменено - заявки.
-      balanceUsdCents: accruedUsdCents - Number(row.payouts ?? 0),
+      // ⚠️ Баланс считает ОБЩИЙ `balanceExpr` — то же выражение, что видит сам
+      // партнёр в кабинете. Своя копия формулы на денежном экране разошлась бы
+      // с кабинетом молча, без единого падения.
+      balanceUsdCents: Number(row.balance ?? 0),
       // Профиля может не быть: ставка тогда дефолтная - ровно та, по которой
       // начисление и посчитано (`getPartnerProfile` при отсутствии строки
       // возвращает null и расчёт падает на дефолт).
@@ -1452,14 +1477,10 @@ export async function listReferralPayoutsForPanel(
            p.fee_usd_cents,
            p.requested_at,
            p.settled_at,
-           COALESCE((SELECT SUM(CASE WHEN a.status = 'accrued' THEN a.amount_usd_cents
-                                     WHEN a.status = 'reversed' THEN -a.amount_usd_cents
-                                     ELSE 0 END)
-                       FROM referral_accruals a
-                      WHERE a.beneficiary_user_id = p.user_id), 0)
-           - COALESCE((SELECT SUM(o.amount_usd_cents) FROM referral_payouts o
-                        WHERE o.user_id = p.user_id
-                          AND o.status IN ('requested', 'processing', 'paid')), 0) AS balance
+           -- Баланс — общим выражением balanceExpr: владелец решает по заявке,
+           -- глядя на это число, и оно обязано совпадать с тем, что видит сам
+           -- партнёр в кабинете. Своя копия формулы разошлась бы молча.
+           ${balanceExpr(sql`p.user_id`)}::bigint AS balance
     FROM referral_payouts p
     JOIN users u ON u.id = p.user_id
     LEFT JOIN referral_partners rp ON rp.user_id = p.user_id

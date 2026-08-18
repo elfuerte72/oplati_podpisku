@@ -104,6 +104,15 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
     if (typeof event.request.url === 'string') {
       event.request.url = scrubUrl(event.request.url);
     }
+    // ⚠️ `cookies` — ОТДЕЛЬНОЕ поле, и чистки заголовка `cookie` ему мало:
+    // интеграция requestData разбирает заголовок в объект ещё ДО `beforeSend`
+    // (`cookies: true` в её дефолтах). Там лежит подписанная cookie сессии
+    // панели — bearer на 12 часов, который нечем отозвать поштучно: таблицы
+    // сессий нет, а `staff.is_active = false` выключает живого сотрудника.
+    // Любое исключение на `/admin/*` отправляло бы этот токен во внешний сервис.
+    if (event.request.cookies) {
+      event.request.cookies = {};
+    }
     if (event.request.headers) {
       const headers = event.request.headers as Record<string, string>;
       for (const key of Object.keys(headers)) {
@@ -129,6 +138,15 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
     for (const crumb of event.breadcrumbs) {
       if (crumb.data) {
         crumb.data = scrubPii(crumb.data) as typeof crumb.data;
+        // ⚠️ `scrubPii` смотрит на ИМЕНА ключей, а адрес живёт в `url`/`to`/
+        // `from` — имена невинные. Поиск в панели кладёт email и телефон
+        // клиента в `?q=`, и навигационная крошка возит их каждые 25 секунд.
+        for (const key of ['url', 'to', 'from'] as const) {
+          const value = (crumb.data as Record<string, unknown>)[key];
+          if (typeof value === 'string') {
+            (crumb.data as Record<string, unknown>)[key] = scrubUrl(value);
+          }
+        }
       }
       if (crumb.message) {
         // превентивная обрезка потенциальных токенов в сообщениях

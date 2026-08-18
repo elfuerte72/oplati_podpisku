@@ -10,6 +10,9 @@ import {
   getUserProfileById,
   findCardsByUserIdForCabinet,
   findPaymentsByOrderId,
+  PAYMENT_REMINDER_FAILED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   type Card,
   type OrderEventRow,
   type OrderRow,
@@ -55,9 +58,15 @@ import {
  * отправлено». Клиент про оба узнаёт из самого сообщения в Telegram.
  */
 const INTERNAL_EVENT_TYPES = new Set<string>([
-  'payment_review_client_notified',
+  // ⚠️ Константами, а не литералами: имена событий пишет `@oplati/db`, и
+  // литерал здесь был бы зеркалом без автосверки (инвариант 10). Цена
+  // расхождения — наше служебное действие в таймлайне КЛИЕНТА.
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  // Сорванная доставка напоминания — тем более служебная: клиенту незачем
+  // знать, что мы не смогли до него достучаться.
+  PAYMENT_REMINDER_FAILED_EVENT,
   'renewal_reminder_sent',
-  'payment_reminder_sent',
 ]);
 
 /** Человекочитаемые ярлыки событий `order_events` для таймлайна кабинета. */

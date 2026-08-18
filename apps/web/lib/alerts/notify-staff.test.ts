@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   listStaff: vi.fn(),
   sendStaffMessage: vi.fn(async (..._args: unknown[]) => {}),
   captureMessage: vi.fn(),
-  notifyOps: vi.fn(async (..._args: unknown[]) => {}),
+  notifyOps: vi.fn(async (..._args: unknown[]) => true),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -193,5 +193,31 @@ describe('notifyStaff', () => {
     await notifyStaff('текст', { capability: 'support' });
 
     expect(h.notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('НЕсостоявшийся фолбэк владельцу окно дедупа не занимает', async () => {
+    // `notifyOps` молчит по построению при незаданном `ALERT_TELEGRAM_CHAT_ID`
+    // и при отказе Telegram (анти-петля). Записать окно по одной лишь попытке
+    // значит получить час тишины при живой аварии — ровно в том случае, ради
+    // которого фолбэк и заведён.
+    h.listStaff.mockImplementation(async () => []);
+    h.notifyOps.mockImplementation(async () => false);
+
+    await notifyStaff('текст', { capability: 'holds', dedupKey: 'k', now: T0 });
+    const second = await notifyStaff('текст', { capability: 'holds', dedupKey: 'k', now: T0 + 60_000 });
+
+    expect(second.deduped).toBe(false);
+    expect(h.notifyOps).toHaveBeenCalledTimes(2);
+  });
+
+  it('состоявшийся фолбэк владельцу окно занимает', async () => {
+    h.listStaff.mockImplementation(async () => []);
+    h.notifyOps.mockImplementation(async () => true);
+
+    await notifyStaff('текст', { capability: 'holds', dedupKey: 'k2', now: T0 });
+    const second = await notifyStaff('текст', { capability: 'holds', dedupKey: 'k2', now: T0 + 60_000 });
+
+    expect(second.deduped).toBe(true);
+    expect(h.notifyOps).toHaveBeenCalledTimes(1);
   });
 });

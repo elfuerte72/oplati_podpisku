@@ -170,6 +170,17 @@ export { getClientIp } from './client-ip.ts';
 let cachedRedis: Redis | null = null;
 const limiterCache = new Map<RateLimitName, Ratelimit>();
 
+/**
+ * Лимитер отключён ОСОЗНАННО (флагом), а не сломался.
+ *
+ * Нужно там, где fail-open дороже отказа: вход в панель считает попытки
+ * подбора второго фактора, и «счётчик недоступен» там обязано означать
+ * «не пускаем», а «выключен руками на dev» — «пускаем».
+ */
+export function isRateLimitDisabled(): boolean {
+  return isDisabled();
+}
+
 function isDisabled(): boolean {
   return process.env.RATE_LIMIT_DISABLED === '1' || process.env.RATE_LIMIT_DISABLED === 'true';
 }

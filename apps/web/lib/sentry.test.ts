@@ -223,4 +223,41 @@ describe('beforeSend: свободный текст message и exception', () =>
     expect(event.message).toContain('**** 1726');
     expect(event.message).toContain('Bearer [REDACTED]');
   });
+
+  it('разобранные cookie вычищаются ЦЕЛИКОМ, а не только заголовок', () => {
+    // ⚠️ Интеграция requestData разбирает заголовок `cookie` в отдельное поле
+    // `request.cookies` ещё ДО `beforeSend`, поэтому редакции заголовка мало.
+    // Там лежит подписанная cookie сессии панели — bearer на 12 часов, который
+    // нечем отозвать поштучно (таблицы сессий нет).
+    const event = makeEvent({
+      request: {
+        headers: { cookie: '__Host-oplatishka_panel_session=v1.body.sig' },
+        cookies: { '__Host-oplatishka_panel_session': 'v1.body.sig', theme: 'dark' },
+      },
+    });
+
+    const out = beforeSend(event);
+
+    expect(JSON.stringify(out?.request?.cookies ?? {})).not.toContain('v1.body.sig');
+    expect((out?.request?.headers as Record<string, string>).cookie).toBe('[REDACTED]');
+  });
+
+  it('адрес в навигационной крошке чистится от контактов клиента', () => {
+    // Поиск в панели — обычная GET-форма, значит email клиента попадает в
+    // адрес, а `LiveRefresh` повторяет его каждые 25 секунд. `scrubPii` смотрит
+    // на ИМЕНА ключей, а `url` — имя невинное.
+    const event = makeEvent({
+      breadcrumbs: [
+        {
+          category: 'navigation',
+          data: { from: '/admin/orders', to: '/admin/orders?q=ivan%40example.com' },
+        },
+      ],
+    });
+
+    const out = beforeSend(event);
+
+    expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan%40example.com');
+    expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan@example.com');
+  });
 });

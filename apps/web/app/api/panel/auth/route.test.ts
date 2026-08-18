@@ -17,7 +17,11 @@ const BOT_TOKEN = '7992756364:AAH-staff-bot';
 const SESSION_SECRET = 'z'.repeat(64);
 
 const h = vi.hoisted(() => ({
-  checkRateLimit: vi.fn(async (_name: string, _identity: string) => ({ allowed: true })),
+  isRateLimitDisabled: vi.fn(() => false),
+  checkRateLimit: vi.fn(async (_name: string, _identity: string) => ({
+    allowed: true,
+    configured: true,
+  })),
   peekRateLimit: vi.fn(async () => ({ allowed: true })),
   cookieStore: new Map<string, string>(),
   findStaffByTelegramId: vi.fn(),
@@ -39,6 +43,7 @@ vi.mock('@/lib/ratelimit', () => ({
   checkRateLimit: h.checkRateLimit,
   peekRateLimit: h.peekRateLimit,
   getClientIp: () => '203.0.113.9',
+  isRateLimitDisabled: h.isRateLimitDisabled,
 }));
 
 vi.mock('@/lib/env.server', () => ({
@@ -70,8 +75,17 @@ vi.mock('next/headers', () => ({
       const value = h.cookieStore.get(name);
       return value === undefined ? undefined : { name, value };
     },
-    set: (name: string, value: string) => {
-      h.cookieStore.set(name, value);
+    // ⚠️ Двойник обязан вести себя как БРАУЗЕР: cookie гасится перезаписью с
+    // истёкшим сроком, а не вызовом `delete`. Прежний двойник (`delete`
+    // удаляет ключ) показывал рабочий выход там, где на проде он был no-op:
+    // `delete` шлёт `Set-Cookie` без `Secure`, а имя с префиксом `__Host-`
+    // браузер в таком виде отвергает целиком.
+    set: (name: string, value: string, options?: { expires?: Date; maxAge?: number }) => {
+      const expired =
+        (options?.expires !== undefined && options.expires.getTime() <= Date.now()) ||
+        options?.maxAge === 0;
+      if (expired) h.cookieStore.delete(name);
+      else h.cookieStore.set(name, value);
     },
     delete: (name: string) => {
       h.cookieStore.delete(name);
@@ -133,7 +147,7 @@ function totpRequest(code: string): Request {
 beforeEach(() => {
   h.cookieStore.clear();
   h.checkRateLimit.mockClear();
-  h.checkRateLimit.mockImplementation(async () => ({ allowed: true }));
+  h.checkRateLimit.mockImplementation(async () => ({ allowed: true, configured: true }));
   h.peekRateLimit.mockClear();
   h.peekRateLimit.mockImplementation(async () => ({ allowed: true }));
   h.findStaffByTelegramId.mockReset();
@@ -262,14 +276,41 @@ describe('POST /api/panel/auth/totp — второй фактор', () => {
     expect(h.checkRateLimit).toHaveBeenCalledWith('admin-auth', '203.0.113.9');
   });
 
-  it('исчерпанный лимит закрывает перебор ДАЖЕ при верном коде', async () => {
+  it('чужой флуд с того же IP НЕ запирает опознанного сотрудника', async () => {
+    // На шаге кода человек уже опознан подписанным `pending`-токеном, а адрес
+    // за CGNAT (или за нашим же VPN) общий на всех: блокировка по IP здесь
+    // означала бы отказ в обслуживании себе. Перебор режет счётчик по
+    // сотруднику, и сменой адреса его не обойти.
     await passFirstFactor();
     h.peekRateLimit.mockImplementation(async () => ({ allowed: false }));
 
     const res = await totpPost(totpRequest(totpCodeAt(SECRET, Math.floor(Date.now() / 1000))));
 
-    expect(res.headers.get('location')).toBe('/admin/login?e=rate_limited');
+    expect(res.headers.get('location')).toBe('/admin');
+    expect(h.cookieStore.has(PANEL_SESSION_COOKIE)).toBe(true);
+  });
+
+  it('НЕДОСТУПНЫЙ счётчик попыток закрывает вход, а не открывает', async () => {
+    // Fail-CLOSED, в отличие от клиентских путей: счётчик — единственный барьер
+    // перебора второго фактора, `pending` живёт 10 минут и переиспользуется.
+    // Отказ Redis не должен дарить миллион попыток владельцу чужого Telegram.
+    await passFirstFactor();
+    h.checkRateLimit.mockImplementation(async () => ({ allowed: true, configured: false }));
+
+    const res = await totpPost(totpRequest(totpCodeAt(SECRET, Math.floor(Date.now() / 1000))));
+
+    expect(res.headers.get('location')).toBe('/admin/login/code?e=rate_limited');
     expect(h.cookieStore.has(PANEL_SESSION_COOKIE)).toBe(false);
+  });
+
+  it('ОСОЗНАННО выключенный лимит (dev) вход не ломает', async () => {
+    await passFirstFactor();
+    h.checkRateLimit.mockImplementation(async () => ({ allowed: true, configured: false }));
+    h.isRateLimitDisabled.mockImplementation(() => true);
+
+    const res = await totpPost(totpRequest(totpCodeAt(SECRET, Math.floor(Date.now() / 1000))));
+
+    expect(res.headers.get('location')).toBe('/admin');
   });
 
   it('без первого фактора код бесполезен', async () => {
@@ -294,7 +335,9 @@ describe('POST /api/panel/auth/totp — второй фактор', () => {
   it('исчерпанный лимит СОТРУДНИКА не пускает даже с верным кодом', async () => {
     await passFirstFactor();
     h.checkRateLimit.mockImplementation(async (name: string) =>
-      name === 'admin-totp' ? { allowed: false } : { allowed: true },
+      name === 'admin-totp'
+        ? { allowed: false, configured: true }
+        : { allowed: true, configured: true },
     );
 
     const res = await totpPost(totpRequest(totpCodeAt(SECRET, Math.floor(Date.now() / 1000))));

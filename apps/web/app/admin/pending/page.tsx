@@ -107,7 +107,17 @@ export default async function PanelPendingPage() {
                       ) : null}
                     </td>
                     <td className="panel-muted">
-                      {item.lastRemindedAt ? (
+                      {/* ⚠️ Сорванная доставка показывается ВМЕСТО времени
+                          отправки: окно суток она съедает, и «напоминали в
+                          14:20» там, где клиент ничего не получил, — та же
+                          ложь, что «клиенту ушло» на экране холдов. */}
+                      {item.lastRemindFailedAt !== null &&
+                      (item.lastRemindedAt === null ||
+                        item.lastRemindFailedAt > item.lastRemindedAt) ? (
+                        <span className="panel-error">
+                          не доставлено <LocalTime iso={item.lastRemindFailedAt.toISOString()} />
+                        </span>
+                      ) : item.lastRemindedAt ? (
                         <LocalTime iso={item.lastRemindedAt.toISOString()} />
                       ) : (
                         'не напоминали'

@@ -62,12 +62,14 @@ export default async function PanelHomePage() {
     canSupport ? countUnansweredSupportRequests(db) : Promise.resolve(null),
   ]);
 
+  // ⚠️ `unavailable` — это `null` («не смотрели / не получили»), а НЕ `false`.
+  // Иначе верх экрана пишет «всё спокойно: денег на карточном счёте хватает»
+  // ровно тогда, когда PaySpace не ответил, — и карточка ниже в тот же момент
+  // честно говорит «баланс не получен».
   const balanceLow =
-    balance === null
+    balance === null || balance.state === 'unavailable' || balance.state === 'not_configured'
       ? null
-      : balance.state === 'ok' || balance.state === 'stale'
-        ? balance.low
-        : false;
+      : balance.low;
   const quiet = isDeskQuiet({
     pendingCount: pendingTotals?.count ?? null,
     holdsCount: holds ? holds.items.length : null,

@@ -88,7 +88,7 @@ export async function notifyStaff(
   // ⚠️ Окно ПРОВЕРЯЕМ, но не занимаем: занять до попытки значит получить час
   // (а то и сутки) молчания при живой аварии — база моргнула, бот не настроен,
   // все получатели дали 403. Фиксируем только по факту доставки, ниже.
-  if (opts.dedupKey && !dedup.isFree(opts.dedupKey, now, windowMs)) {
+  if (opts.dedupKey && !dedup.isFree(opts.dedupKey, now)) {
     log.debug({ event: 'alerts.staff.deduped', dedupKey: opts.dedupKey });
     return { delivered: 0, failed: 0, deduped: true };
   }
@@ -109,8 +109,11 @@ export async function notifyStaff(
 
   if (recipients.length === 0) {
     log.warn({ event: 'alerts.staff.no_recipients', capability: opts.capability });
-    await fallback(text, opts);
-    if (opts.dedupKey) dedup.record(opts.dedupKey, now, windowMs);
+    // Окно — по ФАКТУ доставки владельцу, как и в основной ветке ниже: на
+    // проде `staff` пуст до заведения персонала, и записанное по попытке окно
+    // означало бы час молчания при незаданном канале владельца.
+    const toOwner = await fallback(text, opts);
+    if (opts.dedupKey && toOwner) dedup.record(opts.dedupKey, now, windowMs);
     return { delivered: 0, failed: 0, deduped: false };
   }
 
@@ -140,10 +143,14 @@ export async function notifyStaff(
     }
   }
 
-  if (delivered === 0) await fallback(text, opts);
+  const toOwner = delivered === 0 ? await fallback(text, opts) : false;
 
   // Окно занимает только СОСТОЯВШАЯСЯ доставка — хоть персоналу, хоть владельцу.
-  if (opts.dedupKey && (delivered > 0 || opts.fallbackToOps !== false)) {
+  // ⚠️ Именно факт, а не намерение: `notifyOps` при незаданном
+  // `ALERT_TELEGRAM_CHAT_ID` и при отказе Telegram молчит по построению
+  // (анти-петля), и записанное по попытке окно давало бы час (а то и сутки)
+  // тишины при живой аварии — том самом случае, ради которого фолбэк и есть.
+  if (opts.dedupKey && (delivered > 0 || toOwner)) {
     dedup.record(opts.dedupKey, now, windowMs);
   }
 
@@ -158,13 +165,13 @@ export async function notifyStaff(
 async function fallback(
   text: string,
   opts: { capability: PanelCapability; fallbackToOps?: boolean },
-): Promise<void> {
-  if (opts.fallbackToOps === false) return;
+): Promise<boolean> {
+  if (opts.fallbackToOps === false) return false;
   log.warn({ event: 'alerts.staff.fallback_to_ops', capability: opts.capability });
   Sentry.captureMessage('Уведомление персоналу не доставлено — ушло владельцу', {
     level: 'warning',
     tags: { source: 'alerts.staff' },
     extra: { capability: opts.capability },
   });
-  await notifyOps(text);
+  return notifyOps(text);
 }

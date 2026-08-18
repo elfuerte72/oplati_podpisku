@@ -11,7 +11,17 @@ import 'server-only';
  */
 export class DedupWindow {
   private readonly windowMs: number;
-  private readonly sentAt = new Map<string, number>();
+  /**
+   * Ключ -> момент, КОГДА окно освободится (а не момент отправки).
+   *
+   * ⚠️ Хранить момент отправки нельзя. Окно задаётся на вызов, экземпляр один
+   * на все события, и чистка при записи шла по окну ВЫЗЫВАЮЩЕГО: часовое
+   * уведомление о холде через два часа вычищало запись суточного
+   * предупреждения о балансе — и то начинало уходить каждые пять минут, то
+   * есть ровно так, как алёрт перестают читать. Со сроком ВНУТРИ записи
+   * чистка корректна при любом наборе окон.
+   */
+  private readonly expiresAt = new Map<string, number>();
 
   constructor(windowMs: number) {
     this.windowMs = windowMs;
@@ -26,7 +36,7 @@ export class DedupWindow {
    * отличались бы только текстом ключа — и оба шумели бы раз в час.
    */
   shouldSend(key: string, now: number = Date.now(), windowMs: number = this.windowMs): boolean {
-    if (!this.isFree(key, now, windowMs)) return false;
+    if (!this.isFree(key, now)) return false;
     this.record(key, now, windowMs);
     return true;
   }
@@ -38,10 +48,13 @@ export class DedupWindow {
    * получить час молчания при живой аварии (база моргнула, все получатели дали
    * 403). Вызывающий проверяет `isFree`, отправляет и фиксирует `record` только
    * по факту доставки.
+   *
+   * Окна здесь нет намеренно: срок записан при `record` тем, кто знал цену
+   * повтора своего события.
    */
-  isFree(key: string, now: number = Date.now(), windowMs: number = this.windowMs): boolean {
-    const last = this.sentAt.get(key) ?? 0;
-    return now - last >= windowMs;
+  isFree(key: string, now: number = Date.now()): boolean {
+    const expires = this.expiresAt.get(key);
+    return expires === undefined || now >= expires;
   }
 
   /**
@@ -50,14 +63,14 @@ export class DedupWindow {
    * жизни процесса.
    */
   record(key: string, now: number = Date.now(), windowMs: number = this.windowMs): void {
-    for (const [k, at] of this.sentAt) {
-      if (now - at >= windowMs) this.sentAt.delete(k);
+    for (const [k, expires] of this.expiresAt) {
+      if (expires <= now) this.expiresAt.delete(k);
     }
-    this.sentAt.set(key, now);
+    this.expiresAt.set(key, now + windowMs);
   }
 
   /** Только для unit-тестов. */
   resetForTests(): void {
-    this.sentAt.clear();
+    this.expiresAt.clear();
   }
 }

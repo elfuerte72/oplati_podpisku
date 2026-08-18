@@ -98,9 +98,21 @@ export async function requirePanelActor(): Promise<PanelActor> {
  * Отсутствующий `Origin` тоже отвергаем: браузер его ставит всегда, а curl'ом
  * денежные операции панели проводить незачем.
  */
-export async function assertPanelRequestOrigin(req: Request): Promise<boolean> {
-  const contentType = req.headers.get('content-type') ?? '';
-  if (!contentType.toLowerCase().includes('application/json')) {
+export async function assertPanelRequestOrigin(
+  req: Request,
+  /**
+   * `requireJson: false` — для операций, которые приходят обычной HTML-формой
+   * (кнопка «Выйти»). Такую форму нельзя послать с `application/json`, и
+   * требование типа означало бы, что выход просто не работает. Origin браузер
+   * ставит и на простой кросс-сайтовый POST, поэтому проверка остаётся.
+   */
+  opts: { requireJson?: boolean } = {},
+): Promise<boolean> {
+  // ⚠️ Сравниваем ESSENCE, а не подстроку: `text/plain; charset=application/json`
+  // содержит нужные буквы, но для CORS остаётся ПРОСТЫМ типом — то есть уходит
+  // без preflight. С `includes` второй барьер существовал только на бумаге.
+  const contentType = (req.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase();
+  if (opts.requireJson !== false && contentType !== 'application/json') {
     log.warn({ event: 'panel.guard.bad_content_type' });
     return false;
   }

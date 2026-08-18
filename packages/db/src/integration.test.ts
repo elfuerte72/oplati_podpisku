@@ -27,6 +27,7 @@ import { appendMessage, deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
   claimPaymentReminder,
   claimRenewalReminder,
@@ -4130,6 +4131,32 @@ describe('панель: недожатые заказы (тикет 07)', () => 
 
     const after = await listPendingOrdersForPanel(db, { userId: user.id });
     expect(after.items.find((r) => r.orderId === order.id)?.lastRemindedAt).toBeInstanceOf(Date);
+  });
+
+  it('СОРВАННАЯ доставка напоминания видна отдельно от отправленной', async () => {
+    // Окно суток занимается ДО отправки и вернуть его нечем (журнал
+    // append-only). Без отдельного признака экран показывал бы «напоминали в
+    // 14:20» там, где клиент не получил ничего: менеджер считает заказ
+    // обработанным и сутки не может повторить.
+    const user = await makeUser({ telegramId: `tg-pending-failed-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/failed');
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_SENT_EVENT,
+      actorType: 'operator',
+    });
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_FAILED_EVENT,
+      actorType: 'operator',
+    });
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.lastRemindedAt).toBeInstanceOf(Date);
+    expect(row?.lastRemindFailedAt).toBeInstanceOf(Date);
   });
 
   it('усечение списка не молчит — и не кричит, когда всё влезло', async () => {

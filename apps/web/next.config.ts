@@ -37,6 +37,11 @@ function buildCspReportOnly(): string | null {
     "img-src 'self' data: blob: https://cdn.freekassa.net",
     "font-src 'self' data:",
     "connect-src 'self' https://*.sentry.io https://vitals.vercel-insights.com",
+    // Кнопка входа в панель — iframe `oauth.telegram.org`, его рисует
+    // `telegram-widget.js`. Без своей директивы действует `default-src 'self'`:
+    // сейчас это НАШЕ нарушение в report-only отчётах (которые заводились ради
+    // чужих), а после перевода политики в enforce вход в панель просто умрёт.
+    "frame-src https://oauth.telegram.org",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",

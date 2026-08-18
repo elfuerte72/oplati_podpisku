@@ -114,13 +114,27 @@ export async function setPanelSessionCookie(staffId: string): Promise<void> {
     signPanelToken({ purpose: 'session', staffId }, requireSessionSecret()),
     cookieOptions(PANEL_SESSION_TTL_SECONDS),
   );
-  store.delete(PANEL_PENDING_COOKIE);
+  expireCookie(store, PANEL_PENDING_COOKIE);
 }
 
 export async function clearPanelCookies(): Promise<void> {
   const store = await cookies();
-  store.delete(PANEL_SESSION_COOKIE);
-  store.delete(PANEL_PENDING_COOKIE);
+  expireCookie(store, PANEL_SESSION_COOKIE);
+  expireCookie(store, PANEL_PENDING_COOKIE);
+}
+
+/**
+ * Погасить cookie перезаписью, а НЕ `store.delete(name)`.
+ *
+ * ⚠️ `delete` со строковым аргументом отправляет `Set-Cookie` без атрибутов —
+ * в том числе без `Secure`. Для имени с префиксом `__Host-` (а на проде оно
+ * такое) браузер обязан такую cookie отвергнуть целиком, поэтому удаление
+ * оказывалось no-op: оператор на общем ноутбуке жал «Выйти», его возвращало
+ * в панель, и сессия жила свои 12 часов. В dev имя без префикса, поэтому
+ * dev-проверка этого не показывала.
+ */
+function expireCookie(store: Awaited<ReturnType<typeof cookies>>, name: string): void {
+  store.set(name, '', { ...cookieOptions(0), expires: new Date(0) });
 }
 
 /**
@@ -131,6 +145,12 @@ export async function clearPanelCookies(): Promise<void> {
 export async function readPendingStaffForEnrollment(): Promise<
   { id: string; email: string; isActive: boolean; totpSecret: string | null; confirmed: boolean } | null
 > {
+  // ⚠️ Гейт по хосту — как и у `authorizePanelRequest`. Дублируется намеренно:
+  // именно эта функция отдаёт СЕКРЕТ TOTP, и отказаться от второго эшелона
+  // должна была последней. Сегодня её прикрывают `proxy.ts` и префикс
+  // `__Host-` у cookie, но оба лежат вне этого файла.
+  if (!(await isPanelHost())) return null;
+
   const token = await readPanelPendingCookie();
   if (!token) return null;
 
@@ -146,7 +166,9 @@ export async function readPendingStaffForEnrollment(): Promise<
     id: staff.id,
     email: staff.email,
     isActive: staff.isActive,
-    totpSecret: staff.totpSecret,
+    // Подтверждённый секрет наружу не отдаём вовсе: экран показывает его ровно
+    // один раз, до подтверждения. Дальше он не нужен никому.
+    totpSecret: staff.totpConfirmedAt === null ? staff.totpSecret : null,
     confirmed: staff.totpConfirmedAt !== null,
   };
 }

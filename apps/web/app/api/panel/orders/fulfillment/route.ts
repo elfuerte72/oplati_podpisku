@@ -2,12 +2,18 @@ import * as Sentry from '@sentry/nextjs';
 import { z } from 'zod';
 
 import { OrderTransitionError, type OrderStatus } from '@oplati/types';
-import { getDb, getOrderDetailForPanel, transitionOrderDetailed } from '@oplati/db';
+import {
+  getDb,
+  getOrderDetailForPanel,
+  transitionOrderDetailed,
+  type PanelOrderEvent,
+} from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
 import {
   canCompleteManualFulfillment,
   canStartManualFulfillment,
+  isStartedManually,
   eventTypeFor,
   MANUAL_FULFILLMENT_ACTIONS,
   MANUAL_FULFILLMENT_COMMENT_MAX,
@@ -98,7 +104,7 @@ export async function POST(req: Request): Promise<Response> {
   // Статус сверяем ДО перехода, чтобы человек получил понятный отказ, а не
   // `OrderTransitionError` из глубины. Гонку это не закрывает — её закрывает
   // сам `transitionOrderDetailed` (лок `FOR UPDATE` внутри транзакции).
-  if (!isStatusReady(detail.order.status, detail.hasSucceededPayment, body.action)) {
+  if (!isStatusReady(detail, body.action)) {
     log.warn({
       event: 'panel.fulfillment.wrong_status',
       staffId: guard.actor.id,
@@ -159,12 +165,20 @@ export async function POST(req: Request): Promise<Response> {
   }
 }
 
+/**
+ * Готов ли заказ к действию.
+ *
+ * ⚠️ Для «выдал» одного статуса мало: нужно, чтобы в `in_fulfillment` его
+ * привёл ОПЕРАТОР, а не автомат. Иначе отметка уводит заказ в терминальный
+ * `completed` из-под работающего `issueCard` — см. `isStartedManually`.
+ * То же условие стоит на экране; разъедутся — кнопка будет предлагать
+ * действие, которое сервер отвергнет.
+ */
 function isStatusReady(
-  status: OrderStatus,
-  hasSucceededPayment: boolean,
+  detail: { order: { status: OrderStatus }; hasSucceededPayment: boolean; events: PanelOrderEvent[] },
   action: ManualFulfillmentAction,
 ): boolean {
   return action === 'start'
-    ? canStartManualFulfillment(status, hasSucceededPayment)
-    : canCompleteManualFulfillment(status);
+    ? canStartManualFulfillment(detail.order.status, detail.hasSucceededPayment)
+    : canCompleteManualFulfillment(detail.order.status, isStartedManually(detail.events));
 }

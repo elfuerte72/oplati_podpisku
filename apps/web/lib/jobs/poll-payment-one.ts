@@ -401,7 +401,10 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
     `Холд банка по операции ${providerOrderId} на ${(payment.amountRub / 100).toFixed(2)} RUB. ` +
       `Деньги списаны, карта не выпущена — исход решает провайдер. ` +
       `Заказ виден в панели: /admin/holds`,
-    { dedupKey: `hold:${payment.id}`, capability: 'holds' },
+    // ⚠️ Без фолбэка владельцу: он идёт следующей строкой и текстом подробнее.
+    // С фолбэком на пустом `staff` (а он пуст до заведения персонала) один холд
+    // давал бы владельцу два DM подряд.
+    { dedupKey: `hold:${payment.id}`, capability: 'holds', fallbackToOps: false },
   );
 
   await notifyOps(

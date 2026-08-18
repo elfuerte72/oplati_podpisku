@@ -76,8 +76,21 @@ export async function POST(req: Request): Promise<Response> {
   // иначе клиент видит номер карты, которого в истории нет.
   const text = redactCardNumbers(body.text);
 
+  // ⚠️ `getBot()` — ОТДЕЛЬНЫМ шагом. Он бросает при незаданном
+  // `TELEGRAM_BOT_TOKEN`, и внутри общего `try` эта авария конфигурации
+  // выдавалась бы за «клиент заблокировал бота»: менеджер видел бы отказ
+  // клиента по каждому диалогу подряд и пошёл бы разбираться не туда.
+  let bot: ReturnType<typeof getBot>;
   try {
-    await getBot().api.sendMessage(telegramId, text);
+    bot = getBot();
+  } catch (err) {
+    log.error({ event: 'panel.support.bot_unavailable', staffId: guard.actor.id, err });
+    Sentry.captureException(err, { tags: { source: 'panel.support' } });
+    return Response.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+
+  try {
+    await bot.api.sendMessage(telegramId, text);
   } catch (err) {
     // Чаще всего — клиент заблокировал бота. Менеджер обязан это увидеть, а не
     // считать, что ответил.

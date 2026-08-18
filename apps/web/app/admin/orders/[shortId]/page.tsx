@@ -20,6 +20,7 @@ import {
 import {
   canCompleteManualFulfillment,
   canStartManualFulfillment,
+  isStartedManually,
 } from '@/lib/panel/fulfillment';
 import { canAccess } from '@/lib/panel/permissions';
 import { panelPageAccess } from '@/lib/panel/guard';
@@ -165,7 +166,8 @@ export default async function PanelOrderPage({
           статусе: разметка действия, которое сервер всё равно отвергнет, лишь
           путает. Право проверяется и здесь, и в самой операции. */}
       {canAccess(access.actor.role, 'fulfillment') &&
-      (order.status === 'failed' || canCompleteManualFulfillment(order.status)) ? (
+      (order.status === 'failed' ||
+        canCompleteManualFulfillment(order.status, isStartedManually(detail.events))) ? (
         <section className="panel-card" style={{ marginTop: 16 }}>
           <h2 className="panel-title">Ручное исполнение</h2>
           {order.status === 'failed' ? (

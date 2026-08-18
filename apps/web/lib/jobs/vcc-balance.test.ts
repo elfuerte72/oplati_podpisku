@@ -95,7 +95,11 @@ describe('alertOnLowVccBalance', () => {
     expect(h.notifyStaff).toHaveBeenCalledTimes(1);
     expect(String(h.notifyStaff.mock.calls[0]?.[0])).toContain('89.50');
     expect(String(h.notifyStaff.mock.calls[0]?.[0])).toContain('Критически');
-    expect(h.notifyStaff.mock.calls[0]?.[1]).toMatchObject({ dedupKey: 'vcc_balance_critical' });
+    // Окно — дефолтный час: авария повторяется, пока её не устранят.
+    expect(h.notifyStaff.mock.calls[0]?.[1]).toMatchObject({
+      dedupKey: 'vcc_balance_critical',
+      dedupWindowMs: undefined,
+    });
     expect(h.captureMessage).toHaveBeenCalled();
   });
 
@@ -106,9 +110,16 @@ describe('alertOnLowVccBalance', () => {
 
     await alertOnLowVccBalance(NOW);
 
-    const [text, opts] = h.notifyStaff.mock.calls[0] as unknown as [string, { dedupKey: string }];
+    const [text, opts] = h.notifyStaff.mock.calls[0] as unknown as [
+      string,
+      { dedupKey: string; dedupWindowMs?: number },
+    ];
     expect(text).toContain('самый дорогой');
+    // ⚠️ Ключ с датой САМ ПО СЕБЕ суток не держит: без явного окна дедуп падает
+    // на дефолтный час, и владелец получает два десятка DM в сутки о нормальном
+    // длительном состоянии — так этот алёрт и отключили 28 июля.
     expect(opts.dedupKey).toBe('vcc_balance_low:2026-08-18');
+    expect(opts.dedupWindowMs).toBe(24 * 60 * 60 * 1000);
   });
 
   it('денег хватает на всё — молчим', async () => {

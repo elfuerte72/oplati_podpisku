@@ -13,7 +13,7 @@ import {
   setPanelSessionCookie,
 } from '@/lib/panel/session';
 import { verifyPanelToken } from '@/lib/panel/token';
-import { checkRateLimit, getClientIp, peekRateLimit } from '@/lib/ratelimit';
+import { checkRateLimit, getClientIp, isRateLimitDisabled } from '@/lib/ratelimit';
 
 /**
  * POST /api/panel/auth/totp — второй фактор входа в панель.
@@ -58,12 +58,6 @@ export async function POST(req: Request): Promise<Response> {
     return redirect('/admin/login?e=not_configured');
   }
 
-  const gate = await peekRateLimit('admin-auth', ip);
-  if (!gate.allowed) {
-    log.warn({ event: 'panel.auth.flood', stage: 'totp', by: 'ip' });
-    return redirect('/admin/login?e=rate_limited');
-  }
-
   const pendingToken = await readPanelPendingCookie();
   const pending = verifyPanelToken(pendingToken ?? '', serverEnv.ADMIN_SESSION_SECRET, {
     purpose: 'pending',
@@ -76,9 +70,25 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // Счётчик по СОТРУДНИКУ — до проверки кода и с расходом на каждую попытку.
+  //
+  // ⚠️ Гейта по IP здесь больше НЕТ намеренно: сотрудник на этом шаге уже
+  // опознан подписанным `pending`-токеном, а блокировка по адресу запирала бы
+  // живого человека за чужой флуд с того же CGNAT (или с нашего же VPN).
+  // Перебор режет счётчик по сотруднику — он точнее и обойти его сменой IP
+  // нельзя.
   const staffGate = await checkRateLimit('admin-totp', pending.staffId);
   if (!staffGate.allowed) {
     log.warn({ event: 'panel.auth.flood', stage: 'totp', by: 'staff', staffId: pending.staffId });
+    return redirect('/admin/login/code?e=rate_limited');
+  }
+
+  // ⚠️ Fail-CLOSED, в отличие от клиентских путей. Счётчик попыток — ЕДИНСТВЕННЫЙ
+  // барьер перебора второго фактора: `pending`-токен живёт 10 минут и
+  // переиспользуется, кодов миллион, окон дрейфа три. Пропусти отказ Redis
+  // молча — и владелец Telegram-аккаунта сотрудника подбирает шесть цифр за
+  // часы. Осознанное отключение флагом (dev) от аварии отличаем явно.
+  if (!staffGate.configured && !isRateLimitDisabled()) {
+    log.error({ event: 'panel.auth.limiter_unavailable', stage: 'totp', staffId: pending.staffId });
     return redirect('/admin/login/code?e=rate_limited');
   }
 

@@ -64,8 +64,25 @@ function actor(role: 'admin' | 'operator' | 'supervisor') {
   };
 }
 
-function orderIn(status: string, hasSucceededPayment = true) {
-  return { hasSucceededPayment, order: { id: 'order-1', shortId: SHORT_ID, status } };
+/**
+ * Заказ в панели. `startedManually` — кто привёл его в `in_fulfillment`:
+ * оператор или автомат. Разница денежная, поэтому она в фикстуре явная.
+ */
+function orderIn(status: string, hasSucceededPayment = true, startedManually = true) {
+  return {
+    hasSucceededPayment,
+    order: { id: 'order-1', shortId: SHORT_ID, status },
+    events:
+      status === 'in_fulfillment'
+        ? [
+            {
+              eventType: startedManually ? 'manual_fulfillment_started' : 'fulfillment_started',
+              toStatus: 'in_fulfillment',
+              createdAt: new Date('2026-08-18T10:00:00Z'),
+            },
+          ]
+        : [],
+  };
 }
 
 function request(body: unknown, headers: Record<string, string> = {}): Request {
@@ -308,5 +325,20 @@ describe('POST /api/panel/orders/fulfillment — статусы и сбои', ()
 
     expect(res.status).toBe(503);
     expect(h.captureException).toHaveBeenCalled();
+  });
+
+  it('«выдал» НЕ проходит по заказу, который выпускает карту автомат', async () => {
+    // `in_fulfillment` бывает двух видов: оператор взял руками и `issueCard`
+    // захватил заказ, уйдя в PaySpace. Отметка «выдал» во втором случае уводит
+    // заказ в терминальный `completed` из-под работающего выпуска: упавший
+    // следом `markOrderFailed` вернуть его в `failed` уже не сможет, и клиент
+    // останется без карты при списанных деньгах.
+    h.getOrderDetail.mockImplementation(async () => orderIn('in_fulfillment', true, false));
+
+    const res = await POST(request({ shortId: SHORT_ID, action: 'complete' }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'wrong_status' });
+    expect(h.transition).not.toHaveBeenCalled();
   });
 });

@@ -113,7 +113,7 @@ export async function insertCommissionAccruals(
  * `unknown` (находка ревью): `unknown` не проверял ничего и позволял передать
  * в денежный фрагмент что угодно.
  */
-function balanceExpr(userId: SQL | string) {
+export function balanceExpr(userId: SQL | string) {
   return sql`(
     COALESCE((SELECT SUM(amount_usd_cents) FROM referral_accruals
               WHERE beneficiary_user_id = ${userId} AND status = 'accrued'), 0)

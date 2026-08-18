@@ -113,7 +113,14 @@ async function notifyStaffPlain(
   logCtx: Record<string, unknown>,
 ): Promise<boolean> {
   try {
-    const res = await notifyStaff(stripHtmlTags(operatorMessage), { capability: 'support' });
+    // ⚠️ `fallbackToOps: false` намеренно: ниже по коду стоит legacy-канал
+    // `SUPPORT_OPERATOR_CHAT_ID`, и с фолбэком владелец получал бы КАЖДОЕ
+    // обращение дважды (разными ботами) плюс Sentry-warning на каждое — до тех
+    // пор, пока в `staff` не появится первый сотрудник.
+    const res = await notifyStaff(stripHtmlTags(operatorMessage), {
+      capability: 'support',
+      fallbackToOps: false,
+    });
     return res.delivered > 0;
   } catch (err) {
     log.error({ event: 'telegram.support.staff_notify_failed', ...logCtx, err });
