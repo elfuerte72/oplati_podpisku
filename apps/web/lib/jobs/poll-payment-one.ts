@@ -3,9 +3,11 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  appendOrderEvent,
   getDb,
   getUserTelegramId,
   getOrderById,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   setPaymentProviderStatus,
   transitionOrder,
   type PaymentRow,
@@ -27,6 +29,7 @@ import {
   processInvoicePaid,
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 
 /**
  * Опрос ОДНОГО pending-платежа у его шлюза — общий примитив двух cron'ов.
@@ -264,16 +267,31 @@ const HOLD_CLIENT_TEXT =
 async function handleAntifraudHold(payment: PaymentRow, providerOrderId: string): Promise<void> {
   await alertAntifraudHold(payment, providerOrderId);
 
+  const db = getDb();
+
   // Дедуп «ровно один раз на платёж»: слать только при СМЕНЕ статуса на 7.
   // `payment.lastProviderStatus` — прежний снимок (строка выбрана до записи
-  // нового значения выше по функции). Известные щели best-effort-схемы:
-  // упавший снапшот повторит сообщение на следующем проходе (безвредно),
-  // а транзиентный сбой перехода ниже при уже записанном снапшоте оставит
-  // заказ в pending_payment — его подстрахуют кнопка «Проблема с оплатой»
-  // и сторож stale-review.
-  if (payment.lastProviderStatus === FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD) return;
+  // нового значения выше по функции).
+  //
+  // ⚠️ Но выйти по одному лишь снимку нельзя. Прежняя версия так и делала, и
+  // это оставляло заказ ХОРОНИТЬСЯ: если переход ниже сорвался транзиентно
+  // (deadlock, обрыв соединения), снимок «7» уже записан — следующий проход
+  // выходил здесь, заказ навсегда оставался `pending_payment`, а через час
+  // `expire-payments` уводил его в `expired` вместе с платежом в `failed`.
+  // После этого `findPendingPaymentsForPoll` его не опрашивает НИКОГДА, а
+  // деньги клиента продолжают висеть у провайдера на проверке. Поэтому повтор
+  // гасится не снимком, а фактом: заказ уже доехал до «на проверке».
+  if (payment.lastProviderStatus === FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD) {
+    const current = await getOrderById(db, payment.orderId);
+    if (current?.status !== 'pending_payment') return;
+    log.warn({
+      event: 'cron.poll_payment.hold_transition_retry',
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      status: current.status,
+    });
+  }
 
-  const db = getDb();
   try {
     await transitionOrder(db, {
       orderId: payment.orderId,
@@ -301,6 +319,7 @@ async function handleAntifraudHold(payment: PaymentRow, providerOrderId: string)
     }
   }
 
+  let notified = false;
   try {
     const order = await getOrderById(db, payment.orderId);
     // Guard по фактическому статусу: при гонке с вебхуком заказ мог уже стать
@@ -309,10 +328,43 @@ async function handleAntifraudHold(payment: PaymentRow, providerOrderId: string)
     const telegramId = await getUserTelegramId(db, order.userId);
     if (telegramId) {
       await getBot().api.sendMessage(telegramId, HOLD_CLIENT_TEXT);
+      notified = true;
       log.info({ event: 'cron.poll_payment.hold_client_notified', orderId: payment.orderId });
     }
   } catch (err) {
     log.warn({ event: 'cron.poll_payment.hold_notify_failed', orderId: payment.orderId, err });
+  }
+
+  if (!notified) return;
+
+  // Факт доставки — в журнал заказа, и ТОЛЬКО после успешной отправки. Панель
+  // холдов показывает «клиенту ушло» по этой записи, а не выводит из статусов:
+  // отправка best-effort, и её отказ («бот заблокирован пользователем» — 403)
+  // иначе выглядел бы как предупреждённый клиент, который на деле молчит.
+  //
+  // ⚠️ Своим try, а не хвостом предыдущего: сбой ЗАПИСИ уже после успешной
+  // ОТПРАВКИ — другое событие. Общий catch писал бы `hold_notify_failed` про
+  // доставленное сообщение (при разборе инцидента это читается как «клиент не
+  // предупреждён»), а сама отметка не появится уже никогда: следующий проход
+  // выйдет по дедупу. Значит, в панели навсегда останется «нет отметки», и это
+  // единственный шанс узнать, почему.
+  try {
+    await appendOrderEvent(db, {
+      orderId: payment.orderId,
+      eventType: PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+      actorType: 'system',
+      payload: { paymentId: payment.id, reason: 'antifraud_hold' },
+    });
+  } catch (err) {
+    log.error({
+      event: 'cron.poll_payment.hold_notify_fact_lost',
+      orderId: payment.orderId,
+      err,
+    });
+    Sentry.captureException(err, {
+      tags: { source: 'cron.poll-payment', step: 'hold_notify_fact' },
+      extra: { orderId: payment.orderId, paymentId: payment.id },
+    });
   }
 }
 
@@ -341,6 +393,19 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
   if (now - last < UNKNOWN_STATUS_DM_DEDUP_MS) return;
   pruneUnknownStatusDedup(now);
   unknownStatusAlertedAt.set(dedupKey, now);
+
+  // Менеджеру — СРАЗУ (тикет 11): раньше про холд узнавали через семь дней и
+  // только владелец, через сторож `payment-review-watch`. Дедуп у обоих каналов
+  // свой, но ключ один и тот же платёж.
+  await notifyStaff(
+    `Холд банка по операции ${providerOrderId} на ${(payment.amountRub / 100).toFixed(2)} RUB. ` +
+      `Деньги списаны, карта не выпущена — исход решает провайдер. ` +
+      `Заказ виден в панели: /admin/holds`,
+    // ⚠️ Без фолбэка владельцу: он идёт следующей строкой и текстом подробнее.
+    // С фолбэком на пустом `staff` (а он пуст до заведения персонала) один холд
+    // давал бы владельцу два DM подряд.
+    { dedupKey: `hold:${payment.id}`, capability: 'holds', fallbackToOps: false },
+  );
 
   await notifyOps(
     `Антифрод-холд Freekassa (статус 7): банк поставил перевод на проверку. ` +

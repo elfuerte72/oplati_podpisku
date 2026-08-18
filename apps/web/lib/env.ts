@@ -186,6 +186,38 @@ const serverEnvSchema = z.object({
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
 
+  // ─── Админ-панель (`/admin`) ─────────────────────────────────────────────
+  //
+  // Вход — Telegram Login Widget (первый фактор) + TOTP (второй). Паролей нет.
+  // Бот входа ОТДЕЛЬНЫЙ от клиентского (`@oplatishkaasupport_bot`): утечка
+  // клиентского токена не должна отдавать первый фактор входа персонала, а
+  // alert-бот остаётся на авариях инфраструктуры.
+  //
+  // ⚠️ Имя бота говорит «support», но это бот ПЕРСОНАЛА: он же доставляет
+  // уведомления менеджеру. Клиентская поддержка живёт в `@oplatishkaa_bot`.
+  //
+  // Не заданы → панель отвечает «вход не настроен» и никого не пускает. Это
+  // осознанный fail-closed: панель видит заказы, клиентов и деньги.
+  TELEGRAM_LOGIN_BOT_TOKEN: optionalEnvString(),
+  // Нужен виджету на странице входа (атрибут `data-telegram-login`).
+  TELEGRAM_LOGIN_BOT_USERNAME: optionalEnvString(
+    z.string().regex(/^[A-Za-z0-9_]{4,64}$/, 'must be a Telegram bot username without @'),
+  ),
+  // Свой секрет вебхука бота персонала — НЕ общий с клиентским ботом: общий
+  // означал бы, что компрометация одного открывает точку приёма другого.
+  TELEGRAM_LOGIN_BOT_WEBHOOK_SECRET: optionalEnvString(),
+  // Подпись cookie сессии панели. Минимум 32 символа: короткий секрет здесь —
+  // это подделка сессии перебором, а сессия панели видит всё.
+  ADMIN_SESSION_SECRET: optionalEnvString(
+    z.string().min(32, 'must be at least 32 characters'),
+  ),
+  // Хост, на котором живёт панель (`admin.oplatishka.com`). Задан — `/admin` и
+  // `/api/panel` на любом другом хосте отдают 404. Это ЗАЩИТА В ГЛУБИНУ поверх
+  // маршрутизации Traefik, а не замена ей: ошибка в конфиге прокси не должна
+  // означать открытую панель. Не задан → гейт по хосту выключен (локальная
+  // разработка, где хост `localhost:3000`).
+  PANEL_HOST: optionalEnvString(),
+
   // Love & Pay (MVP) — RUB-acquiring; preview = pk_test_*, prod = pk_live_*
   LOVEANDPAY_API_KEY: optionalEnvString(),
   LOVEANDPAY_SECRET_KEY: optionalEnvString(),
@@ -318,9 +350,18 @@ const serverEnvSchema = z.object({
   // Секрет проверки подписи входящих VCC-вебхуков (Шаг E; схема подписи D6).
   PAYSPACE_WEBHOOK_SECRET: optionalEnvString(),
   PAYSPACE_BASE_URL: z.string().url().default('https://app.pay.space/api/v1'),
-  // Порог алёрта по балансу VCC-аккаунта (USD-центы): ниже — Sentry warning в
-  // cron recycle-cards. Пополнение VCC — T+1, поэтому предупреждаем заранее.
-  PAYSPACE_MIN_VCC_BALANCE_USD_CENTS: z.coerce.number().int().nonnegative().default(5000),
+  // Порог алёрта по балансу VCC-аккаунта (USD-центы). `0` — считать порог
+  // ОТНОСИТЕЛЬНО самого дорогого заказа каталога (цена + буфер + fee за выпуск):
+  // плоское число не отвечает на вопрос «хватит ли на следующий заказ», из-за
+  // чего 14 августа остаток $89.50 «был выше порога $50», а заказу на $100
+  // карты не досталось. Выключение — отдельным флагом ниже, не нулём.
+  PAYSPACE_MIN_VCC_BALANCE_USD_CENTS: z.coerce.number().int().nonnegative().default(0),
+  // Явное «алёрт баланса выключен, мы знаем». Заведён потому, что прошлое
+  // выключение сделали нулём в пороге — и оно выглядело как «настроено»
+  // (docs/BACKLOG.md, риск сработал 2026-08-14).
+  VCC_BALANCE_ALERT_DISABLED: z
+    .preprocess((v) => v === '1' || v === 'true', z.boolean())
+    .default(false),
   // Буфер сверх USD-цены сервиса на сумму ВЫПУСКАЕМОЙ/пополняемой карты (проценты).
   // По умолчанию 0: карты американские, мерчантов оплачиваем в USD без НДС и FX
   // (клиента просим включить VPN США и вводить цену без налога), поэтому реальный

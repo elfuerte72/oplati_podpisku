@@ -10,6 +10,11 @@ import {
 import { analyticsDictionaryRows } from '@oplati/types';
 
 import { childLogger } from '../logger.ts';
+import {
+  ANALYTICS_RETENTION_DAYS,
+  MESSAGES_RETENTION_DAYS,
+  PAYLOAD_RETENTION_DAYS,
+} from '../retention-policy.ts';
 
 /**
  * Cron `retention` — ежедневная чистка растущих данных (M-13 аудита; Supabase
@@ -32,9 +37,8 @@ import { childLogger } from '../logger.ts';
 
 const log = childLogger('cron.retention');
 
-const MESSAGES_RETENTION_DAYS = 90;
-const PAYLOAD_RETENTION_DAYS = 180;
-const ANALYTICS_RETENTION_DAYS = 400;
+// Сроки — из общего модуля: их читает и панель поддержки, объясняя обрыв ленты.
+
 const BATCH_SIZE = 500;
 const MAX_BATCHES_PER_RUN = 20;
 

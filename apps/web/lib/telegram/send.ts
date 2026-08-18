@@ -42,6 +42,11 @@ export async function withTypingIndicator<T>(chatId: number, fn: () => Promise<T
  * Отправка с обработкой штатных ошибок (403 — заблокировал бота, 400 — bad
  * request на нашей стороне). Всё остальное — пробрасывается в Sentry, но
  * не пробрасывается дальше: webhook должен ответить 200.
+ *
+ * Возвращает, УШЛО ли сообщение. Большинству вызывающих это безразлично (они
+ * игнорируют результат), но там, где отправка охраняется дедупом, «не бросили
+ * исключение» и «доставили» — разные вещи: без признака доставки claim
+ * расходовался бы на сообщение, которого клиент не увидел.
  */
 export async function sendSafely(
   chatId: number,
@@ -50,7 +55,7 @@ export async function sendSafely(
   // Reply-клавиатуры (request_contact) и их снятие — контакт-флоу тикета 06.
   replyMarkup?: InlineKeyboard | Keyboard | ReplyKeyboardRemove,
   opts?: { parseMode?: 'HTML' },
-): Promise<void> {
+): Promise<boolean> {
   try {
     const other = {
       ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
@@ -61,11 +66,12 @@ export async function sendSafely(
       text,
       Object.keys(other).length > 0 ? other : undefined,
     );
+    return true;
   } catch (err) {
     if (err instanceof GrammyError) {
       if (err.error_code === 403) {
         log.warn({ event: 'telegram.send.blocked_by_user', updateId, chatId });
-        return;
+        return false;
       }
       log.error({
         event: 'telegram.send.grammy_error',
@@ -75,15 +81,16 @@ export async function sendSafely(
         description: err.description,
       });
       Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
-      return;
+      return false;
     }
     if (err instanceof HttpError) {
       log.error({ event: 'telegram.send.http_error', updateId, chatId, err });
       Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
-      return;
+      return false;
     }
     log.error({ event: 'telegram.send.unknown_error', updateId, chatId, err });
     Sentry.captureException(err, { tags: { source: 'telegram.bot' } });
+    return false;
   }
 }
 

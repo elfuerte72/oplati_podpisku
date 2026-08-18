@@ -1,6 +1,13 @@
 import 'server-only';
 
-import type { TelegramCallbackQuery, TelegramMessage, TelegramUpdate, TelegramUser } from '@oplati/types';
+import {
+  SUPPORT_DELIVERED_META_KEY,
+  SUPPORT_REQUEST_META_KEY,
+  type TelegramCallbackQuery,
+  type TelegramMessage,
+  type TelegramUpdate,
+  type TelegramUser,
+} from '@oplati/types';
 
 import { childLogger } from '@/lib/logger';
 
@@ -26,6 +33,9 @@ const log = childLogger('telegram-bot');
 
 /** Ключ pending-state в meta assistant-сообщения: «жду описание проблемы для /support». */
 const AWAITING_SUPPORT_META_KEY = 'awaiting_support_message';
+
+// Ключи отметки «обращение подано» — из `@oplati/types`: их читает панель, и
+// копия строки здесь была бы зеркалом (см. докблок в types).
 
 /** «/support <текст>» / «/support@bot <текст>» → «<текст>»; «/support» → null. */
 function extractSupportInline(text: string): string | null {
@@ -114,7 +124,13 @@ export async function handleSupportCommand(
         { telegram_update_id: updateId, telegram_message_id: message.message_id },
         updateId,
       );
-      await safeAppendMessage(ctx, 'assistant', reply, { source: 'support' }, updateId);
+      await safeAppendMessage(
+        ctx,
+        'assistant',
+        reply,
+        { source: 'support', [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
+        updateId,
+      );
     }
     await sendSafely(chatId, reply, updateId);
     return;
@@ -204,7 +220,13 @@ export async function tryHandlePendingSupport(
   const ok = await submitSupportRequest(message.from, text, updateId);
   const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
   // Ответ без флага — ожидание сброшено (успех) либо не зацикливаем на сбое.
-  await safeAppendMessage(ctx, 'assistant', reply, { source: 'support' }, updateId);
+  await safeAppendMessage(
+    ctx,
+    'assistant',
+    reply,
+    { source: 'support', [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
+    updateId,
+  );
   await sendSafely(chatId, reply, updateId);
   return true;
 }

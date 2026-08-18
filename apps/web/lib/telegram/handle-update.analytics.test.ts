@@ -49,9 +49,13 @@ vi.mock("./persist", () => ({
 vi.mock("./agent-dialog", () => ({
   runAgentDialog: vi.fn(async () => undefined),
 }));
-vi.mock("./bot", () => ({
-  getBot: () => ({ api: { answerCallbackQuery: vi.fn(async () => {}) } }),
-}));
+vi.mock("./bot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bot")>();
+  return {
+    ...actual,
+    getBot: () => ({ api: { answerCallbackQuery: vi.fn(async () => {}) } }),
+  };
+});
 vi.mock("./start-menu", () => ({
   handleStartCommand: vi.fn(async () => undefined),
 }));
@@ -87,8 +91,13 @@ function textUpdate(text: string, updateId = 100) {
 }
 
 /**
- * Самая невидимая потеря клиентов: при выключенном `BOT_AI_ENABLED` бот молчит
- * на текст и медиа. Ни в логах по смыслу, ни в БД этого нет — только событие.
+ * Спрос, который бот при выключенном `BOT_AI_ENABLED` не обслуживает: клиент
+ * пишет текст или шлёт медиа, а по делу ответа нет. Ни в логах по смыслу, ни в
+ * БД этого нет — только событие.
+ *
+ * С тикета 09 в ответ уходит подсказка с кнопкой «Поддержка» (её поведение
+ * проверяет `handle-update.silent-hint.test.ts`), но само событие остаётся: оно
+ * меряет тот же спрос, и история сравнима.
  *
  * Тест существует ещё и потому, что на dev-стенде флаг ВКЛЮЧЁН
  * (`BOT_AI_ENABLED=1`), то есть вживую этот путь там не воспроизводится.
@@ -100,15 +109,17 @@ describe("bot_text_ignored", () => {
     h.state.botAiEnabled = false;
   });
 
-  it("текст при выключенном AI: бот молчит, событие пишется", async () => {
+  it("текст при выключенном AI пишет событие", async () => {
     await handleTelegramUpdate(textUpdate("хочу оплатить spotify"));
 
-    expect(h.sendMock).not.toHaveBeenCalled();
     expect(h.trackMock).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "bot_text_ignored",
         telegramId: "379336096",
-        props: { kind: "text", len: "хочу оплатить spotify".length },
+        props: expect.objectContaining({
+          kind: "text",
+          len: "хочу оплатить spotify".length,
+        }),
       }),
     );
   });
@@ -120,7 +131,8 @@ describe("bot_text_ignored", () => {
       string,
       unknown
     >;
-    expect(props).toEqual({ kind: "text", len: 24 });
+    expect(props.kind).toBe("text");
+    expect(props.len).toBe(24);
     expect(JSON.stringify(h.trackMock.mock.calls)).not.toContain("79991234567");
   });
 
@@ -135,11 +147,10 @@ describe("bot_text_ignored", () => {
       },
     });
 
-    expect(h.sendMock).not.toHaveBeenCalled();
     expect(h.trackMock).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "bot_text_ignored",
-        props: { kind: "media" },
+        props: expect.objectContaining({ kind: "media" }),
       }),
     );
   });

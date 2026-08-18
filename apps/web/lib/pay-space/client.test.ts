@@ -361,4 +361,96 @@ describe('PaySpaceClient.releaseCard / getVccBalance', () => {
     const res = await c.getVccBalance();
     expect(res).toEqual({ balanceUsdCents: 125000, pendingUsdCents: 5000, currency: 'USD' });
   });
+
+  /**
+   * Дедлайн вызывающего. Дефолт клиента — 60 с на заголовки, 60 с на тело и
+   * два захода: молчащий провайдер держит вызов до четырёх минут. Для выпуска
+   * карты это правильная цена (рубли уже приняты), а для экрана панели —
+   * страница, которую никто не дождётся.
+   */
+  it('свой дедлайн обрывает молчащий запрос и не уходит в ретрай', async () => {
+    // Провайдер, который принял соединение и молчит: завершить вызов может
+    // только abort по нашему таймеру. Если дедлайн не соблюдается, тест не
+    // «покажет большое число», а зависнет и упадёт по таймауту vitest — это и
+    // есть проверяемое поведение (замерять стенные часы внутри прогона незачем:
+    // на нагруженном CI это источник необъяснимых падений).
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        }),
+    );
+    const c = makeClient(fetchMock as unknown as ReturnType<typeof vi.fn>);
+
+    await expect(c.getVccBalance({ timeoutMs: 40, attempts: 1 })).rejects.toThrow(/abort/i);
+
+    // Ровно один заход: повтор удвоил бы ожидание вызывающего.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('дедлайн покрывает и ЧТЕНИЕ ТЕЛА, а не только заголовки', async () => {
+    // Аудит 2026-08-10: сервер отдаёт 200 и замолкает на теле. Таймер на этой
+    // фазе перевзводится — и обязан взводиться НАШИМ бюджетом, иначе экран
+    // холдов ждал бы минуту вместо секунд, а тест первой фазы этого не видит.
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit) =>
+        Promise.resolve({
+          status: 200,
+          text: () =>
+            new Promise<string>((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+              });
+            }),
+        } as unknown as Response),
+    );
+    const c = makeClient(fetchMock as unknown as ReturnType<typeof vi.fn>);
+
+    await expect(c.getVccBalance({ timeoutMs: 40, attempts: 1 })).rejects.toThrow(/abort/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PaySpaceClient — гейт неидемпотентности сильнее просьбы вызывающего', () => {
+  it('createCard не ретраится, даже если попросить больше заходов', async () => {
+    // `createCard` — единственная мутирующая операция без идемпотентного ключа
+    // у провайдера: повтор выпускает ВТОРУЮ профинансированную карту-призрак.
+    // Инвариант держится в самом клиенте, а не в дисциплине вызывающих.
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    const c = makeClient(fetchMock);
+
+    await expect(
+      (c as unknown as {
+        request: (o: Record<string, unknown>) => Promise<unknown>;
+      }).request({
+        method: 'POST',
+        path: '/vcc/card/create/',
+        body: { amount: '10.00' },
+        schema: { parse: (v: unknown) => v },
+        idempotent: false,
+        maxAttempts: 5,
+      }),
+    ).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('испорченное число заходов не превращает вызов в мгновенный отказ', async () => {
+    // `Math.max(1, NaN)` — это `NaN`, и цикл `attempt < NaN` не выполняется ни
+    // разу: без нормализации метод бросал бы «retries exhausted», не сделав
+    // НИ ОДНОГО запроса, — неотличимо от падения провайдера.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        makeResp(200, { success: true, data: { balance: '1.00', pending: '0.00', currency: 'USD' } }),
+      );
+    const c = makeClient(fetchMock);
+
+    const res = await c.getVccBalance({ attempts: Number.NaN });
+
+    expect(res.balanceUsdCents).toBe(100);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

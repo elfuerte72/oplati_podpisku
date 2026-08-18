@@ -32,17 +32,27 @@ const h = vi.hoisted(() => ({
   setProviderStatusMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
   transitionOrderMock: vi.fn((..._args: unknown[]) => Promise.resolve({})),
   botSendMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  appendEventMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  notifyStaffMock: vi.fn((..._args: unknown[]) =>
+    Promise.resolve({ delivered: 1, failed: 0, deduped: false }),
+  ),
+  stuckPaidMock: vi.fn((..._args: unknown[]) => Promise.resolve<unknown[]>([])),
+  getOrderByIdMock: vi.fn((..._args: unknown[]) =>
+    Promise.resolve<unknown>({ id: 'order-1', userId: 'user-1', status: 'payment_review' }),
+  ),
 }));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   findPendingPaymentsForPoll: vi.fn(async () => h.pending),
-  findStuckPaidOrders: vi.fn(async () => []),
+  findStuckPaidOrders: h.stuckPaidMock,
   findStuckInFulfillmentOrders: vi.fn(async () => []),
   setPaymentProviderStatus: h.setProviderStatusMock,
   transitionOrder: h.transitionOrderMock,
-  getOrderById: vi.fn(async () => ({ id: 'order-1', userId: 'user-1', status: 'payment_review' })),
+  getOrderById: h.getOrderByIdMock,
   getUserTelegramId: vi.fn(async () => '555'),
+  appendOrderEvent: h.appendEventMock,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT: 'payment_review_client_notified',
 }));
 
 vi.mock('../telegram/bot.ts', () => ({
@@ -84,6 +94,10 @@ vi.mock('./issue-card.ts', () => ({ issueCard: vi.fn(async () => {}) }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+
+vi.mock('../alerts/notify-staff.ts', () => ({ notifyStaff: h.notifyStaffMock }));
+
+import { captureException } from '@sentry/nextjs';
 
 import { pollPayments } from './poll-payment.ts';
 import { notifyOps } from '../alerts/notify-ops.ts';
@@ -131,6 +145,15 @@ describe('pollPayments — добор по провайдерам', () => {
       status: 'PENDING',
     });
     h.findOrderMock.mockResolvedValue(null);
+    // `clearAllMocks` снимает и реализацию: возвращаем дефолт, иначе заказ
+    // приходит `undefined` и ветки холда молча не выполняются.
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-1',
+      userId: 'user-1',
+      status: 'payment_review',
+    });
+    h.stuckPaidMock.mockResolvedValue([]);
+    h.notifyStaffMock.mockResolvedValue({ delivered: 1, failed: 0, deduped: false });
   });
 
   it('оплаченный счёт Freekassa восстанавливается (уведомление потеряно)', async () => {
@@ -442,6 +465,39 @@ describe('pollPayments — добор по провайдерам', () => {
     expect(text).toContain('/support');
   });
 
+  it('доставленное автосообщение записывается фактом в журнал заказа', async () => {
+    // Экран холдов пишет «клиенту ушло». Выводить это из статусов нельзя:
+    // отправка best-effort, и её сбой глушится log.warn — панель сказала бы
+    // «ушло» там, где клиент молчит. Пишем факт, а не следствие.
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+
+    await pollPayments();
+
+    expect(h.appendEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: 'order-1',
+        eventType: 'payment_review_client_notified',
+      }),
+    );
+  });
+
+  it('бот заблокирован клиентом — факта отправки НЕТ', async () => {
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.botSendMock.mockRejectedValueOnce(
+      Object.assign(new Error('Forbidden: bot was blocked by the user'), { error_code: 403 }),
+    );
+
+    await pollPayments();
+
+    // Заказ всё равно «на проверке» — деньги важнее уведомления.
+    expect(h.transitionOrderMock).toHaveBeenCalled();
+    // А вот утверждать, что клиент предупреждён, нечем.
+    expect(h.appendEventMock).not.toHaveBeenCalled();
+  });
+
   it('повторный опрос того же холда клиента НЕ спамит (дедуп по прежнему статусу)', async () => {
     h.pending = [{ ...FK_PAYMENT, lastProviderStatus: 7 }];
     h.findOrderMock.mockResolvedValue(fkOrder(7));
@@ -450,6 +506,47 @@ describe('pollPayments — добор по провайдерам', () => {
 
     expect(h.transitionOrderMock).not.toHaveBeenCalled();
     expect(h.botSendMock).not.toHaveBeenCalled();
+  });
+
+  it('сорвавшийся перевод «на проверку» повторяется, а не хоронит заказ', async () => {
+    // Снимок статуса 7 уже записан, но заказ остался `pending_payment` — значит,
+    // прошлый переход упал транзиентно. Прежняя версия выходила по снимку, и
+    // через час `expire-payments` уводил заказ в `expired`, а платёж в `failed`:
+    // после этого его не опрашивает уже никто, а деньги клиента висят у
+    // провайдера на проверке.
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: 7 }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-1',
+      userId: 'user-1',
+      status: 'pending_payment',
+    });
+
+    await pollPayments();
+
+    expect(h.transitionOrderMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ toStatus: 'payment_review' }),
+    );
+  });
+
+  it('сбой записи факта не выдаётся за недоставленное сообщение', async () => {
+    // Сообщение клиенту УШЛО, а запись отметки упала (икота БД). Общий catch
+    // писал бы `hold_notify_failed` — при разборе инцидента это читается как
+    // «клиент не предупреждён», хотя он предупреждён. Отметки не будет уже
+    // никогда (следующий проход выйдет по дедупу), поэтому это единственный
+    // шанс узнать причину — значит, Sentry.
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.appendEventMock.mockRejectedValueOnce(new Error('connection terminated'));
+
+    await pollPayments();
+
+    expect(h.botSendMock).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: expect.objectContaining({ step: 'hold_notify_fact' }) }),
+    );
   });
 
   it('каждый опрос Freekassa сохраняет увиденный статус в платёж (тикет 03)', async () => {
@@ -515,5 +612,87 @@ describe('pollPayments — добор по провайдерам', () => {
     await pollPayments();
 
     expect(notifyOps).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pollPayments — уведомления менеджеру (тикет 11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetUnknownStatusAlertDedupForTests();
+    h.pending = [];
+    h.freekassaConfigured = true;
+    h.loveAndPayConfigured.value = true;
+    h.paySpaceConfigured = true;
+    h.findOrderMock.mockResolvedValue(null);
+    h.stuckPaidMock.mockResolvedValue([]);
+    h.notifyStaffMock.mockResolvedValue({ delivered: 1, failed: 0, deduped: false });
+  });
+
+  it('холд банка уходит менеджеру СРАЗУ, а не через семь дней', async () => {
+    // Раньше про холд узнавали только через сторож `payment-review-watch` и
+    // только владелец — на восьмой день.
+    h.paySpaceConfigured = false;
+    h.pending = [{ ...FK_PAYMENT, lastProviderStatus: null }];
+    h.findOrderMock.mockResolvedValue(fkOrder(7));
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-1',
+      userId: 'user-1',
+      status: 'payment_review',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).toHaveBeenCalledWith(
+      expect.stringContaining('Холд банка'),
+      expect.objectContaining({ capability: 'holds' }),
+    );
+  });
+
+  it('застрявший заказ: пишем менеджеру, только когда ПОВТОР НЕ ПОМОГ', async () => {
+    // Крон сам чинит зависшие в `paid` заказы. Уведомлять о каждом застревании
+    // значило бы звать человека к уже починенному.
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'failed',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).toHaveBeenCalledWith(
+      expect.stringContaining('ORD-STUCK'),
+      expect.objectContaining({ capability: 'orders', dedupKey: 'stuck:order-9' }),
+    );
+  });
+
+  it('повтор ПОМОГ — менеджера не беспокоим', async () => {
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'completed',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).not.toHaveBeenCalled();
+  });
+
+  it('заказ ещё в работе после повтора — тоже молчим', async () => {
+    // `in_fulfillment` означает «выпуск идёт прямо сейчас»: звать человека рано.
+    h.stuckPaidMock.mockResolvedValue([{ id: 'order-9', shortId: 'ORD-STUCK' }]);
+    h.getOrderByIdMock.mockResolvedValue({
+      id: 'order-9',
+      shortId: 'ORD-STUCK',
+      userId: 'user-1',
+      status: 'in_fulfillment',
+    });
+
+    await pollPayments();
+
+    expect(h.notifyStaffMock).not.toHaveBeenCalled();
   });
 });

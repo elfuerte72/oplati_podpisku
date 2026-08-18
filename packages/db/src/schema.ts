@@ -187,13 +187,31 @@ export const linkTokens = pgTable(
 
 export const staff = pgTable('staff', {
   id: uuid('id').defaultRandom().primaryKey(),
-  // Supabase Auth user.id — связка с auth.users
+  // Supabase Auth user.id — мёртвое поле: Auth не используется с переезда на
+  // self-host Postgres (2026-07-24). Сносится отдельной миграцией и отдельным
+  // деплоем (тикет 13 админ-панели) — destructive-изменения в два шага.
   authUserId: uuid('auth_user_id').unique(),
   email: text('email').notNull().unique(),
   displayName: text('display_name').notNull(),
   role: staffRoleEnum('role').notNull().default('operator'),
-  telegramId: text('telegram_id'), // для нотификаций в личку
+  // Первый фактор входа в панель И адрес доставки уведомлений менеджеру.
+  // UNIQUE обязателен: по нему ищется сотрудник при входе, и две строки с одним
+  // telegram_id означали бы «кто именно вошёл» на усмотрение планировщика.
+  telegramId: text('telegram_id').unique(),
   isActive: boolean('is_active').default(true).notNull(),
+  // Второй фактор (TOTP, RFC 6238). Секрет лежит как есть: утечка DATABASE_URL
+  // и так означает доступ ко всему, а второй секрет-стор создал бы иллюзию
+  // защиты (решение владельца, спека админ-панели §4.4).
+  totpSecret: text('totp_secret'),
+  // Пока пусто — сотрудник ещё не привязал приложение с кодами; первый вход
+  // покажет ему секрет. Заполнено — вход требует код.
+  totpConfirmedAt: timestamp('totp_confirmed_at', { withTimezone: true }),
+  // Номер уже использованного 30-секундного окна TOTP. Делает код ОДНОРАЗОВЫМ:
+  // без этого подсмотренный код (плечо, фишинг, MITM-прокси) переигрывается
+  // ещё ~90 секунд и даёт полноценную 12-часовую сессию. `bigint` в режиме
+  // number: номер окна — это unix-время/30, до 2262 года влезает в double.
+  totpLastStep: bigint('totp_last_step', { mode: 'number' }),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }).enableRLS();
 
@@ -334,6 +352,12 @@ export const orders = pgTable(
     paidAtIdx: index('orders_paid_at_idx')
       .on(t.paidAt)
       .where(sql`${t.paidAt} IS NOT NULL`),
+    // Список заказов в админ-панели: `ORDER BY created_at DESC LIMIT 50` без
+    // фильтра — самый частый запрос панели, и он ПОВТОРЯЕТСЯ каждые 25 секунд
+    // на каждую открытую вкладку (живое обновление). Без индекса это полная
+    // сортировка вечно растущей таблицы в том же процессе, который принимает
+    // вебхуки Freekassa и Telegram. Тот же мотив, что у `payments_created_at_idx`.
+    createdAtIdx: index('orders_created_at_idx').on(t.createdAt),
     serviceOrCustom: check(
       'orders_service_or_custom',
       sql`${t.serviceId} IS NOT NULL OR ${t.customServiceDescription} IS NOT NULL`,

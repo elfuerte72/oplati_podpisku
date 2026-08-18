@@ -16,17 +16,23 @@ const log = childLogger('alerts.ops');
  * `ALERT_TELEGRAM_CHAT_ID` не задан → no-op. Анти-петля: ошибку доставки только
  * логируем (НЕ `Sentry.captureException`), иначе провал алерта породил бы новый
  * Sentry-issue → снова алерт.
+ *
+ * Возвращает, СОСТОЯЛАСЬ ли доставка. Никогда не бросает — вызывающему это
+ * нужно не для обработки ошибки, а чтобы не выдавать несостоявшуюся отправку
+ * за состоявшуюся (например, занимая ею окно дедупа на час вперёд).
  */
-export async function notifyOps(text: string): Promise<void> {
+export async function notifyOps(text: string): Promise<boolean> {
   const chatId = serverEnv.ALERT_TELEGRAM_CHAT_ID;
   if (!chatId) {
     log.warn({ event: 'alerts.ops.disabled', reason: 'no_chat_id' });
-    return;
+    return false;
   }
   try {
     await sendAlert(chatId, text);
     log.info({ event: 'alerts.ops.sent' });
+    return true;
   } catch (err) {
     log.error({ event: 'alerts.ops.failed', err });
+    return false;
   }
 }

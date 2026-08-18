@@ -51,7 +51,10 @@ export type RateLimitName =
   | 'telegram-media'
   | 'cabinet'
   | 'cabinet-auth'
-  | 'alert-webhook-auth';
+  | 'alert-webhook-auth'
+  | 'admin-auth'
+  | 'admin-totp'
+  | 'staff-bot';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
@@ -134,6 +137,29 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   // уведомление хуже отсутствующего. Порог низкий: у настоящего Sentry секрет
   // верный с первого раза, промахиваться некому.
   'alert-webhook-auth': { limit: 10, windowSeconds: 300 },
+  // Только НЕУДАЧНЫЕ попытки входа в админ-панель (`/api/panel/auth/*`), по IP.
+  // Страница входа — неаутентифицированная точка входа (инвариант 9), а второй
+  // фактор это шесть цифр: без потолка их перебирают.
+  //
+  // ⚠️ Считаются ИМЕННО отказы, как у `cabinet-auth` и `alert-webhook-auth`.
+  // Лимит на все запросы означал бы, что чужой перебор с того же CGNAT-адреса
+  // запирает снаружи живого сотрудника — то есть отказ в обслуживании себе.
+  // 10 за 15 минут: человек, промахнувшийся кодом, укладывается с запасом,
+  // перебор миллиона комбинаций — нет.
+  'admin-auth': { limit: 10, windowSeconds: 900 },
+  // Потолок перебора второго фактора ПО СОТРУДНИКУ. Расходуется на КАЖДУЮ
+  // попытку, а не только на промах, и в этом весь смысл: при учёте одних
+  // промахов пачка параллельных запросов успевает проверить тысячу кодов до
+  // того, как счётчик их догонит, а УГАДАННЫЙ код проходит мимо лимитера вовсе.
+  // Ключ — id сотрудника, поэтому чужой перебор не запирает соседа (в отличие
+  // от общего IP за CGNAT). 8 попыток за 5 минут: человеку, промахнувшемуся
+  // цифрой, хватает, перебору 10^6 комбинаций — нет.
+  'admin-totp': { limit: 8, windowSeconds: 300 },
+  // Бот ПЕРСОНАЛА, по отправителю. Бот публичный: клиент находит его поиском по
+  // слову «support» и пишет туда. Без бакета каждое такое сообщение стоит нам
+  // чтения БД и исходящего вызова Telegram. Отдельный от `telegram` — служебный
+  // бот не должен выедать лимит клиентского и наоборот.
+  'staff-bot': { limit: 10, windowSeconds: 60 },
 };
 
 // Резолв клиентского IP вынесен в `client-ip.ts` (антифрод-трек, тикет 01):
@@ -143,6 +169,17 @@ export { getClientIp } from './client-ip.ts';
 
 let cachedRedis: Redis | null = null;
 const limiterCache = new Map<RateLimitName, Ratelimit>();
+
+/**
+ * Лимитер отключён ОСОЗНАННО (флагом), а не сломался.
+ *
+ * Нужно там, где fail-open дороже отказа: вход в панель считает попытки
+ * подбора второго фактора, и «счётчик недоступен» там обязано означать
+ * «не пускаем», а «выключен руками на dev» — «пускаем».
+ */
+export function isRateLimitDisabled(): boolean {
+  return isDisabled();
+}
 
 function isDisabled(): boolean {
   return process.env.RATE_LIMIT_DISABLED === '1' || process.env.RATE_LIMIT_DISABLED === 'true';
@@ -171,6 +208,42 @@ function getLimiter(name: RateLimitName): Ratelimit | null {
   });
   limiterCache.set(name, limiter);
   return limiter;
+}
+
+/**
+ * Узнать состояние лимита, НЕ расходуя его.
+ *
+ * Нужно там, где считаются только НЕУДАЧНЫЕ попытки (`admin-auth`): при таком
+ * учёте обычный `checkRateLimit` стоит на ветке отказа, а успешный вход мимо
+ * лимитера проходит вовсе — и перебор шестизначного кода не останавливается,
+ * он лишь получает 429 на неудачных попытках, а угаданный код всё равно
+ * впускает. Поэтому вход СНАЧАЛА смотрит сюда (заблокирован ли адрес) и только
+ * потом проверяет код, а расходует лимит на промахе.
+ *
+ * Никогда не бросает; при недоступном backend'е — fail-open, как и весь модуль.
+ */
+export async function peekRateLimit(
+  name: RateLimitName,
+  identity: string,
+): Promise<RateLimitResult> {
+  const cfg = CONFIGS[name];
+  if (isDisabled()) {
+    return { allowed: true, configured: false, limit: cfg.limit, remaining: cfg.limit };
+  }
+
+  const limiter = getLimiter(name);
+  if (!limiter) {
+    return { allowed: true, configured: false, limit: cfg.limit, remaining: cfg.limit };
+  }
+
+  try {
+    const { remaining } = await limiter.getRemaining(identity);
+    return { allowed: remaining > 0, configured: true, limit: cfg.limit, remaining };
+  } catch (err) {
+    log.error({ event: 'ratelimit.peek_failed', name, err });
+    Sentry.captureException(err, { tags: { source: 'ratelimit', name } });
+    return { allowed: true, configured: false, limit: cfg.limit, remaining: cfg.limit };
+  }
 }
 
 /**

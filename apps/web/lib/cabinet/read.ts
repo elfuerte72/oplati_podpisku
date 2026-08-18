@@ -10,6 +10,9 @@ import {
   getUserProfileById,
   findCardsByUserIdForCabinet,
   findPaymentsByOrderId,
+  PAYMENT_REMINDER_FAILED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   type Card,
   type OrderEventRow,
   type OrderRow,
@@ -39,6 +42,32 @@ import {
   type OrderSummary,
   type PaymentView,
 } from './types.ts';
+
+/**
+ * СЛУЖЕБНЫЕ события: они есть в журнале, но клиенту в таймлайне не место.
+ *
+ * `order_events` — общая поверхность трёх потребителей: выручка, панель и
+ * Mini App клиента. Про первых двух помнят все, про третьего забывают: любой
+ * новый тип события без ярлыка доезжает клиенту строкой «Событие» с временем и
+ * без смысла — и делает это на самом тревожном экране продукта (деньги
+ * списаны, банк держит перевод). Поэтому фильтр — денилист, а не «допишите
+ * ярлык, когда вспомните»: неизвестное клиенту НЕ показывается.
+ *
+ * Здесь ровно то, что описывает НАШИ действия вокруг клиента, а не судьбу его
+ * заказа: отметка «мы предупредили о холде» и «напоминание о продлении
+ * отправлено». Клиент про оба узнаёт из самого сообщения в Telegram.
+ */
+const INTERNAL_EVENT_TYPES = new Set<string>([
+  // ⚠️ Константами, а не литералами: имена событий пишет `@oplati/db`, и
+  // литерал здесь был бы зеркалом без автосверки (инвариант 10). Цена
+  // расхождения — наше служебное действие в таймлайне КЛИЕНТА.
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  // Сорванная доставка напоминания — тем более служебная: клиенту незачем
+  // знать, что мы не смогли до него достучаться.
+  PAYMENT_REMINDER_FAILED_EVENT,
+  'renewal_reminder_sent',
+]);
 
 /** Человекочитаемые ярлыки событий `order_events` для таймлайна кабинета. */
 const EVENT_LABELS: Record<string, string> = {
@@ -162,6 +191,27 @@ function mapPayment(payment: PaymentRow): PaymentView {
   };
 }
 
+/**
+ * Служебное ли это событие. Отдельной функцией, чтобы денилист проверялся
+ * ПРЯМО: через `isClientVisibleOrderEvent` он не проверяется вовсе — событие
+ * без ярлыка и так скрыто вторым эшелоном, и тест не заметил бы удаления
+ * строки из списка (находка ревью).
+ */
+export function isInternalOrderEvent(eventType: string): boolean {
+  return INTERNAL_EVENT_TYPES.has(eventType);
+}
+
+/** Показываем ли событие клиенту (см. `INTERNAL_EVENT_TYPES`). */
+export function isClientVisibleOrderEvent(event: {
+  eventType: string;
+  toStatus: string | null;
+}): boolean {
+  if (isInternalOrderEvent(event.eventType)) return false;
+  // Событие без ярлыка И без смены статуса подписать нечем — «Событие» в
+  // истории заказа не значит ничего и только пугает.
+  return Boolean(EVENT_LABELS[event.eventType] ?? event.toStatus);
+}
+
 function mapEvent(event: OrderEventRow): OrderEventView {
   const label =
     EVENT_LABELS[event.eventType] ??
@@ -275,7 +325,7 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
     buyerFeePercent: buyerFeePercentForOrder(payments),
     paidAt: toIso(order.paidAt),
     fulfilledAt: toIso(order.fulfilledAt),
-    events: events.map(mapEvent),
+    events: events.filter(isClientVisibleOrderEvent).map(mapEvent),
     payments: payments.map(mapPayment),
     card: card ? mapCard(card, cardPurpose) : null,
   };

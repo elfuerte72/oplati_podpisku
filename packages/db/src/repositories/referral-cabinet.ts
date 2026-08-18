@@ -408,6 +408,49 @@ export async function transitionReferralPayout(
   const applied = rows.length > 0;
   if (applied) {
     log.info({ event: 'db.referral.payout_transitioned', payoutId, from, to });
+    return { applied, status: to };
   }
-  return { applied, status: applied ? to : from };
+
+  // ⚠️ Не применилось — значит, в базе НЕ `from` (условный UPDATE не прошёл
+  // именно поэтому). Возвращать `from` было бы ложью о состоянии денег: вторая
+  // вкладка могла увести заявку в `paid`, а вызывающий отдал бы наружу
+  // «requested». Читаем фактический статус.
+  const current = await db.execute<{ status: string }>(sql`
+    SELECT status FROM referral_payouts WHERE id = ${payoutId}
+  `);
+  return { applied, status: (current[0]?.status as PayoutStatus) ?? from };
+}
+
+
+/**
+ * Одна заявка на вывод — для операции панели: решение зависит от ФАКТИЧЕСКОГО
+ * статуса, а не от предположения вызывающего. Заявка, застрявшая в
+ * `processing` (процесс умер между двумя переходами), иначе не вынималась бы
+ * из панели ничем, а её сумма продолжала бы вычитаться из баланса партнёра.
+ */
+export async function findReferralPayoutForPanel(
+  db: DB,
+  payoutId: string,
+): Promise<{ id: string; userId: string; status: PayoutStatus; amountUsdCents: number; suspended: boolean } | null> {
+  const rows = await db.execute<{
+    id: string;
+    user_id: string;
+    status: string;
+    amount_usd_cents: number;
+    suspended: boolean | null;
+  }>(sql`
+    SELECT p.id, p.user_id, p.status, p.amount_usd_cents, rp.suspended
+    FROM referral_payouts p
+    LEFT JOIN referral_partners rp ON rp.user_id = p.user_id
+    WHERE p.id = ${payoutId}
+  `);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    status: row.status as PayoutStatus,
+    amountUsdCents: Number(row.amount_usd_cents),
+    suspended: row.suspended ?? false,
+  };
 }

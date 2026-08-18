@@ -64,6 +64,46 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(out?.request?.query_string).toBe('s=[REDACTED]&tags=alerts&status=ok');
   });
 
+  it('редактирует поиск панели: ?q= несёт контакт клиента', () => {
+    const out = beforeSend({
+      request: { query_string: 'q=ivan%40example.com&s2=1' },
+    } as never);
+
+    expect(out?.request?.query_string).toBe('q=[REDACTED]&s2=1');
+  });
+
+  it('чистит строку запроса и в request.url — она несёт те же параметры', () => {
+    // Раньше денилист стоял только на `query_string`, а `url` уезжал целиком:
+    // обход был бесплатным и незаметным.
+    const out = beforeSend({
+      request: {
+        url: 'https://admin.oplatishka.com/admin/orders?q=ivan%40example.com&s=live',
+        query_string: 'q=ivan%40example.com&s=live',
+      },
+    } as never);
+
+    expect(out?.request?.url).toBe(
+      'https://admin.oplatishka.com/admin/orders?q=[REDACTED]&s=[REDACTED]',
+    );
+    expect(JSON.stringify(out)).not.toContain('ivan');
+  });
+
+  it('url без строки запроса не портится', () => {
+    const out = beforeSend({
+      request: { url: 'https://admin.oplatishka.com/admin/orders' },
+    } as never);
+
+    expect(out?.request?.url).toBe('https://admin.oplatishka.com/admin/orders');
+  });
+
+  it('параметры, лишь СОДЕРЖАЩИЕ q, не задеваются', () => {
+    const out = beforeSend({
+      request: { query_string: 'seq=7&uniq=abc' },
+    } as never);
+
+    expect(out?.request?.query_string).toBe('seq=7&uniq=abc');
+  });
+
   it('редактирует s= в середине query_string по границе параметра', () => {
     const event = makeEvent({
       request: { query_string: 'foo=1&s=secret2&bar=2' },
@@ -182,5 +222,42 @@ describe('beforeSend: свободный текст message и exception', () =>
     expect(event.message).not.toContain('5592680100101726');
     expect(event.message).toContain('**** 1726');
     expect(event.message).toContain('Bearer [REDACTED]');
+  });
+
+  it('разобранные cookie вычищаются ЦЕЛИКОМ, а не только заголовок', () => {
+    // ⚠️ Интеграция requestData разбирает заголовок `cookie` в отдельное поле
+    // `request.cookies` ещё ДО `beforeSend`, поэтому редакции заголовка мало.
+    // Там лежит подписанная cookie сессии панели — bearer на 12 часов, который
+    // нечем отозвать поштучно (таблицы сессий нет).
+    const event = makeEvent({
+      request: {
+        headers: { cookie: '__Host-oplatishka_panel_session=v1.body.sig' },
+        cookies: { '__Host-oplatishka_panel_session': 'v1.body.sig', theme: 'dark' },
+      },
+    });
+
+    const out = beforeSend(event);
+
+    expect(JSON.stringify(out?.request?.cookies ?? {})).not.toContain('v1.body.sig');
+    expect((out?.request?.headers as Record<string, string>).cookie).toBe('[REDACTED]');
+  });
+
+  it('адрес в навигационной крошке чистится от контактов клиента', () => {
+    // Поиск в панели — обычная GET-форма, значит email клиента попадает в
+    // адрес, а `LiveRefresh` повторяет его каждые 25 секунд. `scrubPii` смотрит
+    // на ИМЕНА ключей, а `url` — имя невинное.
+    const event = makeEvent({
+      breadcrumbs: [
+        {
+          category: 'navigation',
+          data: { from: '/admin/orders', to: '/admin/orders?q=ivan%40example.com' },
+        },
+      ],
+    });
+
+    const out = beforeSend(event);
+
+    expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan%40example.com');
+    expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan@example.com');
   });
 });

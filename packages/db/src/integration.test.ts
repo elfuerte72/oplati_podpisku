@@ -23,13 +23,21 @@ import {
   stripOldPaymentPayloads,
   upsertPaymentByProviderRef,
 } from './repositories/payments.ts';
-import { deleteOldMessages } from './repositories/messages.ts';
+import { appendMessage, deleteOldMessages } from './repositories/messages.ts';
 import {
   appendOrderEvent,
+  PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+  PAYMENT_REMINDER_FAILED_EVENT,
+  PAYMENT_REMINDER_SENT_EVENT,
+  claimPaymentReminder,
   claimRenewalReminder,
   countRefundishHistoryByUser,
   createDraftOrder,
   findExpiredPayableOrders,
+  findStuckInFulfillmentOrders,
+  getOrderById,
+  getOrderEventsByOrderId,
+  hasPurchasedOrders,
   findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
   transitionOrderDetailed,
@@ -57,12 +65,14 @@ import {
   getReferralBalanceUsdCents,
   insertCommissionAccruals,
   reverseAccrualsForOrder,
+  findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
   findPurchasedOrdersWithReversedAccruals,
   findNegativeReferralBalances,
 } from './repositories/referral-accruals.ts';
 import {
   createReferralPayout,
+  findReferralPayoutForPanel,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
 import { getMonthlyRollupInput } from './repositories/referral-progression.ts';
@@ -78,6 +88,37 @@ import {
   findVpnSubscriptionByUserId,
   upsertVpnSubscription,
 } from './repositories/vpn-subscriptions.ts';
+import {
+  PANEL_DEFAULT_ROWS,
+  PANEL_MAX_ROWS,
+  clampPanelLimit,
+  clampPanelOffset,
+  getClientDetailForPanel,
+  getOrderDetailForPanel,
+  listHoldsForPanel,
+  listPendingOrdersForPanel,
+  countPendingOrdersForPanel,
+  listSupportRequestsForPanel,
+  listReferralPartnersForPanel,
+  listPartnerReferralsForPanel,
+  listReferralPayoutsForPanel,
+  countUnansweredSupportRequests,
+  getSupportThreadForPanel,
+  claimSupportConversation,
+  listOrdersForPanel,
+} from './repositories/panel.ts';
+import {
+  claimStaffTotpStep,
+  confirmStaffTotp,
+  findStaffById,
+  findStaffByTelegramId,
+  listStaff,
+  resetStaffTotpByTelegramId,
+  setStaffActiveByTelegramId,
+  startStaffTotpEnrollment,
+  touchStaffLastLogin,
+  upsertStaffByTelegramId,
+} from './repositories/staff.ts';
 import {
   deleteOldAnalyticsEvents,
   insertAnalyticsEvents,
@@ -2570,5 +2611,1895 @@ describe('RLS: инварианты 7 и 8 под ролью anon', () => {
   it('серверное подключение видит и скрытый каталог (seed идёт мимо public-read policy)', async () => {
     const rows = await db.execute(sql`SELECT 1 FROM services WHERE slug = 'rls-hidden'`);
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('staff (вход в админ-панель: Telegram + TOTP)', () => {
+  async function makeStaff(over: Partial<typeof schema.staff.$inferInsert> = {}) {
+    const n = ++seq;
+    const rows = await db
+      .insert(schema.staff)
+      .values({
+        email: `staff-${n}@example.com`,
+        displayName: `Сотрудник ${n}`,
+        telegramId: `tg-staff-${n}`,
+        role: 'admin',
+        ...over,
+      })
+      .returning();
+    return firstOf(rows, 'staff insert');
+  }
+
+  it('поиск по telegram_id находит сотрудника и отдаёт всё нужное для входа', async () => {
+    const created = await makeStaff({ role: 'operator' });
+
+    const found = await findStaffByTelegramId(db, created.telegramId!);
+
+    expect(found).toMatchObject({
+      id: created.id,
+      role: 'operator',
+      isActive: true,
+      totpSecret: null,
+      totpConfirmedAt: null,
+    });
+  });
+
+  it('неизвестный telegram_id — null (отказ без подробностей строит вызывающий)', async () => {
+    expect(await findStaffByTelegramId(db, 'tg-staff-нет-такого')).toBeNull();
+  });
+
+  it('отключённый сотрудник ВИДЕН репозиторию — решение об отказе принимает панель', async () => {
+    const created = await makeStaff({ isActive: false });
+
+    const found = await findStaffByTelegramId(db, created.telegramId!);
+
+    expect(found?.isActive).toBe(false);
+  });
+
+  it('два сотрудника с одним telegram_id невозможны — иначе «кто вошёл» решает планировщик', async () => {
+    await makeStaff({ telegramId: 'tg-staff-dup' });
+
+    await expect(makeStaff({ telegramId: 'tg-staff-dup' })).rejects.toSatisfy((err: unknown) =>
+      pgErrorMatches(err, /duplicate key|unique/i),
+    );
+  });
+
+  it('привязка TOTP: секрет пишется новичку', async () => {
+    const created = await makeStaff();
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    expect(ok).toBe(true);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET1');
+  });
+
+  it('привязка не доведена до кода — следующий вход выдаёт НОВЫЙ секрет', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET2' });
+
+    expect(ok).toBe(true);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET2');
+  });
+
+  it('подтверждённый TOTP перевыдать нельзя — иначе угон Telegram сбрасывал бы второй фактор', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'SECRET1' });
+
+    const ok = await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'EVIL' });
+
+    expect(ok).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpSecret).toBe('SECRET1');
+  });
+
+  it('подтверждение TOTP срабатывает один раз', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'SECRET1' });
+
+    const args = { staffId: created.id, expectedSecret: 'SECRET1' };
+    expect(await confirmStaffTotp(db, args)).toBe(true);
+    expect(await confirmStaffTotp(db, args)).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpConfirmedAt).toBeInstanceOf(Date);
+  });
+
+  it('подтвердить TOTP без секрета невозможно', async () => {
+    const created = await makeStaff();
+
+    expect(
+      await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'SECRET1' }),
+    ).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpConfirmedAt).toBeNull();
+  });
+
+  it('успешный вход отмечается временем', async () => {
+    const created = await makeStaff();
+    expect(created.lastLoginAt).toBeNull();
+
+    await touchStaffLastLogin(db, created.id);
+
+    expect((await findStaffById(db, created.id))?.lastLoginAt).toBeInstanceOf(Date);
+  });
+
+  it('заведение сотрудника идемпотентно по telegram_id — повтор скрипта не плодит строк', async () => {
+    const first = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-upsert',
+      email: 'upsert@example.com',
+      displayName: 'Владелец',
+      role: 'admin',
+    });
+    const second = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-upsert',
+      email: 'upsert@example.com',
+      displayName: 'Владелец (переименован)',
+      role: 'admin',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.displayName).toBe('Владелец (переименован)');
+  });
+
+  it('повторное заведение НЕ сбрасывает второй фактор — иначе скрипт молча снимал бы защиту', async () => {
+    const created = await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-keep-totp',
+      email: 'keep-totp@example.com',
+      displayName: 'Сотрудник',
+      role: 'operator',
+    });
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'KEEPME' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'KEEPME' });
+
+    await upsertStaffByTelegramId(db, {
+      telegramId: 'tg-staff-keep-totp',
+      email: 'keep-totp@example.com',
+      displayName: 'Сотрудник',
+      role: 'admin',
+    });
+
+    const after = await findStaffById(db, created.id);
+    expect(after?.totpSecret).toBe('KEEPME');
+    expect(after?.totpConfirmedAt).toBeInstanceOf(Date);
+    expect(after?.role).toBe('admin');
+  });
+
+  it('перевыдача TOTP потерявшему телефон стирает и секрет, и подтверждение', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'OLD' });
+    await confirmStaffTotp(db, { staffId: created.id, expectedSecret: 'OLD' });
+
+    const reset = await resetStaffTotpByTelegramId(db, created.telegramId!);
+
+    expect(reset).toBe(true);
+    const after = await findStaffById(db, created.id);
+    expect(after?.totpSecret).toBeNull();
+    expect(after?.totpConfirmedAt).toBeNull();
+  });
+
+  it('отключение доступа работает по telegram_id', async () => {
+    const created = await makeStaff();
+
+    expect(await setStaffActiveByTelegramId(db, created.telegramId!, false)).toBe(true);
+    expect((await findStaffById(db, created.id))?.isActive).toBe(false);
+  });
+
+  it('подтверждение сверяет секрет: соседняя вкладка перевыдала — чужой не подтверждается', async () => {
+    const created = await makeStaff();
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'S1' });
+    // Вкладка B прошла первый фактор заново и перезаписала секрет.
+    await startStaffTotpEnrollment(db, { staffId: created.id, secret: 'S2' });
+
+    // Вкладка A досчитала код от S1 и пытается подтвердить.
+    const confirmed = await confirmStaffTotp(db, {
+      staffId: created.id,
+      expectedSecret: 'S1',
+    });
+
+    expect(confirmed).toBe(false);
+    const after = await findStaffById(db, created.id);
+    // Иначе подтверждённым стал бы S2, которым никто владения не доказал, —
+    // и сотрудник заперт до ручного reset-totp.
+    expect(after?.totpConfirmedAt).toBeNull();
+    expect(after?.totpSecret).toBe('S2');
+  });
+
+  it('окно TOTP занимается один раз — код не переигрывается', async () => {
+    const created = await makeStaff();
+
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1000 })).toBe(true);
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1000 })).toBe(false);
+    expect((await findStaffById(db, created.id))?.totpLastStep).toBe(1000);
+  });
+
+  it('старое окно из допуска +-1 тоже не принимается повторно', async () => {
+    const created = await makeStaff();
+    await claimStaffTotpStep(db, { staffId: created.id, step: 1000 });
+
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 999 })).toBe(false);
+    expect(await claimStaffTotpStep(db, { staffId: created.id, step: 1001 })).toBe(true);
+  });
+
+  it('перевыдача TOTP сбрасывает и занятое окно — новый секрет начинает с чистого листа', async () => {
+    const created = await makeStaff();
+    await claimStaffTotpStep(db, { staffId: created.id, step: 5000 });
+
+    await resetStaffTotpByTelegramId(db, created.telegramId!);
+
+    expect((await findStaffById(db, created.id))?.totpLastStep).toBeNull();
+  });
+
+  it('список персонала отдаёт всех, включая отключённых', async () => {
+    const active = await makeStaff();
+    const disabled = await makeStaff({ isActive: false });
+
+    const list = await listStaff(db);
+    const ids = list.map((s) => s.id);
+
+    expect(ids).toContain(active.id);
+    expect(ids).toContain(disabled.id);
+  });
+});
+
+describe('панель: список заказов и карточка заказа (тикет 03)', () => {
+  let panelUserA: string;
+  let panelUserB: string;
+  let panelServiceId: string;
+  let ordA1: { id: string; shortId: string };
+  let ordA2: { id: string; shortId: string };
+  let ordB1: { id: string; shortId: string };
+
+  beforeAll(async () => {
+    const a = await makeUser({
+      telegramId: 'tg-panel-a',
+      displayName: 'Клиент А',
+      email: 'a@example.com',
+    });
+    const b = await makeUser({
+      telegramId: null,
+      webSessionId: 'web-panel-b',
+      displayName: 'Клиент Б',
+    });
+    panelUserA = a.id;
+    panelUserB = b.id;
+
+    const svc = await db
+      .insert(schema.services)
+      .values({ slug: 'panel-spotify', name: 'Spotify', category: 'music' })
+      .returning();
+    panelServiceId = firstOf(svc, 'service insert').id;
+
+    ordA1 = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'pending_payment',
+      serviceId: panelServiceId,
+      amountRub: 123400,
+      originalAmount: 1500,
+      originalCurrency: 'USD',
+      cardIssueFeeKopecks: 32000,
+      commissionPercent: 30,
+    });
+    ordA2 = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'completed',
+      customServiceDescription: 'Подписка на что-то своё',
+      amountRub: 50000,
+      originalAmount: 600,
+      originalCurrency: 'USD',
+    });
+    ordB1 = await createDraftOrder(db, {
+      userId: panelUserB,
+      status: 'failed',
+      serviceId: panelServiceId,
+      amountRub: 777700,
+      originalAmount: 9000,
+      originalCurrency: 'USD',
+    });
+  });
+
+  it('список отдаёт всё, что нужно строке таблицы', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: ordA1.shortId });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      shortId: ordA1.shortId,
+      status: 'pending_payment',
+      amountRubKopecks: 123400,
+      serviceName: 'Spotify',
+      client: { id: panelUserA, displayName: 'Клиент А', telegramId: 'tg-panel-a' },
+    });
+    expect(rows[0]?.createdAt).toBeInstanceOf(Date);
+  });
+
+  it('сервис вне каталога подписан своим описанием, а не пустотой', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: ordA2.shortId });
+
+    expect(rows[0]?.serviceName).toBe('Подписка на что-то своё');
+  });
+
+  it('фильтр по статусу отбирает только его', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { statuses: ['failed'] });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordB1.shortId);
+    expect(rows.every((r) => r.status === 'failed')).toBe(true);
+  });
+
+  it('поиск находит по telegram_id клиента', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: 'tg-panel-a' });
+
+    const ids = rows.map((r) => r.shortId);
+    expect(ids).toContain(ordA1.shortId);
+    expect(ids).toContain(ordA2.shortId);
+    expect(ids).not.toContain(ordB1.shortId);
+  });
+
+  it('поиск по email клиента', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { query: 'a@example.com' });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordA1.shortId);
+  });
+
+  it('поиск регистронезависим и терпит лишние пробелы', async () => {
+    const { items: rows } = await listOrdersForPanel(db, {
+      query: `  ${ordA1.shortId.toLowerCase()} `,
+    });
+
+    expect(rows.map((r) => r.shortId)).toContain(ordA1.shortId);
+  });
+
+  it('свежие заказы первыми', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { limit: 100 });
+    const times = rows.map((r) => r.createdAt.getTime());
+
+    expect([...times].sort((x, y) => y - x)).toEqual(times);
+  });
+
+  it('размер страницы приводится к допустимому — проверяем САМ кламп', async () => {
+    // Интеграционная проверка «строк не больше ста» на маленькой базе ничего не
+    // доказывает: она зелёная и при потолке в сто тысяч. Поэтому проверяется
+    // функция, а не следствие.
+    expect(clampPanelLimit(10_000)).toBe(PANEL_MAX_ROWS);
+    expect(clampPanelLimit(0)).toBe(1);
+    expect(clampPanelLimit(-5)).toBe(1);
+    expect(clampPanelLimit(undefined)).toBe(PANEL_DEFAULT_ROWS);
+    // NaN проходил бы в LIMIT и ронял запрос.
+    expect(clampPanelLimit(Number.NaN)).toBe(PANEL_DEFAULT_ROWS);
+    expect(clampPanelLimit(7.9)).toBe(7);
+
+    expect(clampPanelOffset(undefined)).toBe(0);
+    expect(clampPanelOffset(-3)).toBe(0);
+    expect(clampPanelOffset(Number.NaN)).toBe(0);
+    expect(clampPanelOffset(25)).toBe(25);
+  });
+
+  it('запрошенный сверх потолка размер не вытягивает всю таблицу', async () => {
+    const { items: rows } = await listOrdersForPanel(db, { limit: 10_000 });
+
+    expect(rows.length).toBeLessThanOrEqual(PANEL_MAX_ROWS);
+  });
+
+  it('смещение листает, а не повторяет', async () => {
+    const first = await listOrdersForPanel(db, { limit: 2 });
+    const second = await listOrdersForPanel(db, { limit: 2, offset: 2 });
+
+    const firstIds = first.items.map((r) => r.id);
+    expect(second.items.every((r) => !firstIds.includes(r.id))).toBe(true);
+  });
+
+  it('пустой результат — это пустой список, а не ошибка', async () => {
+    expect(await listOrdersForPanel(db, { query: 'ничего-такого-нет' })).toEqual({
+      items: [],
+      hasMore: false,
+    });
+  });
+
+  it('карточка заказа собирает всё: цену, события, платежи', async () => {
+    const { payment } = await upsertPaymentByProviderRef(db, {
+      orderId: ordA1.id,
+      provider: 'freekassa',
+      providerRef: `panel-inv-${++seq}`,
+      amountRub: 123400,
+    });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    expect(detail).not.toBeNull();
+    expect(detail?.order).toMatchObject({
+      shortId: ordA1.shortId,
+      amountRubKopecks: 123400,
+      cardIssueFeeKopecks: 32000,
+      commissionPercent: 30,
+    });
+    expect(detail?.client.id).toBe(panelUserA);
+    expect(detail?.serviceName).toBe('Spotify');
+    expect(detail?.events.length).toBeGreaterThan(0);
+    expect(detail?.payments[0]).toMatchObject({
+      provider: 'freekassa',
+      amountRubKopecks: 123400,
+      lastProviderStatus: 7,
+    });
+  });
+
+  it('события карточки идут в хронологии', async () => {
+    const detail = await getOrderDetailForPanel(db, ordA2.shortId);
+    const times = (detail?.events ?? []).map((e) => e.createdAt.getTime());
+
+    expect([...times].sort((x, y) => x - y)).toEqual(times);
+  });
+
+  it('карта показывается ТОЛЬКО маскированной', async () => {
+    const card = firstOf(
+      await db
+        .insert(schema.cards)
+        .values({
+          userId: panelUserA,
+          providerCardId: `panel-card-${++seq}`,
+          panMasked: '444444******1234',
+          balanceUsdCents: 1500,
+        })
+        .returning(),
+      'card insert',
+    );
+    await db.update(schema.orders).set({ cardId: card.id }).where(eq(schema.orders.id, ordA1.id));
+
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    expect(detail?.card).toMatchObject({ panMasked: '444444******1234', balanceUsdCents: 1500 });
+    // Полный PAN/CVC панель не показывает НИКОГДА: санкционированных каналов
+    // выдачи ровно два, и панель третьим не становится.
+    expect(JSON.stringify(detail)).not.toContain('4444444444441234');
+    // Ассерт на ТОЧНЫЙ набор полей, а не «нет pan/cvc»: таких колонок в `cards`
+    // нет вовсе, и отрицание выполнялось бы само собой. Здесь же любое новое
+    // поле карты придётся осознанно внести в список — вместе с решением,
+    // можно ли его показывать.
+    expect(Object.keys(detail?.card ?? {}).sort()).toEqual([
+      'balanceUsdCents',
+      'createdAt',
+      'id',
+      'panMasked',
+      'status',
+    ]);
+  });
+
+
+  it('карточка находится по номеру в любом регистре', async () => {
+    const upper = await getOrderDetailForPanel(db, ordA1.shortId);
+    const lower = await getOrderDetailForPanel(db, ordA1.shortId.toLowerCase());
+    const padded = await getOrderDetailForPanel(db, `  ${ordA1.shortId}  `);
+
+    expect(upper?.order.id).toBe(ordA1.id);
+    expect(lower?.order.id).toBe(ordA1.id);
+    expect(padded?.order.id).toBe(ordA1.id);
+  });
+
+  it('спецсимволы LIKE в поиске — литералы, а не подстановочные знаки', async () => {
+    // Оператор ищет «100%» или «ivan_petrov»: без экранирования `%` и `_`
+    // выдача не соответствует запросу, а «%» вообще возвращает всё подряд.
+    const { items } = await listOrdersForPanel(db, { query: '%' });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('сортировка задаётся вызывающим и по умолчанию — свежие первыми', async () => {
+    const newest = await listOrdersForPanel(db, { limit: 100 });
+    const oldest = await listOrdersForPanel(db, { limit: 100, sort: 'oldest' });
+
+    const newestTimes = newest.items.map((r) => r.createdAt.getTime());
+    const oldestTimes = oldest.items.map((r) => r.createdAt.getTime());
+    expect([...newestTimes].sort((x, y) => y - x)).toEqual(newestTimes);
+    expect([...oldestTimes].sort((x, y) => x - y)).toEqual(oldestTimes);
+  });
+
+  it('усечение выборки НЕ молчаливое: hasMore говорит, что строки остались', async () => {
+    const page = await listOrdersForPanel(db, { limit: 1 });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('когда строк меньше потолка, hasMore ложь', async () => {
+    const page = await listOrdersForPanel(db, { query: ordB1.shortId });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('история заказа со 100+ событиями показывает СВЕЖИЕ, а не первые', async () => {
+    const noisy = await createDraftOrder(db, {
+      userId: panelUserA,
+      status: 'draft',
+      customServiceDescription: 'заказ с длинной историей',
+      amountRub: 10000,
+      originalAmount: 100,
+      originalCurrency: 'USD',
+    });
+    for (let i = 0; i < 105; i++) {
+      await appendOrderEvent(db, {
+        orderId: noisy.id,
+        eventType: `noise_${String(i).padStart(3, '0')}`,
+        actorType: 'system',
+      });
+    }
+
+    const detail = await getOrderDetailForPanel(db, noisy.shortId);
+    const types = (detail?.events ?? []).map((e) => e.eventType);
+
+    // Последнее событие обязано быть видно: ради него карточку и открывают.
+    expect(types).toContain('noise_104');
+    expect(types.length).toBeLessThanOrEqual(100);
+    // И порядок остаётся хронологическим (сверху вниз).
+    const times = (detail?.events ?? []).map((e) => e.createdAt.getTime());
+    expect([...times].sort((x, y) => x - y)).toEqual(times);
+  });
+
+  it('сырое тело ответа провайдера в панель не тянется', async () => {
+    const detail = await getOrderDetailForPanel(db, ordA1.shortId);
+
+    // `payments.raw_payload` несёт контакты плательщика (антифрод-трек) — в
+    // процессе панели ему делать нечего.
+    expect(Object.keys(detail?.payments[0] ?? {})).not.toContain('rawPayload');
+  });
+
+  it('несуществующий номер заказа — null, а не исключение', async () => {
+    expect(await getOrderDetailForPanel(db, 'ORD-НЕТУ')).toBeNull();
+  });
+
+  it('клиент только с сайта отдаётся без telegram_id — панель покажет это явно', async () => {
+    const detail = await getOrderDetailForPanel(db, ordB1.shortId);
+
+    expect(detail?.client).toMatchObject({ id: panelUserB, telegramId: null });
+  });
+});
+
+describe('ручная выдача провалившегося заказа (тикет 06 админ-панели)', () => {
+  /** Заказ реферала с начислением партнёру, который затем провалился. */
+  async function makeFailedOrderWithReversedAccrual() {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 200 }],
+    });
+    // Путь заказа до провала: оплачен → в работе → провалился (не хватило
+    // баланса VCC-субаккаунта на выпуск карты — случай ORD-J6TBP).
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'in_fulfillment' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'failed' });
+    // Провал гасит комиссию компенсирующей строкой (как markOrderFailed).
+    await reverseAccrualsForOrder(db, order.id);
+    return { partner, buyer, order, payment };
+  }
+
+  it('переход failed → in_fulfillment разрешён и пишет событие с автором', async () => {
+    const { order } = await makeFailedOrderWithReversedAccrual();
+
+    const res = await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      actorId: '00000000-0000-4000-8000-0000000000ff',
+      eventType: 'manual_fulfillment_started',
+      payload: { comment: 'реквизиты отправили вручную' },
+    });
+
+    expect(res.transitioned).toBe(true);
+    const events = await getOrderEventsByOrderId(db, order.id);
+    const started = events.find((e) => e.eventType === 'manual_fulfillment_started');
+    expect(started).toMatchObject({
+      fromStatus: 'failed',
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+    });
+    // Кто и почему — в журнале: он append-only и по нему считается выручка.
+    expect(started?.payload).toMatchObject({ comment: 'реквизиты отправили вручную' });
+    expect(started?.actorId).toBe('00000000-0000-4000-8000-0000000000ff');
+  });
+
+  it('прыжок сразу в completed по-прежнему запрещён', async () => {
+    const { order } = await makeFailedOrderWithReversedAccrual();
+
+    await expect(
+      transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' }),
+    ).rejects.toBeInstanceOf(OrderTransitionError);
+  });
+
+  it('после двух шагов заказ снова считается состоявшимся', async () => {
+    const { buyer, order } = await makeFailedOrderWithReversedAccrual();
+    // До ручной выдачи заказ провалившийся: денег в итогах клиента нет.
+    expect((await getClientDetailForPanel(db, buyer.id))?.totals.purchasedRubKopecks).toBe(0);
+    expect(await hasPurchasedOrders(db, buyer.id)).toBe(false);
+
+    await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      eventType: 'manual_fulfillment_started',
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' });
+
+    const after = await getOrderById(db, order.id);
+    expect(after?.status).toBe('completed');
+    // «Считается состоявшимся» проверяем ПОТРЕБИТЕЛЯМИ набора статусов, а не
+    // утверждением про саму константу: `toContain('completed')` зеленело бы и
+    // при выборке, которая эту константу не читает.
+    expect((await getClientDetailForPanel(db, buyer.id))?.totals.purchasedRubKopecks).toBe(
+      order.amountRub,
+    );
+    expect(await hasPurchasedOrders(db, buyer.id)).toBe(true);
+  });
+
+  /**
+   * Ответ на вопрос чеклиста тикета 06: реферальные начисления сами НЕ
+   * восстанавливаются. Это не сломано тикетом — так устроен ledger, и вот
+   * почему это приемлемо: расхождение НЕ теряется молча, его ловит зеркальная
+   * сверка `findPurchasedOrdersWithReversedAccruals` и показывает владельцу.
+   *
+   * Восстановление ручное намеренно: дописать `accrued` автоматически нельзя
+   * (упрётся в частичный UNIQUE), а компенсирующая строка «reversal reversal'а»
+   * в append-only ledger'е — прямой путь к двойному начислению.
+   */
+  it('комиссия партнёра НЕ восстанавливается сама — но и не теряется молча', async () => {
+    const { partner, order } = await makeFailedOrderWithReversedAccrual();
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'in_fulfillment',
+      actorType: 'operator',
+      eventType: 'manual_fulfillment_started',
+    });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'completed' });
+
+    // 1. Автодобор заказ НЕ подберёт: у него есть строки ledger'а (гашение),
+    //    а `findOrdersMissingReferralAccruals` ищет заказы БЕЗ строк вовсе.
+    const missing = await findOrdersMissingReferralAccruals(db, 50);
+    expect(missing.map((m) => m.orderId)).not.toContain(order.id);
+
+    // 2. Баланс партнёра остаётся нулевым — комиссия не вернулась.
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    // 3. Но зеркальная сверка это ВИДИТ: заказ состоялся, а комиссия погашена.
+    //    Значит владелец узнает и доначислит руками, а не обнаружит потерю от
+    //    партнёра.
+    const underpaid = await findPurchasedOrdersWithReversedAccruals(db, 50);
+    expect(underpaid.map((u) => u.orderId)).toContain(order.id);
+  });
+});
+
+describe('панель: карточка клиента (тикет 04)', () => {
+  it('собирает контакты, заказы, карты и реферальные связи', async () => {
+    const partner = await makeUser({ telegramId: 'tg-client-partner', displayName: 'Партнёр' });
+    const client = await makeUser({
+      telegramId: 'tg-client-main',
+      displayName: 'Клиент',
+      email: 'client@example.com',
+      phone: '+79990001122',
+      phoneSource: 'telegram',
+      referredBy: partner.id,
+      referredBySetAt: new Date(),
+    });
+    const invited = await makeUser({
+      telegramId: 'tg-client-invited',
+      displayName: 'Приглашённый',
+      referredBy: client.id,
+      referredBySetAt: new Date(),
+    });
+    const order = await createDraftOrder(db, {
+      userId: client.id,
+      status: 'completed',
+      customServiceDescription: 'Netflix',
+      amountRub: 99900,
+      originalAmount: 1200,
+      originalCurrency: 'USD',
+    });
+    await db.insert(schema.cards).values({
+      userId: client.id,
+      providerCardId: `client-card-${++seq}`,
+      panMasked: '555555******7777',
+      balanceUsdCents: 300,
+    });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.client).toMatchObject({
+      telegramId: 'tg-client-main',
+      email: 'client@example.com',
+      phone: '+79990001122',
+      phoneSource: 'telegram',
+    });
+    expect(detail?.orders.map((o) => o.shortId)).toContain(order.shortId);
+    expect(detail?.orders[0]).toMatchObject({ serviceName: 'Netflix', amountRubKopecks: 99900 });
+    expect(detail?.cards[0]).toMatchObject({ panMasked: '555555******7777' });
+    expect(detail?.referredBy).toMatchObject({ id: partner.id, displayName: 'Партнёр' });
+    expect(detail?.referrals.map((r) => r.id)).toContain(invited.id);
+  });
+
+  it('клиент только с сайта отдаётся без telegram_id — панель скажет это прямо', async () => {
+    const webOnly = await makeUser({
+      telegramId: null,
+      webSessionId: `web-client-${++seq}`,
+      displayName: null,
+    });
+
+    const detail = await getClientDetailForPanel(db, webOnly.id);
+
+    expect(detail?.client.telegramId).toBeNull();
+    // Наружу уходит ФЛАГ, а не сам `web_session_id`: его значение — содержимое
+    // httpOnly-cookie клиента, то есть живой креденшл (им можно выдать себя за
+    // клиента). Панели достаточно знать, что человек пришёл с сайта.
+    expect(detail?.client.hasWebSession).toBe(true);
+    expect(JSON.stringify(detail)).not.toContain(webOnly.webSessionId);
+  });
+
+  it('клиент без заказов, карт и связей — пустые списки, а не ошибка', async () => {
+    const lonely = await makeUser({ telegramId: `tg-lonely-${++seq}` });
+
+    const detail = await getClientDetailForPanel(db, lonely.id);
+
+    expect(detail).not.toBeNull();
+    expect(detail?.orders).toEqual([]);
+    expect(detail?.cards).toEqual([]);
+    expect(detail?.referredBy).toBeNull();
+    expect(detail?.referrals).toEqual([]);
+  });
+
+  it('несуществующий клиент — null, а не исключение', async () => {
+    expect(
+      await getClientDetailForPanel(db, '00000000-0000-4000-8000-00000000dead'),
+    ).toBeNull();
+  });
+
+  it('карта клиента отдаётся только маскированной', async () => {
+    const client = await makeUser({ telegramId: `tg-card-client-${++seq}` });
+    await db.insert(schema.cards).values({
+      userId: client.id,
+      providerCardId: `client-card-${++seq}`,
+      panMasked: '400000******1111',
+      balanceUsdCents: 0,
+    });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(Object.keys(detail?.cards[0] ?? {}).sort()).toEqual([
+      'balanceUsdCents',
+      'createdAt',
+      'id',
+      'panMasked',
+      'status',
+    ]);
+  });
+
+  it('итоги считаются в БАЗЕ и не занижаются срезом списка', async () => {
+    // Смысл всей затеи виден только за потолком выборки: список режется, а
+    // деньги — нет. Складывать видимые строки значило бы показывать владельцу
+    // заниженную сумму по самому ценному клиенту и ровно столько заказов,
+    // сколько влезло на экран.
+    const client = await makeUser({ telegramId: `tg-client-many-${++seq}` });
+    const total = PANEL_MAX_ROWS + 5;
+    for (let i = 0; i < total; i++) {
+      await createDraftOrder(db, {
+        userId: client.id,
+        status: 'completed',
+        customServiceDescription: `bulk order ${i}`,
+        amountRub: 10_000,
+        originalAmount: 100,
+        originalCurrency: 'USD',
+      });
+    }
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.orders.length).toBe(PANEL_MAX_ROWS);
+    expect(detail?.totals.ordersCount).toBe(total);
+    expect(detail?.totals.purchasedRubKopecks).toBe(total * 10_000);
+  });
+
+  it('карт у клиента считается столько, сколько их есть, а не сколько показано', async () => {
+    const client = await makeUser({ telegramId: `tg-client-cards-${++seq}` });
+    for (let i = 0; i < 3; i++) {
+      await db.insert(schema.cards).values({
+        userId: client.id,
+        providerCardId: `count-card-${++seq}`,
+        panMasked: '400000******2222',
+        balanceUsdCents: 0,
+      });
+    }
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.totals.cardsCount).toBe(3);
+  });
+
+  it('последний живой IP клиента в панель не отдаётся', async () => {
+    const client = await makeUser({ telegramId: `tg-ip-client-${++seq}` });
+    await touchUserLastSeenIp(db, { userId: client.id, ip: '203.0.113.77' });
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    // IP нужен антифрод-треку при выставлении счёта; на экране это лишняя PII,
+    // которую менеджеру не с чем сопоставить.
+    expect(JSON.stringify(detail)).not.toContain('203.0.113.77');
+  });
+});
+
+describe('панель: партнёры и выплаты (тикет 12)', () => {
+  /**
+   * ⚠️ Ставка начисления и ставка профиля здесь РАЗНЫЕ намеренно. Положи в обе
+   * строки одно число — и тест «ставка берётся только из `locked_rate_l1_bps`»
+   * пройдёт даже если выборка возьмёт её из `referral_accruals.rate_bps`, то
+   * есть ровно из второго места, которого по решению владельца быть не должно.
+   */
+  async function makePartnerWithAccrual(
+    over: {
+      accrualRateBps?: number;
+      lockedRateL1Bps?: number;
+      suspended?: boolean;
+      withProfile?: boolean;
+    } = {},
+  ) {
+    const partner = await makeUser({ telegramId: `tg-partner-${++seq}`, displayName: 'Партнёр' });
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [
+        {
+          beneficiaryUserId: partner.id,
+          level: 1,
+          rateBps: over.accrualRateBps ?? 400,
+          amountUsdCents: 500,
+        },
+      ],
+    });
+    if (over.withProfile ?? true) {
+      await db.insert(schema.referralPartners).values({
+        userId: partner.id,
+        lockedRateL1Bps: over.lockedRateL1Bps ?? 550,
+        suspended: over.suspended ?? false,
+      });
+    }
+    return { partner, buyer, order };
+  }
+
+  it('партнёр виден с начисленным, балансом и ЗАФИКСИРОВАННОЙ ставкой', async () => {
+    const { partner } = await makePartnerWithAccrual({ accrualRateBps: 400, lockedRateL1Bps: 550 });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.userId === partner.id);
+
+    expect(row?.accruedUsdCents).toBe(500);
+    expect(row?.balanceUsdCents).toBe(500);
+    expect(row?.referralsCount).toBe(1);
+    // Ставка — ТОЛЬКО из `locked_rate_l1_bps`, единственного источника по
+    // решению владельца от 11 августа.
+    expect(row?.lockedRateL1Bps).toBe(550);
+  });
+
+  it('отменённое начисление вычитается, а не показывается как заработок', async () => {
+    const { partner, order } = await makePartnerWithAccrual();
+    // Отмена привязана к ПРОВАЛУ заказа: гасить комиссию по живому заказу
+    // нельзя, и выборка обязана считать ровно то же, что ledger.
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'in_fulfillment' });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'failed' });
+    await reverseAccrualsForOrder(db, order.id);
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+
+    expect(items.find((p) => p.userId === partner.id)?.accruedUsdCents).toBe(0);
+  });
+
+  it('заявка на вывод уменьшает баланс до решения по ней', async () => {
+    const { partner } = await makePartnerWithAccrual();
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 300 });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+
+    expect(items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(200);
+  });
+
+  it('ОТКЛОНЁННАЯ заявка возвращает деньги в баланс сама', async () => {
+    // Компенсирующая строка в append-only ledger'е тут не нужна и была бы
+    // вредна: формула баланса просто не считает отклонённые заявки.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 300 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'rejected',
+    });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    expect(items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(500);
+  });
+
+  it('приглашённые партнёра видны с их деньгами, и НЕсостоявшийся заказ в сумму не идёт', async () => {
+    const { partner, buyer } = await makePartnerWithAccrual();
+    // Второй заказ того же клиента, который деньгами не стал: без него фильтр
+    // `PURCHASED_STATUSES_SQL` тождественен «все заказы» и ничего не проверяет.
+    const failed = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await transitionOrderDetailed(db, { orderId: failed.order.id, toStatus: 'failed' });
+
+    const { items } = await listPartnerReferralsForPanel(db, partner.id, { limit: 100 });
+    const row = items.find((r) => r.userId === buyer.id);
+
+    // Заказов у клиента два, но «принёс» — только оплаченный.
+    expect(row?.ordersCount).toBe(2);
+    // Заказ оплачен (`paid` входит в PURCHASED_ORDER_STATUSES).
+    expect(row?.purchasedRubKopecks).toBe(50_000);
+  });
+
+  it('партнёр без профиля виден сразу, а не с 1-го числа следующего месяца', async () => {
+    // Строку в `referral_partners` создаёт ТОЛЬКО месячный роллап. Возьми
+    // список из неё — и партнёр, заработавший комиссию 5 августа, до 1 сентября
+    // отсутствует на экране, который вдобавок пишет «Партнёров пока нет».
+    const { partner } = await makePartnerWithAccrual({ withProfile: false });
+
+    const { items } = await listReferralPartnersForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.userId === partner.id);
+
+    expect(row?.accruedUsdCents).toBe(500);
+    expect(row?.hasProfile).toBe(false);
+    // Ставка показывается дефолтная — та же, по которой считает начисление.
+    expect(row?.lockedRateL1Bps).toBe(DEFAULT_REFERRAL_RATE_L1_BPS);
+  });
+
+  it('блокировка партнёра видна в списке и в его заявке', async () => {
+    // Гейт «заблокированному не выплачиваем» стоит в операции, но узнать о
+    // блокировке владелец должен ДО нажатия — иначе кнопка врёт.
+    const { partner } = await makePartnerWithAccrual({ suspended: true });
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const partners = await listReferralPartnersForPanel(db, { limit: 100 });
+    const payouts = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    expect(partners.items.find((p) => p.userId === partner.id)?.suspended).toBe(true);
+    expect(payouts.items.find((p) => p.payoutId === created.payoutId)?.suspended).toBe(true);
+  });
+
+  it('заявка в списке выплат несёт партнёра, сумму и его баланс', async () => {
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 200 });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const { items } = await listReferralPayoutsForPanel(db, { limit: 100 });
+    const row = items.find((p) => p.payoutId === created.payoutId);
+
+    expect(row?.amountUsdCents).toBe(200);
+    expect(row?.status).toBe('requested');
+    expect(row?.displayName).toBe('Партнёр');
+    // Баланс СЕЙЧАС — чтобы видеть, чем заявка обеспечена.
+    expect(row?.balanceUsdCents).toBe(300);
+  });
+
+  it('реквизиты выплаты наружу НЕ отдаются', async () => {
+    // В `destination` лежат маскированный номер карты или адрес кошелька, и
+    // для решения «выплатить или отклонить» они не нужны.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, {
+      userId: partner.id,
+      amountUsdCents: 100,
+      method: 'crypto_usdt',
+      destination: {
+        method: 'crypto_usdt',
+        network: 'trc20',
+        address: 'TXYZ000000000000000000000000000000',
+      },
+    });
+    if (!created.ok) throw new Error('заявка не создалась');
+
+    const { items } = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    expect(JSON.stringify(items)).not.toContain('TXYZ');
+  });
+
+  it('усечение списка партнёров не молчит', async () => {
+    await makePartnerWithAccrual();
+    await makePartnerWithAccrual();
+
+    const page = await listReferralPartnersForPanel(db, { limit: 1 });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('усечение списка приглашённых и списка заявок тоже не молчит', async () => {
+    const { partner, buyer } = await makePartnerWithAccrual();
+    // Второй приглашённый с заказом — иначе усекать нечего.
+    const second = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    await makeOrderWithPendingPayment({ userId: second.id });
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+
+    const referrals = await listPartnerReferralsForPanel(db, partner.id, { limit: 1 });
+    const payouts = await listReferralPayoutsForPanel(db, { limit: 1 });
+
+    expect(referrals.items).toHaveLength(1);
+    expect(referrals.hasMore).toBe(true);
+    expect(payouts.items).toHaveLength(1);
+    expect(payouts.hasMore).toBe(true);
+    // Оба списка помещаются целиком — «есть ещё» обязано быть ложью, иначе
+    // экран вечно пишет «показаны не все» и предупреждение перестают читать.
+    expect((await listPartnerReferralsForPanel(db, partner.id, { limit: 100 })).hasMore).toBe(false);
+    expect(buyer.id).toBeTruthy();
+  });
+
+  it('по умолчанию экран заявок показывает открытые, а закрытые — по запросу', async () => {
+    // Закрытые заявки копятся навсегда и вытеснили бы живые за потолок выборки.
+    const { partner } = await makePartnerWithAccrual();
+    const open = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!open.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, { payoutId: open.payoutId, from: 'requested', to: 'rejected' });
+    const second = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 150 });
+    if (!second.ok) throw new Error('вторая заявка не создалась');
+
+    const onlyOpen = await listReferralPayoutsForPanel(db, { limit: 100, onlyOpen: true });
+    const all = await listReferralPayoutsForPanel(db, { limit: 100 });
+
+    const mine = (page: { items: { payoutId: string }[] }) =>
+      page.items.map((p) => p.payoutId).filter((id) => id === open.payoutId || id === second.payoutId);
+    expect(mine(onlyOpen)).toEqual([second.payoutId]);
+    expect(mine(all).sort()).toEqual([open.payoutId, second.payoutId].sort());
+  });
+
+  it('заявка в processing разрешается из панели, а не только SQL на проде', async () => {
+    // «Выплачено» — два перехода вне одной транзакции: упавший между ними
+    // процесс оставляет заявку здесь, и её сумма продолжает вычитаться из
+    // баланса. Машина статусов доводить такую заявку разрешает.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'processing',
+    });
+
+    const stuck = await findReferralPayoutForPanel(db, created.payoutId);
+    const finished = await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'processing',
+      to: 'paid',
+    });
+
+    expect(stuck?.status).toBe('processing');
+    expect(finished.applied).toBe(true);
+    expect(finished.status).toBe('paid');
+  });
+
+  it('несостоявшийся переход возвращает ФАКТИЧЕСКИЙ статус, а не запрошенный', async () => {
+    // Вернуть `from` — соврать о состоянии денег: панель показала бы «заявка
+    // всё ещё ждёт решения» там, где её уже кто-то отклонил.
+    const { partner } = await makePartnerWithAccrual();
+    const created = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    if (!created.ok) throw new Error('заявка не создалась');
+    await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'rejected',
+    });
+
+    const late = await transitionReferralPayout(db, {
+      payoutId: created.payoutId,
+      from: 'requested',
+      to: 'processing',
+    });
+
+    expect(late.applied).toBe(false);
+    expect(late.status).toBe('rejected');
+  });
+});
+
+describe('панель: поддержка (тикет 10)', () => {
+  // Сотрудники заводятся один раз на блок: `messages.staff_id` — настоящий FK,
+  // и выдуманный uuid отвергнет база.
+  let SUPPORT_STAFF_ID = '';
+  let OTHER_STAFF_ID = '';
+
+  beforeAll(async () => {
+    const first = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-support-${++seq}`,
+      email: `support-${seq}@example.com`,
+      displayName: 'Менеджер поддержки',
+      role: 'operator',
+    });
+    const second = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-support-2-${++seq}`,
+      email: `support2-${seq}@example.com`,
+      displayName: 'Второй менеджер',
+      role: 'operator',
+    });
+    SUPPORT_STAFF_ID = first.id;
+    OTHER_STAFF_ID = second.id;
+  });
+
+  async function makeSupportRequest(
+    userId: string,
+    opts: { delivered?: boolean; text?: string } = {},
+  ) {
+    const conversation = await createConversation(db, { userId, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: opts.text ?? 'не проходит оплата, помогите',
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: opts.delivered ?? true },
+    });
+    return conversation;
+  }
+
+  it('обращение попадает в список, ответа пока нет', async () => {
+    const user = await makeUser({ telegramId: `tg-support-${++seq}`, displayName: 'Клиент' });
+    const conversation = await makeSupportRequest(user.id);
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.conversationId === conversation.id);
+
+    expect(row?.client.displayName).toBe('Клиент');
+    expect(row?.lastRequestAt).toBeInstanceOf(Date);
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(row?.lastRequestDelivered).toBe(true);
+  });
+
+  it('начатое обращение (бот только спросил) обращением НЕ считается', async () => {
+    // У приглашения «опиши проблему» тот же `source: 'support'`, что и у
+    // поданного обращения. Без явной отметки экран показывал бы как обращение
+    // каждое нажатие кнопки.
+    const user = await makeUser({ telegramId: `tg-support-ask-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Опиши проблему',
+      meta: { source: 'support', awaiting_support_message: true },
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('недоставленное оператору обращение помечается', async () => {
+    // Не доставили — это наша авария конфигурации, и она обязана быть видна:
+    // клиент считает, что написал, а обращение никуда не ушло.
+    const user = await makeUser({ telegramId: `tg-support-fail-${++seq}` });
+    const conversation = await makeSupportRequest(user.id, { delivered: false });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      false,
+    );
+  });
+
+  it('ответ оператора виден в списке', async () => {
+    const user = await makeUser({ telegramId: `tg-support-answered-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'Разобрались, счёт перевыставлен',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(
+      items.find((r) => r.conversationId === conversation.id)?.lastOperatorReplyAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('старый ответ НЕ закрывает новое обращение того же клиента', async () => {
+    // Разговор один на клиента: «когда-то отвечали» означало бы, что повторное
+    // обращение постоянного клиента навсегда числится отвеченным и не попадает
+    // в счётчик «без ответа» на рабочем столе.
+    const user = await makeUser({ telegramId: `tg-support-again-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    const reply = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили на первое',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, reply.id));
+
+    const second = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: true },
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 120_000) })
+      .where(eq(schema.messages.id, second.id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.conversationId === conversation.id)?.lastOperatorReplyAt).toBeNull();
+  });
+
+  it('свежие обращения сверху, отметка доставки — от ПОСЛЕДНЕГО', async () => {
+    // Все проверки этого блока раньше делались на выборке из одной строки, где
+    // и порядок, и «последний из нескольких» выполняются тождественно (находка
+    // ревью). Здесь у клиента ДВА обращения и два разговора.
+    const user = await makeUser({ telegramId: `tg-support-order-${++seq}` });
+    const older = await makeSupportRequest(user.id, { delivered: false, text: 'первое' });
+    const newer = await makeSupportRequest(user.id, { delivered: true, text: 'второе' });
+    // Возраст задаём явно: несколько INSERT'ов подряд ложатся в одну отметку.
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(schema.messages.conversationId, older.id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.map((i) => i.conversationId)).toEqual([newer.id, older.id]);
+    // У каждого разговора — СВОЙ исход доставки, а не исход соседа.
+    expect(items[0]?.lastRequestDelivered).toBe(true);
+    expect(items[1]?.lastRequestDelivered).toBe(false);
+  });
+
+  it('повторное обращение в ТОМ ЖЕ разговоре берёт свежую отметку', async () => {
+    // У клиента, написавшего дважды, экран обязан показывать исход ПОСЛЕДНЕГО
+    // обращения: старый успех рядом со свежим провалом читается как «дошло».
+    const user = await makeUser({ telegramId: `tg-support-repeat-${++seq}` });
+    const conversation = await makeSupportRequest(user.id, { delivered: true });
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: false },
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      false,
+    );
+  });
+
+  it('усечение списка обращений не молчит — и не кричит без повода', async () => {
+    const user = await makeUser({ telegramId: `tg-support-page-${++seq}` });
+    await makeSupportRequest(user.id);
+    await makeSupportRequest(user.id);
+
+    const page = await listSupportRequestsForPanel(db, { userId: user.id, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+
+    const full = await listSupportRequestsForPanel(db, { userId: user.id, limit: 5 });
+    expect(full.items).toHaveLength(2);
+    expect(full.hasMore).toBe(false);
+  });
+
+  it('«кто ведёт» показывает имя сотрудника, а не прочерк', async () => {
+    const user = await makeUser({ telegramId: `tg-support-owner-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    await claimSupportConversation(db, {
+      conversationId: conversation.id,
+      staffId: SUPPORT_STAFF_ID,
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.assignedOperatorName).toBe(
+      'Менеджер поддержки',
+    );
+  });
+
+  it('обращения ДО появления отметки не выдаются за недоставленные', async () => {
+    // У старых строк meta без ключа: «не знаем» — не повод писать напраслину.
+    const user = await makeUser({ telegramId: `tg-support-legacy-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true },
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+
+    expect(items.find((i) => i.conversationId === conversation.id)?.lastRequestDelivered).toBe(
+      true,
+    );
+  });
+
+  it('неотвеченные обращения считаются по ВСЕЙ базе', async () => {
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-count-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    // Ответ должен быть ПОЗЖЕ обращения; соседние INSERT'ы ложатся в одну
+    // отметку `now()`, и «позже» переставало быть определено.
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    // Ответ снимает обращение со счётчика — иначе цифра на столе не спадает
+    // никогда и её перестают читать.
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+  });
+
+  it('лента отдаёт КОНЕЦ переписки и говорит про обрыв', async () => {
+    const user = await makeUser({ telegramId: `tg-support-thread-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+    for (let i = 0; i < 5; i++) {
+      const { id } = await appendMessage(db, {
+        conversationId: conversation.id,
+        role: 'user',
+        content: `сообщение ${i}`,
+      });
+      // Время задаём явно: несколько INSERT'ов подряд ложатся в одну отметку
+      // `now()`, и «последние три» переставали быть определены — тест зеленел
+      // бы от случая, а не от правила.
+      await db
+        .update(schema.messages)
+        .set({ createdAt: new Date(Date.now() + (i + 1) * 1000) })
+        .where(eq(schema.messages.id, id));
+    }
+
+    const thread = await getSupportThreadForPanel(db, conversation.id, 3);
+
+    expect(thread?.messages).toHaveLength(3);
+    // Читают сверху вниз, а показывать надо последние: порядок хронологический.
+    expect(thread?.messages.at(-1)?.content).toBe('сообщение 4');
+    expect(thread?.hasMore).toBe(true);
+  });
+
+  it('короткая переписка про обрыв не сочиняет', async () => {
+    const user = await makeUser({ telegramId: `tg-support-short-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    const thread = await getSupportThreadForPanel(db, conversation.id, 50);
+
+    expect(thread?.hasMore).toBe(false);
+    expect(thread?.messages).toHaveLength(2);
+  });
+
+  it('несуществующий диалог — null, а не пустая лента', async () => {
+    expect(
+      await getSupportThreadForPanel(db, '00000000-0000-4000-8000-00000000dead'),
+    ).toBeNull();
+  });
+
+  it('подключение закрепляет диалог, второй сотрудник получает отказ', async () => {
+    const user = await makeUser({ telegramId: `tg-support-claim-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('claimed');
+    // Двое, отвечающие одному клиенту, — то, ради чего кнопка и существует.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: OTHER_STAFF_ID,
+      }),
+    ).toBe('taken');
+    // Повторное нажатие ТЕМ ЖЕ сотрудником отказом не является.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: conversation.id,
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('claimed');
+    // Несуществующий диалог — это НЕ «занято коллегой»: одинаковый ответ
+    // отправлял бы менеджера искать несуществующего человека.
+    expect(
+      await claimSupportConversation(db, {
+        conversationId: '00000000-0000-4000-8000-00000000dead',
+        staffId: SUPPORT_STAFF_ID,
+      }),
+    ).toBe('not_found');
+
+    const thread = await getSupportThreadForPanel(db, conversation.id);
+    expect(thread?.handoffMode).toBe('operator');
+    expect(thread?.assignedOperatorId).toBe(SUPPORT_STAFF_ID);
+  });
+});
+
+describe('панель: недожатые заказы (тикет 07)', () => {
+  /** Заказ с живым счётом и ссылкой на оплату в снимке инвойса. */
+  async function makeOrderWithLiveInvoice(userId: string, paymentUrl: string | null) {
+    const order = await createDraftOrder(db, {
+      userId,
+      status: 'pending_payment',
+      customServiceDescription: 'pending order',
+      amountRub: 50_000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    const { payment } = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `pending-${++seq}`,
+      amountRub: 50_000,
+      rawPayload: paymentUrl
+        ? { invoice: { id: 'inv-1', paymentLink: paymentUrl } }
+        : { invoice: { id: 'inv-1' } },
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return { order, payment };
+  }
+
+  it('заказ со счётом отдаёт ссылку на оплату из снимка инвойса', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/inv-1');
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    // Отдельной колонки под ссылку нет: она лежит в снимке инвойса, и
+    // доставать её обязано ОДНО место — иначе список и операция разъедутся.
+    expect(row?.invoice?.paymentUrl).toBe('https://pay.example/inv-1');
+    expect(row?.client.telegramId).toBe(user.telegramId);
+  });
+
+  it('черновик без счёта в списке ЕСТЬ, но счёта у него нет', async () => {
+    // 97 из 138 просроченных заказов до счёта не дошли — прятать эту половину
+    // потери нельзя, хотя напоминать по ней нечем.
+    const user = await makeUser({ telegramId: `tg-pending-draft-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'draft order',
+      amountRub: 30_000,
+      originalAmount: 300,
+      originalCurrency: 'USD',
+    });
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.status).toBe('ready_for_payment');
+    expect(row?.invoice).toBeNull();
+  });
+
+  it('терминальный счёт живым не считается', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-dead-${++seq}` });
+    const { order, payment } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/dead');
+    await claimPaymentTerminal(db, payment.id);
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+
+    expect(items.find((r) => r.orderId === order.id)?.invoice).toBeNull();
+  });
+
+  it('оплаченный заказ с экрана уходит', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-paid-${++seq}` });
+    const { order, payment } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/paid');
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+
+    // Фильтр по клиенту: без него собственный заказ теста однажды окажется за
+    // потолком страницы, и отрицательный ассерт замолчит, ничего не покрасив.
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+
+    expect(items).toHaveLength(0);
+  });
+
+  it('когда напоминали — читается из журнала заказа', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-remind-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/remind');
+
+    const before = await listPendingOrdersForPanel(db, { userId: user.id });
+    expect(before.items.find((r) => r.orderId === order.id)?.lastRemindedAt).toBeNull();
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_SENT_EVENT,
+      actorType: 'operator',
+    });
+
+    const after = await listPendingOrdersForPanel(db, { userId: user.id });
+    expect(after.items.find((r) => r.orderId === order.id)?.lastRemindedAt).toBeInstanceOf(Date);
+  });
+
+  it('СОРВАННАЯ доставка напоминания видна отдельно от отправленной', async () => {
+    // Окно суток занимается ДО отправки и вернуть его нечем (журнал
+    // append-only). Без отдельного признака экран показывал бы «напоминали в
+    // 14:20» там, где клиент не получил ничего: менеджер считает заказ
+    // обработанным и сутки не может повторить.
+    const user = await makeUser({ telegramId: `tg-pending-failed-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/failed');
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_SENT_EVENT,
+      actorType: 'operator',
+    });
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REMINDER_FAILED_EVENT,
+      actorType: 'operator',
+    });
+
+    const { items } = await listPendingOrdersForPanel(db, { userId: user.id });
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.lastRemindedAt).toBeInstanceOf(Date);
+    expect(row?.lastRemindFailedAt).toBeInstanceOf(Date);
+  });
+
+  it('усечение списка не молчит — и не кричит, когда всё влезло', async () => {
+    // ⚠️ Обе стороны пиннятся НА ИЗОЛИРОВАННОЙ выборке. На общей базе файла
+    // (десятки недожатых заказов) `hasMore` истинно тождественно: мутация
+    // «всегда true» проходила бы весь прогон, а экран врал бы «показаны не все»
+    // каждый день (находка ревью).
+    const user = await makeUser({ telegramId: `tg-pending-page-${++seq}` });
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/a');
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/b');
+
+    const page = await listPendingOrdersForPanel(db, { userId: user.id, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+
+    const full = await listPendingOrdersForPanel(db, { userId: user.id, limit: 5 });
+    expect(full.items).toHaveLength(2);
+    expect(full.hasMore).toBe(false);
+
+    // Старые сверху: возраст и есть причина, по которой экран нужен.
+    const times = full.items.map((i) => i.createdAt.getTime());
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it('итоги считаются по ВСЕМ недожатым, а не по видимым пяти', async () => {
+    const before = await countPendingOrdersForPanel(db);
+    const user = await makeUser({ telegramId: `tg-pending-totals-${++seq}` });
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/t1');
+    await makeOrderWithLiveInvoice(user.id, 'https://pay.example/t2');
+
+    const after = await countPendingOrdersForPanel(db);
+
+    // Рабочий стол показывает пять строк, а число и деньги обязан называть
+    // настоящие: «5+ на 50 000 ₽» при сорока заказах занижает ровно то, ради
+    // чего блок существует.
+    expect(after.count).toBe(before.count + 2);
+    expect(after.sumKopecks).toBe(before.sumKopecks + 100_000);
+  });
+
+  it('дедуп напоминания атомарен: второй одновременный claim не проходит', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-claim-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/claim');
+
+    // Две вкладки жмут «Напомнить» одновременно. Схема «прочитали отметку →
+    // отправили → записали» пропускала обоих, и клиент получал два одинаковых
+    // платёжных документа от официального бота.
+    const [first, second] = await Promise.all([
+      claimPaymentReminder(db, { orderId: order.id, cooldownMs: 24 * 60 * 60 * 1000 }),
+      claimPaymentReminder(db, { orderId: order.id, cooldownMs: 24 * 60 * 60 * 1000 }),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    const events = await getOrderEventsByOrderId(db, order.id);
+    expect(events.filter((e) => e.eventType === 'payment_reminder_sent')).toHaveLength(1);
+  });
+
+  it('через сутки окно открывается снова', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-claim2-${++seq}` });
+    const { order } = await makeOrderWithLiveInvoice(user.id, 'https://pay.example/claim2');
+
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(true);
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(false);
+    // Окно меряется от отметки: с нулевым окном прошлая запись уже не мешает.
+    expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 0 })).toBe(true);
+  });
+});
+
+describe('панель: антифрод-холды (тикет 05)', () => {
+  it('заказ на проверке банка попадает в список', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+    const found = rows.find((r) => r.orderId === order.id);
+
+    expect(found).toMatchObject({
+      orderStatus: 'payment_review',
+      lastProviderStatus: 7,
+      client: { telegramId: user.telegramId },
+    });
+    expect(found?.lastProviderStatusAt).toBeInstanceOf(Date);
+  });
+
+  it('платёж с отказом провайдера виден, даже если заказ ещё ждёт оплаты', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-declined-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 8 });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    expect(rows.map((r) => r.orderId)).toContain(order.id);
+  });
+
+  it('обычный заказ без холда в список не попадает', async () => {
+    const user = await makeUser({ telegramId: `tg-nohold-${++seq}` });
+    const { order } = await makeOrderWithPendingPayment({ userId: user.id });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    expect(rows.map((r) => r.orderId)).not.toContain(order.id);
+  });
+
+  it('разрешившийся холд уходит с экрана: оплаченный заказ не показываем', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-resolved-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+
+    // Иначе экран «что требует внимания» копил бы уже закрытые истории.
+    expect(rows.map((r) => r.orderId)).not.toContain(order.id);
+  });
+
+  it('заказ с двумя платежами: одна строка, и статус в ней — от СВЕЖЕГО платежа', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-two-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    // Первый счёт закрыт терминально — только после этого частичный UNIQUE
+    // (не более одного ЖИВОГО инвойса на заказ) пропускает второй.
+    await claimPaymentTerminal(db, payment.id);
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 8 });
+    const second = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `hold-second-${++seq}`,
+      amountRub: 50000,
+    });
+    await setPaymentProviderStatus(db, { paymentId: second.payment.id, providerStatus: 7 });
+    // Возраст платежей задаём явно: два INSERT'а подряд могут лечь в одну
+    // миллисекунду, и «свежий» перестал бы быть определён — тест зеленел бы
+    // от совпадения, а не от правила.
+    await db
+      .update(schema.payments)
+      .set({ createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(schema.payments.id, payment.id));
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items: rows } = await listHoldsForPanel(db);
+    const mine = rows.filter((r) => r.orderId === order.id);
+
+    expect(mine).toHaveLength(1);
+    // Правило «показываем последнее, что провайдер сказал»: перевыставленный
+    // счёт на проверке (7), а не отвергнутый первый (8). Прежняя версия брала
+    // любой ненулевой статус и на этой паре врала.
+    expect(mine[0]?.lastProviderStatus).toBe(7);
+  });
+
+  it('неопрошенный свежий счёт не прячет операцию, которую держит банк', async () => {
+    // Клиенту перевыставили счёт, поллер его ещё не видел (статуса нет). На
+    // экране обязана остаться операция С ХОЛДОМ: именно её номер менеджер
+    // подставляет в обращение в поддержку Freekassa, и именно по ней банк
+    // держит деньги. Показать пустой статус свежего счёта значило бы стереть
+    // и причину попадания заказа на экран.
+    const user = await makeUser({ telegramId: `tg-hold-fresh-null-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await claimPaymentTerminal(db, payment.id);
+    const fresh = await upsertPaymentByProviderRef(db, {
+      orderId: order.id,
+      provider: 'freekassa',
+      providerRef: `hold-fresh-${++seq}`,
+      amountRub: 50000,
+    });
+    await db
+      .update(schema.payments)
+      .set({ createdAt: new Date(Date.now() - 60 * 60 * 1000) })
+      .where(eq(schema.payments.id, payment.id));
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const { items } = await listHoldsForPanel(db, 100);
+    const row = items.find((r) => r.orderId === order.id);
+
+    expect(row?.lastProviderStatus).toBe(7);
+    expect(row?.paymentId).toBe(payment.id);
+    expect(row?.paymentId).not.toBe(fresh.payment.id);
+  });
+
+  it('«клиенту ушло» читается фактом доставки, а не выводится из статуса', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-notified-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    // Заказ УЖЕ на проверке банка, но автосообщение могло не уйти: отправка
+    // best-effort, и «бот заблокирован пользователем» гасится log.warn.
+    // Лимит задан явно: в файле общая база, и на дефолтной странице свой заказ
+    // однажды перестанет помещаться — тест упадёт с непонятным `undefined`.
+    const before = await listHoldsForPanel(db, 100);
+    expect(before.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeNull();
+    // Заодно: страница, вместившая всё, не должна кричать «показаны не все».
+    expect(before.hasMore).toBe(false);
+
+    await appendOrderEvent(db, {
+      orderId: order.id,
+      eventType: PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
+      actorType: 'system',
+    });
+
+    const after = await listHoldsForPanel(db, 100);
+    expect(after.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('ОДИН заказ с длинной историей счетов тоже даёт «есть ещё»', async () => {
+    // Запас выборки — три платежа на заказ. Заказ с большим числом
+    // перевыставлений съедает его в одиночку: заказов набралось меньше
+    // страницы, но дальше потолка мы просто НЕ ЗНАЕМ, что есть. Молчаливый
+    // хвост на экране, чья пустота означает «холдов нет», — прямая ложь.
+    const user = await makeUser({ telegramId: `tg-hold-many-pay-${++seq}` });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    await claimPaymentTerminal(db, payment.id);
+    await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+    // limit=1 → потолок выборки 1*3+1 = 4 строки; делаем платежей заведомо больше.
+    for (let i = 0; i < 6; i++) {
+      const extra = await upsertPaymentByProviderRef(db, {
+        orderId: order.id,
+        provider: 'freekassa',
+        providerRef: `hold-many-${++seq}`,
+        amountRub: 50000,
+      });
+      await claimPaymentTerminal(db, extra.payment.id);
+      await setPaymentProviderStatus(db, { paymentId: extra.payment.id, providerStatus: 7 });
+    }
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+
+    const page = await listHoldsForPanel(db, 1);
+
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('усечение списка холдов не молчит', async () => {
+    // Прежний тест утверждал `Array.isArray(...)` — тавтология при
+    // типизированном возврате. Проверяем то, что действительно может сломаться:
+    // страница обрезана, и об этом СКАЗАНО. Молчаливый срез читается как
+    // «холдов больше нет» — ровно наоборот смыслу экрана.
+    const user = await makeUser({ telegramId: `tg-hold-page-${++seq}` });
+    for (let i = 0; i < 2; i++) {
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    }
+
+    const page = await listHoldsForPanel(db, 1);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+  });
+});
+
+describe('findStuckInFulfillmentOrders — время входа В СТАТУС, а не paid_at', () => {
+  const THIRTY_MIN = 30 * 60 * 1000;
+
+  /**
+   * Состояние собирается ПРЯМЫМИ вставками: событие журнала нельзя состарить
+   * UPDATE'ом — `order_events` append-only на уровне триггера БД (инвариант 1),
+   * и это правильно. INSERT с нужным временем триггер разрешает.
+   */
+  async function makeOrderInFulfillment(input: { enteredAgoMs: number; paidAgoMs: number | null }) {
+    const user = await makeUser({ telegramId: `tg-stuck-${++seq}` });
+    // Заказ создаётся ЧЕРНОВИКОМ: `createDraftOrder` пишет стартовое событие с
+    // тем статусом, который ему передали, и оно оказалось бы свежее нашего —
+    // `max()` брал бы его, а тест проверял бы не то, что заявляет.
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'stuck-test',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    await db.execute(sql`UPDATE orders SET status = 'in_fulfillment' WHERE id = ${order.id}`);
+    if (input.paidAgoMs !== null) {
+      const paidAt = new Date(Date.now() - input.paidAgoMs).toISOString();
+      await db.execute(
+        sql`UPDATE orders SET paid_at = ${paidAt}::timestamptz WHERE id = ${order.id}`,
+      );
+    }
+    await db.insert(schema.orderEvents).values({
+      orderId: order.id,
+      actorType: 'system',
+      eventType: 'status_changed',
+      fromStatus: 'paid',
+      toStatus: 'in_fulfillment',
+      createdAt: new Date(Date.now() - input.enteredAgoMs),
+    });
+    return order;
+  }
+
+  it('заказ, давно вошедший в работу, находится', async () => {
+    const order = await makeOrderInFulfillment({
+      enteredAgoMs: 3 * 3600_000,
+      paidAgoMs: 3 * 3600_000,
+    });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
+  });
+
+  it('РУЧНАЯ выдача старого заказа не считается зависшей', async () => {
+    // Регрессия тикета 06: оператор берёт в работу заказ, оплаченный неделю
+    // назад. По прежнему условию (`paid_at < now-30мин`) он попадал в
+    // «зависшие» с первой секунды, и Sentry-алёрт летел каждые пять минут всё
+    // время ручной работы — настоящий случай утонул бы в этом шуме.
+    const order = await makeOrderInFulfillment({
+      enteredAgoMs: 1000,
+      paidAgoMs: 7 * 24 * 3600_000,
+    });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).not.toContain(order.id);
+  });
+
+  it('заказ БЕЗ paid_at тоже попадает под наблюдение', async () => {
+    // Зеркальная дыра прежнего условия: `NULL < cutoff` — это NULL, поэтому
+    // заказ без отметки оплаты не алёртился НИКОГДА.
+    const order = await makeOrderInFulfillment({ enteredAgoMs: 3 * 3600_000, paidAgoMs: null });
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
+  });
+
+  it('заказ без события входа наблюдается по paid_at — страховка для старых строк', async () => {
+    const user = await makeUser({ telegramId: `tg-stuck-legacy-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'stuck-legacy',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    await db.execute(sql`UPDATE orders SET status = 'in_fulfillment' WHERE id = ${order.id}`);
+    const paidAt = new Date(Date.now() - 3 * 3600_000).toISOString();
+    await db.execute(
+      sql`UPDATE orders SET paid_at = ${paidAt}::timestamptz WHERE id = ${order.id}`,
+    );
+
+    const stuck = await findStuckInFulfillmentOrders(db, { olderThanMs: THIRTY_MIN });
+
+    expect(stuck.map((o) => o.id)).toContain(order.id);
   });
 });

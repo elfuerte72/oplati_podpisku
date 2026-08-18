@@ -104,7 +104,18 @@ export const allowedTransitions: Record<OrderStatus, readonly OrderStatus[]> = {
   paid: ['in_fulfillment', 'failed', 'refund_requested'],
   in_fulfillment: ['completed', 'failed'],
   completed: ['refund_requested'],
-  failed: ['refund_requested'],
+  // → in_fulfillment: РУЧНАЯ выдача (тикет 06 админ-панели). Заказ, который
+  // выдали руками, не должен вечно числиться провалившимся: пока он `failed`,
+  // он не в выручке (`PURCHASED_ORDER_STATUSES`) и комиссия партнёра по нему
+  // погашена (`REFUND_OR_FAILED_ORDER_STATUSES`). Случай ORD-J6TBP от
+  // 2026-08-14: клиент заплатил 11 680 ₽, карту выпустить не смогли (не хватило
+  // баланса VCC-субаккаунта), реквизиты отправили вручную.
+  //
+  // ⚠️ Именно в `in_fulfillment`, а НЕ сразу в `completed`: оператор делает два
+  // шага («беру в ручную выдачу» → «выдал»), и `order_events` — append-only, по
+  // нему считается выручка. Прыжок в `completed` не оставил бы записи о том,
+  // что работа вообще начиналась, и кто её начал.
+  failed: ['refund_requested', 'in_fulfillment'],
   refund_requested: ['refunded', 'completed', 'cancelled'],
   refunded: [],
   cancelled: [],

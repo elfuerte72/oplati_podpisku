@@ -24,6 +24,24 @@ vi.mock('@oplati/db', () => ({
   markRecycled: vi.fn(async () => {}),
 }));
 
+// Алёрт баланса пишет персоналу (тикет 11). Здесь проверяется джоб, а не
+// доставка: настоящая реализация полезла бы в базу и в env.
+vi.mock('../alerts/notify-staff.ts', () => ({
+  notifyStaff: vi.fn(async () => ({ delivered: 1, failed: 0, deduped: false })),
+}));
+
+// Пороги задаём явно: иначе тест зависит от окружения прогона, а не от того,
+// что проверяет (`PAYSPACE_MIN_VCC_BALANCE_USD_CENTS` в env отменяет расчёт).
+vi.mock('../env.server.ts', () => ({
+  serverEnv: {
+    PAYSPACE_MIN_VCC_BALANCE_USD_CENTS: 0,
+    PAYSPACE_CARD_BUFFER_PERCENT: 20,
+    CARD_ISSUE_FEE_USD_CENTS: 400,
+    VCC_BALANCE_ALERT_DISABLED: false,
+    CARD_LIFETIME_DAYS: 180,
+  },
+}));
+
 vi.mock('../pay-space/index.ts', () => ({
   isPaySpaceConfigured: () => h.paySpaceConfigured.value,
   getPaySpaceClient: () => ({
@@ -47,7 +65,9 @@ describe('recycleCards', () => {
       { id: 'card-2', providerCardId: 'pc-2' },
     ];
     h.releaseMock.mockResolvedValue({ cardId: 'pc', releasedUsdCents: 0 });
-    h.vccBalanceMock.mockResolvedValue({ balanceUsdCents: 100000, pendingUsdCents: 0, currency: 'USD' });
+    // «В норме» теперь означает «хватит и на самый дорогой заказ каталога»
+    // ($1200 + буфер + fee), поэтому дефолт фикстуры выше прежнего.
+    h.vccBalanceMock.mockResolvedValue({ balanceUsdCents: 200_000, pendingUsdCents: 0, currency: 'USD' });
   });
 
   it('happy path: release каждой карты + markRecycled', async () => {
@@ -88,9 +108,27 @@ describe('recycleCards', () => {
     expect(h.vccBalanceMock).not.toHaveBeenCalled();
   });
 
-  it('низкий VCC-баланс → Sentry warning', async () => {
+  it('нехватка на типовой заказ — Sentry уровня error', async () => {
+    // $10 на счету: не хватает даже на типовой заказ, то есть следующий
+    // оплаченный заказ упадёт при выпуске карты. Это авария, а не «внимание».
     h.state.toRecycle = [];
     h.vccBalanceMock.mockResolvedValue({ balanceUsdCents: 1000, pendingUsdCents: 0, currency: 'USD' });
+
+    await recycleCards();
+
+    expect(sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('VCC balance'),
+      expect.objectContaining({ level: 'error' }),
+    );
+  });
+
+  it('хватает на типовой, но не на самый дорогой — уровень warning', async () => {
+    h.state.toRecycle = [];
+    h.vccBalanceMock.mockResolvedValue({
+      balanceUsdCents: 50_000,
+      pendingUsdCents: 0,
+      currency: 'USD',
+    });
 
     await recycleCards();
 

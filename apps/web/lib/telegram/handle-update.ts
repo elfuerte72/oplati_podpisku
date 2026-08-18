@@ -19,6 +19,7 @@ import {
 import { handleContactMessage } from './contact-flow';
 import { persistInbound, readPendingMeta, safeAppendMessage } from './persist';
 import { sendSafely, showOrEdit } from './send';
+import { buildSupportHintKeyboard, claimSilentHint, releaseSilentHint } from './silent-hint';
 import { handleStartCommand } from './start-menu';
 import {
   handleSupportCallback,
@@ -30,6 +31,8 @@ import {
   CATALOG_OWN_VARIANT_TEXT,
   CHANNEL_LINK_TEXT,
   MEDIA_REPLY,
+  SILENT_MEDIA_HINT,
+  SILENT_TEXT_HINT,
   SUPPORT_BUTTON,
   type MediaKind,
 } from './templates';
@@ -73,6 +76,31 @@ function detectMediaKind(message: TelegramMessage): MediaKind | null {
   if (message.sticker) return 'sticker';
   if (message.animation) return 'animation';
   return null;
+}
+
+/**
+ * Одна подсказка вместо молчания (тикет 09) — с дедупом на отправителя.
+ *
+ * Возвращает `true`, если сообщение реально ушло. Дедуп живёт в `silent-hint.ts`
+ * и закрывает два случая сразу: альбом (Telegram шлёт апдейт на каждое фото) и
+ * серию сообщений от человека, которому не ответили по делу.
+ */
+async function sendSilentHint(
+  chatId: number,
+  identity: string,
+  text: string,
+  updateId: number,
+): Promise<boolean> {
+  if (!(await claimSilentHint(identity))) return false;
+
+  const delivered = await sendSafely(chatId, text, updateId, buildSupportHintKeyboard());
+  if (!delivered) {
+    // Клиент заблокировал бота или Telegram ответил ошибкой. Право отпускаем:
+    // иначе несостоявшаяся отправка запирала бы подсказку на час — ровно та
+    // тишина, ради устранения которой тикет 09 и делался.
+    await releaseSilentHint(identity);
+  }
+  return delivered;
 }
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void> {
@@ -167,17 +195,28 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         kind: 'media',
         mediaType: mediaKind,
       });
-      // При выключенном BOT_AI_ENABLED бот не реагирует на сообщения (работают
-      // только команды/кнопки) — на медиа молчим.
+      // При включённом BOT_AI_ENABLED — прежний шаблонный ответ; при
+      // выключенном (тикет 09) — подсказка с кнопкой «Поддержка».
       if (serverEnv.BOT_AI_ENABLED) {
         await sendSafely(chatId, MEDIA_REPLY[mediaKind], update.update_id);
       } else {
-        // Клиент прислал медиа и не получил ничего. Ни в логах бизнес-смысла,
-        // ни в БД этой потери нет — только здесь.
+        // Тикет 09: молчания больше нет — уходит подсказка с кнопкой
+        // «Поддержка». Дедуп обязателен: Telegram шлёт апдейт на КАЖДОЕ фото
+        // альбома, и без него скриншот на десять кадров вернулся бы десятью
+        // одинаковыми сообщениями.
+        const hinted = await sendSilentHint(
+          chatId,
+          rlIdentity,
+          SILENT_MEDIA_HINT,
+          update.update_id,
+        );
+        // Событие остаётся: оно меряет, сколько людей приходит в бота за тем,
+        // чего он при выключенном AI не умеет. `hinted` отделяет прежнюю
+        // тишину от нынешней подсказки.
         trackServer({
           name: 'bot_text_ignored',
           telegramId: telegramUserId ? String(telegramUserId) : null,
-          props: { kind: 'media' },
+          props: { kind: 'media', hinted },
           eventKey: `tg-${update.update_id}-${telegramUserId ?? 'anon'}-ignored`,
         });
       }
@@ -298,12 +337,31 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   // кнопки. Весь AI-путь сохранён и работает при BOT_AI_ENABLED=1.
   if (!serverEnv.BOT_AI_ENABLED) {
     log.info({ event: 'telegram.message.ignored_ai_disabled', updateId: update.update_id, chatId });
-    // Самая невидимая потеря клиентов: человек написал в бота и получил тишину.
+    // Тикет 09: раньше здесь бот замолкал, и человек, написавший «помогите»,
+    // уходил в пустоту — обращение не появлялось нигде, в том числе в панели.
+    // Теперь уходит одна фраза с кнопкой «Поддержка». Обращение по-прежнему
+    // создаётся ТОЛЬКО нажатием (правило владельца) — подсказка его не создаёт.
+    //
+    // Сюда попадает и неизвестная команда (`/foo`): она тоже заканчивалась
+    // тишиной, а человек, промахнувшийся мимо команды, тем более нуждается в
+    // указателе. Известные команды и кнопки до этой точки не доходят.
+    const hinted = await sendSilentHint(chatId, rlIdentity, SILENT_TEXT_HINT, update.update_id);
+    // Подсказку кладём в переписку — иначе лента обращения в панели (тикет 10)
+    // показывала бы вопрос клиента без единого ответа, хотя ответ был.
+    if (hinted && ctx) {
+      await safeAppendMessage(
+        ctx,
+        'assistant',
+        SILENT_TEXT_HINT,
+        { source: 'silent_hint' },
+        update.update_id,
+      );
+    }
     // `len` вместо текста — переписка в аналитику не тянется (PII).
     trackServer({
       name: 'bot_text_ignored',
       telegramId: telegramUserId ? String(telegramUserId) : null,
-      props: { kind: 'text', len: text.length },
+      props: { kind: 'text', len: text.length, hinted },
       eventKey: `tg-${update.update_id}-${telegramUserId ?? 'anon'}-ignored`,
     });
     return;

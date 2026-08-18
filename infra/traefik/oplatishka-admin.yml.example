@@ -1,0 +1,72 @@
+# Traefik: админ-панель на своём домене `admin.oplatishka.com`.
+#
+# Установка (прод-VPS 187.124.172.104):
+#   1. DNS: A-запись admin.oplatishka.com -> 187.124.172.104
+#   2. scp infra/traefik/oplatishka-admin.yml.example \
+#          root@VPS:/etc/dokploy/traefik/dynamic/oplatishka-admin.yml
+#   3. docker service ls | grep oplatishka-web     # узнать реальное имя сервиса
+#      sed -i 's|__WEB_SERVICE__|oplatishka-web-XXXXXX|' \
+#        /etc/dokploy/traefik/dynamic/oplatishka-admin.yml
+#   4. в env приложения задать PANEL_HOST=admin.oplatishka.com и редеплойнуть
+#
+# Откат: удалить файл — Traefik подхватит за секунды, панель перестанет быть
+# доступной снаружи. Приложение при этом живёт: панель — часть `oplatishka-web`,
+# отдельного сервиса у неё нет, и сайт не затрагивается.
+#
+# ⚠️ Маршрутизация — ЗАЩИТА В ГЛУБИНУ, а не гейт. Настоящая проверка доступа
+# живёт в каждой операции панели (`apps/web/lib/panel/session.ts`). Ошибка в
+# этом файле не должна означать открытую панель — и не означает.
+#
+# ⚠️ 404 на ПУБЛИЧНЫХ доменах делает приложение (`apps/web/proxy.ts`): при
+# заданном `PANEL_HOST` любой запрос к `/admin` и `/api/panel` с чужого хоста
+# получает пустой 404. В Traefik такого правила НЕТ намеренно — встроенного
+# «верни 404» middleware у него нет, а роутер на несуществующий сервис отдавал
+# бы 502, то есть рассказывал бы, что там что-то есть. Поэтому блокировка
+# сделана там, где она проверяется тестами, а не подбором конфига.
+#
+# Что тут происходит:
+#   1. `admin-panel` — панель и её API на домене панели. Приоритет выше
+#      публичных роутеров Dokploy, иначе домен уедет на сайт. `/_next` и иконки
+#      нужны, иначе страница не отрисуется.
+#   2. `admin-root` — корень домена редиректом на `/admin`, чтобы «зашёл на
+#      admin.oplatishka.com» приводило ко входу, а не к сайту.
+#
+# ⚠️ `/api/staff-bot` (точка приёма бота персонала) сюда НЕ входит намеренно:
+# до него должны дотягиваться серверы Telegram, а домен панели у них не
+# зарегистрирован. Он живёт на публичном домене рядом с `/api/bot` и защищён
+# своим `X-Telegram-Bot-Api-Secret-Token`.
+http:
+  routers:
+    admin-panel:
+      rule: "Host(`admin.oplatishka.com`) && (PathPrefix(`/admin`) || PathPrefix(`/api/panel`) || PathPrefix(`/_next`) || PathPrefix(`/favicon.ico`) || PathPrefix(`/icon.png`) || PathPrefix(`/apple-icon.png`))"
+      service: admin-panel-svc
+      entryPoints:
+        - websecure
+      priority: 900000
+      tls:
+        certResolver: letsencrypt
+
+    admin-root:
+      rule: "Host(`admin.oplatishka.com`)"
+      service: admin-panel-svc
+      entryPoints:
+        - websecure
+      priority: 800000
+      middlewares:
+        - admin-to-panel
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    admin-to-panel:
+      redirectRegex:
+        regex: "^https://admin\\.oplatishka\\.com/(.*)$"
+        replacement: "https://admin.oplatishka.com/admin"
+        permanent: false
+
+  services:
+    admin-panel-svc:
+      loadBalancer:
+        servers:
+          - url: http://__WEB_SERVICE__:3000
+        passHostHeader: true
