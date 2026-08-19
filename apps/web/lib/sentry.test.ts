@@ -260,4 +260,34 @@ describe('beforeSend: свободный текст message и exception', () =>
     expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan%40example.com');
     expect(JSON.stringify(out?.breadcrumbs ?? [])).not.toContain('ivan@example.com');
   });
+
+  it('чужая среда исполнения не считается нашей ошибкой', () => {
+    // Next при загрузке переопределяет `push` у массива RSC-payload
+    // (`self.__next_f.push = …`). Сканеры и анти-бот-обвязки замораживают
+    // глобальные объекты перед исполнением страницы, и присваивание падает —
+    // у НИХ, не у нас: в живом браузере консоль чиста. Один такой клиент за
+    // час дал 158 событий и увёл issue в escalating, то есть съел и квоту, и
+    // внимание дежурного.
+    const event = makeEvent({
+      exception: {
+        values: [
+          {
+            type: 'TypeError',
+            value: "Cannot assign to read only property 'push' of object '[object Array]'",
+          },
+        ],
+      },
+    });
+
+    expect(beforeSend(event)).toBeNull();
+  });
+
+  it('другая TypeError по-прежнему доезжает', () => {
+    // Глушить весь класс TypeError нельзя: так пропадут наши настоящие падения.
+    const event = makeEvent({
+      exception: { values: [{ type: 'TypeError', value: 'fetch failed' }] },
+    });
+
+    expect(beforeSend(event)).not.toBeNull();
+  });
 });
