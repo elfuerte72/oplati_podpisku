@@ -78,6 +78,15 @@ describe('vccAlertThresholdsUsdCents', () => {
     expect(vccAlertThresholdsUsdCents().critical).toBe(30_000);
   });
 
+  it('комиссия за выпуск входит в порог: без неё алёрт молчал бы о нехватке', () => {
+    // Буфер выключен, комиссия $4 осталась — типовой заказ всё равно стоит
+    // фонду $104. Забыть слагаемое здесь значит пропустить ровно тот заказ,
+    // который упадёт при выпуске.
+    h.env.PAYSPACE_CARD_BUFFER_PERCENT = 0;
+
+    expect(vccAlertThresholdsUsdCents().critical).toBe(10_400);
+  });
+
   it('нулевой буфер и нулевой fee дают ровно цену заказа', () => {
     h.env.PAYSPACE_CARD_BUFFER_PERCENT = 0;
     h.env.CARD_ISSUE_FEE_USD_CENTS = 0;

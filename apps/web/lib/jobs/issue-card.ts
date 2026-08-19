@@ -18,8 +18,6 @@ import {
   updateBalance,
 } from '@oplati/db';
 
-import { isCardTopupSafe } from '@oplati/types';
-
 import { notifyOps } from '../alerts/notify-ops.ts';
 import {
   formatBillingAddressLines,
@@ -29,6 +27,7 @@ import {
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { cardFundingUsdCents, paySpaceRequestId } from '../pay-space/format.ts';
+import { isCardReusable } from '../pay-space/funding.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { getBot } from '../telegram/bot.ts';
@@ -199,7 +198,7 @@ export async function issueCard(orderId: string): Promise<void> {
     // мы с этого заказа не взяли (`propose-order` видел карту живой) — $4 нашей
     // маржи дешевле свёрнутой подписки клиента. Карту не идлим: она рабочая,
     // кабинет показывает её до конца срока, закроет её cron по возрасту.
-    if (card && !isCardTopupSafe(card.createdAt)) {
+    if (card && !isCardReusable(card)) {
       log.info({
         event: 'job.issue_card.reuse_skipped_near_expiry',
         orderId,
