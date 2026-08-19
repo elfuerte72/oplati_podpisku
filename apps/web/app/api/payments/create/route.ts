@@ -22,13 +22,18 @@ import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import { isPaymentGatewayUnavailable } from '@/lib/payments/availability';
-import { isPriceLockExpired } from '@/lib/payments/expiry';
+import { isPriceLockExpired, priceLockMinutesLeft } from '@/lib/payments/expiry';
 import {
   createGatewayInvoice,
   maxAmountRubFor,
   minAmountRubFor,
   primaryPaymentGateway,
 } from '@/lib/payments/gateway';
+import {
+  checkOrderFundingCapacity,
+  reportFundingCapacityBlocked,
+} from '@/lib/pay-space/preflight';
+import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { LoveAndPayApiError } from '@/lib/loveandpay';
 
@@ -245,6 +250,34 @@ export async function POST(req: Request): Promise<NextResponse> {
           error: PHONE_REQUIRED,
           requiredFromRub: phoneThresholdRub,
           message: phoneRequiredText(phoneThresholdRub),
+        },
+        { status: 422 },
+      );
+    }
+
+    // Preflight карточного фонда (трек vcc-preflight, Р1) — ПОСЛЕДНИЙ гейт
+    // перед выставлением счёта и единственная его точка на все каналы.
+    //
+    // До него порядок был такой: клиент платит -> деньги у нас -> на карточном
+    // счёте не хватает -> заказ в `failed`, деньги приняты, услуга не оказана
+    // (4 заказа из 17 оплаченных, последний 14 августа на 11 680 ₽).
+    //
+    // ⚠️ Только НОВЫЕ счета: путь `repeat_confirm` возвращается выше. Гейт стоит
+    // на выставлении счёта, а не на приёме денег — отказать по уже выданному
+    // платёжному документу значило бы не принять оплату по нему.
+    const capacity = await checkOrderFundingCapacity(order);
+    if (capacity.state === 'insufficient') {
+      // Заказ НЕ трогаем: он остаётся `ready_for_payment` с зафиксированной
+      // ценой, клиент вернётся и оплатит. Перевод в `expired`/`failed` был бы
+      // наказанием клиента за нашу проблему.
+      await reportFundingCapacityBlocked(order, capacity);
+      const minutesLeft = priceLockMinutesLeft(order);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: FULFILLMENT_CAPACITY,
+          priceLockMinutesLeft: minutesLeft,
+          message: fulfillmentCapacityText(minutesLeft),
         },
         { status: 422 },
       );

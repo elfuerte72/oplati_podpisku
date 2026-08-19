@@ -606,6 +606,21 @@ export const PAYMENT_REMINDER_SENT_EVENT = 'payment_reminder_sent';
 export const PAYMENT_REMINDER_FAILED_EVENT = 'payment_reminder_failed';
 
 /**
+ * Preflight карточного фонда отказал в счёте: денег на выпуск карты не хватало
+ * (трек vcc-preflight, тикет 02).
+ *
+ * Пишется КАЖДЫЙ раз, когда клиент упёрся в гейт, — в отличие от DM владельцу,
+ * которое живёт под окном дедупа. Первую неделю на проде по этим строкам
+ * считают, не режет ли гейт живые оплаты; вывести это из статусов нельзя —
+ * отказ заказ не двигает, он остаётся `ready_for_payment`.
+ *
+ * ⚠️ Событие СЛУЖЕБНОЕ: в таймлайн клиента не показывается (денилист
+ * `INTERNAL_EVENT_TYPES` в `lib/cabinet/read.ts`). Клиенту про устройство нашей
+ * казны знать незачем, он получает свой текст в ответе на кнопку.
+ */
+export const PAYMENT_BLOCKED_CAPACITY_EVENT = 'payment_blocked_capacity';
+
+/**
  * Атомарно «занять» право напомнить об оплате: не чаще одного раза в
  * `cooldownMs` на заказ.
  *

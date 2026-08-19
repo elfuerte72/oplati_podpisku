@@ -42,6 +42,16 @@ describe('isClientVisibleOrderEvent', () => {
     );
   });
 
+  it('отказ preflight — наша кухня, клиенту в таймлайне не место', () => {
+    // Клиент получил свой текст в ответ на кнопку. Строка «Оплата заблокирована»
+    // в истории заказа сказала бы ему только то, что проблема у нас, — и ровно
+    // на том экране, где он ждёт карту за свои деньги.
+    expect(isInternalOrderEvent('payment_blocked_capacity')).toBe(true);
+    expect(
+      isClientVisibleOrderEvent({ eventType: 'payment_blocked_capacity', toStatus: null }),
+    ).toBe(false);
+  });
+
   it('денилист проверяется ПРЯМО, а не через фолбэк', () => {
     // Через `isClientVisibleOrderEvent` эти строки не проверяются: событие без
     // ярлыка скрыто и так. Стоит кому-то подписать его в общем словаре — и

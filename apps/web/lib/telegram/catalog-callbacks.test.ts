@@ -53,6 +53,7 @@ vi.mock('@sentry/nextjs', () => ({ captureException: h.captureException, capture
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import {
   OrderAboveMaxAmountError,
+  PaymentCapacityError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
 } from '@/lib/tool-handlers/confirm-order';
@@ -116,6 +117,13 @@ describe('разбор отказов: клиенту говорят то, чт�
     expect(text).toContain('140');
   });
 
+  it('карту выпустить нечем → срок фиксации цены и поддержка, без внутренностей', async () => {
+    const text = await confirmWith(new PaymentCapacityError(43));
+    expect(text).toContain('43 минуты');
+    expect(text).toContain('поддержку');
+    expect(text).not.toMatch(/баланс|фонд|PaySpace/i);
+  });
+
   it('неизвестная ошибка → честный повтор и /support, без выдуманного оператора', async () => {
     const text = await confirmWith(new Error('что-то пошло не так'));
     expect(text).toContain('/support');
@@ -128,6 +136,7 @@ describe('разбор отказов: клиенту говорят то, чт�
       new OrderExpiredError(),
       new PaymentProviderUnavailableError(),
       new OrderAboveMaxAmountError(null),
+      new PaymentCapacityError(43),
       new Error('boom'),
     ]) {
       const text = await confirmWith(err);

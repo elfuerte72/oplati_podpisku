@@ -128,3 +128,24 @@ describe('handleContactMessage', () => {
     expect(all).not.toContain('провайдер лежит');
   });
 });
+
+describe('счёт после контакта — карту выпустить нечем (тикет 02 vcc-preflight)', () => {
+  it('клиент слышит честный срок, а не «попробуй через минуту», и Sentry не шумит', async () => {
+    // Самый вероятный путь этого отказа: телефон спрашивают от 10 000 ₽, а
+    // инцидентный заказ был на 11 680 ₽. Генерик «через минуту» тут враньё —
+    // карточный счёт пополняется T+1.
+    const { PaymentCapacityError } = await import('@/lib/tool-handlers/confirm-order');
+    const Sentry = await import('@sentry/nextjs');
+    h.lastMetaMock.mockResolvedValue({ [AWAITING_CONTACT_META_KEY]: 'order-1' });
+    h.confirmMock.mockRejectedValueOnce(new PaymentCapacityError(43));
+
+    const { update, message } = contactUpdate({ phone_number: '+79001234567', user_id: 555 });
+    await handleContactMessage(update, message);
+
+    const text = sentTexts().join('\n');
+    expect(text).toContain('Номер сохранён');
+    expect(text).toContain('43 минуты');
+    expect(text).not.toContain('через минуту');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+});

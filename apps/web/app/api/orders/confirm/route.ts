@@ -7,6 +7,7 @@ import { getDb, getOrCreateUserByWebSessionId, updateUserContacts } from '@oplat
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
+import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
 import {
   PHONE_INVALID_TEXT,
   PHONE_REQUIRED,
@@ -22,6 +23,7 @@ import {
   EMAIL_REQUIRED,
   EmailRequiredError,
   OrderAboveMaxAmountError,
+  PaymentCapacityError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
   PhoneRequiredError,
@@ -212,6 +214,20 @@ export async function POST(req: Request): Promise<NextResponse> {
       log.info({ event: 'web-chat.confirm.above_max_amount', orderId });
       return NextResponse.json(
         { ok: false, error: 'above_max_amount', text: aboveMaxAmountText(err.maxAmountRub) },
+        { status: 422 },
+      );
+    }
+    // Карточного фонда не хватает на этот заказ (трек vcc-preflight): счёт не
+    // выставлен, заказ жив с зафиксированной ценой — повтор через 10-15 минут
+    // осмыслен, в отличие от лимита шлюза выше.
+    if (err instanceof PaymentCapacityError) {
+      log.warn({ event: 'web-chat.confirm.fulfillment_capacity', orderId });
+      return NextResponse.json(
+        {
+          ok: false,
+          error: FULFILLMENT_CAPACITY,
+          text: fulfillmentCapacityText(err.priceLockMinutesLeft),
+        },
         { status: 422 },
       );
     }

@@ -6,6 +6,7 @@ import { InlineKeyboard } from 'grammy';
 import { getDb, getOrderById, transitionOrder } from '@oplati/db';
 import type { TelegramCallbackQuery } from '@oplati/types';
 
+import { fulfillmentCapacityText } from '../payments/capacity.ts';
 import {
   filterCatalogForDisplay,
   groupCatalog,
@@ -23,6 +24,7 @@ import {
   EmailRequiredError,
   PhoneRequiredError,
   OrderAboveMaxAmountError,
+  PaymentCapacityError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
 } from '@/lib/tool-handlers/confirm-order';
@@ -391,6 +393,13 @@ export async function handleOrderActionCallback(
           'Срок фиксации цены истёк — оформи заказ заново, сумма пересчитается по свежему курсу.',
           updateId,
         );
+        return;
+      }
+      // Карточного фонда не хватает (трек vcc-preflight): счёт не выставлен,
+      // заказ жив с зафиксированной ценой. Общий текст на три канала — про
+      // деньги формулировки разъезжаться не должны.
+      if (err instanceof PaymentCapacityError) {
+        await sendSafely(chatId, fulfillmentCapacityText(err.priceLockMinutesLeft), updateId);
         return;
       }
       // Транспорт до шлюза лежит: заказ жив, помогает именно повтор позже.

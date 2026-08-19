@@ -52,6 +52,7 @@ import {
   confirmOrder,
   OrderAboveMaxAmountError,
   OrderExpiredError,
+  PaymentCapacityError,
   PaymentProviderUnavailableError,
   TelegramLinkRequiredError,
 } from './confirm-order.ts';
@@ -211,6 +212,22 @@ describe('confirmOrder — классификация отказов шлюза'
     const err = await confirmOrder({ orderId: 'order-1' }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OrderAboveMaxAmountError);
     expect((err as OrderAboveMaxAmountError).maxAmountRub).toBeNull();
+  });
+
+  it('422 fulfillment_capacity несёт остаток фиксации цены — клиенту называется срок', async () => {
+    // Карту выпустить нечем: счёт не выставлен, заказ жив. Клиенту говорим,
+    // сколько ещё держится ЕГО цена, а не зашитые «два часа».
+    mockFetch(422, { error: 'fulfillment_capacity', priceLockMinutesLeft: 43 });
+    const err = await confirmOrder({ orderId: 'order-1' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaymentCapacityError);
+    expect((err as PaymentCapacityError).priceLockMinutesLeft).toBe(43);
+  });
+
+  it('422 fulfillment_capacity без срока в теле → null, ошибка всё равно типизирована', async () => {
+    mockFetch(422, { error: 'fulfillment_capacity' });
+    const err = await confirmOrder({ orderId: 'order-1' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaymentCapacityError);
+    expect((err as PaymentCapacityError).priceLockMinutesLeft).toBeNull();
   });
 
   it('код ошибки обязан совпасть со статусом: 503 с чужим кодом → generic', async () => {
