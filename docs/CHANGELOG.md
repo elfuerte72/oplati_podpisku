@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-08-19 — Админ-панель включена на проде
+
+Код уехал 18 августа (PR #165); сегодня панель поднята и проверена живым входом.
+
+- **Домен `admin.oplatishka.com`** — A-запись на VPS, файл Traefik
+  `/etc/dokploy/traefik/dynamic/oplatishka-admin.yml`, сертификат Let's Encrypt
+  выпустился сам. Отдельного приложения в Dokploy у панели нет: она часть
+  `apps/web`, Traefik ведёт её домен на тот же сервис.
+- **Env прода**: `PANEL_HOST`, `ADMIN_SESSION_SECRET`, `TELEGRAM_LOGIN_BOT_TOKEN`,
+  `TELEGRAM_LOGIN_BOT_USERNAME`, `TELEGRAM_LOGIN_BOT_WEBHOOK_SECRET`. Было 41
+  переменная, стало 46, потерянных ноль — сверялось поимённо ДО отправки, потому
+  что API Dokploy перезаписывает блок целиком. Бэкап прежнего блока на VPS:
+  `/root/env-backups/oplatishka-web-20260819-070551.env`.
+- **Вебхук бота персонала** — `https://www.oplatishka.com/api/staff-bot` с
+  secret-token из env. На публичном домене намеренно: домен панели серверам
+  Telegram не известен.
+- **Владелец заведён в `staff`** (роль `admin`), TOTP привязан и подтверждён,
+  вход выполнен.
+
+Смоук после включения: `/admin/login` на домене панели — 200, `/admin` — редирект
+на вход; тот же `/admin` на `www` и `new` — **404** (изоляция работает); сайт 200,
+оба бота отвечают 401 на чужой secret-token; `/api/ready` — ok; ошибок в логах нет.
+
+### ⚠️ Грабля, стоившая часа: `/setdomain`
+
+Страница входа отдавала пустую рамку вместо кнопки Telegram. Ни одной ошибки
+нигде: скрипт виджета грузится (200), CSP пропускает (`script-src telegram.org`,
+`frame-src oauth.telegram.org`), в логах приложения тихо, консоль браузера
+молчит. Причина — у бота не привязан домен, и это видно ТОЛЬКО со стороны
+Telegram: `https://oauth.telegram.org/embed/<bot>?origin=…` отвечает
+`Bot domain invalid`. Лечится `/setdomain` у @BotFather; метода Bot API нет.
+Записано в `docs/reference/infrastructure.md` вместе с командой диагностики.
+
+Отдельно: `ERR_NAME_NOT_RESOLVED` сразу после заведения A-записи — это
+отрицательный DNS-кэш на машине, а не проблема контура. Проверять надо не
+браузером, а `dig +short admin.oplatishka.com @8.8.8.8` и авторитетным сервером
+зоны; лечится `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` и
+очисткой `chrome://net-internals/#dns`.
+
 ## 2026-08-18 — Админ-панель: правки по итогам ревью всего PR
 
 Четыре ревьюера по осям «готовность к проду», «безопасность и права», «деньги и

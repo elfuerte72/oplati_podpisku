@@ -318,6 +318,7 @@ docker exec $(docker ps --filter name=oplatishka-web --format '{{.Names}}' | gre
 | `oplatishka-www.yml` | www + apex | роутеры прод-домена, cert от внешнего lego (DNS-01), middleware `oplatishka-strip-altsvc` |
 | `oplatishka-dev-webhook.yml` | dev | `/api/bot` без basic-auth (Telegram его не умеет) |
 | `oplatishka-dev-miniapp.yml` | dev | `/cabinet` и зависимости без basic-auth (WebView его не умеет) |
+| `oplatishka-admin.yml` | `admin.oplatishka.com` | домен админ-панели на тот же сервис `oplatishka-web` (отдельного приложения у панели НЕТ) |
 
 ⚠️ **При переезде на другой VPS они не переносятся ничем** — ни деплоем, ни
 system backup Dokploy: тот несёт проекты, домены и env-переменные, но не
@@ -343,6 +344,56 @@ python3 -c "import yaml; yaml.safe_load(open('/tmp/new.yml'))" \
 ```
 
 ---
+
+## Включение админ-панели на новом контуре
+
+Панель не имеет своего приложения в Dokploy — она часть `oplatishka-web`. Чтобы
+она заработала, нужны пять шагов, и **четвёртый молчит, если его забыть**.
+
+1. **DNS**: A-запись `admin.<домен>` → IP VPS. Зона на Cloudflare, режим
+   DNS-only (в браузере должен резолвиться НАШ IP, не прокси-адрес).
+2. **Traefik**: положить `infra/traefik/oplatishka-admin.yml.example` в
+   `/etc/dokploy/traefik/dynamic/oplatishka-admin.yml` и заменить
+   `__WEB_SERVICE__` на реальное имя swarm-сервиса
+   (`docker service ls | grep oplatishka-web`). Сертификат Let's Encrypt
+   выпускается сам, проверять через минуту.
+3. **Env** (порядок правки — в разделе «Правка env» выше, бэкап обязателен):
+   `PANEL_HOST`, `ADMIN_SESSION_SECRET` (≥32 символа, `openssl rand -hex 32`),
+   `TELEGRAM_LOGIN_BOT_TOKEN`, `TELEGRAM_LOGIN_BOT_USERNAME`,
+   `TELEGRAM_LOGIN_BOT_WEBHOOK_SECRET` → редеплой.
+4. **`/setdomain` у @BotFather** для бота персонала = домен панели.
+   ⚠️ Без этого шага страница входа отдаёт ПУСТУЮ РАМКУ вместо кнопки, и
+   причину не показывает ничто: скрипт виджета грузится (200), CSP пропускает,
+   логи приложения и консоль браузера чисты. Диагноз только со стороны Telegram:
+
+   ```bash
+   curl -s "https://oauth.telegram.org/embed/<bot_username>?origin=https%3A%2F%2Fadmin.oplatishka.com" \
+     | grep -o "Bot domain invalid"
+   ```
+
+   Метода Bot API для привязки нет — только вручную у @BotFather.
+5. **Вебхук бота персонала** — `setWebhook` на
+   `https://<ПУБЛИЧНЫЙ домен>/api/staff-bot` с тем же secret-token, что в env.
+   На публичном домене намеренно: домен панели серверам Telegram не известен.
+   `/api/admin/telegram-webhook` управляет ТОЛЬКО клиентским ботом.
+6. **Сотрудник**: `pnpm --filter @oplati/db db:staff add <telegram_id> <email> admin <имя>`
+   (с VPS либо SQL-эквивалентом — прод-БД снаружи недоступна). Секрет TOTP
+   скрипт не выдаёт: его показывает панель при первом входе, РОВНО ОДИН раз.
+   Сотрудник обязан один раз запустить бота персонала (`/start`), иначе
+   уведомления не дойдут — Telegram отвечает 403 на DM от незапущенного бота.
+
+Проверка после включения:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://admin.oplatishka.com/admin/login  # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://www.oplatishka.com/admin          # 404 — изоляция
+```
+
+⚠️ `ERR_NAME_NOT_RESOLVED` сразу после заведения DNS — это отрицательный кэш на
+машине, а не проблема контура. Проверять `dig +short admin.oplatishka.com @8.8.8.8`
+и авторитетным сервером зоны, лечить
+`sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` + очисткой
+`chrome://net-internals/#dns`.
 
 ## ⚠️ Деплой НЕ применяет миграции БД
 
