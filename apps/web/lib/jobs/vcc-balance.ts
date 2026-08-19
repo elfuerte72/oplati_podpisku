@@ -2,10 +2,13 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
+import { getDb } from '@oplati/db';
+
 import { notifyStaff } from '../alerts/notify-staff.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 import { orderFundingRequirementUsdCents } from '../pay-space/funding.ts';
+import { persistVccBalanceSnapshot } from '../pay-space/snapshot.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 
 const log = childLogger('vcc-balance');
@@ -102,17 +105,29 @@ function dailyKey(now: Date): string {
 
 export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void> {
   if (!isPaySpaceConfigured()) return;
-  if (isAlertDisabled()) {
-    log.debug({ event: 'vcc_balance.alert_disabled' });
-    return;
-  }
+
+  // ⚠️ Выключатель алёрта гасит СООБЩЕНИЯ, а не опрос. Раньше он стоял выше и
+  // выходил до запроса — после тикета 03 это тихо ломало бы гейт оплаты:
+  // снимок фонда перестал бы обновляться, и каждая оплата снова ходила бы к
+  // провайдеру. Флаг называется «алёрт выключен», им он и остаётся.
+  const alertDisabled = isAlertDisabled();
+  if (alertDisabled) log.debug({ event: 'vcc_balance.alert_disabled' });
 
   try {
     // ⚠️ Расчёт порога — ВНУТРИ try. Он больше не инлайн-арифметика: формула
     // требования валидирует вход и умеет бросить, а этот модуль обещает, что
     // сбой наблюдателя не роняет наблюдаемое (крон опроса платежей).
     const { critical, low } = vccAlertThresholdsUsdCents();
-    const { balanceUsdCents } = await getPaySpaceClient().getVccBalance();
+    const { balanceUsdCents, pendingUsdCents } = await getPaySpaceClient().getVccBalance();
+
+    // Снимок пишется ВСЕГДА, а не только при низком балансе: гейт оплаты
+    // (`lib/pay-space/preflight.ts`) читает именно нормальное значение — по
+    // нему он пропускает счёт, не ходя к провайдеру. Крон и так спрашивал
+    // баланс каждые 5 минут и выбрасывал ответ.
+    await persistVccBalanceSnapshot(getDb(), { balanceUsdCents, pendingUsdCents, readAt: now }, 'cron');
+
+    if (alertDisabled) return;
+
     if (balanceUsdCents >= low) {
       log.info({ event: 'vcc_balance.ok', balanceUsdCents });
       return;

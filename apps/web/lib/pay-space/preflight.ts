@@ -2,7 +2,15 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { appendOrderEvent, findActiveByUserId, getDb, PAYMENT_BLOCKED_CAPACITY_EVENT } from '@oplati/db';
+import {
+  appendOrderEvent,
+  findActiveByUserId,
+  getDb,
+  getVccBalanceSnapshot,
+  PAYMENT_BLOCKED_CAPACITY_EVENT,
+  VCC_SNAPSHOT_PROVIDER,
+  type DBLike,
+} from '@oplati/db';
 
 import { DedupWindow } from '../alerts/dedup-window.ts';
 import { notifyStaff } from '../alerts/notify-staff.ts';
@@ -11,6 +19,7 @@ import { childLogger } from '../logger.ts';
 import { usdCentsToDollarString } from './format.ts';
 import { isCardReusable, orderFundingRequirementUsdCents } from './funding.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from './index.ts';
+import { persistVccBalanceSnapshot } from './snapshot.ts';
 
 /**
  * Preflight карточного фонда: можно ли выставлять счёт по этому заказу.
@@ -34,6 +43,26 @@ const log = childLogger('pay-space.preflight');
  * справочного числа, а неизвестный ответ мы и так трактуем в пользу оплаты.
  */
 const BALANCE_TIMEOUT_MS = 2000;
+
+/**
+ * До какого возраста снимок считается свежим.
+ *
+ * ⚠️ **Зеркало** (инвариант 10) с кадансом крона в `infra/crontab.example`:
+ * окно осмысленно, пока опрос идёт заметно чаще получаса. Перевод крона на
+ * час тихо вернёт живой запрос к провайдеру в каждую оплату — правишь
+ * расписание, проверь это число.
+ *
+ * Крон опрашивает баланс каждые 5 минут, поэтому протухший снимок означает
+ * «крон мёртв или контейнер только что поднялся» — редкий случай, за который
+ * клиент не должен платить ожиданием, отсюда и короткий поводок живого запроса.
+ *
+ * Полчаса не приблизительны, а точны в безопасную сторону: баланс меняется от
+ * НАШИХ выпусков карт (видны в наших же заказах мгновенно) и от пополнений
+ * владельцем (редких, идущих T+1). Значит снимок ошибается только «в меньшую
+ * сторону», и цена ошибки — один лишний отказ, который пройдёт после
+ * ближайшего прогона крона.
+ */
+const SNAPSHOT_FRESH_MS = 30 * 60 * 1000;
 
 /**
  * Окно молчания про непрочитанный фонд. Лежащий провайдер — состояние
@@ -115,15 +144,10 @@ export type FundingCapacityVerdict =
 
 export async function checkOrderFundingCapacity(
   order: PreflightOrder,
+  now: Date = new Date(),
 ): Promise<FundingCapacityVerdict> {
   if (isPreflightDisabled()) {
     log.warn({ event: 'preflight.disabled', orderId: order.id });
-    return { state: 'skipped' };
-  }
-  // Карты выпускать нечем в принципе (dev-контур без ключей) — тогда и фонда
-  // никакого нет: гейт молчит, заказ доводит оператор, как и до него.
-  if (!isPaySpaceConfigured()) {
-    log.debug({ event: 'preflight.not_configured', orderId: order.id });
     return { state: 'skipped' };
   }
 
@@ -139,6 +163,7 @@ export async function checkOrderFundingCapacity(
   }
 
   const db = getDb();
+
   // Комиссию за выпуск платим только когда карту придётся выпускать: у клиента
   // с живой картой заказ дешевле фонду ровно на неё. Правило реюза — общее с
   // `issue-card` (`isCardReusable`), иначе гейт и выпуск ответили бы по-разному.
@@ -149,16 +174,9 @@ export async function checkOrderFundingCapacity(
   // Замороженными деньгами карту профинансировать нельзя, и пропущенный по ним
   // заказ упал бы на выпуске — то есть вернул бы ровно ту проблему, ради
   // которой этот гейт написан.
-  let balanceUsdCents: number;
-  try {
-    ({ balanceUsdCents } = await getPaySpaceClient().getVccBalance({
-      timeoutMs: BALANCE_TIMEOUT_MS,
-      attempts: 1,
-    }));
-  } catch (err) {
-    await reportFundingUnknown(order, err);
-    return { state: 'unknown' };
-  }
+  const fund = await readAvailableFund(db, order, now);
+  if (!fund.ok) return fund.reason === 'unknown' ? { state: 'unknown' } : { state: 'skipped' };
+  const balanceUsdCents = fund.balanceUsdCents;
 
   if (balanceUsdCents >= neededUsdCents) {
     log.info({
@@ -178,6 +196,77 @@ export async function checkOrderFundingCapacity(
     needsNewCard,
   });
   return { state: 'insufficient', availableUsdCents: balanceUsdCents, neededUsdCents };
+}
+
+/**
+ * Доступный остаток фонда: сначала свой снимок, и только если он протух —
+ * один живой запрос к провайдеру.
+ *
+ * ⚠️ Снимок проверяется ДО ключей провайдера намеренно. На контуре без ключей
+ * (dev — там их нет специально) гейт обязан оставаться проверяемым: положил
+ * строку снимка в базу руками — и весь путь отказа виден целиком, без единого
+ * обращения к PaySpace. Обратный порядок делал бы гейт непроверяемым до прода.
+ *
+ * `'unavailable'` — спросить некого (ключей нет), это конфигурация, а не сбой:
+ * оплата идёт. `'unknown'` — провайдер не ответил; тоже идёт, но с сигналом.
+ */
+type FundReading =
+  | { ok: true; balanceUsdCents: number }
+  /** `unknown` — провайдер не ответил; `unavailable` — спрашивать некого. */
+  | { ok: false; reason: 'unknown' | 'unavailable' };
+
+async function readAvailableFund(
+  db: DBLike,
+  order: PreflightOrder,
+  now: Date,
+): Promise<FundReading> {
+  const snapshot = await getVccBalanceSnapshot(db, VCC_SNAPSHOT_PROVIDER);
+  // ⚠️ Возраст обязан быть НЕОТРИЦАТЕЛЬНЫМ. Снимок «из будущего» (ушли часы
+  // контейнера, строку положили руками со сдвинутым `read_at`) проходил бы
+  // проверку «не старше получаса» ВЕЧНО: гейт судил бы по выдуманному числу, а
+  // крон, который его перезапишет, до этого момента не дотянется.
+  const ageMs = snapshot ? now.getTime() - snapshot.readAt.getTime() : null;
+  if (snapshot && ageMs !== null && ageMs >= 0 && ageMs <= SNAPSHOT_FRESH_MS) {
+    return { ok: true, balanceUsdCents: snapshot.balanceUsdCents };
+  }
+
+  if (!isPaySpaceConfigured()) {
+    log.debug({ event: 'preflight.not_configured', orderId: order.id });
+    return { ok: false, reason: 'unavailable' };
+  }
+
+  // ⚠️ Коалесценции здесь НЕТ: залп оплат по холодному снимку даст по живому
+  // запросу на каждую, а не один на всех. При нынешнем потоке (десятки заказов
+  // в сутки) это допустимо, и состояние редкое — крон бежит каждые 5 минут.
+  // Станет тесно — сюда просится общий замок, а не второй кэш.
+  log.info({
+    event: 'preflight.snapshot_cold',
+    orderId: order.id,
+    snapshotReadAt: snapshot?.readAt.toISOString() ?? null,
+    snapshotAgeMs: ageMs,
+  });
+  try {
+    const live = await getPaySpaceClient().getVccBalance({
+      timeoutMs: BALANCE_TIMEOUT_MS,
+      attempts: 1,
+    });
+    // Пишем сразу: следующий клиент в ближайшие полчаса уже не ждёт провайдера,
+    // даже если крон так и не ожил. Ошибку записи гасит сам `persist*` —
+    // одинаково с кроном, и одинаково же сигналит.
+    await persistVccBalanceSnapshot(
+      db,
+      {
+        balanceUsdCents: live.balanceUsdCents,
+        pendingUsdCents: live.pendingUsdCents,
+        readAt: now,
+      },
+      'preflight',
+    );
+    return { ok: true, balanceUsdCents: live.balanceUsdCents };
+  } catch (err) {
+    await reportFundingUnknown(order, err);
+    return { ok: false, reason: 'unknown' };
+  }
 }
 
 /**

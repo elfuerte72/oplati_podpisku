@@ -48,6 +48,10 @@ import {
 } from './repositories/payments.ts';
 import { nextFreekassaNonce } from './repositories/freekassa.ts';
 import {
+  getVccBalanceSnapshot,
+  saveVccBalanceSnapshot,
+} from './repositories/vcc-balance.ts';
+import {
   createConversation,
   getOrCreateActiveConversation,
 } from './repositories/conversations.ts';
@@ -2532,6 +2536,9 @@ describe('RLS: инварианты 7 и 8 под ролью anon', () => {
     'referral_accruals',
     'referral_payouts',
     'vpn_subscriptions',
+    // Остаток карточного фонда: не персональные данные, но состояние нашей
+    // казны — браузерной поверхности знать его незачем (трек vcc-preflight).
+    'vcc_balance_snapshots',
   ];
 
   beforeAll(async () => {
@@ -4502,4 +4509,57 @@ describe('findStuckInFulfillmentOrders — время входа В СТАТУС
 
     expect(stuck.map((o) => o.id)).toContain(order.id);
   });
+});
+
+describe('снимок карточного фонда (трек vcc-preflight, тикет 03)', () => {
+  it('сохранённое значение читается обратно тем же числом', async () => {
+    // Крон опрашивает баланс каждые 5 минут ради алёрта и до сих пор выбрасывал
+    // ответ. Теперь его читает гейт оплаты — вместо похода к провайдеру.
+    const readAt = new Date('2026-08-19T12:00:00.000Z');
+
+    await saveVccBalanceSnapshot(db, {
+      provider: 'payspace',
+      balanceUsdCents: 8_950,
+      pendingUsdCents: 1_200,
+      readAt,
+    });
+
+    const snapshot = await getVccBalanceSnapshot(db, 'payspace');
+    expect(snapshot).toMatchObject({
+      balanceUsdCents: 8_950,
+      pendingUsdCents: 1_200,
+    });
+    expect(snapshot?.readAt.toISOString()).toBe(readAt.toISOString());
+  });
+
+  it('каждый прогон крона ПЕРЕЗАПИСЫВАЕТ снимок, а не плодит строки', async () => {
+    // Крон бежит каждые 5 минут — 288 строк в сутки за справочным числом были бы
+    // мусором, а «последнюю» пришлось бы искать сортировкой на каждой оплате.
+    await saveVccBalanceSnapshot(db, {
+      provider: 'payspace',
+      balanceUsdCents: 1,
+      pendingUsdCents: 0,
+      readAt: new Date('2026-08-19T12:00:00.000Z'),
+    });
+    await saveVccBalanceSnapshot(db, {
+      provider: 'payspace',
+      balanceUsdCents: 50_000,
+      pendingUsdCents: 0,
+      readAt: new Date('2026-08-19T12:05:00.000Z'),
+    });
+
+    const rows = await pg.query<{ count: string }>(
+      "select count(*)::text as count from vcc_balance_snapshots where provider = 'payspace'",
+    );
+    expect(rows.rows[0]?.count).toBe('1');
+    const snapshot = await getVccBalanceSnapshot(db, 'payspace');
+    expect(snapshot?.balanceUsdCents).toBe(50_000);
+  });
+
+  it('снимка нет — null, а не выдуманный ноль', async () => {
+    // Ноль означал бы «денег нет» и заблокировал бы все оплаты сразу после
+    // выката, до первого прогона крона.
+    expect(await getVccBalanceSnapshot(db, 'never-written')).toBeNull();
+  });
+
 });

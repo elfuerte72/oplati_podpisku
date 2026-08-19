@@ -274,3 +274,10 @@ export {
   type PanelOrderPayment,
   type PanelOrderSort,
 } from './panel.ts';
+
+export {
+  saveVccBalanceSnapshot,
+  getVccBalanceSnapshot,
+  VCC_SNAPSHOT_PROVIDER,
+  type VccBalanceSnapshot,
+} from './vcc-balance.ts';

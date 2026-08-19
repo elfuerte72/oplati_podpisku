@@ -18,6 +18,10 @@ const h = vi.hoisted(() => ({
   configured: true,
   balanceUsdCents: 100_000,
   activeCard: null as { id: string; createdAt: Date } | null,
+  snapshot: null as
+    | { provider: string; balanceUsdCents: number; pendingUsdCents: number; readAt: Date }
+    | null,
+  saveSnapshot: vi.fn(async (..._args: unknown[]) => {}),
   getVccBalance: vi.fn(),
   notifyStaff: vi.fn(async (..._args: unknown[]) => ({ delivered: 1, failed: 0, deduped: false })),
   captureException: vi.fn(),
@@ -45,6 +49,9 @@ vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   findActiveByUserId: vi.fn(async () => h.activeCard),
   appendOrderEvent: h.appendOrderEvent,
+  getVccBalanceSnapshot: vi.fn(async () => h.snapshot),
+  saveVccBalanceSnapshot: h.saveSnapshot,
+  VCC_SNAPSHOT_PROVIDER: 'payspace',
   PAYMENT_BLOCKED_CAPACITY_EVENT: 'payment_blocked_capacity',
 }));
 
@@ -71,6 +78,10 @@ beforeEach(() => {
   };
   h.configured = true;
   h.activeCard = null;
+  // Дефолт — снимка нет: сценарии со снимком включают его явно.
+  h.snapshot = null;
+  h.saveSnapshot.mockClear();
+  h.saveSnapshot.mockResolvedValue(undefined);
   h.notifyStaff.mockClear();
   h.captureException.mockClear();
   h.captureMessage.mockClear();
@@ -260,5 +271,113 @@ describe('reportFundingCapacityBlocked', () => {
     h.appendOrderEvent.mockRejectedValueOnce(new Error('db down'));
 
     await expect(reportFundingCapacityBlocked(ORDER, BLOCKED)).resolves.toBeUndefined();
+  });
+});
+
+describe('checkOrderFundingCapacity — снимок фонда (тикет 03)', () => {
+  const NOW = new Date('2026-08-19T12:00:00.000Z');
+  const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
+
+  it('свежий снимок — судим по нему, к провайдеру не ходим вовсе', async () => {
+    // Ради этого снимок и заводился: в горячем пути оплаты клиент не должен
+    // ждать чужой API, а лежащий провайдер не должен останавливать продажи.
+    h.snapshot = {
+      provider: 'payspace',
+      balanceUsdCents: 20_000,
+      pendingUsdCents: 0,
+      readAt: minutesAgo(5),
+    };
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
+    expect(h.getVccBalance).not.toHaveBeenCalled();
+  });
+
+  it('свежий снимок с нехваткой — отказ, тоже без похода наружу', async () => {
+    h.snapshot = {
+      provider: 'payspace',
+      balanceUsdCents: 8_950,
+      pendingUsdCents: 0,
+      readAt: minutesAgo(29),
+    };
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+      availableUsdCents: 8_950,
+    });
+    expect(h.getVccBalance).not.toHaveBeenCalled();
+  });
+
+  it('снимок из БУДУЩЕГО свежим не считается — иначе он пришпилен навсегда', async () => {
+    // Часы контейнера ушли вперёд или строку положили руками со сдвинутым
+    // `read_at` — и разница «сейчас минус снимок» отрицательна. Проверка «не
+    // старше получаса» такую строку принимает ВЕЧНО: гейт судит по выдуманному
+    // числу, а крон, который его перезапишет, до этого числа не дотянется.
+    h.snapshot = {
+      provider: 'payspace',
+      balanceUsdCents: 999_999,
+      pendingUsdCents: 0,
+      readAt: new Date(NOW.getTime() + 60 * 60_000),
+    };
+    h.getVccBalance.mockResolvedValue({ balanceUsdCents: 8_950, pendingUsdCents: 0 });
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+    });
+    expect(h.getVccBalance).toHaveBeenCalled();
+  });
+
+  it('снимок старше получаса — один живой запрос, и результат тут же сохраняется', async () => {
+    // Крон бежит каждые 5 минут, значит протухший снимок означает «крон мёртв
+    // или контейнер только что поднялся» — редкий случай, за который клиент не
+    // должен платить ожиданием.
+    h.snapshot = {
+      provider: 'payspace',
+      balanceUsdCents: 100,
+      pendingUsdCents: 0,
+      readAt: minutesAgo(31),
+    };
+    h.getVccBalance.mockResolvedValue({ balanceUsdCents: 20_000, pendingUsdCents: 0 });
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
+    expect(h.getVccBalance).toHaveBeenCalledWith({ timeoutMs: 2000, attempts: 1 });
+    expect(h.saveSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ balanceUsdCents: 20_000, readAt: NOW }),
+    );
+  });
+
+  it('живого значения нет, а ключей провайдера нет тоже — оплату пропускаем', async () => {
+    // Dev-контур: ключей PaySpace там нет намеренно. Спросить некого, и это не
+    // сбой, а конфигурация.
+    h.configured = false;
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'skipped',
+    });
+  });
+
+  it('на контуре БЕЗ ключей гейт всё равно работает по снимку, положенному руками', async () => {
+    // Требование тикета: проверку можно пройти целиком там, где ключей нет —
+    // достаточно вставить строку снимка в базу. Иначе гейт нечем смотреть до
+    // прода.
+    h.configured = false;
+    h.snapshot = {
+      provider: 'payspace',
+      balanceUsdCents: 8_950,
+      pendingUsdCents: 0,
+      readAt: minutesAgo(1),
+    };
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+    });
+  });
+
+  it('сбой записи свежего значения не отменяет вердикт', async () => {
+    // Снимок — оптимизация следующего запроса, а не условие этого решения.
+    h.getVccBalance.mockResolvedValue({ balanceUsdCents: 20_000, pendingUsdCents: 0 });
+    h.saveSnapshot.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
   });
 });
