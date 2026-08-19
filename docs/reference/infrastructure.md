@@ -46,6 +46,58 @@ Dokploy. Исключение ровно одно: `/api/deploy` (файл `dokp
 ⚠️ Из-за basic-auth команды к API панели по внешнему адресу требуют `-u`; проще ходить с самого
 VPS на `http://127.0.0.1:3000` — Traefik и basic-auth при этом не участвуют.
 
+## Админ-панель `admin.oplatishka.com`
+
+**Отдельного приложения в Dokploy у панели НЕТ и быть не должно.** Панель — часть
+`apps/web` (кросс-импорты между `apps/*` запрещены, а ей нужны `lib/telegram`,
+`lib/pay-space`, `lib/alerts`), поэтому Traefik просто ведёт её домен на тот же
+сервис `oplatishka-web-<хеш>:3000`. Второе приложение означало бы вторую сборку
+того же образа и дубль всех 46 переменных окружения.
+
+Разделение держится ДВУМЯ вещами, ни одна из которых не в Traefik:
+
+- `apps/web/proxy.ts` — гейт по хосту: при заданном `PANEL_HOST` любой запрос к
+  `/admin` и `/api/panel` с чужого домена получает пустой 404;
+- проверка прав в КАЖДОЙ операции панели (`lib/panel/session.ts`).
+
+Маршрут — файл `/etc/dokploy/traefik/dynamic/oplatishka-admin.yml` (шаблон в
+репозитории: `infra/traefik/oplatishka-admin.yml.example`, в нём `__WEB_SERVICE__`
+заменяется на реальное имя сервиса). Откат — удалить файл: Traefik подхватит за
+секунды, приложение при этом живёт.
+
+⚠️ **`/api/staff-bot` живёт на ПУБЛИЧНОМ домене, а не на домене панели** — до
+вебхука должны дотягиваться серверы Telegram, а домен панели у них не
+зарегистрирован. Защищён своим `X-Telegram-Bot-Api-Secret-Token`.
+
+### Что нужно, чтобы панель заработала на новом контуре
+
+1. DNS: A-запись `admin.<домен>` на IP VPS (зона на Cloudflare, режим DNS-only —
+   отдавать надо наш IP, а не прокси-адрес).
+2. Файл Traefik (см. выше) + подстановка имени сервиса.
+3. Env приложения: `PANEL_HOST`, `ADMIN_SESSION_SECRET`, `TELEGRAM_LOGIN_BOT_TOKEN`,
+   `TELEGRAM_LOGIN_BOT_USERNAME`, `TELEGRAM_LOGIN_BOT_WEBHOOK_SECRET` + редеплой.
+4. Вебхук бота персонала: `setWebhook` на `https://<публичный домен>/api/staff-bot`
+   с тем же secret-token (`/api/admin/telegram-webhook` управляет ТОЛЬКО
+   клиентским ботом — этот регистрируется отдельно).
+5. Сотрудник в таблице `staff`: `pnpm --filter @oplati/db db:staff add …`.
+6. ⚠️ **`/setdomain` у @BotFather** — см. ниже.
+
+### ⚠️ `/setdomain` — шаг, который молчит, если его забыть
+
+Telegram Login Widget рисует кнопку, только если у бота привязан домен:
+@BotFather → `/setdomain` → бот персонала → `admin.oplatishka.com`.
+
+Без этого страница входа отдаёт **пустую рамку**, и узнать причину неоткуда:
+скрипт виджета грузится (200), CSP пропускает, в логах приложения ничего нет,
+консоль браузера молчит. Диагноз виден только со стороны Telegram:
+
+```bash
+curl -s "https://oauth.telegram.org/embed/<bot_username>?origin=https%3A%2F%2Fadmin.oplatishka.com" \
+  | grep -o "Bot domain invalid"
+```
+
+Домен привязывается ТОЛЬКО вручную у @BotFather — метода Bot API для этого нет.
+
 ## Hardening VPS
 
 **Безопасность VPS (2026-07-27):** SSH только по ключу (`PasswordAuthentication no`,
