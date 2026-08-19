@@ -86,7 +86,38 @@ function scrubUrl(url: string): string {
 export type SentryEvent = SentryTypes.ErrorEvent;
 export type SentryHint = SentryTypes.EventHint;
 
+/**
+ * Ошибки ЧУЖОЙ среды исполнения, а не наши.
+ *
+ * ⚠️ Список закрытый и обязан таким остаться: каждая строка — конкретный текст,
+ * доказанный живой проверкой, что в нормальном браузере его нет. Глушить класс
+ * ошибок целиком (например, все `TypeError`) нельзя — так исчезнут наши
+ * настоящие падения.
+ *
+ * `Cannot assign to read only property 'push'` — Next при загрузке
+ * переопределяет `push` у массива RSC-payload (`self.__next_f.push = …`).
+ * Сканеры и анти-бот-обвязки замораживают глобальные объекты перед исполнением
+ * страницы, и присваивание падает у них. Домен панели попал в
+ * Certificate Transparency сразу после выпуска сертификата, и первый же такой
+ * клиент дал 158 событий за час — issue уехал в escalating и начал жечь и
+ * квоту, и внимание дежурного (2026-08-19).
+ */
+const FOREIGN_RUNTIME_ERRORS = [
+  "Cannot assign to read only property 'push'",
+] as const;
+
+function isForeignRuntimeError(event: SentryEvent): boolean {
+  const values = event.exception?.values ?? [];
+  return values.some((v) =>
+    FOREIGN_RUNTIME_ERRORS.some((needle) => (v.value ?? '').includes(needle)),
+  );
+}
+
 export function beforeSend(event: SentryEvent): SentryEvent | null {
+  // Отбрасываем ДО скраббера: чистить PII в событии, которое всё равно не
+  // поедет, незачем.
+  if (isForeignRuntimeError(event)) return null;
+
   // Request body / query / headers — денилист PII
   if (event.request) {
     if (event.request.data) {
