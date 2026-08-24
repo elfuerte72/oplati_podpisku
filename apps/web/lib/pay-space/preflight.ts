@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import {
   appendOrderEvent,
   findActiveByUserId,
+  findOrdersCommittingCardFund,
   getDb,
   getVccBalanceSnapshot,
   PAYMENT_BLOCKED_CAPACITY_EVENT,
@@ -56,11 +57,17 @@ const BALANCE_TIMEOUT_MS = 2000;
  * «крон мёртв или контейнер только что поднялся» — редкий случай, за который
  * клиент не должен платить ожиданием, отсюда и короткий поводок живого запроса.
  *
- * Полчаса не приблизительны, а точны в безопасную сторону: баланс меняется от
- * НАШИХ выпусков карт (видны в наших же заказах мгновенно) и от пополнений
- * владельцем (редких, идущих T+1). Значит снимок ошибается только «в меньшую
- * сторону», и цена ошибки — один лишний отказ, который пройдёт после
- * ближайшего прогона крона.
+ * Баланс меняется от НАШИХ выпусков карт (видны в наших же заказах) и от
+ * пополнений владельцем (редких, идущих T+1), поэтому снимок почти всегда
+ * ошибается «в меньшую сторону»: пополнение он узнаёт с задержкой, а цена
+ * ошибки — один лишний отказ, который пройдёт после ближайшего прогона крона.
+ *
+ * ⚠️ Но НЕ всегда. Есть окно в опасную сторону: карта выпущена, деньги у
+ * провайдера уже списаны, заказ ушёл в `completed` и выпал из обязательств — а
+ * снимок ещё не переписан. Оно длится до ближайшего прогона крона (5 минут при
+ * живом кроне) и завышает свободное на стоимость только что выпущенной карты.
+ * Остаточный риск принят: закрыть его значило бы обновлять снимок из
+ * `issue-card`, то есть тащить провайдера в путь выпуска ещё раз.
  */
 const SNAPSHOT_FRESH_MS = 30 * 60 * 1000;
 
@@ -127,7 +134,24 @@ export type FundingCapacityVerdict =
   /** Фонда хватает — счёт выставляем. */
   | { state: 'ok' }
   /** Фонда заведомо нет: счёт не выставляем, заказ не трогаем. */
-  | { state: 'insufficient'; availableUsdCents: number; neededUsdCents: number }
+  | {
+      state: 'insufficient';
+      /** Свободно = остаток фонда − обещанные карты − страховой запас, но не ниже нуля. */
+      availableUsdCents: number;
+      neededUsdCents: number;
+      /** Сколько фонда занято уже обещанными картами. */
+      committedUsdCents: number;
+      /**
+       * Насколько пополнить счёт, чтобы этот заказ прошёл.
+       *
+       * ⚠️ Считается по НЕклампнутому свободному остатку. Обещанные карты
+       * могут превышать то, что лежит на счёте (залипший выпуск, списание уже
+       * прошло) — тогда «свободно» показывается нулём, но дыра глубже, и
+       * пополнение «на сумму заказа» её не закроет: гейт продолжит отказывать,
+       * а владелец будет думать, что уже всё исправил.
+       */
+      shortfallUsdCents: number;
+    }
   /**
    * Гейт не работает: провайдер не настроен, выключен флагом или считать нечего.
    * Чем именно — видно в логах; вызывающему важно одно: счёт выставляем.
@@ -156,9 +180,9 @@ export async function checkOrderFundingCapacity(
   // `invalid_amount`. Здесь важно не превратить пустое поле в пятисотку вместо
   // платёжной ссылки — формула требования на невалидном входе БРОСАЕТ, и это
   // правильно, но не в горячем пути оплаты.
-  const priceUsdCents = order.originalAmount;
-  if (priceUsdCents === null || !Number.isInteger(priceUsdCents) || priceUsdCents <= 0) {
-    log.warn({ event: 'preflight.no_price', orderId: order.id, priceUsdCents });
+  const priceUsdCents = usablePriceUsdCents(order.originalAmount);
+  if (priceUsdCents === null) {
+    log.warn({ event: 'preflight.no_price', orderId: order.id, price: order.originalAmount });
     return { state: 'skipped' };
   }
 
@@ -176,13 +200,24 @@ export async function checkOrderFundingCapacity(
   // которой этот гейт написан.
   const fund = await readAvailableFund(db, order, now);
   if (!fund.ok) return fund.reason === 'unknown' ? { state: 'unknown' } : { state: 'skipped' };
-  const balanceUsdCents = fund.balanceUsdCents;
 
-  if (balanceUsdCents >= neededUsdCents) {
+  // «Сколько лежит на счёте» и «сколько свободно» — разные числа. Пока другой
+  // клиент держит живой счёт, его карта уже обещана: пропустить по остатку
+  // значило бы продать одни и те же деньги дважды.
+  const committedUsdCents = await sumCommittedFunding(db, now);
+  // Сырое значение может быть ОТРИЦАТЕЛЬНЫМ (обещано больше, чем на счёте) —
+  // именно по нему считается дефицит; клампом наружу уходит только показ.
+  const rawAvailableUsdCents =
+    fund.balanceUsdCents - committedUsdCents - serverEnv.PAYSPACE_SAFETY_RESERVE_USD_CENTS;
+  const availableUsdCents = Math.max(0, rawAvailableUsdCents);
+
+  if (rawAvailableUsdCents >= neededUsdCents) {
     log.info({
       event: 'preflight.ok',
       orderId: order.id,
-      availableUsdCents: balanceUsdCents,
+      balanceUsdCents: fund.balanceUsdCents,
+      committedUsdCents,
+      availableUsdCents,
       neededUsdCents,
     });
     return { state: 'ok' };
@@ -191,11 +226,59 @@ export async function checkOrderFundingCapacity(
   log.warn({
     event: 'preflight.insufficient',
     orderId: order.id,
-    availableUsdCents: balanceUsdCents,
+    balanceUsdCents: fund.balanceUsdCents,
+    committedUsdCents,
+    availableUsdCents,
     neededUsdCents,
     needsNewCard,
   });
-  return { state: 'insufficient', availableUsdCents: balanceUsdCents, neededUsdCents };
+  return {
+    state: 'insufficient',
+    availableUsdCents,
+    neededUsdCents,
+    committedUsdCents,
+    shortfallUsdCents: neededUsdCents - rawAvailableUsdCents,
+  };
+}
+
+/**
+ * Сколько фонда занято картами, которые мы уже пообещали, но не выпустили.
+ *
+ * ⚠️ Считаем по ХУДШЕМУ случаю — как будто каждому заказу нужна НОВАЯ карта
+ * (Р7 спеки). Точный ответ требовал бы join'ить карты клиентов с окном реюза
+ * прямо в выборке; завышение стоит $4 на заказ и ошибается в безопасную
+ * сторону, а занижение пропустило бы оплату, которую нечем исполнить.
+ *
+ * Заказы без цены в долларах пропускаем: карту им не выпустят вовсе
+ * (`issue-card` завалит их с `invalid_amount`), значит и фонд они не потратят.
+ */
+/**
+ * ⚠️ `payment_review` (холд банка) в обязательства НЕ входит, и это выбор, а не
+ * пропуск: холд живёт до 7 дней, и всё это время его сумма морозила бы фонд для
+ * живых клиентов. Обратная сторона — заказ, вышедший из холда в `paid`, может
+ * потребовать карту, которой уже нет; тогда сработает обычный путь `failed` с
+ * ручным разбором, как и до трека.
+ */
+async function sumCommittedFunding(db: DBLike, now: Date): Promise<number> {
+  const awaiting = await findOrdersCommittingCardFund(db, now);
+  return awaiting.reduce((sum, o) => {
+    const price = usablePriceUsdCents(o.originalAmount);
+    if (price === null) return sum;
+    return sum + orderFundingRequirementUsdCents({ priceUsdCents: price, needsNewCard: true });
+  }, 0);
+}
+
+/**
+ * Цена заказа, годная для расчёта фонда, — или `null`.
+ *
+ * `orders.original_amount` nullable, а формула требования на невалидном входе
+ * БРОСАЕТ (и правильно делает — это деньги). Одно правило на оба места: и на
+ * сам заказ, и на чужие заказы в обязательствах, — иначе они разъедутся при
+ * первой же правке порога.
+ */
+function usablePriceUsdCents(value: number | null): number | null {
+  if (value === null || !Number.isInteger(value) || value <= 0) return null;
+  return value;
 }
 
 /**
@@ -315,7 +398,7 @@ export async function reportFundingCapacityBlocked(
   order: PreflightOrder,
   verdict: Extract<FundingCapacityVerdict, { state: 'insufficient' }>,
 ): Promise<void> {
-  const shortfallUsdCents = verdict.neededUsdCents - verdict.availableUsdCents;
+  const shortfallUsdCents = verdict.shortfallUsdCents;
 
   // Событие — на КАЖДЫЙ отказ, вне дедупа: по нему считают, не режет ли гейт
   // живые оплаты, а статус заказа об отказе не говорит ничего (он не меняется).
@@ -328,6 +411,7 @@ export async function reportFundingCapacityBlocked(
         availableUsdCents: verdict.availableUsdCents,
         neededUsdCents: verdict.neededUsdCents,
         shortfallUsdCents,
+        committedUsdCents: verdict.committedUsdCents,
       },
     });
   } catch (err) {
@@ -345,10 +429,19 @@ export async function reportFundingCapacityBlocked(
       neededUsdCents: verdict.neededUsdCents,
     },
   });
+  // ⚠️ Обещанные карты называем ОТДЕЛЬНОЙ строкой. Иначе владелец видит на
+  // счёте $200, а в сообщении «доступно $76» — и первым делом идёт проверять
+  // баланс руками, решив, что расчёт врёт.
+  const committedNote =
+    verdict.committedUsdCents > 0
+      ? ` (${usdCentsToDollarString(verdict.committedUsdCents)} USD на счёте уже обещаны картам ` +
+        'по заказам с живым счётом, оплаченным и в выпуске)'
+      : '';
+
   try {
     await notifyStaff(
       `Клиент не смог оплатить ${order.shortId}${amountRubNote(order)}: ` +
-        `на карточном счёте PaySpace ${usdCentsToDollarString(verdict.availableUsdCents)} USD, ` +
+        `свободно ${usdCentsToDollarString(verdict.availableUsdCents)} USD${committedNote}, ` +
         `на этот заказ нужно ${usdCentsToDollarString(verdict.neededUsdCents)} USD — ` +
         `не хватает ${usdCentsToDollarString(shortfallUsdCents)} USD. ` +
         'Счёт клиенту не выставлен, заказ жив с зафиксированной ценой. ' +

@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
     CARD_ISSUE_FEE_USD_CENTS: 400,
     PAYSPACE_API_KEY: 'test-key',
     PAYSPACE_PREFLIGHT_DISABLED: false,
+    PAYSPACE_SAFETY_RESERVE_USD_CENTS: 0,
   } as Record<string, unknown>,
   configured: true,
   balanceUsdCents: 100_000,
@@ -22,6 +23,8 @@ const h = vi.hoisted(() => ({
     | { provider: string; balanceUsdCents: number; pendingUsdCents: number; readAt: Date }
     | null,
   saveSnapshot: vi.fn(async (..._args: unknown[]) => {}),
+  /** Заказы, которым карту уже пообещали (обязательства фонда). */
+  committed: [] as { id: string; originalAmount: number | null }[],
   getVccBalance: vi.fn(),
   notifyStaff: vi.fn(async (..._args: unknown[]) => ({ delivered: 1, failed: 0, deduped: false })),
   captureException: vi.fn(),
@@ -50,6 +53,7 @@ vi.mock('@oplati/db', () => ({
   findActiveByUserId: vi.fn(async () => h.activeCard),
   appendOrderEvent: h.appendOrderEvent,
   getVccBalanceSnapshot: vi.fn(async () => h.snapshot),
+  findOrdersCommittingCardFund: vi.fn(async () => h.committed),
   saveVccBalanceSnapshot: h.saveSnapshot,
   VCC_SNAPSHOT_PROVIDER: 'payspace',
   PAYMENT_BLOCKED_CAPACITY_EVENT: 'payment_blocked_capacity',
@@ -75,11 +79,13 @@ beforeEach(() => {
     CARD_ISSUE_FEE_USD_CENTS: 400,
     PAYSPACE_API_KEY: 'test-key',
     PAYSPACE_PREFLIGHT_DISABLED: false,
+    PAYSPACE_SAFETY_RESERVE_USD_CENTS: 0,
   };
   h.configured = true;
   h.activeCard = null;
   // Дефолт — снимка нет: сценарии со снимком включают его явно.
   h.snapshot = null;
+  h.committed = [];
   h.saveSnapshot.mockClear();
   h.saveSnapshot.mockResolvedValue(undefined);
   h.notifyStaff.mockClear();
@@ -110,6 +116,8 @@ describe('checkOrderFundingCapacity', () => {
       state: 'insufficient',
       availableUsdCents: 8_950,
       neededUsdCents: 12_400,
+      committedUsdCents: 0,
+      shortfallUsdCents: 3_450,
     });
   });
 
@@ -206,6 +214,8 @@ describe('reportFundingCapacityBlocked', () => {
     state: 'insufficient' as const,
     availableUsdCents: 8_950,
     neededUsdCents: 12_400,
+    committedUsdCents: 0,
+    shortfallUsdCents: 3_450,
   };
 
   it('отказ остаётся следом в журнале заказа', async () => {
@@ -235,6 +245,23 @@ describe('reportFundingCapacityBlocked', () => {
     expect(text).toContain(ORDER.shortId);
     // Масштаб развёрнутого заказа — в рублях: по нему видно, что потеряли.
     expect(text).toMatch(/11\s?680/);
+  });
+
+  it('обещанные карты названы отдельно — иначе цифры в сообщении не сходятся', async () => {
+    // Владелец видит на счёте $200, а в сообщении «доступно $76». Без строки
+    // про обещанные карты это выглядит как ошибка расчёта, и первое, что он
+    // сделает, — пойдёт проверять баланс руками.
+    await reportFundingCapacityBlocked(ORDER, { ...BLOCKED, committedUsdCents: 12_400 });
+
+    const text = String(h.notifyStaff.mock.calls[0]?.[0]);
+    expect(text).toContain('124.00');
+    expect(text).toMatch(/обещан|занят/i);
+  });
+
+  it('без обещанных карт лишней строки в сообщении нет', async () => {
+    await reportFundingCapacityBlocked(ORDER, BLOCKED);
+
+    expect(String(h.notifyStaff.mock.calls[0]?.[0])).not.toMatch(/обещан|занят/i);
   });
 
   it('окно молчания задано ЯВНО — иначе личка молчит вчетверо дольше Sentry', async () => {
@@ -379,5 +406,113 @@ describe('checkOrderFundingCapacity — снимок фонда (тикет 03)'
     h.saveSnapshot.mockRejectedValueOnce(new Error('db down'));
 
     await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
+  });
+});
+
+describe('checkOrderFundingCapacity — обязательства фонда (тикет 04)', () => {
+  const NOW = new Date('2026-08-24T12:00:00.000Z');
+  const freshSnapshot = (balanceUsdCents: number) => ({
+    provider: 'payspace',
+    balanceUsdCents,
+    pendingUsdCents: 0,
+    readAt: new Date(NOW.getTime() - 60_000),
+  });
+
+  it('чужие обещанные карты вычитаются: на счёте есть, а свободного нет', async () => {
+    // На счёте $200, но другой клиент держит живой счёт на заказ в $100:
+    // его карта уже обещана ($124), свободно лишь $76 — на второго не хватит.
+    h.snapshot = freshSnapshot(20_000);
+    h.committed = [{ id: 'other-order', originalAmount: 10_000 }];
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toEqual({
+      state: 'insufficient',
+      availableUsdCents: 7_600,
+      neededUsdCents: 12_400,
+      committedUsdCents: 12_400,
+      shortfallUsdCents: 4_800,
+    });
+  });
+
+  it('касса не закрывается целиком: дорогой заказ отказан, дешёвый проходит', async () => {
+    h.snapshot = freshSnapshot(20_000);
+    h.committed = [{ id: 'other-order', originalAmount: 5_000 }];
+
+    // Свободно $200 − $64 = $136. Заказ на $100 требует $124 — проходит.
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
+    // А заказ на $150 требует $184 — уже нет.
+    await expect(
+      checkOrderFundingCapacity({ ...ORDER, originalAmount: 15_000 }, NOW),
+    ).resolves.toMatchObject({ state: 'insufficient' });
+  });
+
+  it('обещания считаются по худшему случаю — как будто каждому нужна НОВАЯ карта', async () => {
+    // Иначе выборка обязательств должна была бы join'ить карты клиентов с
+    // окном реюза. Завышение — $4 на заказ, и оно в безопасную сторону.
+    h.snapshot = freshSnapshot(20_000);
+    h.committed = [{ id: 'other-order', originalAmount: 10_000 }];
+
+    const verdict = await checkOrderFundingCapacity(ORDER, NOW);
+
+    // $100 + 20% + $4 = $124 на чужой заказ, а не $120: комиссию за выпуск
+    // считаем и ему, хотя у клиента могла быть живая карта.
+    expect(verdict).toMatchObject({ committedUsdCents: 12_400 });
+  });
+
+  it('заказ без цены обязательством не считается и расчёт не роняет', async () => {
+    // `original_amount` nullable. Карту такому заказу не выпустят вовсе
+    // (`issue-card` завалит его с `invalid_amount`), значит и фонд он не
+    // потратит — но и сложение об него спотыкаться не должно.
+    h.snapshot = freshSnapshot(15_000);
+    h.committed = [
+      { id: 'no-price', originalAmount: null },
+      { id: 'normal', originalAmount: 5_000 },
+    ];
+
+    // Обещано только $64 (за заказ на $50), пустой заказ не добавил ничего —
+    // и не превратил сумму в NaN, отказав всем подряд.
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+      committedUsdCents: 6_400,
+      availableUsdCents: 8_600,
+    });
+  });
+
+  it('страховой запас отодвигает границу, не трогая код', async () => {
+    h.env.PAYSPACE_SAFETY_RESERVE_USD_CENTS = 5_000;
+    h.snapshot = freshSnapshot(15_000);
+
+    // $150 − $50 запаса = $100 свободно, а заказу нужно $124.
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+      availableUsdCents: 10_000,
+    });
+  });
+
+  it('свободное не уходит в минус — владельцу показываем ноль, а не «минус двести»', async () => {
+    h.snapshot = freshSnapshot(1_000);
+    h.committed = [{ id: 'other', originalAmount: 50_000 }];
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+      availableUsdCents: 0,
+    });
+  });
+
+  it('НЕХВАТКА считается по настоящему дефициту, а не по показанному нулю', async () => {
+    // Обещано больше, чем лежит на счёте: свободного $0, но пополнить надо не
+    // на «нужную сумму заказа», а на дыру целиком. Скажи владельцу «не хватает
+    // $124» — он пополнит ровно столько, и гейт продолжит отказывать.
+    h.snapshot = freshSnapshot(10_000); // $100 на счёте
+    h.committed = [{ id: 'other', originalAmount: 20_000 }]; // обещано $244
+
+    const verdict = await checkOrderFundingCapacity(ORDER, NOW);
+
+    expect(verdict).toMatchObject({
+      state: 'insufficient',
+      availableUsdCents: 0,
+      neededUsdCents: 12_400,
+      // -14 400 свободного + 12 400 нужных = дыра в 26 800 центов.
+      shortfallUsdCents: 26_800,
+    });
   });
 });

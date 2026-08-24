@@ -51,6 +51,7 @@ import {
   getVccBalanceSnapshot,
   saveVccBalanceSnapshot,
 } from './repositories/vcc-balance.ts';
+import { findOrdersCommittingCardFund } from './repositories/orders.ts';
 import {
   createConversation,
   getOrCreateActiveConversation,
@@ -4562,4 +4563,91 @@ describe('снимок карточного фонда (трек vcc-preflight, 
     expect(await getVccBalanceSnapshot(db, 'never-written')).toBeNull();
   });
 
+});
+
+describe('обязательства карточного фонда (трек vcc-preflight, тикет 04)', () => {
+  const NOW = new Date('2026-08-24T12:00:00.000Z');
+
+  async function makeOrderIn(
+    status: 'ready_for_payment' | 'pending_payment' | 'paid' | 'in_fulfillment' | 'completed' | 'failed' | 'expired',
+    over: { originalAmount?: number; expiresAt?: Date | null } = {},
+  ) {
+    const user = await makeUser();
+    return await createDraftOrder(db, {
+      userId: user.id,
+      status,
+      customServiceDescription: 'committed-test order',
+      amountRub: 50_000,
+      originalAmount: over.originalAmount ?? 10_000,
+      originalCurrency: 'USD',
+      expiresAt: over.expiresAt === undefined ? new Date(NOW.getTime() + 30 * 60_000) : over.expiresAt,
+    });
+  }
+
+  /** База PGlite общая на сьют — меряем ДЕЛЬТУ, а не абсолютные суммы. */
+  async function committedIds(): Promise<Set<string>> {
+    const rows = await findOrdersCommittingCardFund(db, NOW);
+    return new Set(rows.map((r) => r.id));
+  }
+
+  it('карта обещана: счёт жив, деньги пришли, выпуск идёт — все трое считаются', async () => {
+    // «Сколько лежит на счёте» и «сколько свободно» — разные числа: заказ с
+    // живым счётом может оплатиться в любую минуту, и его карта уже обещана.
+    const pending = await makeOrderIn('pending_payment');
+    const paid = await makeOrderIn('paid');
+    const fulfilling = await makeOrderIn('in_fulfillment');
+
+    const ids = await committedIds();
+
+    expect(ids.has(pending.id)).toBe(true);
+    expect(ids.has(paid.id)).toBe(true);
+    expect(ids.has(fulfilling.id)).toBe(true);
+  });
+
+  it('заказ, ради которого идёт проверка, в обязательства НЕ попадает', async () => {
+    // Он лежит в `ready_for_payment`. Добавь этот статус в выборку — и гейт
+    // начнёт вычитать заказ сам из себя, отказывая там, где денег хватает.
+    const draft = await makeOrderIn('ready_for_payment');
+
+    expect((await committedIds()).has(draft.id)).toBe(false);
+  });
+
+  it('протухший счёт освобождает деньги сам, без крона', async () => {
+    // `expire-payments` бежит раз в 15 минут — окно «счёт мёртв, статус ещё
+    // оплатимый» реально, и всё это время деньги висели бы занятыми.
+    const stale = await makeOrderIn('pending_payment', {
+      expiresAt: new Date(NOW.getTime() - 1_000),
+    });
+
+    expect((await committedIds()).has(stale.id)).toBe(false);
+  });
+
+  it('счёт без срока считается живым — ошибка в безопасную сторону', async () => {
+    // `expires_at` заполняется при выставлении счёта всегда; пустое поле —
+    // аномалия. Считать такой заказ свободным значило бы занизить обязательства
+    // и пропустить оплату, которую нечем исполнить.
+    const noExpiry = await makeOrderIn('pending_payment', { expiresAt: null });
+
+    expect((await committedIds()).has(noExpiry.id)).toBe(true);
+  });
+
+  it('завершённые и провалившиеся заказы карту уже не ждут', async () => {
+    const done = await makeOrderIn('completed');
+    const failed = await makeOrderIn('failed');
+    const expired = await makeOrderIn('expired');
+
+    const ids = await committedIds();
+
+    expect(ids.has(done.id)).toBe(false);
+    expect(ids.has(failed.id)).toBe(false);
+    expect(ids.has(expired.id)).toBe(false);
+  });
+
+  it('отдаёт цену в USD-центах — по ней считается требование фонда', async () => {
+    const order = await makeOrderIn('paid', { originalAmount: 12_345 });
+
+    const row = (await findOrdersCommittingCardFund(db, NOW)).find((r) => r.id === order.id);
+
+    expect(row?.originalAmount).toBe(12_345);
+  });
 });

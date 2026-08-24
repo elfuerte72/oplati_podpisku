@@ -145,6 +145,7 @@ export {
   setOrderCardId,
   setOrderExpiresAt,
   findExpiredPayableOrders,
+  findOrdersCommittingCardFund,
   findStaleOrdersInPaymentReview,
   findStuckPaidOrders,
   findStuckInFulfillmentOrders,

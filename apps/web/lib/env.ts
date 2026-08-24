@@ -378,6 +378,11 @@ const serverEnvSchema = z.object({
   PAYSPACE_PREFLIGHT_DISABLED: z
     .preprocess((v) => v === '1' || v === 'true', z.boolean())
     .default(false),
+  // Страховой запас карточного фонда (USD-центы): гейт считает свободным
+  // остаток МИНУС эту сумму. Дефолт 0 — гейт и без него консервативен (чужие
+  // обещанные карты считаются по худшему случаю). Переменная нужна, чтобы
+  // владелец мог одним значением отодвинуть границу, не трогая код.
+  PAYSPACE_SAFETY_RESERVE_USD_CENTS: z.coerce.number().int().nonnegative().default(0),
 
   // Remnawave (VPN Оплатишки) — панель управления VPN-подписками. Кнопка «VPN»
   // в боте выдаёт ссылку-подписку (создаёт юзера панели по telegramId).
