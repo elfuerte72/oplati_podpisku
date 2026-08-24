@@ -1,6 +1,7 @@
 import 'server-only';
 
 import {
+  deleteExpiredCardFundReservations,
   deleteOldAnalyticsEvents,
   deleteOldMessages,
   getDb,
@@ -42,11 +43,19 @@ const log = childLogger('cron.retention');
 const BATCH_SIZE = 500;
 const MAX_BATCHES_PER_RUN = 20;
 
+/**
+ * Сколько держать протухшие занятия карточного фонда. Срок счёта — час, так что
+ * неделя это заведомый запас: след для разбора инцидента остаётся, а таблица,
+ * которую читают под глобальным замком, не растёт бесконечно.
+ */
+const FUND_RESERVATION_RETENTION_DAYS = 7;
+
 export async function runRetention(): Promise<{
   messagesDeleted: number;
   payloadsStripped: number;
   analyticsDeleted: number;
   dictionarySynced: number;
+  fundReservationsDeleted: number;
 }> {
   log.info({ event: 'cron.retention.start' });
   const db = getDb();
@@ -91,6 +100,23 @@ export async function runRetention(): Promise<{
     log.error({ event: 'cron.retention.analytics_failed', err });
   }
 
+  // Отдельный try по той же причине, что у аналитики: миграция 0040
+  // применяется вручную, и до неё таблицы нет — падение здесь унесло бы уже
+  // выполненную чистку переписки и payload'ов.
+  let fundReservationsDeleted = 0;
+  try {
+    for (let i = 0; i < MAX_BATCHES_PER_RUN; i++) {
+      const deleted = await deleteExpiredCardFundReservations(db, {
+        olderThanDays: FUND_RESERVATION_RETENTION_DAYS,
+        limit: BATCH_SIZE,
+      });
+      fundReservationsDeleted += deleted;
+      if (deleted < BATCH_SIZE) break;
+    }
+  } catch (err) {
+    log.error({ event: 'cron.retention.fund_reservations_failed', err });
+  }
+
   // Словарь синхронизируем последним и не роняем им весь джоб: чистка данных
   // важнее подписей в отчёте.
   let dictionarySynced = 0;
@@ -106,6 +132,13 @@ export async function runRetention(): Promise<{
     payloadsStripped,
     analyticsDeleted,
     dictionarySynced,
+    fundReservationsDeleted,
   });
-  return { messagesDeleted, payloadsStripped, analyticsDeleted, dictionarySynced };
+  return {
+    messagesDeleted,
+    payloadsStripped,
+    analyticsDeleted,
+    dictionarySynced,
+    fundReservationsDeleted,
+  };
 }

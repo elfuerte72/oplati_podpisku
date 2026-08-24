@@ -3,10 +3,14 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  acquireCardFundLock,
   appendOrderEvent,
   findActiveByUserId,
   findOrdersCommittingCardFund,
   getDb,
+  insertCardFundReservation,
+  releaseCardFundReservation,
+  sumLiveCardFundReservations,
   getVccBalanceSnapshot,
   PAYMENT_BLOCKED_CAPACITY_EVENT,
   VCC_SNAPSHOT_PROVIDER,
@@ -17,6 +21,7 @@ import { DedupWindow } from '../alerts/dedup-window.ts';
 import { notifyStaff } from '../alerts/notify-staff.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import { currentInvoiceTtlHours } from '../payments/gateway.ts';
 import { usdCentsToDollarString } from './format.ts';
 import { isCardReusable, orderFundingRequirementUsdCents } from './funding.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from './index.ts';
@@ -96,10 +101,16 @@ const BLOCKED_ALERT_WINDOW_MS = 15 * 60 * 1000;
 
 const blockedDedup = new DedupWindow(BLOCKED_ALERT_WINDOW_MS);
 
+/** Окно молчания про перегруженный расчёт — как у отказа: событие срочное. */
+const BUSY_ALERT_WINDOW_MS = 15 * 60 * 1000;
+
+const busyDedup = new DedupWindow(BUSY_ALERT_WINDOW_MS);
+
 /** Только для тестов. */
 export function resetPreflightDedupForTests(): void {
   unknownDedup.resetForTests();
   blockedDedup.resetForTests();
+  busyDedup.resetForTests();
 }
 
 /**
@@ -164,7 +175,19 @@ export type FundingCapacityVerdict =
    * не хуже статус-кво, а fail-closed означал бы, что чужой сбой останавливает
    * нам продажи целиком. Владелец узнаёт отдельным сообщением.
    */
-  | { state: 'unknown' };
+  | { state: 'unknown' }
+  /**
+   * Занять деньги не удалось: расчёт не смог получить замок фонда за отведённый
+   * срок.
+   *
+   * ⚠️ Здесь fail-CLOSED, в отличие от непрочитанного баланса выше, и это не
+   * непоследовательность. Таймаут замка означает очередь из таких же расчётов —
+   * то есть РОВНО ту гонку, ради которой замок и поставлен. Пропусти мы оплату,
+   * защита выключалась бы сама именно под нагрузкой, и фонд продавался бы
+   * дважды. Клиент получает ту же «техническую паузу» и возвращается через
+   * десять минут; заказ жив с зафиксированной ценой.
+   */
+  | { state: 'busy' };
 
 export async function checkOrderFundingCapacity(
   order: PreflightOrder,
@@ -204,41 +227,112 @@ export async function checkOrderFundingCapacity(
   // «Сколько лежит на счёте» и «сколько свободно» — разные числа. Пока другой
   // клиент держит живой счёт, его карта уже обещана: пропустить по остатку
   // значило бы продать одни и те же деньги дважды.
-  const committedUsdCents = await sumCommittedFunding(db, now);
-  // Сырое значение может быть ОТРИЦАТЕЛЬНЫМ (обещано больше, чем на счёте) —
-  // именно по нему считается дефицит; клампом наружу уходит только показ.
-  const rawAvailableUsdCents =
-    fund.balanceUsdCents - committedUsdCents - serverEnv.PAYSPACE_SAFETY_RESERVE_USD_CENTS;
-  const availableUsdCents = Math.max(0, rawAvailableUsdCents);
-
-  if (rawAvailableUsdCents >= neededUsdCents) {
-    log.info({
-      event: 'preflight.ok',
-      orderId: order.id,
+  // ⚠️ Расчёт и ЗАНЯТИЕ денег — одна неделимая операция (тикет 05). Разделить
+  // их нельзя: заказ становится `pending_payment` не в момент прохождения
+  // гейта, а ПОСЛЕ создания счёта у шлюза, и внутри этого окна (от полусекунды
+  // до пары секунд) двое видят одни и те же свободные деньги.
+  //
+  // Замок держится только на время подсчёта и снимается на COMMIT — до похода
+  // к шлюзу: иначе один зависший чужой вызов выстроил бы в очередь все оплаты.
+  try {
+    return await claimUnderFundLock(db, order, now, {
       balanceUsdCents: fund.balanceUsdCents,
+      neededUsdCents,
+      needsNewCard,
+    });
+  } catch (err) {
+    // Сорвалась транзакция занятия: чаще всего поводок ожидания замка. См.
+    // разбор у ветки `busy` — здесь мы ОТКАЗЫВАЕМ, а не пропускаем.
+    await reportFundingBusy(order, err);
+    return { state: 'busy' };
+  }
+}
+
+/** Расчёт и занятие фонда — одной транзакцией под общим замком. */
+async function claimUnderFundLock(
+  db: ReturnType<typeof getDb>,
+  order: PreflightOrder,
+  now: Date,
+  input: { balanceUsdCents: number; neededUsdCents: number; needsNewCard: boolean },
+): Promise<FundingCapacityVerdict> {
+  const { balanceUsdCents, neededUsdCents, needsNewCard } = input;
+  return await db.transaction(async (tx) => {
+    await acquireCardFundLock(tx);
+
+    const committedUsdCents = await sumCommittedFunding(tx, now);
+    // ⚠️ СВОЙ резерв из подсчёта исключается: повторное нажатие того же
+    // клиента иначе вычитало бы собственные деньги и отказывало ему самому.
+    const reservedUsdCents = await sumLiveCardFundReservations(tx, now, {
+      excludeOrderId: order.id,
+    });
+    // Сырое значение может быть ОТРИЦАТЕЛЬНЫМ (обещано больше, чем на счёте) —
+    // именно по нему считается дефицит; клампом наружу уходит только показ.
+    const rawAvailableUsdCents =
+      balanceUsdCents -
+      committedUsdCents -
+      reservedUsdCents -
+      serverEnv.PAYSPACE_SAFETY_RESERVE_USD_CENTS;
+    const availableUsdCents = Math.max(0, rawAvailableUsdCents);
+
+    if (rawAvailableUsdCents >= neededUsdCents) {
+      // Занимаем на срок счёта: не оплатят — освободится само, вместе с
+      // платёжным документом, без крона и ручного шага.
+      await insertCardFundReservation(tx, {
+        orderId: order.id,
+        amountUsdCents: neededUsdCents,
+        expiresAt: new Date(now.getTime() + currentInvoiceTtlHours() * 60 * 60 * 1000),
+      });
+      log.info({
+        event: 'preflight.claimed',
+        orderId: order.id,
+        balanceUsdCents,
+        committedUsdCents,
+        reservedUsdCents,
+        availableUsdCents,
+        neededUsdCents,
+      });
+      return { state: 'ok' };
+    }
+
+    log.warn({
+      event: 'preflight.insufficient',
+      orderId: order.id,
+      balanceUsdCents,
       committedUsdCents,
+      reservedUsdCents,
       availableUsdCents,
       neededUsdCents,
+      needsNewCard,
     });
-    return { state: 'ok' };
-  }
-
-  log.warn({
-    event: 'preflight.insufficient',
-    orderId: order.id,
-    balanceUsdCents: fund.balanceUsdCents,
-    committedUsdCents,
-    availableUsdCents,
-    neededUsdCents,
-    needsNewCard,
+    return {
+      state: 'insufficient',
+      availableUsdCents,
+      neededUsdCents,
+      committedUsdCents: committedUsdCents + reservedUsdCents,
+      shortfallUsdCents: neededUsdCents - rawAvailableUsdCents,
+    };
   });
-  return {
-    state: 'insufficient',
-    availableUsdCents,
-    neededUsdCents,
-    committedUsdCents,
-    shortfallUsdCents: neededUsdCents - rawAvailableUsdCents,
-  };
+}
+
+/**
+ * Освободить занятые под заказ деньги немедленно — счёт создать не удалось.
+ *
+ * Никогда не бросает: вызывается уже из обработчика ошибки, и вторая ошибка
+ * поверх первой лишила бы клиента внятного ответа. Худший исход отказа —
+ * фонд простоит запертым до срока счёта, то есть максимум час.
+ */
+export async function releaseOrderFundingClaim(orderId: string): Promise<void> {
+  try {
+    await releaseCardFundReservation(getDb(), orderId);
+  } catch (err) {
+    // ⚠️ Не только лог: несостоявшееся освобождение запирает карточный фонд до
+    // конца срока счёта, а знать об этом по строке в логах никто не будет.
+    log.error({ event: 'preflight.release_failed', orderId, err });
+    Sentry.captureException(err, {
+      tags: { source: 'pay-space.preflight', step: 'release' },
+      extra: { orderId },
+    });
+  }
 }
 
 /**
@@ -349,6 +443,37 @@ async function readAvailableFund(
   } catch (err) {
     await reportFundingUnknown(order, err);
     return { ok: false, reason: 'unknown' };
+  }
+}
+
+/**
+ * Занять фонд не удалось. Отдельно от «фонд не прочитан» намеренно: причины
+ * разные, и слитый алёрт отправил бы владельца чинить провайдера там, где
+ * очередь у нашей же базы, а общее окно дедупа на час глушило бы настоящее
+ * «PaySpace недоступен».
+ */
+async function reportFundingBusy(order: PreflightOrder, err: unknown): Promise<void> {
+  log.error({ event: 'preflight.busy', orderId: order.id, err });
+  if (!busyDedup.shouldSend('preflight_busy')) return;
+
+  Sentry.captureException(err, {
+    tags: { source: 'pay-space.preflight', step: 'claim' },
+    extra: { orderId: order.id },
+  });
+  try {
+    await notifyStaff(
+      `Не удалось занять карточный фонд под заказ ${order.shortId}: расчёт не дождался ` +
+        'своей очереди. Клиенту отказано вежливым текстом, заказ жив. Обычно это всплеск ' +
+        'одновременных оплат; если повторяется на спокойном трафике — смотри длинные ' +
+        'транзакции по заказам в базе.',
+      {
+        dedupKey: 'preflight_busy_staff',
+        dedupWindowMs: BUSY_ALERT_WINDOW_MS,
+        capability: 'holds',
+      },
+    );
+  } catch (notifyErr) {
+    log.error({ event: 'preflight.busy_notify_failed', orderId: order.id, err: notifyErr });
   }
 }
 

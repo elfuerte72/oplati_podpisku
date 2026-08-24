@@ -279,6 +279,11 @@ export {
 export {
   saveVccBalanceSnapshot,
   getVccBalanceSnapshot,
+  acquireCardFundLock,
+  sumLiveCardFundReservations,
+  insertCardFundReservation,
+  releaseCardFundReservation,
+  deleteExpiredCardFundReservations,
   VCC_SNAPSHOT_PROVIDER,
   type VccBalanceSnapshot,
 } from './vcc-balance.ts';

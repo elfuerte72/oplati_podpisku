@@ -25,6 +25,11 @@ const h = vi.hoisted(() => ({
   saveSnapshot: vi.fn(async (..._args: unknown[]) => {}),
   /** Заказы, которым карту уже пообещали (обязательства фонда). */
   committed: [] as { id: string; originalAmount: number | null }[],
+  /** Уже занятый фонд под чужие заказы, ещё не дошедшие до счёта. */
+  reservedUsdCents: 0,
+  acquireLock: vi.fn(async (..._args: unknown[]) => {}),
+  insertReservation: vi.fn(async (..._args: unknown[]) => {}),
+  releaseReservation: vi.fn(async (..._args: unknown[]) => {}),
   getVccBalance: vi.fn(),
   notifyStaff: vi.fn(async (..._args: unknown[]) => ({ delivered: 1, failed: 0, deduped: false })),
   captureException: vi.fn(),
@@ -49,7 +54,13 @@ vi.mock('@sentry/nextjs', () => ({
 }));
 
 vi.mock('@oplati/db', () => ({
-  getDb: () => ({}),
+  // Транзакция исполняет callback с тем же хендлом: атомарность проверяется на
+  // реальном Postgres в `packages/db`, здесь — логика решения.
+  getDb: () => ({ transaction: async (fn: (tx: unknown) => Promise<unknown>) => await fn({}) }),
+  acquireCardFundLock: h.acquireLock,
+  sumLiveCardFundReservations: vi.fn(async () => h.reservedUsdCents),
+  insertCardFundReservation: h.insertReservation,
+  releaseCardFundReservation: h.releaseReservation,
   findActiveByUserId: vi.fn(async () => h.activeCard),
   appendOrderEvent: h.appendOrderEvent,
   getVccBalanceSnapshot: vi.fn(async () => h.snapshot),
@@ -61,6 +72,7 @@ vi.mock('@oplati/db', () => ({
 
 import {
   checkOrderFundingCapacity,
+  releaseOrderFundingClaim,
   reportFundingCapacityBlocked,
   resetPreflightDedupForTests,
 } from './preflight.ts';
@@ -86,6 +98,10 @@ beforeEach(() => {
   // Дефолт — снимка нет: сценарии со снимком включают его явно.
   h.snapshot = null;
   h.committed = [];
+  h.reservedUsdCents = 0;
+  h.acquireLock.mockClear();
+  h.insertReservation.mockClear();
+  h.releaseReservation.mockClear();
   h.saveSnapshot.mockClear();
   h.saveSnapshot.mockResolvedValue(undefined);
   h.notifyStaff.mockClear();
@@ -514,5 +530,128 @@ describe('checkOrderFundingCapacity — обязательства фонда (�
       // -14 400 свободного + 12 400 нужных = дыра в 26 800 центов.
       shortfallUsdCents: 26_800,
     });
+  });
+});
+
+describe('claimOrderFundingCapacity — занятие фонда (тикет 05)', () => {
+  const NOW = new Date('2026-08-24T12:00:00.000Z');
+  const freshSnap = (balanceUsdCents: number) => ({
+    provider: 'payspace',
+    balanceUsdCents,
+    pendingUsdCents: 0,
+    readAt: new Date(NOW.getTime() - 60_000),
+  });
+
+  it('пропуск ЗАНИМАЕТ деньги под этот заказ, а не просто разрешает', async () => {
+    // Иначе между гейтом и созданием счёта остаётся окно, в котором второй
+    // клиент видит те же свободные деньги: статус заказа меняется только ПОСЛЕ
+    // ответа платёжного шлюза.
+    h.snapshot = freshSnap(20_000);
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({ state: 'ok' });
+
+    expect(h.insertReservation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orderId: ORDER.id, amountUsdCents: 12_400 }),
+    );
+  });
+
+  it('расчёт идёт ПОД замком — иначе двое считают по одному и тому же снимку', async () => {
+    h.snapshot = freshSnap(20_000);
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    expect(h.acquireLock).toHaveBeenCalled();
+  });
+
+  it('чужое занятие вычитается наравне с обещанными картами', async () => {
+    // Сосед прошёл гейт полсекунды назад: счёта у него ещё нет, статус прежний,
+    // и по статусам он невидим — видно только занятие.
+    h.snapshot = freshSnap(20_000);
+    h.reservedUsdCents = 12_400;
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'insufficient',
+      availableUsdCents: 7_600,
+    });
+    expect(h.insertReservation).not.toHaveBeenCalled();
+  });
+
+  it('отказ денег НЕ занимает', async () => {
+    h.snapshot = freshSnap(1_000);
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    expect(h.insertReservation).not.toHaveBeenCalled();
+  });
+
+  it('срок занятия равен сроку счёта — фонд не заперт дольше платёжного документа', async () => {
+    h.snapshot = freshSnap(20_000);
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    const [, reservation] = h.insertReservation.mock.calls[0] as unknown as [
+      unknown,
+      { expiresAt: Date },
+    ];
+    // У текущего шлюза счёт живёт час.
+    expect(reservation.expiresAt.getTime()).toBe(NOW.getTime() + 60 * 60_000);
+  });
+
+  it('не удалось занять деньги — ОТКАЗ, а не тихий пропуск', async () => {
+    // ⚠️ Здесь fail-CLOSED, в отличие от непрочитанного баланса. Таймаут замка
+    // означает очередь из таких же claim'ов, то есть РОВНО ту гонку, ради
+    // которой замок и стоит: пропусти мы оплату — защита выключалась бы сама
+    // именно под нагрузкой, и фонд продавался бы дважды. Клиент видит ту же
+    // «техническую паузу» и возвращается через десять минут; заказ жив.
+    h.snapshot = freshSnap(20_000);
+    h.acquireLock.mockRejectedValueOnce(
+      Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    );
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'busy',
+    });
+    expect(h.insertReservation).not.toHaveBeenCalled();
+  });
+
+  it('о перегруженной кассе владелец узнаёт ОТДЕЛЬНО от недоступного провайдера', async () => {
+    // Иначе шторм таймаутов вытеснит настоящий алёрт «PaySpace не отвечает»:
+    // окно дедупа общее, и владелец час получал бы неверную причину.
+    h.snapshot = freshSnap(20_000);
+    h.acquireLock.mockRejectedValueOnce(
+      Object.assign(new Error('lock timeout'), { code: '55P03' }),
+    );
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    const text = String(h.notifyStaff.mock.calls[0]?.[0]);
+    expect(text).not.toMatch(/прочитать карточный счёт/i);
+    expect(h.notifyStaff.mock.calls[0]?.[1]).toMatchObject({ dedupKey: 'preflight_busy_staff' });
+  });
+
+  it('гейт выключен — фонд не занимается вовсе', async () => {
+    h.env.PAYSPACE_PREFLIGHT_DISABLED = true;
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    expect(h.insertReservation).not.toHaveBeenCalled();
+    expect(h.acquireLock).not.toHaveBeenCalled();
+  });
+});
+
+describe('releaseOrderFundingClaim', () => {
+  it('неудачный счёт освобождает деньги сразу', async () => {
+    await releaseOrderFundingClaim(ORDER.id);
+
+    expect(h.releaseReservation).toHaveBeenCalledWith(expect.anything(), ORDER.id);
+  });
+
+  it('сбой освобождения не роняет обработку ошибки счёта', async () => {
+    // Мы уже в catch: вторая ошибка поверх первой лишит клиента внятного
+    // ответа, а деньги всё равно освободятся по сроку.
+    h.releaseReservation.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(releaseOrderFundingClaim(ORDER.id)).resolves.toBeUndefined();
   });
 });

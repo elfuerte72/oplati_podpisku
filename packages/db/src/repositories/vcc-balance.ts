@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, gt, inArray, lt, ne, sql } from 'drizzle-orm';
 
-import { vccBalanceSnapshots } from '../schema.ts';
+import { orders, vccBalanceSnapshots, vccFundReservations } from '../schema.ts';
 import type { DBLike } from '../index.ts';
 
 /**
@@ -75,4 +75,150 @@ export async function getVccBalanceSnapshot(
         readAt: row.readAt,
       }
     : null;
+}
+
+// ─── Резервы фонда (тикет 05) ─────────────────────────────────────────────
+
+/**
+ * Замок расчёта карточного фонда.
+ *
+ * ⚠️ Держится ТОЛЬКО на время подсчёта и снимается на COMMIT/ROLLBACK — до
+ * обращения к платёжному шлюзу. Обратное («залочили и пошли в Freekassa»)
+ * выстроило бы все оплаты страны в одну очередь за чужим API с таймаутом 45
+ * секунд.
+ *
+ * Ключ один на весь фонд: он и есть общий ресурс, за который идёт гонка.
+ * Конкуренты за другие ресурсы (диалоги, реферальные балансы) берут свои ключи
+ * и друг друга не задевают.
+ *
+ * ⚠️ Порядок взятия: этот замок берётся ПЕРВЫМ, до любых строчных блокировок.
+ * Вызвать гейт фонда изнутри транзакции, уже держащей `FOR UPDATE` на заказе,
+ * значит замкнуть цикл и получить настоящий дедлок — сейчас такого вызова нет
+ * и заводить его нельзя.
+ */
+/**
+ * Сколько ждать своей очереди у замка фонда.
+ *
+ * Три секунды — это «очередь короче десятка расчётов»: каждый держит замок
+ * миллисекунды. Не дождались — значит либо всплеск оплат, либо чужая долгая
+ * транзакция по заказу; и то, и другое лучше закончить отказом, чем ожиданием,
+ * которое клиент видит как зависшую кнопку.
+ */
+const FUND_LOCK_TIMEOUT = '3s';
+
+export async function acquireCardFundLock(tx: DBLike): Promise<void> {
+  // ⚠️ Поводок на ЛЮБОЕ ожидание блокировки в этой транзакции, включая сам
+  // advisory-lock и FK-блокировку строки заказа при вставке резерва.
+  //
+  // Без него схема кусает себя за хвост: вставка резерва берёт на заказе
+  // `FOR KEY SHARE`, а `transitionOrder` держит на нём `FOR UPDATE` (крон
+  // `expire-payments` хоронит протухший черновик ровно в этот момент) — и наш
+  // claim ЖДЁТ, не отпуская глобальный замок фонда. За ним встают все оплаты
+  // сразу, то есть ровно то, чего трек избегает, только с другой стороны.
+  //
+  // `SET LOCAL` живёт до конца транзакции и откатывается сам.
+  await tx.execute(sql`SET LOCAL lock_timeout = ${sql.raw(`'${FUND_LOCK_TIMEOUT}'`)}`);
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('vcc-funding')::bigint)`);
+}
+
+/**
+ * Сколько фонда занято живыми резервами.
+ *
+ * ⚠️ Считаются только резервы заказов, ЕЩЁ находящихся в `ready_for_payment`.
+ * Как только заказ ушёл к оплате, его деньги учитываются по статусу
+ * (`findOrdersCommittingCardFund`), и складывать оба значило бы вычесть один
+ * заказ дважды — то есть отказывать клиентам за чужой счёт.
+ *
+ * Протухшие резервы не считаются вовсе: умерший между занятием и счётом
+ * процесс не должен запирать фонд дольше срока счёта.
+ */
+export async function sumLiveCardFundReservations(
+  tx: DBLike,
+  now: Date,
+  opts: {
+    /**
+     * Не считать резерв этого заказа.
+     *
+     * ⚠️ Нужен на повторном нажатии: заказ, занявший деньги секунду назад,
+     * иначе вычитал бы СВОИ же средства и получал отказ от самого себя.
+     */
+    excludeOrderId?: string;
+  } = {},
+): Promise<number> {
+  const rows = await tx
+    .select({ amountUsdCents: vccFundReservations.amountUsdCents })
+    .from(vccFundReservations)
+    .innerJoin(orders, eq(orders.id, vccFundReservations.orderId))
+    .where(
+      and(
+        gt(vccFundReservations.expiresAt, now),
+        eq(orders.status, 'ready_for_payment'),
+        ...(opts.excludeOrderId ? [ne(vccFundReservations.orderId, opts.excludeOrderId)] : []),
+      ),
+    );
+  return rows.reduce((sum, r) => sum + r.amountUsdCents, 0);
+}
+
+/**
+ * Занять фонд под заказ. Идемпотентно по заказу: повторное нажатие обновляет
+ * сумму и срок той же строки, а не занимает деньги второй раз.
+ */
+export async function insertCardFundReservation(
+  tx: DBLike,
+  input: { orderId: string; amountUsdCents: number; expiresAt: Date },
+): Promise<void> {
+  await tx
+    .insert(vccFundReservations)
+    .values({
+      orderId: input.orderId,
+      amountUsdCents: input.amountUsdCents,
+      expiresAt: input.expiresAt,
+    })
+    .onConflictDoUpdate({
+      target: vccFundReservations.orderId,
+      set: { amountUsdCents: input.amountUsdCents, expiresAt: input.expiresAt },
+    });
+}
+
+/**
+ * Освободить занятые деньги немедленно — счёт создать не удалось.
+ *
+ * Без этого шага фонд простоял бы запертым до срока счёта (час) из-за ошибки,
+ * о которой мы узнали сразу.
+ */
+export async function releaseCardFundReservation(tx: DBLike, orderId: string): Promise<void> {
+  await tx.delete(vccFundReservations).where(eq(vccFundReservations.orderId, orderId));
+}
+
+/**
+ * Убрать протухшие занятия фонда.
+ *
+ * Строка не удаляется в момент успеха — заказ ушёл к оплате, и резерв просто
+ * перестал влиять (учёт идёт по статусу). Копятся они поэтому навсегда, а
+ * выборка живых занятий выполняется ВНУТРИ глобального замка: чем длиннее
+ * таблица, тем дольше стоят все оплаты сразу. Индекс по сроку это держит, но
+ * мусор всё равно незачем хранить.
+ *
+ * Порог с запасом относительно срока счёта: удалять «сразу как протухло» —
+ * значит терять след для разбора инцидента в тот же день.
+ */
+export async function deleteExpiredCardFundReservations(
+  db: DBLike,
+  input: { olderThanDays: number; limit: number },
+): Promise<number> {
+  const cutoff = new Date(Date.now() - input.olderThanDays * 24 * 60 * 60 * 1000);
+  const rows = await db
+    .delete(vccFundReservations)
+    .where(
+      inArray(
+        vccFundReservations.orderId,
+        db
+          .select({ orderId: vccFundReservations.orderId })
+          .from(vccFundReservations)
+          .where(lt(vccFundReservations.expiresAt, cutoff))
+          .limit(input.limit),
+      ),
+    )
+    .returning({ orderId: vccFundReservations.orderId });
+  return rows.length;
 }

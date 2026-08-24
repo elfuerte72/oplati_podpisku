@@ -38,6 +38,20 @@ const log = childLogger('payments-gateway');
 const LOVEANDPAY_INVOICE_TTL_HOURS = 1;
 
 /**
+ * Сколько живёт счёт у ТЕКУЩЕГО шлюза, в часах.
+ *
+ * Нужен не только самому шлюзу: на этот же срок preflight занимает карточный
+ * фонд под заказ (тикет 05). Держать там своё число значило бы завести зеркало —
+ * резерв, переживающий счёт, запирает деньги зря, а умирающий раньше отдаёт их
+ * тому, кто уже получил платёжный документ.
+ */
+export function currentInvoiceTtlHours(): number {
+  return primaryPaymentGateway() === 'freekassa'
+    ? serverEnv.FREEKASSA_INVOICE_TTL_HOURS
+    : LOVEANDPAY_INVOICE_TTL_HOURS;
+}
+
+/**
  * Нормализованный результат создания счёта — общая форма для обоих шлюзов,
  * чтобы `payments/create` не ветвился второй раз при записи в БД.
  */

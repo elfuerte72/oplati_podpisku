@@ -45,8 +45,27 @@ const h = vi.hoisted(() => ({
   phoneGateNotifyMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
   // Вердикт preflight карточного фонда. Дефолт — «хватает»: гейт проверяется
   // отдельным сьютом, остальные не должны про него знать.
-  preflightMock: vi.fn(async () => ({ state: 'ok' }) as { state: string }),
+  preflightMock: vi.fn(
+    async () =>
+      ({ state: 'ok' }) as {
+        state: string;
+        availableUsdCents?: number;
+        neededUsdCents?: number;
+        committedUsdCents?: number;
+        shortfallUsdCents?: number;
+      },
+  ),
   preflightReportMock: vi.fn(async (..._args: unknown[]) => {}),
+  preflightReleaseMock: vi.fn(async (..._args: unknown[]) => {}),
+  invoiceMock: vi.fn(async () => ({
+    invoice: {
+      id: 'inv-1',
+      invoiceNumber: 'INV-0001',
+      paymentLink: 'https://pay.example/inv-1',
+      qrPayload: null,
+      expiresAt: '2026-07-19T00:00:00.000Z',
+    },
+  })),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -71,17 +90,7 @@ vi.mock('@/lib/loveandpay', () => {
   }
   return {
     LoveAndPayApiError,
-    getLoveAndPayClient: () => ({
-      createInvoice: vi.fn(async () => ({
-        invoice: {
-          id: 'inv-1',
-          invoiceNumber: 'INV-0001',
-          paymentLink: 'https://pay.example/inv-1',
-          qrPayload: null,
-          expiresAt: '2026-07-19T00:00:00.000Z',
-        },
-      })),
-    }),
+    getLoveAndPayClient: () => ({ createInvoice: h.invoiceMock }),
   };
 });
 
@@ -100,6 +109,7 @@ vi.mock('@/lib/contacts/phone-gate', () => ({
 vi.mock('@/lib/pay-space/preflight', () => ({
   checkOrderFundingCapacity: h.preflightMock,
   reportFundingCapacityBlocked: h.preflightReportMock,
+  releaseOrderFundingClaim: h.preflightReleaseMock,
 }));
 
 vi.mock('@/lib/payments/gateway', async (importOriginal) => {
@@ -149,6 +159,15 @@ beforeEach(() => {
     payment: { id: 'pay-1' },
   }));
   h.preflightMock.mockResolvedValue({ state: 'ok' });
+  h.invoiceMock.mockResolvedValue({
+    invoice: {
+      id: 'inv-1',
+      invoiceNumber: 'INV-0001',
+      paymentLink: 'https://pay.example/inv-1',
+      qrPayload: null,
+      expiresAt: '2026-07-19T00:00:00.000Z',
+    },
+  });
 });
 
 describe('POST /api/payments/create — атомарность записи платежа и перехода (M-2)', () => {
@@ -510,5 +529,54 @@ describe('POST /api/payments/create — preflight карточного фонд�
 
     expect(resp.status).toBe(200);
     expect(h.preflightMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/payments/create — освобождение занятого фонда (тикет 05)', () => {
+  it('счёт создать не удалось — занятые деньги освобождаются сразу', async () => {
+    // Иначе фонд простоял бы запертым до срока счёта (час) из-за ошибки, о
+    // которой мы узнали в ту же секунду.
+    h.invoiceMock.mockRejectedValueOnce(new Error('шлюз лёг'));
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.preflightReleaseMock).toHaveBeenCalledWith(ORDER_ID);
+  });
+
+  it('счёт выставлен — занятие НЕ снимается: деньги обещаны клиенту со ссылкой', async () => {
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.preflightReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it('расчёт не дождался очереди — тот же вежливый отказ, счёт не выставлен', async () => {
+    // Fail-closed: пропустить оплату значило бы выключить защиту ровно под
+    // нагрузкой. Клиенту при этом говорим то же, что и при нехватке фонда, —
+    // ему разница между «денег нет» и «касса занята» ни о чём.
+    h.preflightMock.mockResolvedValue({ state: 'busy' });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('fulfillment_capacity');
+    expect(h.upsertMock).not.toHaveBeenCalled();
+    // Владельцу про нехватку фонда не врём — у занятости свой алёрт.
+    expect(h.preflightReportMock).not.toHaveBeenCalled();
+  });
+
+  it('отказ гейта ничего не освобождает — занимать было нечего', async () => {
+    h.preflightMock.mockResolvedValue({
+      state: 'insufficient',
+      availableUsdCents: 0,
+      neededUsdCents: 12_400,
+      committedUsdCents: 0,
+      shortfallUsdCents: 12_400,
+    });
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.preflightReleaseMock).not.toHaveBeenCalled();
   });
 });

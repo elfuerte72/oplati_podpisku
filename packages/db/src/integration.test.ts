@@ -53,6 +53,12 @@ import {
 } from './repositories/vcc-balance.ts';
 import { findOrdersCommittingCardFund } from './repositories/orders.ts';
 import {
+  acquireCardFundLock,
+  insertCardFundReservation,
+  releaseCardFundReservation,
+  sumLiveCardFundReservations,
+} from './repositories/vcc-balance.ts';
+import {
   createConversation,
   getOrCreateActiveConversation,
 } from './repositories/conversations.ts';
@@ -2540,6 +2546,8 @@ describe('RLS: инварианты 7 и 8 под ролью anon', () => {
     // Остаток карточного фонда: не персональные данные, но состояние нашей
     // казны — браузерной поверхности знать его незачем (трек vcc-preflight).
     'vcc_balance_snapshots',
+    // Занятые под заказы деньги — то же самое, плюс `order_id` клиентов.
+    'vcc_fund_reservations',
   ];
 
   beforeAll(async () => {
@@ -4649,5 +4657,136 @@ describe('обязательства карточного фонда (трек v
     const row = (await findOrdersCommittingCardFund(db, NOW)).find((r) => r.id === order.id);
 
     expect(row?.originalAmount).toBe(12_345);
+  });
+});
+
+describe('резервы карточного фонда (трек vcc-preflight, тикет 05)', () => {
+  const NOW = new Date('2026-08-24T12:00:00.000Z');
+  const LIVE = new Date(NOW.getTime() + 60 * 60_000);
+
+  async function draftOrder(status: 'ready_for_payment' | 'pending_payment' | 'paid' = 'ready_for_payment') {
+    const user = await makeUser();
+    return await createDraftOrder(db, {
+      userId: user.id,
+      status,
+      customServiceDescription: 'reservation-test order',
+      amountRub: 50_000,
+      originalAmount: 10_000,
+      originalCurrency: 'USD',
+      expiresAt: LIVE,
+    });
+  }
+
+  it('занятые деньги видны следующему счётчику', async () => {
+    const order = await draftOrder();
+    const before = await sumLiveCardFundReservations(db, NOW);
+
+    await insertCardFundReservation(db, {
+      orderId: order.id,
+      amountUsdCents: 12_400,
+      expiresAt: LIVE,
+    });
+
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(before + 12_400);
+  });
+
+  it('повторное нажатие тем же клиентом денег дважды НЕ занимает', async () => {
+    // Ключ по заказу, а не проверка в коде: двойной клик приходит двумя
+    // запросами, и «сначала посмотрели, потом вставили» — снова гонка.
+    const order = await draftOrder();
+    const before = await sumLiveCardFundReservations(db, NOW);
+
+    await insertCardFundReservation(db, { orderId: order.id, amountUsdCents: 12_400, expiresAt: LIVE });
+    await insertCardFundReservation(db, { orderId: order.id, amountUsdCents: 12_400, expiresAt: LIVE });
+
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(before + 12_400);
+  });
+
+  it('протухшее занятие освобождает деньги само — без крона и ручного шага', async () => {
+    // Процесс умер между занятием и созданием счёта: строка осталась, но фонд
+    // заперт максимум до срока счёта.
+    const order = await draftOrder();
+    const before = await sumLiveCardFundReservations(db, NOW);
+
+    await insertCardFundReservation(db, {
+      orderId: order.id,
+      amountUsdCents: 12_400,
+      expiresAt: new Date(NOW.getTime() - 1_000),
+    });
+
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(before);
+  });
+
+  it('заказ ушёл к оплате — занятие больше не считается: иначе двойной счёт', async () => {
+    // С этого момента деньги учитываются по СТАТУСУ (обязательства, тикет 04).
+    // Считать и то, и другое значило бы вычесть один заказ дважды.
+    const order = await draftOrder();
+    await insertCardFundReservation(db, { orderId: order.id, amountUsdCents: 12_400, expiresAt: LIVE });
+    const withReservation = await sumLiveCardFundReservations(db, NOW);
+
+    await transitionOrderDetailed(db, {
+      orderId: order.id,
+      toStatus: 'pending_payment',
+      actorType: 'system',
+      eventType: 'payment_invoice_created',
+    });
+
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(withReservation - 12_400);
+  });
+
+  it('неудачный счёт освобождает деньги сразу, не дожидаясь срока', async () => {
+    const order = await draftOrder();
+    const before = await sumLiveCardFundReservations(db, NOW);
+    await insertCardFundReservation(db, { orderId: order.id, amountUsdCents: 12_400, expiresAt: LIVE });
+
+    await releaseCardFundReservation(db, order.id);
+
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(before);
+  });
+
+  it('своё занятие из подсчёта исключается — клиент не отказывает сам себе', async () => {
+    // Двойной клик: первый запрос занял деньги, второй считает свободное. Не
+    // исключи мы собственную строку — клиент вычел бы свои же средства и
+    // получил отказ по заказу, который сам и оплачивает.
+    const order = await draftOrder();
+    await insertCardFundReservation(db, { orderId: order.id, amountUsdCents: 12_400, expiresAt: LIVE });
+
+    const withOwn = await sumLiveCardFundReservations(db, NOW);
+    const withoutOwn = await sumLiveCardFundReservations(db, NOW, { excludeOrderId: order.id });
+
+    expect(withOwn - withoutOwn).toBe(12_400);
+  });
+
+  it('второй расчёт видит занятие первого и на те же деньги не претендует', async () => {
+    // Суть тикета 05: без занятия оба клиента считают фонд по картине, где
+    // соседа ещё нет, и оба проходят гейт при деньгах на одного.
+    //
+    // ⚠️ НАСТОЯЩУЮ одновременность этот тест не воспроизводит: PGlite — одно
+    // соединение, и `Promise.all` тут сериализуется драйвером, а не замком.
+    // Проверяется именно ВИДИМОСТЬ чужого занятия в расчёте; что замок
+    // сериализует конкурентов, держится на семантике `pg_advisory_xact_lock`
+    // и проверяемо только на многосоединеночном Postgres.
+    const first = await draftOrder();
+    const second = await draftOrder();
+    const before = await sumLiveCardFundReservations(db, NOW);
+
+    const claim = async (orderId: string, budgetUsdCents: number): Promise<boolean> =>
+      await db.transaction(async (tx) => {
+        await acquireCardFundLock(tx);
+        const taken = await sumLiveCardFundReservations(tx, NOW);
+        if (taken - before + 12_400 > budgetUsdCents) return false;
+        await insertCardFundReservation(tx, {
+          orderId,
+          amountUsdCents: 12_400,
+          expiresAt: LIVE,
+        });
+        return true;
+      });
+
+    // Бюджет на одного: $124.
+    const results = await Promise.all([claim(first.id, 12_400), claim(second.id, 12_400)]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await sumLiveCardFundReservations(db, NOW)).toBe(before + 12_400);
   });
 });
