@@ -1,10 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { buildVpnMessageHtml } from './templates';
 
 const URL = 'https://sub.example.com/api/sub/TESTshortUuid001';
 const EXPIRE = new Date('2026-08-21T00:00:00.000Z');
 const BASE = { subscriptionUrl: URL, expireAt: EXPIRE, trafficLimitGb: 200 };
+
+/**
+ * ⚠️ Время ЗАМОРОЖЕНО. Шаблон сравнивает срок подписки с `Date.now()`, а даты
+ * в тесте зашиты: без заморозки «живая» подписка становится истёкшей ровно в
+ * тот день, когда её дата уходит в прошлое, и три теста краснеют сами по себе,
+ * без единой правки кода. Так и случилось 2026-08-24 — прогон встал на дате
+ * 21 августа, зелёной ещё двумя днями раньше.
+ */
+const FROZEN_NOW = new Date('2026-08-19T00:00:00.000Z');
+
+beforeAll(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(FROZEN_NOW);
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 describe('buildVpnMessageHtml', () => {
   it('ссылка — в <code> (копируется тапом), срок по-русски, флаги стран', () => {
