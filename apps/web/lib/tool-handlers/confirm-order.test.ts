@@ -301,9 +301,11 @@ describe('confirmOrder — self-call защищён таймаутом', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const settled = confirmOrder({ orderId: 'order-1' }).catch((e: unknown) => e);
-    await vi.advanceTimersByTimeAsync(46_000);
+    await vi.advanceTimersByTimeAsync(51_000);
 
-    // Ключевая проверка: к 46-й секунде таймер ещё жив и оборвал чтение тела.
+    // Ключевая проверка: к 51-й секунде таймер ещё жив и оборвал чтение тела.
+    // Порог поднят вместе с самим таймаутом (45 -> 50 с, трек vcc-preflight:
+    // гейт фонда добавил секунды в худший случай и съел запас до обрыва).
     expect(signalInsideBody?.aborted).toBe(true);
     await expect(settled).resolves.toBeInstanceOf(Error);
     vi.useRealTimers();

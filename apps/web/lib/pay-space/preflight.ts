@@ -106,11 +106,20 @@ const BUSY_ALERT_WINDOW_MS = 15 * 60 * 1000;
 
 const busyDedup = new DedupWindow(BUSY_ALERT_WINDOW_MS);
 
+/**
+ * Окно молчания про отсутствующую схему — час: состояние длительное (чинится
+ * применением миграции), но забыть о нём нельзя, гейт всё это время не работает.
+ */
+const SCHEMA_ALERT_WINDOW_MS = 60 * 60 * 1000;
+
+const schemaDedup = new DedupWindow(SCHEMA_ALERT_WINDOW_MS);
+
 /** Только для тестов. */
 export function resetPreflightDedupForTests(): void {
   unknownDedup.resetForTests();
   blockedDedup.resetForTests();
   busyDedup.resetForTests();
+  schemaDedup.resetForTests();
 }
 
 /**
@@ -241,8 +250,19 @@ export async function checkOrderFundingCapacity(
       needsNewCard,
     });
   } catch (err) {
-    // Сорвалась транзакция занятия: чаще всего поводок ожидания замка. См.
-    // разбор у ветки `busy` — здесь мы ОТКАЗЫВАЕМ, а не пропускаем.
+    // ⚠️ Развилка по ПРИЧИНЕ, а не «любой сбой одинаково».
+    //
+    // Нет таблицы (миграцию забыли применить — а применяется она руками, и
+    // этот шаг уже терялся) — это НАША авария конфигурации, а не гонка.
+    // Трактовать её как «не смогли занять» значило бы превратить гейт в
+    // стоп-кран: 422 всем клиентам во всех пяти каналах разом. Работаем как до
+    // трека: оплату пропускаем, владельцу говорим прямо про миграцию.
+    if (isMissingRelationError(err)) {
+      await reportFundingSchemaMissing(order, err);
+      return { state: 'unknown' };
+    }
+    // Всё прочее — поводок ожидания замка. См. разбор у ветки `busy`: здесь
+    // ОТКАЗЫВАЕМ, потому что таймаут и означает ту самую гонку.
     await reportFundingBusy(order, err);
     return { state: 'busy' };
   }
@@ -259,12 +279,23 @@ async function claimUnderFundLock(
   return await db.transaction(async (tx) => {
     await acquireCardFundLock(tx);
 
-    const committedUsdCents = await sumCommittedFunding(tx, now);
+    // ⚠️ ПОРЯДОК ЧТЕНИЙ ЗНАЧИМ. Транзакция идёт в READ COMMITTED: у каждого
+    // запроса свой снимок, и сосед может уйти `ready_for_payment` →
+    // `pending_payment` ровно между ними.
+    //
+    // Резервы ПЕРВЫМИ: тогда такой сосед попадает в оба чтения (в резервы — по
+    // старому статусу, в обязательства — по новому) и считается дважды. Это
+    // завышение, то есть безопасная сторона. Обратный порядок терял бы его
+    // ЦЕЛИКОМ: из обязательств — потому что статус ещё старый, из резервов —
+    // потому что уже новый и join его отсекает. Гейт пропустил бы оплату,
+    // которую нечем исполнить, — ровно то, ради чего этот замок и стоит.
+    //
     // ⚠️ СВОЙ резерв из подсчёта исключается: повторное нажатие того же
     // клиента иначе вычитало бы собственные деньги и отказывало ему самому.
     const reservedUsdCents = await sumLiveCardFundReservations(tx, now, {
       excludeOrderId: order.id,
     });
+    const committedUsdCents = await sumCommittedFunding(tx, now);
     // Сырое значение может быть ОТРИЦАТЕЛЬНЫМ (обещано больше, чем на счёте) —
     // именно по нему считается дефицит; клампом наружу уходит только показ.
     const rawAvailableUsdCents =
@@ -397,7 +428,17 @@ async function readAvailableFund(
   order: PreflightOrder,
   now: Date,
 ): Promise<FundReading> {
-  const snapshot = await getVccBalanceSnapshot(db, VCC_SNAPSHOT_PROVIDER);
+  let snapshot: Awaited<ReturnType<typeof getVccBalanceSnapshot>>;
+  try {
+    snapshot = await getVccBalanceSnapshot(db, VCC_SNAPSHOT_PROVIDER);
+  } catch (err) {
+    // Таблицы снимка ещё нет (миграцию не применили). Это чтение стоит РАНЬШЕ
+    // транзакции занятия, поэтому без своей обработки ошибка улетела бы в общий
+    // catch роута — клиент получил бы 500 вместо платёжной ссылки.
+    if (!isMissingRelationError(err)) throw err;
+    await reportFundingSchemaMissing(order, err);
+    return { ok: false, reason: 'unavailable' };
+  }
   // ⚠️ Возраст обязан быть НЕОТРИЦАТЕЛЬНЫМ. Снимок «из будущего» (ушли часы
   // контейнера, строку положили руками со сдвинутым `read_at`) проходил бы
   // проверку «не старше получаса» ВЕЧНО: гейт судил бы по выдуманному числу, а
@@ -443,6 +484,56 @@ async function readAvailableFund(
   } catch (err) {
     await reportFundingUnknown(order, err);
     return { ok: false, reason: 'unknown' };
+  }
+}
+
+/**
+ * `42P01 undefined_table` — таблицы ещё нет.
+ *
+ * Postgres кладёт код в `code`; postgres-js прячет исходную ошибку в `cause`,
+ * поэтому смотрим оба уровня. На текст полагаемся только как на последний
+ * рубеж — он локализуется настройками сервера.
+ */
+function isMissingRelationError(err: unknown): boolean {
+  const candidates: unknown[] = [err];
+  if (typeof err === 'object' && err !== null && 'cause' in err) {
+    candidates.push((err as { cause?: unknown }).cause);
+  }
+  for (const c of candidates) {
+    if (typeof c !== 'object' || c === null) continue;
+    if ((c as { code?: string }).code === '42P01') return true;
+  }
+  return err instanceof Error && /does not exist/i.test(err.message);
+}
+
+/**
+ * Схемы нет: гейт молчит, оплаты идут как до трека, владелец узнаёт причину.
+ *
+ * Отдельный текст от «касса занята» — иначе сообщение отправляет искать
+ * всплеск оплат там, где не хватает одной применённой миграции.
+ */
+async function reportFundingSchemaMissing(order: PreflightOrder, err: unknown): Promise<void> {
+  log.error({ event: 'preflight.schema_missing', orderId: order.id, err });
+  if (!schemaDedup.shouldSend('preflight_schema_missing')) return;
+
+  Sentry.captureException(err, {
+    tags: { source: 'pay-space.preflight', step: 'schema' },
+    extra: { orderId: order.id },
+  });
+  try {
+    await notifyStaff(
+      'Проверка карточного фонда ОТКЛЮЧИЛАСЬ: в базе нет её таблиц — похоже, ' +
+        'миграции трека vcc-preflight (0039/0040) не применены на этой базе. ' +
+        'Оплаты идут как раньше, БЕЗ проверки: заказ снова может упасть после ' +
+        'приёма денег. Примени миграции и проверь GET /api/ready.',
+      {
+        dedupKey: 'preflight_schema_missing_staff',
+        dedupWindowMs: SCHEMA_ALERT_WINDOW_MS,
+        capability: 'holds',
+      },
+    );
+  } catch (notifyErr) {
+    log.error({ event: 'preflight.schema_notify_failed', orderId: order.id, err: notifyErr });
   }
 }
 

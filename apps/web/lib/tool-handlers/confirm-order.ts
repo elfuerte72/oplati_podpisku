@@ -235,10 +235,16 @@ export async function confirmOrder(input: {
   log.info({ event: 'tool.confirm_order.start', orderId: input.orderId });
 
   const controller = new AbortController();
-  // 45с < maxDuration=60 у payments/create и с запасом внутри maxDuration=90
+  // 50с < maxDuration=60 у payments/create и с запасом внутри maxDuration=90
   // вызывающих роутов (/api/chat, /api/bot) — self-call не должен переживать
   // собственную функцию (M-6 аудита).
-  const timeoutId = setTimeout(() => controller.abort(), 45_000);
+  //
+  // ⚠️ Было 45 с. Поднято треком vcc-preflight: гейт фонда добавил в худший
+  // случай около пяти секунд (живой запрос баланса, когда снимок протух, плюс
+  // два ожидания блокировок), и вместе с worst-case Freekassa (~40 с) запас
+  // съедался в ноль. Обрыв ЗДЕСЬ — худший исход из возможных: счёт у шлюза
+  // мог уже создаться, а клиент видит «технический сбой».
+  const timeoutId = setTimeout(() => controller.abort(), 50_000);
   try {
     const resp = await fetch(url, {
       method: 'POST',

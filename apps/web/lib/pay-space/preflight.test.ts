@@ -28,6 +28,9 @@ const h = vi.hoisted(() => ({
   /** Уже занятый фонд под чужие заказы, ещё не дошедшие до счёта. */
   reservedUsdCents: 0,
   acquireLock: vi.fn(async (..._args: unknown[]) => {}),
+  sumReservations: vi.fn(async (..._args: unknown[]) => 0),
+  getSnapshot: vi.fn(async (..._args: unknown[]) => null as unknown),
+  committedSpy: vi.fn(async (..._args: unknown[]) => [] as { id: string; originalAmount: number | null }[]),
   insertReservation: vi.fn(async (..._args: unknown[]) => {}),
   releaseReservation: vi.fn(async (..._args: unknown[]) => {}),
   getVccBalance: vi.fn(),
@@ -58,13 +61,13 @@ vi.mock('@oplati/db', () => ({
   // реальном Postgres в `packages/db`, здесь — логика решения.
   getDb: () => ({ transaction: async (fn: (tx: unknown) => Promise<unknown>) => await fn({}) }),
   acquireCardFundLock: h.acquireLock,
-  sumLiveCardFundReservations: vi.fn(async () => h.reservedUsdCents),
+  sumLiveCardFundReservations: h.sumReservations,
   insertCardFundReservation: h.insertReservation,
   releaseCardFundReservation: h.releaseReservation,
   findActiveByUserId: vi.fn(async () => h.activeCard),
   appendOrderEvent: h.appendOrderEvent,
-  getVccBalanceSnapshot: vi.fn(async () => h.snapshot),
-  findOrdersCommittingCardFund: vi.fn(async () => h.committed),
+  getVccBalanceSnapshot: h.getSnapshot,
+  findOrdersCommittingCardFund: h.committedSpy,
   saveVccBalanceSnapshot: h.saveSnapshot,
   VCC_SNAPSHOT_PROVIDER: 'payspace',
   PAYMENT_BLOCKED_CAPACITY_EVENT: 'payment_blocked_capacity',
@@ -100,6 +103,12 @@ beforeEach(() => {
   h.committed = [];
   h.reservedUsdCents = 0;
   h.acquireLock.mockClear();
+  h.getSnapshot.mockReset();
+  h.getSnapshot.mockImplementation(async () => h.snapshot);
+  h.sumReservations.mockReset();
+  h.sumReservations.mockImplementation(async () => h.reservedUsdCents);
+  h.committedSpy.mockReset();
+  h.committedSpy.mockImplementation(async () => h.committed);
   h.insertReservation.mockClear();
   h.releaseReservation.mockClear();
   h.saveSnapshot.mockClear();
@@ -628,6 +637,78 @@ describe('claimOrderFundingCapacity — занятие фонда (тикет 05
     const text = String(h.notifyStaff.mock.calls[0]?.[0]);
     expect(text).not.toMatch(/прочитать карточный счёт/i);
     expect(h.notifyStaff.mock.calls[0]?.[1]).toMatchObject({ dedupKey: 'preflight_busy_staff' });
+  });
+
+  it('таблицы снимка ещё нет — оплата идёт, а не падает пятисоткой', async () => {
+    // Чтение снимка стоит РАНЬШЕ транзакции занятия, и без своей обработки
+    // отсутствие таблицы улетело бы в общий catch роута — то есть клиент
+    // получил бы 500 вместо платёжной ссылки.
+    h.getSnapshot.mockRejectedValueOnce(
+      Object.assign(new Error('relation "vcc_balance_snapshots" does not exist'), {
+        code: '42P01',
+      }),
+    );
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'skipped',
+    });
+    expect(h.getVccBalance).not.toHaveBeenCalled();
+  });
+
+  it('таблицы резервов ещё нет — оплату ПРОПУСКАЕМ, а не отказываем всем подряд', async () => {
+    // Миграция применяется руками. Не примени её — каждый запрос к таблице
+    // падает, и трактовка «не смогли занять → отказ» превратила бы гейт в
+    // стоп-кран для ВСЕХ клиентов во всех каналах. Это наша авария конфигурации,
+    // а не гонка: правильный исход — работать как до трека.
+    h.snapshot = freshSnap(20_000);
+    h.acquireLock.mockRejectedValueOnce(
+      Object.assign(new Error('relation "vcc_fund_reservations" does not exist'), {
+        code: '42P01',
+      }),
+    );
+
+    await expect(checkOrderFundingCapacity(ORDER, NOW)).resolves.toMatchObject({
+      state: 'unknown',
+    });
+  });
+
+  it('про отсутствующую таблицу владельцу говорят прямо, а не про всплеск оплат', async () => {
+    h.snapshot = freshSnap(20_000);
+    h.acquireLock.mockRejectedValueOnce(
+      Object.assign(new Error('relation "vcc_fund_reservations" does not exist'), {
+        code: '42P01',
+      }),
+    );
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    const text = String(h.notifyStaff.mock.calls[0]?.[0]);
+    expect(text).toMatch(/миграц/i);
+    expect(text).not.toMatch(/всплеск/i);
+  });
+
+  it('резервы читаются ПЕРВЫМИ — иначе заказ на переходе не считается ни разу', async () => {
+    // READ COMMITTED: у каждого запроса свой снимок. Сосед, уходящий в
+    // `pending_payment` между двумя чтениями, при обратном порядке выпадает из
+    // ОБОИХ: из обязательств — потому что там его статус ещё старый, из
+    // резервов — потому что там уже новый и join его отсекает. Так гейт
+    // пропустил бы оплату, которую нечем исполнить, — ровно то, ради чего
+    // написан тикет 05. При этом порядке тот же сосед считается ДВАЖДЫ:
+    // завышение, то есть ошибка в безопасную сторону.
+    h.snapshot = freshSnap(20_000);
+    const order: string[] = [];
+    h.sumReservations.mockImplementationOnce(async () => {
+      order.push('reservations');
+      return 0;
+    });
+    h.committedSpy.mockImplementationOnce(async () => {
+      order.push('committed');
+      return [];
+    });
+
+    await checkOrderFundingCapacity(ORDER, NOW);
+
+    expect(order).toEqual(['reservations', 'committed']);
   });
 
   it('гейт выключен — фонд не занимается вовсе', async () => {
