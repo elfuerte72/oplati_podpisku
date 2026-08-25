@@ -8,7 +8,7 @@ PaySpace выпускает долларовую карту, которой кл
 Выделено из `CLAUDE.md` 2026-08-14; там остались инварианты выпуска и безопасности реквизитов.
 
 
-План фазы (исполнен, архив) — [`docs/history/plan-2026-06-phase2-payspace-cards.md`](docs/history/plan-2026-06-phase2-payspace-cards.md).
+План фазы (исполнен, архив) — [`docs/history/plan-2026-06-phase2-payspace-cards.md`](../history/plan-2026-06-phase2-payspace-cards.md).
 
 Карты выпускает **app.pay.space** (это НЕ Love&Pay; L&P — только приём RUB). Контракт VCC подтверждён OpenAPI-докой + **живым вызовом** (`createCard` реально выпускает карту). Клиент `lib/pay-space/`: `createCard`/`topupCard`/`withdrawCard`/`releaseCard`/`getCardInfo`/`getVccBalance` + HMAC-подпись запросов (`sign.ts`: `X-Timestamp/X-Nonce/X-Signature`, если задан `PAYSPACE_REQUEST_SECRET`); Zod-схемы `packages/types/src/paypace.ts`. **`createCard` НЕ авто-ретраится** (`idempotent:false`) — единственная мутирующая операция без идемпотентного `request_id` у провайдера: повтор на таймаут/5xx выпускал бы вторую профинансированную карту-призрак (потеря funding). Остальные (topup/withdraw/release идемпотентны через `request_id`; GET) ретраятся ×2. **Урок: дока врёт** — суммы приходят то строкой, то числом (`paySpaceMoney`), `exp_date` в формате `MM/YY` (не `YYYY-MM-DD`), опц. поля `card/info` бывают `null`; всё через Zod, дрейф → `PaySpaceContractError`.
 
