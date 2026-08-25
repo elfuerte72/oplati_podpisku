@@ -130,7 +130,7 @@ describe('handleContactMessage', () => {
 });
 
 describe('счёт после контакта — карту выпустить нечем (тикет 02 vcc-preflight)', () => {
-  it('клиент слышит честный срок, а не «попробуй через минуту», и Sentry не шумит', async () => {
+  it('клиент слышит рабочий шаг, а не «попробуй через минуту», и Sentry не шумит', async () => {
     // Самый вероятный путь этого отказа: телефон спрашивают от 10 000 ₽, а
     // инцидентный заказ был на 11 680 ₽. Генерик «через минуту» тут враньё —
     // карточный счёт пополняется T+1.
@@ -144,7 +144,7 @@ describe('счёт после контакта — карту выпустить
 
     const text = sentTexts().join('\n');
     expect(text).toContain('Номер сохранён');
-    expect(text).toContain('43 минуты');
+    expect(text).toMatch(/заказ сохранён/i);
     expect(text).not.toContain('через минуту');
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });

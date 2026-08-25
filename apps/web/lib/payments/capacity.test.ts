@@ -26,27 +26,39 @@ describe('fulfillmentCapacityText', () => {
       fulfillmentCapacityText(5),
       fulfillmentCapacityText(null),
     ]) {
-      expect(text).not.toMatch(/\bпопробуй\b|\bнапиши\b|за тобой/i);
+      expect(text).not.toMatch(/\bпопробуй\b|\bнапиши\b/i);
       expect(text).toMatch(/попробуйте|напишите/i);
     }
   });
 
-  it('называет РЕАЛЬНЫЙ остаток фиксации цены и зовёт вернуться', () => {
-    // Решение В3: у заказа могло остаться десять минут, и зашитое «цена
-    // держится два часа» стало бы обманом.
+  it('успокаивает про заказ и называет следующий шаг', () => {
+    // Практика сообщений о недоступности сервиса: сказать, что происходит, что
+    // с данными клиента всё в порядке, когда вернуться и куда писать, если не
+    // вернётся.
     const text = fulfillmentCapacityText(43);
 
-    expect(text).toContain('43 минуты');
+    expect(text).toMatch(/заказ сохранён/i);
     expect(text).toMatch(/попробуйте/i);
     expect(text).toMatch(/поддержк/i);
   });
 
+  it('НЕ рассказывает про срок фиксации цены — клиент про него не знает', () => {
+    // Он не выбирал этот таймер и до отказа о нём не слышал. Введи его здесь —
+    // и вместо ответа «что делать» человек получает новую тревогу: оказывается,
+    // у него что-то истекает. Срок по-прежнему решает, КАКОЙ дать совет, но в
+    // текст не попадает.
+    for (const minutes of [97, 43, 21, 5, 1]) {
+      const text = fulfillmentCapacityText(minutes);
+      expect(text).not.toMatch(/цена/i);
+      expect(text).not.toMatch(new RegExp(`${minutes}\\s*минут`));
+    }
+  });
+
   it('времени в обрез — зовёт в поддержку СРАЗУ, а не «через 10-15 минут»', () => {
-    // Иначе фраза спорит сама с собой: клиент вернётся, когда цена уже
-    // протухла, и получит «оформи заказ заново».
+    // Вернувшись через десять минут, клиент застал бы протухшую цену и «оформи
+    // заказ заново». Причину не объясняем — просто даём другой совет.
     const text = fulfillmentCapacityText(5);
 
-    expect(text).toContain('5 минут');
     expect(text).not.toContain('10-15 минут');
     expect(text).toMatch(/поддержк/i);
   });
@@ -56,19 +68,10 @@ describe('fulfillmentCapacityText', () => {
     expect(fulfillmentCapacityText(19)).not.toContain('10-15 минут');
   });
 
-  it('срока нет — про цену молчим, но шаг называем', () => {
-    // Обещать «цена за тобой ещё N минут», не зная N, нельзя; звать вернуться —
-    // можно.
+  it('срока нет — совет тот же, что и при запасе времени', () => {
     const text = fulfillmentCapacityText(null);
 
     expect(text).toMatch(/попробуйте/i);
-    expect(text).not.toMatch(/Цена за вами/i);
-  });
-
-  it('склонение живое: минуту / минуты / минут', () => {
-    expect(fulfillmentCapacityText(21)).toContain('21 минуту');
-    expect(fulfillmentCapacityText(43)).toContain('43 минуты');
-    expect(fulfillmentCapacityText(45)).toContain('45 минут');
-    expect(fulfillmentCapacityText(12)).toContain('12 минут');
+    expect(text).toMatch(/заказ сохранён/i);
   });
 });

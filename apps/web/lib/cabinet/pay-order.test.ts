@@ -120,7 +120,7 @@ describe('payOrder — выставленный счёт (L-5)', () => {
 });
 
 describe('payOrder — карту выпустить нечем (тикет 02 vcc-preflight)', () => {
-  it('клиент Mini App видит честный текст со сроком, а не «попробуй ещё раз»', async () => {
+  it('клиент Mini App видит честный текст, а не «попробуй ещё раз»', async () => {
     // «Не получилось создать счёт, попробуй через минуту» здесь было бы враньём
     // дважды: счёт не создан не из-за сбоя, и минуты не хватит — фонд
     // пополняется T+1.
@@ -131,7 +131,7 @@ describe('payOrder — карту выпустить нечем (тикет 02 v
 
     expect(res).toMatchObject({ ok: false });
     const message = String((res as { message?: string }).message);
-    expect(message).toContain('43 минуты');
+    expect(message).toMatch(/заказ сохранён/i);
     expect(message).not.toMatch(/баланс|фонд|PaySpace/i);
   });
 });

@@ -224,7 +224,7 @@ describe('handoff заказа: счёт выставляется прямо в 
     await handleLinkDeepLink(update, message, 'link_abc');
 
     expect(sentText()).toContain('привязан');
-    expect(sentText()).toContain('43 минуты');
+    expect(sentText()).toMatch(/заказ сохранён/i);
     expect(sentText()).not.toMatch(/баланс|фонд|PaySpace/i);
     expect(h.captureException).not.toHaveBeenCalled();
   });

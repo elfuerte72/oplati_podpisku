@@ -117,9 +117,9 @@ describe('разбор отказов: клиенту говорят то, чт�
     expect(text).toContain('140');
   });
 
-  it('карту выпустить нечем → срок фиксации цены и поддержка, без внутренностей', async () => {
+  it('карту выпустить нечем → заказ цел и путь дальше, без внутренностей', async () => {
     const text = await confirmWith(new PaymentCapacityError(43));
-    expect(text).toContain('43 минуты');
+    expect(text).toMatch(/заказ сохранён/i);
     expect(text).toContain('поддержку');
     expect(text).not.toMatch(/баланс|фонд|PaySpace/i);
   });

@@ -221,7 +221,7 @@ describe('типизированные отказы → HTTP-коды, по ко
     expect(body.text).toContain('140');
   });
 
-  it('карту выпустить нечем → 422 с честным текстом и сроком фиксации цены', async () => {
+  it('карту выпустить нечем → 422 с честным текстом', async () => {
     // Клиент видит «техническая пауза», а не «недостаточно средств»: последнее
     // он прочитал бы как проблему СВОЕЙ карты. Про фонд и провайдера — молчок.
     h.confirmOrder.mockRejectedValueOnce(new PaymentCapacityError(43));
@@ -229,7 +229,7 @@ describe('типизированные отказы → HTTP-коды, по ко
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: string; text: string };
     expect(body.error).toBe('fulfillment_capacity');
-    expect(body.text).toContain('43 минуты');
+    expect(body.text).toMatch(/заказ сохранён/i);
     expect(body.text).not.toMatch(/баланс|фонд|PaySpace/i);
   });
 
