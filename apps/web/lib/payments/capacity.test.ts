@@ -9,12 +9,26 @@ import { fulfillmentCapacityText } from './capacity.ts';
  * провайдера — ни слова.
  */
 describe('fulfillmentCapacityText', () => {
-  it('говорит про технические работы, а не про наши внутренности', () => {
+  it('говорит по-человечески, без техподробностей и без «на нашей стороне»', () => {
     const text = fulfillmentCapacityText(43);
 
-    expect(text).toMatch(/технические работы/i);
+    expect(text).toMatch(/заминка/i);
     expect(text).not.toMatch(/на нашей стороне/i);
+    expect(text).not.toMatch(/технические работы/i);
     expect(text).not.toMatch(/баланс|фонд|PaySpace|карт/i);
+  });
+
+  it('обращение на «вы» — во всех ветках текста', () => {
+    // Решение владельца 2026-08-25. ⚠️ Остальные тексты продукта на «ты»:
+    // если начнёте переводить их, этот не забудьте.
+    for (const text of [
+      fulfillmentCapacityText(43),
+      fulfillmentCapacityText(5),
+      fulfillmentCapacityText(null),
+    ]) {
+      expect(text).not.toMatch(/\bпопробуй\b|\bнапиши\b|за тобой/i);
+      expect(text).toMatch(/попробуйте|напишите/i);
+    }
   });
 
   it('называет РЕАЛЬНЫЙ остаток фиксации цены и зовёт вернуться', () => {
@@ -23,7 +37,7 @@ describe('fulfillmentCapacityText', () => {
     const text = fulfillmentCapacityText(43);
 
     expect(text).toContain('43 минуты');
-    expect(text).toMatch(/попробуй/i);
+    expect(text).toMatch(/попробуйте/i);
     expect(text).toMatch(/поддержк/i);
   });
 
@@ -47,8 +61,8 @@ describe('fulfillmentCapacityText', () => {
     // можно.
     const text = fulfillmentCapacityText(null);
 
-    expect(text).toMatch(/попробуй/i);
-    expect(text).not.toMatch(/Цена за тобой/i);
+    expect(text).toMatch(/попробуйте/i);
+    expect(text).not.toMatch(/Цена за вами/i);
   });
 
   it('склонение живое: минуту / минуты / минут', () => {
