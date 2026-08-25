@@ -15,8 +15,8 @@
 `177.7.34.106`, где делил два ядра с VPN-панелью Remnawave, dev-стендом и личным ботом —
 `idle` упал до 1%, гипервизор начал отбирать до 50% CPU (`%steal`), а до РФ было ~140 мс RTT
 против ~40 мс из Франкфурта. Порядок работ и грабли переезда —
-[`docs/runbooks/server-migration.md`](docs/runbooks/server-migration.md), цифры разбора —
-[`docs/CHANGELOG.md`](docs/CHANGELOG.md) за 2026-07-27.
+[`docs/runbooks/server-migration.md`](../runbooks/server-migration.md), цифры разбора —
+[`docs/CHANGELOG.md`](../CHANGELOG.md) за 2026-07-27.
 
 ## Что где живёт
 
@@ -24,14 +24,14 @@
 Ни Vercel, ни реверс-прокси, ни Supabase в схеме не участвуют (проверено на живом проде
 2026-08-14: `www.oplatishka.com` резолвится в `187.124.172.104`, `CLIENT_IP_MODE=traefik`,
 `PROXY_SHARED_SECRET` и `MINIAPP_BASE_URL` не заданы). Прошлые контуры и их грабли —
-[`docs/history/vercel-era.md`](docs/history/vercel-era.md) и
-[`docs/history/dokploy-cutover-report.md`](docs/history/dokploy-cutover-report.md).
+[`docs/history/vercel-era.md`](../history/vercel-era.md) и
+[`docs/history/dokploy-cutover-report.md`](../history/dokploy-cutover-report.md).
 
 ⚠️ **Одно исключение — VPN-панель Remnawave `panel.mxpkn8ns.ru`: она осталась на бостонском
 VPS `177.7.34.106`** (проверено 2026-08-14, отвечает), и кнопка «VPN» в боте ходит туда. Там же
 личный бот `Vanya_bot`, свой Dokploy и остановленная прод-БД `oplatishka-db-ry3smb` — холодный
 резерв эпохи переезда; погашен он или нет, по коду не видно, разбор в
-[`docs/BACKLOG.md`](docs/BACKLOG.md).
+[`docs/BACKLOG.md`](../BACKLOG.md).
 
 Таблица стендов (домены, БД, боты, модели, ключи) живёт в `CLAUDE.md` — она нужна при
 любой работе, поэтому не дублируется здесь.
@@ -117,7 +117,7 @@ typecheck+тесты+lint → `POST /api/deploy/<refreshToken>` → **прове
 запущена», и упавшая сборка давала зелёный workflow при старом коде на проде. **`curl exit 28`
 в деплое — это внешние эпизоды сетевой недоступности VPS с раннеров GitHub, а НЕ нагрузка от
 собственной сборки** (последнее проверено и опровергнуто: `sar` в разгар падения показал load
-average 0.25); отсюда `--connect-timeout 10` и 10 попыток — см. [`docs/incidents.md`](docs/incidents.md).
+average 0.25); отсюда `--connect-timeout 10` и 10 попыток — см. [`docs/incidents.md`](../incidents.md).
 GitHub App Dokploy как источник
 триггера больше не используется: он деплоил сразу на push, не дожидаясь CI (красный `main` уехал бы
 на боевой контур с живыми платежами), а его отказы не видны из репозитория — вебхук молча потерял
@@ -126,8 +126,8 @@ GitHub App Dokploy как источник
 проверке подписи), проверено экспериментом с docs-коммитом, который наш workflow пропускает.
 Решение владельца — не чинить. ⚠️ Отвязывать git-провайдера или сужать Repository access **нельзя**:
 Dokploy клонирует репозиторий по токену этой установки, сломается и workflow-деплой; глушить App
-следует снятием подписки на события — [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md). Ровно та же история была с вебхуком Vercel
-(PR #83, 2026-07-18, см. [`docs/incidents.md`](docs/incidents.md)).
+следует снятием подписки на события — [`docs/runbooks/deploy.md`](../runbooks/deploy.md). Ровно та же история была с вебхуком Vercel
+(PR #83, 2026-07-18, см. [`docs/incidents.md`](../incidents.md)).
 
 ## Контракт deploy-вебхука Dokploy
 
