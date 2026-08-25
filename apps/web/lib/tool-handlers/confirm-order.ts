@@ -9,7 +9,7 @@ import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 import { selfCallBaseUrl } from '../deployment-url.ts';
 import { EMAIL_REQUIRED } from '../contacts/email.ts';
 import { PHONE_REQUIRED } from '../contacts/phone.ts';
-import { CAPACITY_RETRY_WINDOW, FULFILLMENT_CAPACITY } from '../payments/capacity.ts';
+import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '../payments/capacity.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -135,8 +135,9 @@ export class PaymentCapacityError extends Error {
   constructor(priceLockMinutesLeft: number | null) {
     super(
       `${FULFILLMENT_CAPACITY}: выпустить карту по этому заказу сейчас нечем, счёт не создан. ` +
-        `Это временно и на нашей стороне. Скажи пользователю попробовать через ${CAPACITY_RETRY_WINDOW} ` +
-        'или написать в поддержку — там помогут вручную. Про баланс и провайдеров не упоминай.',
+        'Передай пользователю ДОСЛОВНО этот текст и ничего к нему не добавляй: ' +
+        `"${fulfillmentCapacityText(priceLockMinutesLeft)}". ` +
+        'Про баланс, фонд и провайдеров не упоминай.',
     );
     this.name = 'PaymentCapacityError';
     this.priceLockMinutesLeft = priceLockMinutesLeft;
