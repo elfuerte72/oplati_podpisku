@@ -18,6 +18,19 @@ describe('fulfillmentCapacityText', () => {
     expect(text).not.toMatch(/баланс|фонд|PaySpace|карт/i);
   });
 
+  it('без тире: самый узнаваемый след машинного текста', () => {
+    // Проверено детектором скилла `avoid-ai-writing` (conorbronsdon, GitHub):
+    // два тире на 25 слов против его порога «одно на тысячу». В русском тире
+    // законно, но в трёх коротких фразах подряд читается как штамп.
+    for (const text of [
+      fulfillmentCapacityText(43),
+      fulfillmentCapacityText(5),
+      fulfillmentCapacityText(null),
+    ]) {
+      expect(text).not.toMatch(/[—–]|--/);
+    }
+  });
+
   it('обращение на «вы» — во всех ветках текста', () => {
     // Решение владельца 2026-08-25. ⚠️ Остальные тексты продукта на «ты»:
     // если начнёте переводить их, этот не забудьте.
