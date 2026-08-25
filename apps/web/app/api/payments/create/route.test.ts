@@ -43,6 +43,29 @@ const h = vi.hoisted(() => ({
     phoneThreshold: null as number | null,
   },
   phoneGateNotifyMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
+  // Вердикт preflight карточного фонда. Дефолт — «хватает»: гейт проверяется
+  // отдельным сьютом, остальные не должны про него знать.
+  preflightMock: vi.fn(
+    async () =>
+      ({ state: 'ok' }) as {
+        state: string;
+        availableUsdCents?: number;
+        neededUsdCents?: number;
+        committedUsdCents?: number;
+        shortfallUsdCents?: number;
+      },
+  ),
+  preflightReportMock: vi.fn(async (..._args: unknown[]) => {}),
+  preflightReleaseMock: vi.fn(async (..._args: unknown[]) => {}),
+  invoiceMock: vi.fn(async () => ({
+    invoice: {
+      id: 'inv-1',
+      invoiceNumber: 'INV-0001',
+      paymentLink: 'https://pay.example/inv-1',
+      qrPayload: null,
+      expiresAt: '2026-07-19T00:00:00.000Z',
+    },
+  })),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -67,17 +90,7 @@ vi.mock('@/lib/loveandpay', () => {
   }
   return {
     LoveAndPayApiError,
-    getLoveAndPayClient: () => ({
-      createInvoice: vi.fn(async () => ({
-        invoice: {
-          id: 'inv-1',
-          invoiceNumber: 'INV-0001',
-          paymentLink: 'https://pay.example/inv-1',
-          qrPayload: null,
-          expiresAt: '2026-07-19T00:00:00.000Z',
-        },
-      })),
-    }),
+    getLoveAndPayClient: () => ({ createInvoice: h.invoiceMock }),
   };
 });
 
@@ -91,6 +104,12 @@ vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi
 vi.mock('@/lib/contacts/phone-gate', () => ({
   phoneRequirementRub: () => h.state.phoneThreshold,
   notifyPhoneGateBlocked: h.phoneGateNotifyMock,
+}));
+
+vi.mock('@/lib/pay-space/preflight', () => ({
+  checkOrderFundingCapacity: h.preflightMock,
+  reportFundingCapacityBlocked: h.preflightReportMock,
+  releaseOrderFundingClaim: h.preflightReleaseMock,
 }));
 
 vi.mock('@/lib/payments/gateway', async (importOriginal) => {
@@ -139,6 +158,16 @@ beforeEach(() => {
     isNew: true,
     payment: { id: 'pay-1' },
   }));
+  h.preflightMock.mockResolvedValue({ state: 'ok' });
+  h.invoiceMock.mockResolvedValue({
+    invoice: {
+      id: 'inv-1',
+      invoiceNumber: 'INV-0001',
+      paymentLink: 'https://pay.example/inv-1',
+      qrPayload: null,
+      expiresAt: '2026-07-19T00:00:00.000Z',
+    },
+  });
 });
 
 describe('POST /api/payments/create — атомарность записи платежа и перехода (M-2)', () => {
@@ -421,5 +450,133 @@ describe('POST /api/payments/create — потолок суммы шлюза (л
 
     expect(resp.status).toBe(200);
     expect(h.upsertMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/payments/create — preflight карточного фонда (тикет 02)', () => {
+  const INSUFFICIENT = {
+    state: 'insufficient' as const,
+    availableUsdCents: 8_950,
+    neededUsdCents: 12_400,
+  };
+
+  it('фонда нет — счёт не выставляется, деньги не принимаются', async () => {
+    // Инцидент 2026-08-14 наоборот: клиент не получает ссылку вместо того,
+    // чтобы заплатить 11 680 ₽ и остаться без карты.
+    h.preflightMock.mockResolvedValue(INSUFFICIENT);
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { ok: boolean; error: string; message: string };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('fulfillment_capacity');
+    expect(h.upsertMock).not.toHaveBeenCalled();
+  });
+
+  it('заказ после отказа остаётся живым: ни перехода, ни платежа', async () => {
+    // Р4 спеки: переводить в expired/failed значило бы наказать клиента за нашу
+    // проблему. Он вернётся через двадцать минут и оплатит по той же цене.
+    h.preflightMock.mockResolvedValue(INSUFFICIENT);
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.transitionMock).not.toHaveBeenCalled();
+    expect(h.transactionMock).not.toHaveBeenCalled();
+  });
+
+  it('в теле — реальный остаток фиксации цены, а не зашитое число', async () => {
+    h.preflightMock.mockResolvedValue(INSUFFICIENT);
+    h.state.order = { ...h.state.order!, expiresAt: new Date(Date.now() + 43 * 60_000) };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { priceLockMinutesLeft: number };
+
+    expect(json.priceLockMinutesLeft).toBe(43);
+  });
+
+  it('владелец узнаёт о развёрнутом клиенте', async () => {
+    h.preflightMock.mockResolvedValue(INSUFFICIENT);
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.preflightReportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ORDER_ID }),
+      INSUFFICIENT,
+    );
+  });
+
+  it('фонд прочитать не удалось — оплата идёт как обычно', async () => {
+    // Fail-open (Р5): чужой сбой не останавливает нам продажи целиком.
+    h.preflightMock.mockResolvedValue({ state: 'unknown' });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.upsertMock).toHaveBeenCalled();
+  });
+
+  it('уже выставленный счёт гейт не трогает — клиент со ссылкой доплачивает', async () => {
+    // Гейт стоит на ВЫСТАВЛЕНИИ счёта, а не на приёме денег: отказать по уже
+    // выданному платёжному документу значило бы не принять оплату по нему.
+    h.state.order = { ...h.state.order!, status: 'pending_payment' };
+    h.state.pendingPayment = {
+      id: 'pay-1',
+      rawPayload: { invoice: { id: 'inv-1', paymentLink: 'https://pay.example/inv-1' } },
+    };
+    h.preflightMock.mockResolvedValue(INSUFFICIENT);
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.preflightMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/payments/create — освобождение занятого фонда (тикет 05)', () => {
+  it('счёт создать не удалось — занятые деньги освобождаются сразу', async () => {
+    // Иначе фонд простоял бы запертым до срока счёта (час) из-за ошибки, о
+    // которой мы узнали в ту же секунду.
+    h.invoiceMock.mockRejectedValueOnce(new Error('шлюз лёг'));
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.preflightReleaseMock).toHaveBeenCalledWith(ORDER_ID);
+  });
+
+  it('счёт выставлен — занятие НЕ снимается: деньги обещаны клиенту со ссылкой', async () => {
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(resp.status).toBe(200);
+    expect(h.preflightReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it('расчёт не дождался очереди — тот же вежливый отказ, счёт не выставлен', async () => {
+    // Fail-closed: пропустить оплату значило бы выключить защиту ровно под
+    // нагрузкой. Клиенту при этом говорим то же, что и при нехватке фонда, —
+    // ему разница между «денег нет» и «касса занята» ни о чём.
+    h.preflightMock.mockResolvedValue({ state: 'busy' });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('fulfillment_capacity');
+    expect(h.upsertMock).not.toHaveBeenCalled();
+    // Владельцу про нехватку фонда не врём — у занятости свой алёрт.
+    expect(h.preflightReportMock).not.toHaveBeenCalled();
+  });
+
+  it('отказ гейта ничего не освобождает — занимать было нечего', async () => {
+    h.preflightMock.mockResolvedValue({
+      state: 'insufficient',
+      availableUsdCents: 0,
+      neededUsdCents: 12_400,
+      committedUsdCents: 0,
+      shortfallUsdCents: 12_400,
+    });
+
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.preflightReleaseMock).not.toHaveBeenCalled();
   });
 });

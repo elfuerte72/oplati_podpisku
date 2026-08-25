@@ -85,8 +85,10 @@ export async function recycleCards(): Promise<{ recycled: number; errors: number
     log.warn({ event: 'cron.recycle_cards.skipped_no_paypace' });
   }
 
-  // Шаг 2: алёрт на низкий VCC-баланс (не влияет на errors — это мониторинг).
-  // Общий с poll-payment модуль, чтобы проверка шла и каждые 5 минут.
+  // Шаг 2: опрос VCC-баланса — алёрт на низкий остаток плюс снимок фонда для
+  // гейта оплаты (тикет 03 трека vcc-preflight). Не влияет на errors: свои
+  // ошибки модуль ловит сам. Общий с poll-payment, чтобы опрос шёл и каждые
+  // 5 минут — снимок тем свежее, чем чаще прогон.
   await alertOnLowVccBalance();
 
   log.info({ event: 'cron.recycle_cards.done', recycled, errors });

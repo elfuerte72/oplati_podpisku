@@ -10,6 +10,7 @@ import {
   getUserProfileById,
   findCardsByUserIdForCabinet,
   findPaymentsByOrderId,
+  PAYMENT_BLOCKED_CAPACITY_EVENT,
   PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
@@ -66,6 +67,10 @@ const INTERNAL_EVENT_TYPES = new Set<string>([
   // Сорванная доставка напоминания — тем более служебная: клиенту незачем
   // знать, что мы не смогли до него достучаться.
   PAYMENT_REMINDER_FAILED_EVENT,
+  // «Мы не выставили счёт, потому что выпускать карту не на что» — запись про
+  // НАШУ казну (трек vcc-preflight). Клиент свой текст уже получил в ответ на
+  // кнопку; строка в истории заказа добавила бы к ней только тревогу.
+  PAYMENT_BLOCKED_CAPACITY_EVENT,
   'renewal_reminder_sent',
 ]);
 

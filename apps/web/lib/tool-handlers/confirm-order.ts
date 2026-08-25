@@ -9,6 +9,7 @@ import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 import { selfCallBaseUrl } from '../deployment-url.ts';
 import { EMAIL_REQUIRED } from '../contacts/email.ts';
 import { PHONE_REQUIRED } from '../contacts/phone.ts';
+import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '../payments/capacity.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
 
@@ -121,6 +122,29 @@ export class OrderAboveMaxAmountError extends Error {
 }
 
 /**
+ * `/api/payments/create` ответил 422 `fulfillment_capacity` — карточного фонда
+ * не хватает на этот заказ, счёт НЕ выставлен (трек vcc-preflight, тикет 02).
+ *
+ * Отличается от `provider_unavailable` тем, что сломано не у платёжного шлюза,
+ * а у нас: он жив и счёт бы принял. Повтор через 10-15 минут осмыслен — фонд
+ * пополняется, — поэтому заказ и остаётся живым с зафиксированной ценой.
+ */
+export class PaymentCapacityError extends Error {
+  /** Сколько минут ещё держится цена заказа; null — сказать нечего. */
+  readonly priceLockMinutesLeft: number | null;
+  constructor(priceLockMinutesLeft: number | null) {
+    super(
+      `${FULFILLMENT_CAPACITY}: выпустить карту по этому заказу сейчас нечем, счёт не создан. ` +
+        'Передай пользователю ДОСЛОВНО этот текст и ничего к нему не добавляй: ' +
+        `"${fulfillmentCapacityText(priceLockMinutesLeft)}". ` +
+        'Про баланс, фонд и провайдеров не упоминай.',
+    );
+    this.name = 'PaymentCapacityError';
+    this.priceLockMinutesLeft = priceLockMinutesLeft;
+  }
+}
+
+/**
  * Текст отказа для КЛИЕНТСКИХ каналов (веб, Mini App, бот) — один на все три,
  * чтобы формулировки про деньги не разъезжались. Сообщение самой ошибки выше
  * адресовано AI-агенту и звучит иначе.
@@ -137,38 +161,34 @@ const errorBodySchema = z.object({
   error: z.string(),
   maxAmountRub: z.number().optional(),
   requiredFromRub: z.number().optional(),
+  // Целые неотрицательные минуты: дробь отрендерилась бы клиенту как
+  // «12.5 минут», а отрицательная — как обещание уже истёкшей цены.
+  priceLockMinutesLeft: z.number().int().nonnegative().nullable().optional(),
 });
 
-/** Порог телефона из тела 422 — чтобы назвать клиенту конкретную цифру. */
-function parseRequiredFromRub(respText: string): number | null {
-  try {
-    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
-    return parsed.success ? (parsed.data.requiredFromRub ?? null) : null;
-  } catch {
-    return null;
-  }
-}
+type ErrorBody = z.infer<typeof errorBodySchema>;
 
-/** Лимит из тела 422 — чтобы назвать клиенту конкретную цифру, а не «слишком много». */
-function parseMaxAmountRub(respText: string): number | null {
+/**
+ * Разбор тела ошибки — ОДНА функция на все поля.
+ *
+ * Раньше их было четыре, по одной на поле, и каждая глушила `JSON.parse`
+ * пустым `catch` — то есть трижды нарушала «never swallow errors» ради одного
+ * и того же разбора. Теперь ошибка разбора логируется один раз и явно: тело
+ * пишет наш же роут, и не-JSON здесь означает, что ответил кто-то другой
+ * (прокси, балансировщик) — это стоит увидеть в логах.
+ */
+function parseErrorBody(respText: string): ErrorBody | null {
+  let raw: unknown;
   try {
-    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
-    return parsed.success ? (parsed.data.maxAmountRub ?? null) : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseErrorCode(respText: string): string | null {
-  try {
-    const parsed = errorBodySchema.safeParse(JSON.parse(respText));
-    return parsed.success ? parsed.data.error : null;
+    raw = JSON.parse(respText);
   } catch (err) {
     // Ожидаемый фоллбек (не-JSON тело → generic-классификация); само тело уже
     // залогировано вызывающим кодом в `tool.confirm_order.failed`.
     log.warn({ event: 'tool.confirm_order.error_body_not_json', err });
     return null;
   }
+  const parsed = errorBodySchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export async function confirmOrder(input: {
@@ -216,10 +236,16 @@ export async function confirmOrder(input: {
   log.info({ event: 'tool.confirm_order.start', orderId: input.orderId });
 
   const controller = new AbortController();
-  // 45с < maxDuration=60 у payments/create и с запасом внутри maxDuration=90
+  // 50с < maxDuration=60 у payments/create и с запасом внутри maxDuration=90
   // вызывающих роутов (/api/chat, /api/bot) — self-call не должен переживать
   // собственную функцию (M-6 аудита).
-  const timeoutId = setTimeout(() => controller.abort(), 45_000);
+  //
+  // ⚠️ Было 45 с. Поднято треком vcc-preflight: гейт фонда добавил в худший
+  // случай около пяти секунд (живой запрос баланса, когда снимок протух, плюс
+  // два ожидания блокировок), и вместе с worst-case Freekassa (~40 с) запас
+  // съедался в ноль. Обрыв ЗДЕСЬ — худший исход из возможных: счёт у шлюза
+  // мог уже создаться, а клиент видит «технический сбой».
+  const timeoutId = setTimeout(() => controller.abort(), 50_000);
   try {
     const resp = await fetch(url, {
       method: 'POST',
@@ -242,7 +268,8 @@ export async function confirmOrder(input: {
         httpStatus: resp.status,
         body: respText.slice(0, 500),
       });
-      const errorCode = parseErrorCode(respText);
+      const errorBody = parseErrorBody(respText);
+      const errorCode = errorBody?.error ?? null;
       if (resp.status === 503 && errorCode === 'provider_unavailable') {
         throw new PaymentProviderUnavailableError();
       }
@@ -250,13 +277,16 @@ export async function confirmOrder(input: {
         throw new OrderExpiredError();
       }
       if (resp.status === 422 && errorCode === 'above_max_amount') {
-        throw new OrderAboveMaxAmountError(parseMaxAmountRub(respText));
+        throw new OrderAboveMaxAmountError(errorBody?.maxAmountRub ?? null);
       }
       if (resp.status === 422 && errorCode === EMAIL_REQUIRED) {
         throw new EmailRequiredError();
       }
       if (resp.status === 422 && errorCode === PHONE_REQUIRED) {
-        throw new PhoneRequiredError(parseRequiredFromRub(respText));
+        throw new PhoneRequiredError(errorBody?.requiredFromRub ?? null);
+      }
+      if (resp.status === 422 && errorCode === FULFILLMENT_CAPACITY) {
+        throw new PaymentCapacityError(errorBody?.priceLockMinutesLeft ?? null);
       }
       throw new Error(`confirm_order: /api/payments/create вернул ${resp.status}: ${respText.slice(0, 200)}`);
     }

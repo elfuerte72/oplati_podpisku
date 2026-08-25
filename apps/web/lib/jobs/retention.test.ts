@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   stripMock: vi.fn(),
   analyticsDeleteMock: vi.fn(),
   dictionaryMock: vi.fn(),
+  fundReservationsDeleteMock: vi.fn(),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -19,6 +20,7 @@ vi.mock('@oplati/db', () => ({
   stripOldPaymentPayloads: h.stripMock,
   deleteOldAnalyticsEvents: h.analyticsDeleteMock,
   syncAnalyticsDictionary: h.dictionaryMock,
+  deleteExpiredCardFundReservations: h.fundReservationsDeleteMock,
 }));
 
 import { runRetention } from './retention.ts';
@@ -29,6 +31,7 @@ beforeEach(() => {
   h.stripMock.mockResolvedValue(0);
   h.analyticsDeleteMock.mockResolvedValue(0);
   h.dictionaryMock.mockResolvedValue(25);
+  h.fundReservationsDeleteMock.mockResolvedValue(0);
 });
 
 describe('runRetention (M-13: чистка messages и raw_payload)', () => {
@@ -40,6 +43,7 @@ describe('runRetention (M-13: чистка messages и raw_payload)', () => {
       payloadsStripped: 0,
       analyticsDeleted: 0,
       dictionarySynced: 25,
+      fundReservationsDeleted: 0,
     });
     expect(h.deleteMock).toHaveBeenCalledTimes(1);
     expect(h.stripMock).toHaveBeenCalledTimes(1);
@@ -75,5 +79,29 @@ describe('runRetention (M-13: чистка messages и raw_payload)', () => {
 
     expect(h.deleteMock).toHaveBeenCalledTimes(20);
     expect(result.messagesDeleted).toBe(10_000);
+  });
+});
+
+describe('runRetention — чистка занятий фонда (тикет 05)', () => {
+  it('протухшие занятия убираются: таблицу читают под глобальным замком', async () => {
+    h.fundReservationsDeleteMock.mockResolvedValueOnce(7);
+
+    const result = await runRetention();
+
+    expect(result.fundReservationsDeleted).toBe(7);
+  });
+
+  it('таблицы ещё нет — джоб доводит остальную чистку до конца', async () => {
+    // Миграция применяется руками, и до неё запроса не существует. Падение
+    // здесь унесло бы уже выполненную чистку переписки и payload'ов.
+    h.fundReservationsDeleteMock.mockRejectedValueOnce(
+      new Error('relation "vcc_fund_reservations" does not exist'),
+    );
+    h.deleteMock.mockResolvedValueOnce(3);
+
+    const result = await runRetention();
+
+    expect(result.messagesDeleted).toBe(3);
+    expect(result.fundReservationsDeleted).toBe(0);
   });
 });

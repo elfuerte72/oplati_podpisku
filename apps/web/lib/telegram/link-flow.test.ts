@@ -213,6 +213,22 @@ describe('handoff заказа: счёт выставляется прямо в 
     expect(h.captureException).not.toHaveBeenCalled();
   });
 
+  it('карту выпустить нечем → привязан + честный текст, и это не сбой', async () => {
+    // Клиент пришёл по ссылке ИМЕННО оплатить: тишина после «Telegram
+    // привязан!» оставила бы его гадать, куда делся счёт. И в Sentry этому
+    // делать нечего — ситуация штатная, про неё кричит свой алёрт владельцу.
+    const { PaymentCapacityError } = await import('@/lib/tool-handlers/confirm-order');
+    h.getOrdersByUserId.mockResolvedValueOnce([readyOrder()]);
+    h.confirmOrder.mockRejectedValueOnce(new PaymentCapacityError(43));
+
+    await handleLinkDeepLink(update, message, 'link_abc');
+
+    expect(sentText()).toContain('привязан');
+    expect(sentText()).toMatch(/заказ сохранён/i);
+    expect(sentText()).not.toMatch(/баланс|фонд|PaySpace/i);
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
   it('сбой выставления счёта НЕ роняет привязку', async () => {
     h.getOrdersByUserId.mockResolvedValueOnce([readyOrder()]);
     h.confirmOrder.mockRejectedValueOnce(new Error('провайдер лежит'));

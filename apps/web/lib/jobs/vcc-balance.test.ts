@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
     VCC_BALANCE_ALERT_DISABLED: false,
   } as Record<string, unknown>,
   notifyStaff: vi.fn(async (..._args: unknown[]) => ({ delivered: 1, failed: 0, deduped: false })),
+  saveSnapshot: vi.fn(async (..._args: unknown[]) => {}),
   captureMessage: vi.fn(),
   captureException: vi.fn(),
 }));
@@ -36,6 +37,12 @@ vi.mock('../env.server.ts', () => ({
 }));
 
 vi.mock('../alerts/notify-staff.ts', () => ({ notifyStaff: h.notifyStaff }));
+
+vi.mock('@oplati/db', () => ({
+  getDb: () => ({}),
+  saveVccBalanceSnapshot: h.saveSnapshot,
+  VCC_SNAPSHOT_PROVIDER: 'payspace',
+}));
 
 vi.mock('@sentry/nextjs', () => ({
   captureMessage: h.captureMessage,
@@ -57,6 +64,9 @@ beforeEach(() => {
   };
   h.notifyStaff.mockClear();
   h.captureMessage.mockClear();
+  h.captureException.mockClear();
+  h.saveSnapshot.mockClear();
+  h.saveSnapshot.mockResolvedValue(undefined);
 });
 
 describe('vccAlertThresholdsUsdCents', () => {
@@ -76,6 +86,15 @@ describe('vccAlertThresholdsUsdCents', () => {
     h.env.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS = 30_000;
 
     expect(vccAlertThresholdsUsdCents().critical).toBe(30_000);
+  });
+
+  it('комиссия за выпуск входит в порог: без неё алёрт молчал бы о нехватке', () => {
+    // Буфер выключен, комиссия $4 осталась — типовой заказ всё равно стоит
+    // фонду $104. Забыть слагаемое здесь значит пропустить ровно тот заказ,
+    // который упадёт при выпуске.
+    h.env.PAYSPACE_CARD_BUFFER_PERCENT = 0;
+
+    expect(vccAlertThresholdsUsdCents().critical).toBe(10_400);
   });
 
   it('нулевой буфер и нулевой fee дают ровно цену заказа', () => {
@@ -159,5 +178,67 @@ describe('alertOnLowVccBalance', () => {
     await alertOnLowVccBalance(NOW);
 
     expect(h.notifyStaff).not.toHaveBeenCalled();
+  });
+});
+
+describe('снимок фонда для preflight (тикет 03)', () => {
+  it('увиденный баланс СОХРАНЯЕТСЯ, даже когда он в норме и алёрта нет', async () => {
+    // Крон и раньше спрашивал баланс каждые 5 минут — и выбрасывал ответ.
+    // Гейту оплаты нужен именно нормальный баланс: по нему он пропускает.
+    h.balance = 200_000;
+
+    await alertOnLowVccBalance(NOW);
+
+    expect(h.notifyStaff).not.toHaveBeenCalled();
+    expect(h.saveSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ provider: 'payspace', balanceUsdCents: 200_000 }),
+    );
+  });
+
+  it('сохраняется и низкий баланс — гейт по нему и должен отказывать', async () => {
+    h.balance = 8_950;
+
+    await alertOnLowVccBalance(NOW);
+
+    expect(h.saveSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ balanceUsdCents: 8_950 }),
+    );
+  });
+
+  it('момент снимка — время ОПРОСА, а не записи: свежесть считается по нему', async () => {
+    await alertOnLowVccBalance(NOW);
+
+    const [, snapshot] = h.saveSnapshot.mock.calls[0] as unknown as [unknown, { readAt: Date }];
+    expect(snapshot.readAt.toISOString()).toBe(NOW.toISOString());
+  });
+
+  it('выключенный алёрт гасит СООБЩЕНИЯ, но не питание снимка', async () => {
+    // Иначе флаг «не шуметь» тихо ломал бы гейт оплаты: снимок перестал бы
+    // обновляться, и каждая оплата снова ходила бы к провайдеру. Ровно тот
+    // класс скрытых связей, из-за которого алёрт баланса уже один раз умер.
+    h.env.VCC_BALANCE_ALERT_DISABLED = true;
+    h.balance = 8_950;
+
+    await alertOnLowVccBalance(NOW);
+
+    expect(h.notifyStaff).not.toHaveBeenCalled();
+    expect(h.saveSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ balanceUsdCents: 8_950 }),
+    );
+  });
+
+  it('сбой записи снимка НЕ глушит алёрт и не тонет молча', async () => {
+    // Наблюдатель и его хранилище — разные вещи: недоступная база не повод
+    // промолчать о пустом карточном счёте.
+    h.balance = 8_950;
+    h.saveSnapshot.mockRejectedValueOnce(new Error('db down'));
+
+    await alertOnLowVccBalance(NOW);
+
+    expect(h.notifyStaff).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalled();
   });
 });

@@ -22,13 +22,19 @@ import { alertOnLoveAndPayProxyDown } from '@/lib/jobs/proxy-health';
 import { childLogger } from '@/lib/logger';
 import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 import { isPaymentGatewayUnavailable } from '@/lib/payments/availability';
-import { isPriceLockExpired } from '@/lib/payments/expiry';
+import { isPriceLockExpired, priceLockMinutesLeft } from '@/lib/payments/expiry';
 import {
   createGatewayInvoice,
   maxAmountRubFor,
   minAmountRubFor,
   primaryPaymentGateway,
 } from '@/lib/payments/gateway';
+import {
+  checkOrderFundingCapacity,
+  releaseOrderFundingClaim,
+  reportFundingCapacityBlocked,
+} from '@/lib/pay-space/preflight';
+import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { LoveAndPayApiError } from '@/lib/loveandpay';
 
@@ -101,6 +107,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   const gateway = primaryPaymentGateway();
 
   log.info({ event: 'payments.create.start', orderId, paymentMethod, gateway });
+
+  // Объявлено ВНЕ try: занятие фонда происходит внутри, а снимать его нужно из
+  // обработчика ошибки — иначе деньги простоят запертыми до срока счёта.
+  let fundClaimed = false;
 
   try {
     const db = getDb();
@@ -250,6 +260,44 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Preflight карточного фонда (трек vcc-preflight, Р1) — ПОСЛЕДНИЙ гейт
+    // перед выставлением счёта и единственная его точка на все каналы.
+    //
+    // До него порядок был такой: клиент платит -> деньги у нас -> на карточном
+    // счёте не хватает -> заказ в `failed`, деньги приняты, услуга не оказана
+    // (4 заказа из 17 оплаченных, последний 14 августа на 11 680 ₽).
+    //
+    // ⚠️ Только НОВЫЕ счета: путь `repeat_confirm` возвращается выше. Гейт стоит
+    // на выставлении счёта, а не на приёме денег — отказать по уже выданному
+    // платёжному документу значило бы не принять оплату по нему.
+    const capacity = await checkOrderFundingCapacity(order);
+    // Пропуск ЗАНЯЛ фонд под этот заказ (тикет 05). Дальше есть ровно два
+    // исхода: счёт создан — деньги обещаны клиенту со ссылкой и держатся до
+    // срока счёта; что-то упало — занятие снимаем немедленно, не дожидаясь
+    // часа простоя из-за ошибки, о которой узнали в ту же секунду.
+    fundClaimed = capacity.state === 'ok';
+    if (capacity.state === 'insufficient' || capacity.state === 'busy') {
+      // Заказ НЕ трогаем: он остаётся `ready_for_payment` с зафиксированной
+      // ценой, клиент вернётся и оплатит. Перевод в `expired`/`failed` был бы
+      // наказанием клиента за нашу проблему.
+      //
+      // Клиенту оба исхода выглядят одинаково — «техническая пауза»: разница
+      // между «денег нет» и «касса занята» ему ни о чём. А владельцу врать про
+      // нехватку фонда нельзя, поэтому у занятости свой алёрт — его шлёт сам
+      // гейт, не этот роут.
+      if (capacity.state === 'insufficient') await reportFundingCapacityBlocked(order, capacity);
+      const minutesLeft = priceLockMinutesLeft(order);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: FULFILLMENT_CAPACITY,
+          priceLockMinutesLeft: minutesLeft,
+          message: fulfillmentCapacityText(minutesLeft),
+        },
+        { status: 422 },
+      );
+    }
+
     // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
     const orderAmountKopecks = order.amountRub;
 
@@ -353,6 +401,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       invoiceNumber: invoice.providerInvoiceNumber,
     });
   } catch (err) {
+    // ⚠️ Освобождаем ДО ответа клиенту и до Sentry: этот путь проходят и
+    // таймауты шлюза, после которых заказ живёт дальше и клиент вернётся.
+    if (fundClaimed) await releaseOrderFundingClaim(orderId);
     const isApiErr = err instanceof LoveAndPayApiError;
     log.error({
       event: 'payments.create.failed',

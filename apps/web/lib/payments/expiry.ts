@@ -22,3 +22,22 @@ export function isPriceLockExpired(
     order.expiresAt.getTime() < now.getTime()
   );
 }
+
+/**
+ * Сколько минут ещё держится зафиксированная цена заказа — или `null`, если
+ * сказать нечего (срока нет либо он уже прошёл).
+ *
+ * Нужен там, где клиенту отказывают по НАШЕЙ причине (preflight карточного
+ * фонда) и зовут вернуться позже: обещать «цена держится два часа» нельзя —
+ * у конкретного заказа могло остаться десять минут, и обещание превратилось бы
+ * в обман. Округляем ВВЕРХ: неполная минута считается в пользу клиента.
+ */
+export function priceLockMinutesLeft(
+  order: { expiresAt: Date | null },
+  now: Date = new Date(),
+): number | null {
+  if (order.expiresAt === null) return null;
+  const ms = order.expiresAt.getTime() - now.getTime();
+  if (ms <= 0) return null;
+  return Math.ceil(ms / 60_000);
+}

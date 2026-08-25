@@ -8,10 +8,12 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { normalizeTelegramPhone, phoneFieldHint } from '../contacts/phone.ts';
 import { childLogger } from '../logger.ts';
+import { fulfillmentCapacityText } from '@/lib/payments/capacity';
 import {
   confirmOrder,
   EmailRequiredError,
   OrderExpiredError,
+  PaymentCapacityError,
   PaymentProviderUnavailableError,
 } from '../tool-handlers/confirm-order.ts';
 import { PROVIDER_UNAVAILABLE_TEXT } from '../loveandpay/availability.ts';
@@ -203,6 +205,12 @@ async function issueInvoiceAfterContact(
       reply = 'Номер сохранён, но срок фиксации цены истёк — оформи заказ заново.';
     } else if (err instanceof PaymentProviderUnavailableError) {
       reply = `Номер сохранён. ${PROVIDER_UNAVAILABLE_TEXT}`;
+    } else if (err instanceof PaymentCapacityError) {
+      // Карточного фонда не хватает (трек vcc-preflight): счёт не выставлен,
+      // заказ жив. Generic-ветка ниже звала бы «через минуту» — при пополнении
+      // T+1 это враньё, — и слала бы Sentry на каждый отказ мимо всякого
+      // дедупа; про этот случай кричит свой алёрт владельцу.
+      reply = `Номер сохранён. ${fulfillmentCapacityText(err.priceLockMinutesLeft)}`;
     } else if (err instanceof EmailRequiredError) {
       reply =
         'Номер сохранён. Осталась почта: открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню) и укажи её там.';

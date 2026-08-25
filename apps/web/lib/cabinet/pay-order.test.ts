@@ -14,6 +14,11 @@ const h = vi.hoisted(() => ({
     pendingPayment: null as PaymentLike | null,
   },
   findPendingMock: vi.fn(),
+  confirmOrderMock: vi.fn(async () => ({
+    paymentUrl: 'https://pay.example/new',
+    qrPayload: null,
+    expiresAt: '2026-07-20T00:00:00.000Z',
+  })),
 }));
 
 vi.mock('@oplati/db', () => ({
@@ -28,25 +33,25 @@ vi.mock('@oplati/db', () => ({
   hasRecentOrderEvent: vi.fn(async () => false),
 }));
 
-vi.mock('../tool-handlers/confirm-order.ts', () => {
+vi.mock('../tool-handlers/confirm-order.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tool-handlers/confirm-order.ts')>();
   class TelegramLinkRequiredError extends Error {}
   class PaymentProviderUnavailableError extends Error {}
   class OrderExpiredError extends Error {}
   return {
+    ...actual,
     TelegramLinkRequiredError,
     PaymentProviderUnavailableError,
     OrderExpiredError,
-    confirmOrder: vi.fn(async () => ({
-      paymentUrl: 'https://pay.example/new',
-      qrPayload: null,
-      expiresAt: '2026-07-20T00:00:00.000Z',
-    })),
+    confirmOrder: h.confirmOrderMock,
   };
 });
 
 vi.mock('../catalog/propose.ts', () => ({ proposeFromCatalog: vi.fn() }));
 vi.mock('../telegram/support.ts', () => ({ sendToSupportOperator: vi.fn(async () => true) }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+
+import { PaymentCapacityError } from '../tool-handlers/confirm-order.ts';
 
 import { extractInvoiceLink, payOrder } from './actions.ts';
 
@@ -64,6 +69,11 @@ beforeEach(() => {
   h.state.order = { id: 'o1', userId: 'u1', status: 'pending_payment' };
   h.state.pendingPayment = { id: 'p1', rawPayload: STORED_INVOICE };
   h.findPendingMock.mockImplementation(async () => h.state.pendingPayment);
+  h.confirmOrderMock.mockResolvedValue({
+    paymentUrl: 'https://pay.example/new',
+    qrPayload: null,
+    expiresAt: '2026-07-20T00:00:00.000Z',
+  });
 });
 
 describe('extractInvoiceLink (T-4)', () => {
@@ -106,5 +116,22 @@ describe('payOrder — выставленный счёт (L-5)', () => {
   it('чужой заказ → not_found (ownership)', async () => {
     const res = await payOrder('other-user', 'o1');
     expect(res).toMatchObject({ ok: false, error: 'not_found' });
+  });
+});
+
+describe('payOrder — карту выпустить нечем (тикет 02 vcc-preflight)', () => {
+  it('клиент Mini App видит честный текст, а не «попробуй ещё раз»', async () => {
+    // «Не получилось создать счёт, попробуй через минуту» здесь было бы враньём
+    // дважды: счёт не создан не из-за сбоя, и минуты не хватит — фонд
+    // пополняется T+1.
+    h.state.order = { id: 'o1', userId: 'u1', status: 'ready_for_payment' };
+    h.confirmOrderMock.mockRejectedValueOnce(new PaymentCapacityError(43));
+
+    const res = await payOrder('u1', 'o1');
+
+    expect(res).toMatchObject({ ok: false });
+    const message = String((res as { message?: string }).message);
+    expect(message).toMatch(/заказ сохранён/i);
+    expect(message).not.toMatch(/баланс|фонд|PaySpace/i);
   });
 });

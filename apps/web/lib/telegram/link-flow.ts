@@ -7,10 +7,12 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
 import { formatExpires, formatRub } from '@/components/comic/format';
 import { childLogger } from '@/lib/logger';
+import { fulfillmentCapacityText } from '@/lib/payments/capacity';
 import { currentBuyerFeePercent } from '@/lib/payments/gateway';
 import {
   confirmOrder,
   EmailRequiredError,
+  PaymentCapacityError,
   PhoneRequiredError,
 } from '@/lib/tool-handlers/confirm-order';
 
@@ -242,6 +244,14 @@ async function buildPendingOrderHandoffText(
       return (
         'Готово, Telegram привязан! Остался один шаг до оплаты: укажи почту для связи по заказу — открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню), поле почты там, на экране заказа. После этого счёт выставится там же.'
       );
+    }
+    // Карточного фонда не хватает (трек vcc-preflight): счёт не выставлен, но
+    // клиент шёл по ссылке ИМЕННО оплатить — тишина после «привязан!» оставила
+    // бы его гадать, куда делся счёт. Это штатный исход, а не сбой: про него
+    // кричит свой алёрт владельцу, и Sentry шуметь незачем.
+    if (err instanceof PaymentCapacityError) {
+      log.info({ event: 'telegram.link.handoff_fulfillment_capacity', updateId });
+      return `Готово, Telegram привязан! ${fulfillmentCapacityText(err.priceLockMinutesLeft)}`;
     }
     // Привязку из-за счёта не роняем: уйдёт стандартный LINK_SUCCESS_TEXT,
     // пользователь оплатит с сайта или из кабинета.

@@ -145,6 +145,7 @@ export {
   setOrderCardId,
   setOrderExpiresAt,
   findExpiredPayableOrders,
+  findOrdersCommittingCardFund,
   findStaleOrdersInPaymentReview,
   findStuckPaidOrders,
   findStuckInFulfillmentOrders,
@@ -153,6 +154,7 @@ export {
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
   PAYMENT_REMINDER_FAILED_EVENT,
+  PAYMENT_BLOCKED_CAPACITY_EVENT,
   claimPaymentReminder,
   claimRenewalReminder,
   hasRecentOrderEvent,
@@ -273,3 +275,15 @@ export {
   type PanelOrderPayment,
   type PanelOrderSort,
 } from './panel.ts';
+
+export {
+  saveVccBalanceSnapshot,
+  getVccBalanceSnapshot,
+  acquireCardFundLock,
+  sumLiveCardFundReservations,
+  insertCardFundReservation,
+  releaseCardFundReservation,
+  deleteExpiredCardFundReservations,
+  VCC_SNAPSHOT_PROVIDER,
+  type VccBalanceSnapshot,
+} from './vcc-balance.ts';

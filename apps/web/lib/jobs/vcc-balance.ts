@@ -2,9 +2,13 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
+import { getDb } from '@oplati/db';
+
 import { notifyStaff } from '../alerts/notify-staff.ts';
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import { orderFundingRequirementUsdCents } from '../pay-space/funding.ts';
+import { persistVccBalanceSnapshot } from '../pay-space/snapshot.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 
 const log = childLogger('vcc-balance');
@@ -62,10 +66,15 @@ function isAlertDisabled(): boolean {
  * перестают, и это уже случалось.
  */
 export function vccAlertThresholdsUsdCents(): { critical: number; low: number } {
-  const bufferPercent = serverEnv.PAYSPACE_CARD_BUFFER_PERCENT;
-  const fee = serverEnv.CARD_ISSUE_FEE_USD_CENTS;
-  const withBuffer = (usdCents: number) =>
-    Math.ceil(usdCents * (1 + bufferPercent / 100)) + fee;
+  // ⚠️ Своей формулы здесь больше НЕТ (тикет 01 трека vcc-preflight). Порог
+  // отвечает на вопрос «хватит ли на следующий заказ», а сколько заказ стоит
+  // фонду, знает `orderFundingRequirementUsdCents` — она же единственный
+  // источник этого числа для остальных потребителей. Держать здесь копию
+  // значило бы, что два ответа об одних и тех же деньгах расходятся от правки
+  // в одном месте, и ничто при этом не падает.
+  // Клиент без карты — худший (и типичный) случай: комиссию за выпуск считаем.
+  const requirementFor = (usdCents: number) =>
+    orderFundingRequirementUsdCents({ priceUsdCents: usdCents, needsNewCard: true });
 
   // Явно заданный порог — это право владельца назвать свою цифру; тогда он и
   // есть критический уровень.
@@ -75,8 +84,8 @@ export function vccAlertThresholdsUsdCents(): { critical: number; low: number } 
   // подталкивал бы ровно к тому, чего тикет избегает.
   const explicit = serverEnv.PAYSPACE_MIN_VCC_BALANCE_USD_CENTS;
   if (explicit > 0) return { critical: explicit, low: explicit };
-  const critical = withBuffer(TYPICAL_ORDER_USD_CENTS);
-  return { critical, low: Math.max(critical, withBuffer(MAX_ORDER_USD_CENTS)) };
+  const critical = requirementFor(TYPICAL_ORDER_USD_CENTS);
+  return { critical, low: Math.max(critical, requirementFor(MAX_ORDER_USD_CENTS)) };
 }
 
 /**
@@ -96,14 +105,29 @@ function dailyKey(now: Date): string {
 
 export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void> {
   if (!isPaySpaceConfigured()) return;
-  if (isAlertDisabled()) {
-    log.debug({ event: 'vcc_balance.alert_disabled' });
-    return;
-  }
 
-  const { critical, low } = vccAlertThresholdsUsdCents();
+  // ⚠️ Выключатель алёрта гасит СООБЩЕНИЯ, а не опрос. Раньше он стоял выше и
+  // выходил до запроса — после тикета 03 это тихо ломало бы гейт оплаты:
+  // снимок фонда перестал бы обновляться, и каждая оплата снова ходила бы к
+  // провайдеру. Флаг называется «алёрт выключен», им он и остаётся.
+  const alertDisabled = isAlertDisabled();
+  if (alertDisabled) log.debug({ event: 'vcc_balance.alert_disabled' });
+
   try {
-    const { balanceUsdCents } = await getPaySpaceClient().getVccBalance();
+    // ⚠️ Расчёт порога — ВНУТРИ try. Он больше не инлайн-арифметика: формула
+    // требования валидирует вход и умеет бросить, а этот модуль обещает, что
+    // сбой наблюдателя не роняет наблюдаемое (крон опроса платежей).
+    const { critical, low } = vccAlertThresholdsUsdCents();
+    const { balanceUsdCents, pendingUsdCents } = await getPaySpaceClient().getVccBalance();
+
+    // Снимок пишется ВСЕГДА, а не только при низком балансе: гейт оплаты
+    // (`lib/pay-space/preflight.ts`) читает именно нормальное значение — по
+    // нему он пропускает счёт, не ходя к провайдеру. Крон и так спрашивал
+    // баланс каждые 5 минут и выбрасывал ответ.
+    await persistVccBalanceSnapshot(getDb(), { balanceUsdCents, pendingUsdCents, readAt: now }, 'cron');
+
+    if (alertDisabled) return;
+
     if (balanceUsdCents >= low) {
       log.info({ event: 'vcc_balance.ok', balanceUsdCents });
       return;

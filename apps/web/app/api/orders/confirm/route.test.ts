@@ -51,6 +51,7 @@ vi.mock('@/lib/tool-handlers/confirm-order', async (importOriginal) => {
 
 import {
   OrderAboveMaxAmountError,
+  PaymentCapacityError,
   OrderExpiredError,
   PaymentProviderUnavailableError,
   TelegramLinkRequiredError,
@@ -218,6 +219,18 @@ describe('типизированные отказы → HTTP-коды, по ко
     const body = (await res.json()) as { error: string; text: string };
     expect(body.error).toBe('above_max_amount');
     expect(body.text).toContain('140');
+  });
+
+  it('карту выпустить нечем → 422 с честным текстом', async () => {
+    // Клиент видит «техническая пауза», а не «недостаточно средств»: последнее
+    // он прочитал бы как проблему СВОЕЙ карты. Про фонд и провайдера — молчок.
+    h.confirmOrder.mockRejectedValueOnce(new PaymentCapacityError(43));
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; text: string };
+    expect(body.error).toBe('fulfillment_capacity');
+    expect(body.text).toMatch(/заказ сохранён/i);
+    expect(body.text).not.toMatch(/баланс|фонд|PaySpace/i);
   });
 
   it('транспорт до шлюза лежит → 503 provider_unavailable', async () => {
