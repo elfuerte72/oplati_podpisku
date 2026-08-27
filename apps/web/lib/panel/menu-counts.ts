@@ -39,8 +39,17 @@ import { canAccess } from './permissions';
 
 const log = childLogger('panel.menu-counts');
 
-const COUNT_TTL_MS = 5_000;
+/**
+ * Срок памятки ДЛИННЕЕ шага живого обновления (25 с): у `countUnansweredSupportRequests`
+ * нет индекса под предикат по jsonb, и одна вкладка на каждом обновлении гоняла
+ * бы seq-scan `messages`. Теперь процесс делает не больше одного такого запроса
+ * на секцию за срок, сколько бы вкладок ни было открыто. Действие оператора,
+ * меняющее число, сбрасывает памятку явно (`invalidateMenuCounts`).
+ */
+const COUNT_TTL_MS = 30_000;
 const COUNT_DEADLINE_MS = 2_000;
+/** Одно событие Sentry на секцию за окно — лежащая база не должна бить в Sentry каждым рендером. */
+const SENTRY_WINDOW_MS = 10 * 60_000;
 
 export type PendingTotals = { count: number; sumKopecks: number };
 
@@ -50,9 +59,10 @@ export type PendingTotals = { count: number; sumKopecks: number };
  * каждый рендер, а поздний удачный ответ выбрасывался бы; здесь все рендеры
  * ждут один и тот же запрос, каждый — не дольше своего бюджета.
  */
-type Slot<T> = { work: Promise<T | null>; at: number };
+type Slot<T> = { work: Promise<T | null>; at: number; done: boolean };
 
 const memo: { pending?: Slot<PendingTotals>; support?: Slot<number> } = {};
+const lastReportedAt: Partial<Record<MenuBadgeSection, number>> = {};
 
 /**
  * Сбросить памятку после действия, которое меняет число: ответ клиенту в
@@ -62,6 +72,10 @@ const memo: { pending?: Slot<PendingTotals>; support?: Slot<number> } = {};
 export function invalidateMenuCounts(section?: MenuBadgeSection): void {
   if (section === undefined || section === 'pending') delete memo.pending;
   if (section === undefined || section === 'support') delete memo.support;
+  if (section === undefined) {
+    delete lastReportedAt.pending;
+    delete lastReportedAt.support;
+  }
 }
 
 /** Дедлайн без отмены: запрос дорабатывает в фоне и кормит памятку. */
@@ -90,7 +104,10 @@ function through<T>(
   now: number,
 ): Promise<T | null> {
   let slot = get();
-  if (!slot || now - slot.at >= COUNT_TTL_MS) {
+  // Незавершённый запрос переиспользуется НЕЗАВИСИМО от срока: запрос длиннее
+  // срока иначе заменялся бы новым, пока старый ещё работает, — тот же пайл-ап,
+  // только раз в срок, а не раз в рендер.
+  if (!slot || (slot.done && now - slot.at >= COUNT_TTL_MS)) {
     // `run` — под промисом: синхронный бросок `getDb()` (не задан `DATABASE_URL`)
     // иначе ронял бы оболочку вместе со страницей. Таймаут — только лог (база
     // медленная), а НЕОЖИДАННЫЙ отказ уходит в Sentry: «зелёная панель,
@@ -99,12 +116,17 @@ function through<T>(
       .then(run)
       .catch((err: unknown) => {
         log.warn({ event: 'panel.menu_counts.failed', section, err });
-        Sentry.captureException(err, { tags: { source: 'panel.menu-counts', section } });
+        const reportedAt = lastReportedAt[section];
+        if (reportedAt === undefined || now - reportedAt >= SENTRY_WINDOW_MS) {
+          lastReportedAt[section] = now;
+          Sentry.captureException(err, { tags: { source: 'panel.menu-counts', section } });
+        }
         return null;
       });
-    const fresh: Slot<T> = { work, at: now };
+    const fresh: Slot<T> = { work, at: now, done: false };
     set(fresh);
     void work.then((value) => {
+      fresh.done = true;
       if (value === null && get() === fresh) set(undefined);
     });
     slot = fresh;

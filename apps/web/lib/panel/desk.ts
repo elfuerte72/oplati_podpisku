@@ -1,6 +1,6 @@
 import type { StaffRole } from '@oplati/db';
 
-import { canAccess } from './permissions';
+import { canAccess, type PanelSection } from './permissions';
 
 /**
  * Рабочий стол панели (тикет 08) — решение «что показать», отделённое от
@@ -64,7 +64,7 @@ export function isDeskQuiet(signals: DeskSignals): boolean {
  * тип чисел, и цикл ниже, и проверка в оболочке — добавить раздел, забыв одно
  * из трёх мест, нельзя.
  */
-export const MENU_BADGE_SECTIONS = ['pending', 'support'] as const;
+export const MENU_BADGE_SECTIONS = ['pending', 'support'] as const satisfies readonly PanelSection['capability'][];
 
 export type MenuBadgeSection = (typeof MENU_BADGE_SECTIONS)[number];
 

@@ -30,6 +30,7 @@ import {
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
 import { notifyStaff } from '../alerts/notify-staff.ts';
+import { SECTION_TITLES } from '../panel/labels.ts';
 
 /**
  * Опрос ОДНОГО pending-платежа у его шлюза — общий примитив двух cron'ов.
@@ -400,7 +401,7 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
   await notifyStaff(
     `Платёж на проверке банка: операция ${providerOrderId} на ${(payment.amountRub / 100).toFixed(2)} RUB. ` +
       `Деньги списаны, карта не выпущена — исход решает провайдер. ` +
-      `Заказ виден в панели, раздел «Проверка платежей»: /admin/holds`,
+      `Заказ виден в панели, раздел «${SECTION_TITLES.holds}»: /admin/holds`,
     // ⚠️ Без фолбэка владельцу: он идёт следующей строкой и текстом подробнее.
     // С фолбэком на пустом `staff` (а он пуст до заведения персонала) один холд
     // давал бы владельцу два DM подряд.
