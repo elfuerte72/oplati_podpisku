@@ -30,11 +30,11 @@ import { canAccess } from './permissions';
  *   - у запроса есть дедлайн: зависшая выборка гасит число, а не держит весь
  *     ответ страницы (тот же приём, что у чтения карточного счёта);
  *   - неудача НЕ запоминается: следующий рендер спрашивает снова, иначе один
- *     сбой держал бы стол на «не получили» весь срок памятки;
+ *     сбой держал бы стол на «не получили» весь срок памятки; а действие,
+ *     меняющее число (ответ клиенту), сбрасывает памятку явно —
+ *     `invalidateMenuCounts`;
  *   - никогда не бросает: отказ базы — это `null` («не получили»), страница
- *     остаётся живой. Таймаут — только лог (база медленная), а НЕОЖИДАННЫЙ
- *     отказ запроса уходит в Sentry: «зелёная панель, мёртвый счётчик» — ровно
- *     та форма, в которой прошёл инцидент `freekassa_nonce`.
+ *     остаётся живой.
  */
 
 const log = childLogger('panel.menu-counts');
@@ -44,39 +44,43 @@ const COUNT_DEADLINE_MS = 2_000;
 
 export type PendingTotals = { count: number; sumKopecks: number };
 
-type Slot<T> = { promise: Promise<T | null>; at: number };
+/**
+ * Слот памятки держит САМ запрос (без дедлайна): дедлайн — на каждый вызов,
+ * а не на запрос. Иначе медленная база порождала бы по новому запросу на
+ * каждый рендер, а поздний удачный ответ выбрасывался бы; здесь все рендеры
+ * ждут один и тот же запрос, каждый — не дольше своего бюджета.
+ */
+type Slot<T> = { work: Promise<T | null>; at: number };
 
 const memo: { pending?: Slot<PendingTotals>; support?: Slot<number> } = {};
 
 /**
- * Дедлайн без отмены: postgres-js запрос не прервать, но ждать его дольше
- * бюджета страница не обязана — число гаснет, запрос дорабатывает в фоне.
+ * Сбросить памятку после действия, которое меняет число: ответ клиенту в
+ * поддержке гасит «без ответа», и следующий `router.refresh()` обязан показать
+ * свежий счётчик, а не переждать срок памятки.
  */
-function withDeadline<T>(section: keyof typeof memo, work: Promise<T>): Promise<T | null> {
+export function invalidateMenuCounts(section?: MenuBadgeSection): void {
+  if (section === undefined || section === 'pending') delete memo.pending;
+  if (section === undefined || section === 'support') delete memo.support;
+}
+
+/** Дедлайн без отмены: запрос дорабатывает в фоне и кормит памятку. */
+function withDeadline<T>(section: MenuBadgeSection, work: Promise<T | null>): Promise<T | null> {
   return new Promise<T | null>((resolve) => {
     const timer = setTimeout(() => {
       log.warn({ event: 'panel.menu_counts.slow', section, deadlineMs: COUNT_DEADLINE_MS });
       resolve(null);
     }, COUNT_DEADLINE_MS);
-    work.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err: unknown) => {
-        clearTimeout(timer);
-        log.warn({ event: 'panel.menu_counts.failed', section, err });
-        Sentry.captureException(err, { tags: { source: 'panel.menu-counts', section } });
-        resolve(null);
-      },
-    );
+    void work.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
   });
 }
 
 /**
  * Памяткой владеет ТОЛЬКО эта функция: она кладёт слот и она же убирает его,
- * если запрос не ответил, — неудача буквально не хранится, а не «протухает по
- * волшебному времени».
+ * если запрос отказал, — неудача буквально не хранится.
  */
 function through<T>(
   section: MenuBadgeSection,
@@ -85,16 +89,27 @@ function through<T>(
   run: () => Promise<T>,
   now: number,
 ): Promise<T | null> {
-  const slot = get();
-  if (slot && now - slot.at < COUNT_TTL_MS) return slot.promise;
-  // `run` — под промисом: синхронный бросок `getDb()` (не задан `DATABASE_URL`)
-  // иначе обходил бы `withDeadline` и ронял оболочку вместе со страницей.
-  const fresh: Slot<T> = { promise: withDeadline(section, Promise.resolve().then(run)), at: now };
-  set(fresh);
-  void fresh.promise.then((value) => {
-    if (value === null && get() === fresh) set(undefined);
-  });
-  return fresh.promise;
+  let slot = get();
+  if (!slot || now - slot.at >= COUNT_TTL_MS) {
+    // `run` — под промисом: синхронный бросок `getDb()` (не задан `DATABASE_URL`)
+    // иначе ронял бы оболочку вместе со страницей. Таймаут — только лог (база
+    // медленная), а НЕОЖИДАННЫЙ отказ уходит в Sentry: «зелёная панель,
+    // мёртвый счётчик» — та форма, в которой прошёл инцидент `freekassa_nonce`.
+    const work: Promise<T | null> = Promise.resolve()
+      .then(run)
+      .catch((err: unknown) => {
+        log.warn({ event: 'panel.menu_counts.failed', section, err });
+        Sentry.captureException(err, { tags: { source: 'panel.menu-counts', section } });
+        return null;
+      });
+    const fresh: Slot<T> = { work, at: now };
+    set(fresh);
+    void work.then((value) => {
+      if (value === null && get() === fresh) set(undefined);
+    });
+    slot = fresh;
+  }
+  return withDeadline(section, slot.work);
 }
 
 /** Заказов, ждущих оплаты, и их сумма — для стола и меню. `null` — не получили. */

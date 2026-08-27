@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { Suspense } from 'react';
 
 import { isMenuBadgeSection, menuBadges, type MenuBadgeSection } from '@/lib/panel/desk';
 import { ACTION_TITLES, FORBIDDEN_TEXT, attentionLabel } from '@/lib/panel/labels';
@@ -16,12 +17,13 @@ import { LiveRefresh } from './LiveRefresh';
  * Скрывать пункт значило бы полагаться на то, что менеджер не наберёт адрес
  * руками; настоящая защита живёт в операции (`guardPanelOperation`).
  *
- * Счётчики в меню (редизайн, тикет 02) считаются здесь же, на сервере, теми
- * же выборками, что питают рабочий стол; отказ базы гасит число, а не экран.
- * Обновляются вместе со страницей — живое обновление раз в 25 с их тоже
- * перерисовывает.
+ * Счётчики в меню (редизайн, тикет 02) считаются на сервере теми же
+ * выборками, что питают рабочий стол, но В `<Suspense>`: оболочка рендерится
+ * ПОСЛЕ данных страницы, и ожидание счётчиков здесь же добавляло бы к каждому
+ * экрану ещё один поход в базу перед первым байтом. Теперь страница уходит
+ * сразу, числа доезжают потоком; отказ базы гасит число, а не экран.
  */
-export async function PanelShell({
+export function PanelShell({
   actor,
   current,
   live = true,
@@ -35,7 +37,6 @@ export async function PanelShell({
   children: React.ReactNode;
 }) {
   const sections = sectionsFor(actor.role);
-  const badges = menuBadges(actor.role, await readMenuCounts(actor.role));
 
   return (
     <div className="panel-shell">
@@ -58,7 +59,11 @@ export async function PanelShell({
             >
               {section.title}
               {section.allowed ? null : ' ·'}
-              {badgeFor(section.capability, badges)}
+              {isMenuBadgeSection(section.capability) ? (
+                <Suspense fallback={null}>
+                  <NavBadge role={actor.role} section={section.capability} />
+                </Suspense>
+              ) : null}
             </Link>
           ))}
         </nav>
@@ -82,13 +87,12 @@ export async function PanelShell({
   );
 }
 
-function badgeFor(
-  capability: string,
-  badges: Partial<Record<MenuBadgeSection, number>>,
-): React.ReactNode {
-  // Только у разделов из `MENU_BADGE_SECTIONS` — без своих литералов здесь.
-  if (!isMenuBadgeSection(capability)) return null;
-  const count = badges[capability];
+/**
+ * Счётчик одного пункта. Все пункты зовут один `readMenuCounts` — запрос в
+ * памятке общий, так что два бейджа не означают два похода в базу.
+ */
+async function NavBadge({ role, section }: { role: PanelActor['role']; section: MenuBadgeSection }) {
+  const count = menuBadges(role, await readMenuCounts(role))[section];
   if (count === undefined) return null;
   return (
     <span className="panel-nav-badge" aria-label={attentionLabel(count)}>
