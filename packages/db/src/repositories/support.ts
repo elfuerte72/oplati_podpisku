@@ -1,6 +1,10 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { ConversationMode } from '@oplati/types';
-import { SUPPORT_AI_META_SOURCE, SUPPORT_STATE_META_SOURCE } from '@oplati/types';
+import {
+  SUPPORT_AI_META_SOURCE,
+  SUPPORT_REQUEST_META_KEY,
+  SUPPORT_STATE_META_SOURCE,
+} from '@oplati/types';
 
 import { conversations, messages } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
@@ -53,6 +57,11 @@ export type TransitionConversationModeInput = {
 export type TransitionConversationModeResult = {
   transitioned: boolean;
   /**
+   * Режим не менялся — только продлён срок (повтор в том же режиме с тем же
+   * ведущим). Служебной строки нет, события эскалации быть не должно.
+   */
+  touched?: boolean;
+  /**
    * ФАКТИЧЕСКОЕ состояние из БД, а не запрошенное. Проигравший гонку обязан
    * плясать от того, что в базе: соврать ему «перевели в operator», когда там
    * уже `idle`, значит отправить клиенту обещание ответа, которого не будет.
@@ -99,6 +108,27 @@ export async function transitionConversationMode(
   const fromModes = Array.isArray(input.from) ? input.from : [input.from as ConversationMode];
 
   return await db.transaction(async (tx) => {
+    // ⚠️ Повтор в ТОМ ЖЕ режиме с ТЕМ ЖЕ ведущим — это touch, а не переход:
+    // третий ответ оператора подряд не должен рисовать в ленте третью
+    // служебную строку «→ operator» и третье событие эскалации. Служебные
+    // строки — след настоящих переходов; их дубли похоронили бы ленту.
+    if (fromModes.includes(to)) {
+      const current = await getConversationState(tx, conversationId);
+      const sameOwner =
+        input.assignedOperatorId === undefined ||
+        current?.assignedOperatorId === input.assignedOperatorId;
+      if (current && current.mode === to && sameOwner) {
+        await tx.execute(sql`
+          UPDATE conversations
+             SET mode_expires_at = ${modeExpiresAt === null ? null : modeExpiresAt.toISOString()},
+                 updated_at = now()
+           WHERE id = ${conversationId}
+        `);
+        log.info({ event: 'db.support.transition_touch', conversationId, mode: to, trigger });
+        return { transitioned: true, state: { ...current, modeExpiresAt }, touched: true };
+      }
+    }
+
     const conditions = [
       sql`id = ${conversationId}`,
       sql`handoff_mode IN (${sql.join(
@@ -274,10 +304,14 @@ export async function findUnansweredSupportConversations(
     last_client_at: Date | string;
   }>(sql`
     WITH asked AS (
+      -- ТОТ ЖЕ предикат, что у панели (listSupportRequestsForPanel,
+      -- countUnansweredSupportRequests): маркер обращения на строке, а не
+      -- любая реплика клиента. Иначе бейдж «без ответа» в панели и пинг крона
+      -- считались бы по разным правилам и расходились на живых разговорах.
       SELECT m.conversation_id, max(m.created_at) AS last_client_at
         FROM messages m
         JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.role = 'user'
+       WHERE (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
          AND c.handoff_mode = 'operator'
        GROUP BY m.conversation_id
     )
@@ -327,6 +361,28 @@ export async function countSupportAiReplies(
 }
 
 /**
+ * Когда персоналу в последний раз уходил пинг о новом сообщении клиента в
+ * ЭТОМ разговоре. Факт хранится в `messages.meta` строки клиента
+ * (`staff_pinged_at`), а не в Redis: у Redis fail-open, и при его аварии
+ * оператор получал бы пинг на каждое сообщение ждущего клиента.
+ */
+export async function findLastStaffFollowUpAt(
+  db: DB,
+  conversationId: string,
+): Promise<Date | null> {
+  const rows = await db.execute<{ at: Date | string }>(sql`
+    SELECT (meta ->> 'staff_pinged_at') AS at
+      FROM messages
+     WHERE conversation_id = ${conversationId}
+       AND meta ? 'staff_pinged_at'
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1
+  `);
+  const at = rows[0]?.at;
+  return at ? new Date(at) : null;
+}
+
+/**
  * `meta.source` строк, которые в контекст помощника подавать НЕЛЬЗЯ.
  *
  * Разговор в БД один на клиента и копит всё подряд: приветствие Оплатишки на
@@ -342,7 +398,12 @@ export async function countSupportAiReplies(
  * разворачивает в кортеж `($1, $2, $3)`, а `ALL` требует массив или подзапрос —
  * запрос падал на синтаксисе (поймано тестом, до прода не доехало).
  */
-const NON_CONVERSATIONAL_SOURCES = ['static_greeting', 'silent_hint', 'support_greeting'];
+const NON_CONVERSATIONAL_SOURCES = [
+  'static_greeting',
+  'silent_hint',
+  'support_greeting',
+  'support_follow_up_ping',
+];
 
 /**
  * Последние строки разговора для истории помощника.

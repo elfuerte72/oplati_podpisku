@@ -11,8 +11,13 @@ import { isWithinOperatorHours } from '../telegram/templates.ts';
 /**
  * Tool `request_human` — заявка оператору.
  *
- * Текущее состояние (Спринт 1): реального handoff в forum-topics ещё нет.
- * Пишем event `handoff_requested` в `order_events` (append-only audit log).
+ * С 2026-08-27 ведёт в ОБЩИЙ механизм эскалации поддержки (переход режима
+ * разговора в `operator` + уведомление персонала), если вызывающий передал
+ * `escalateToHuman`. До этого команда никого не звала: писала строку в
+ * `order_events` и молчала — и включение `BOT_AI_ENABLED` оживило бы этот
+ * молчаливый путь. Запись `handoff_requested` при `orderId` сохранена как
+ * дополнение: это аудит-след по заказу, у поддержки его нет.
+ *
  * Возвращаем AI флаг `withinBusinessHours`, чтобы он подобрал точный текст
  * ответа («свяжемся в течение часа» vs «ответим утром»).
  *
@@ -45,8 +50,25 @@ export async function requestHuman(input: {
   reason: string;
   userId: string;
   conversationId: string;
+  escalateToHuman?: (reason: string) => Promise<void>;
 }): Promise<RequestHumanResult> {
   const withinBusinessHours = isWithinOperatorHours();
+
+  // Общий механизм — ПЕРВЫМ и best-effort: сорвавшаяся передача не должна
+  // ронять tool (модель получила бы ошибку и переспросила клиента, хочет ли
+  // он оператора, — которого уже просил). Сам сбой виден в логе модуля.
+  if (input.escalateToHuman) {
+    try {
+      await input.escalateToHuman(input.reason);
+    } catch (err) {
+      log.error({
+        event: 'tool.request_human.escalate_failed',
+        conversationId: input.conversationId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      Sentry.captureException(err, { tags: { source: 'tool.request_human' } });
+    }
+  }
 
   log.info({
     event: 'tool.request_human',

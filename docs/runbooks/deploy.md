@@ -483,3 +483,26 @@ curl -sD - -o /dev/null https://www.oplatishka.com/ | grep -i 'report-uri.*sentr
 руками. Пошаговый чек-лист — в
 [`../history/dokploy-cutover-report.md`](../history/dokploy-cutover-report.md),
 раздел 12.
+
+
+## Выкат помощника поддержки (трек support-ai)
+
+Порядок — спека §13, сверен с тем, что реально сделано в коде:
+
+1. **Миграция `0041_conscious_lilith`** — одна (не две: пара «enum отдельно + использование»
+   падает у drizzle-мигратора, см. `CLAUDE.md` → «Расширение enum»). Применить на прод и dev
+   ПОСЛЕ выката кода; `/api/ready` в окне красный — штатно.
+2. **Ключ DeepSeek** — `SUPPORT_AI_API_KEY` в env обоих приложений Dokploy (один ключ на
+   dev и prod). `SUPPORT_AI_BASE_URL`/`SUPPORT_AI_MODEL` не задавать — дефолты в коде.
+3. **Смоук и eval** с ключом: `pnpm --filter @oplati/agent smoke:support` (сверить `model` в
+   ответе — незнакомый id DeepSeek молча маппит на flash), затем `eval:support`; результаты —
+   в Comments тикетов 02 и 08.
+4. **`SUPPORT_AI_ENABLED=1` на dev** → нажать «Поддержка» в `@dev_test_podpiska_bot`,
+   проверить приветствие, ответ, «Завершить», `/start`-сброс, эскалацию словом «оператор».
+5. **Строка крона на VPS** — `support-housekeeping` из `infra/crontab.example` в
+   `/etc/cron.d/oplatishka` (сдвиг `:07`, чтобы не совпадать с `expire-payments`).
+6. **`SUPPORT_AI_ENABLED=1` на prod** + redeploy. Персонал должен один раз запустить бота
+   входа — иначе пинги «без ответа» уйдут владельцу через `notifyOps`.
+
+Откат — `SUPPORT_AI_ENABLED=0` + redeploy: кнопка снова ведёт в двухшаговый флоу к человеку,
+миграцию откатывать не нужно (колонка и значение enum безвредны).

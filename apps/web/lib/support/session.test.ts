@@ -12,6 +12,7 @@ import {
   SUPPORT_CAP_REACHED,
   SUPPORT_CLOSED_BY_CLIENT,
   SUPPORT_GREETING,
+  SUPPORT_GUARDED,
   SUPPORT_MEDIA_TO_AI,
   SUPPORT_MEDIA_TO_OPERATOR,
 } from './texts';
@@ -31,6 +32,7 @@ type Harness = {
   touches: { mode: string; modeExpiresAt: Date | null }[];
   events: { name: string; [k: string]: unknown }[];
   staffNotified: { trigger: string; reason: string | null }[];
+  staffFollowUps: unknown[];
   snapshot: ConversationSnapshot | null;
   historyRows: SupportHistoryRow[];
   modelCalls: { role: string; content: string }[][];
@@ -42,10 +44,12 @@ function harness(over: Partial<{
   snapshot: ConversationSnapshot | null;
   aiReplies: number;
   configured: boolean;
-  modelReply: { text: string; toolsUsed?: string[] } | Error;
+  modelReply: { text: string; toolsUsed?: string[]; requestHuman?: string } | Error;
   transitioned: boolean;
   historyRows: SupportHistoryRow[];
   staffDelivered: boolean;
+  /** Когда персоналу в последний раз уходил пинг о новом сообщении клиента. */
+  followUpNotifiedAt: Date | null;
 }> = {}): Harness {
   const sent: Harness['sent'] = [];
   const appended: Harness['appended'] = [];
@@ -53,6 +57,7 @@ function harness(over: Partial<{
   const touches: Harness['touches'] = [];
   const events: Harness['events'] = [];
   const staffNotified: Harness['staffNotified'] = [];
+  const staffFollowUps: Harness['staffFollowUps'] = [];
   const modelCalls: Harness['modelCalls'] = [];
 
   const state: Harness['snapshot'] =
@@ -68,6 +73,7 @@ function harness(over: Partial<{
     touches,
     events,
     staffNotified,
+    staffFollowUps,
     snapshot: state,
     historyRows,
     modelCalls,
@@ -109,12 +115,15 @@ function harness(over: Partial<{
       },
       model: {
         configured: () => over.configured ?? true,
-        reply: async (history) => {
+        reply: async (history, hooks) => {
           modelCalls.push(history);
           const r = over.modelReply ?? { text: 'Ответ помощника.' };
           // Порт тотальный: авария провайдера приходит как `null`, уже
           // записанная в лог и Sentry реализацией порта.
           if (r instanceof Error) return null;
+          // Модель «позвала человека» — как это сделал бы tool `request_human`
+          // внутри цикла: через хук, который модуль передал порту.
+          if (r.requestHuman !== undefined) await hooks.requestHuman(r.requestHuman);
           return {
             text: r.text,
             model: 'deepseek-v4-flash',
@@ -135,6 +144,11 @@ function harness(over: Partial<{
           staffNotified.push({ trigger: input.trigger, reason: input.reason });
           return over.staffDelivered ?? true;
         },
+        notifyFollowUp: async () => {
+          staffFollowUps.push(true);
+          return true;
+        },
+        lastFollowUpAt: async () => over.followUpNotifiedAt ?? null,
       },
       analytics: {
         track: (e) => {
@@ -181,11 +195,22 @@ describe('открытие сессии', () => {
     expect(h.touches).toHaveLength(1);
   });
 
-  it('разговор ведёт человек — кнопка НЕ отбирает его у оператора', async () => {
+  it('разговор ведёт человек — кнопка НЕ отбирает его у оператора, но и не молчит (РЕГРЕСС V9)', async () => {
     const h = harness({ snapshot: operator });
     const res = await openSupportSession(h.ports, { surface: 'button', now: NOW });
 
     expect(res.status).toBe('operator_leads');
+    expect(h.transitions).toHaveLength(0);
+    // Клиент нажал и ждёт хоть чего-то: говорим, кто ведёт и что ответ придёт сюда.
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.text).toContain('у оператора');
+  });
+
+  it('РЕГРЕСС V1: без ключа сессия НЕ открывается — приветствие без ответа за ним хуже флоу к человеку', async () => {
+    const h = harness({ snapshot: idle, configured: false });
+    const res = await openSupportSession(h.ports, { surface: 'button', now: NOW });
+
+    expect(res.status).toBe('unavailable');
     expect(h.transitions).toHaveLength(0);
     expect(h.sent).toHaveLength(0);
   });
@@ -218,7 +243,10 @@ describe('ход помощника', () => {
 
     expect(res).toEqual({ status: 'answered' });
     expect(h.sent).toEqual([{ text: 'Ответ помощника.', withFinishButton: true }]);
-    expect(h.appended[0]).toMatchObject({
+    // Реплика клиента — ПЕРВОЙ и ровно одна: её пишет модуль, а не бот (V2).
+    expect(h.appended[0]).toMatchObject({ role: 'user', content: 'когда придёт карта?' });
+    expect(h.appended.filter((r) => r.role === 'user')).toHaveLength(1);
+    expect(h.appended[1]).toMatchObject({
       role: 'assistant',
       content: 'Ответ помощника.',
       meta: expect.objectContaining({ source: 'support_ai', model: 'deepseek-v4-flash' }),
@@ -534,5 +562,133 @@ describe('завершение сессии', () => {
   it('закрывать нечего (idle) — тихо ничего не делаем', async () => {
     const h = harness({ snapshot: idle });
     expect((await closeSupportSession(h.ports, { reason: 'client', now: NOW })).closed).toBe(false);
+  });
+});
+
+describe('жёсткий триггер (тикет 04)', () => {
+  it('«позовите оператора» уходит человеку ДО вызова модели', async () => {
+    const h = harness();
+    const res = await handleSupportMessage(h.ports, { text: 'позовите оператора', kind: 'text', now: NOW });
+
+    expect(res).toEqual({ status: 'escalated', trigger: 'hard' });
+    expect(h.modelCalls).toHaveLength(0);
+    expect(h.transitions[0]).toMatchObject({ to: 'operator', trigger: 'hard' });
+  });
+
+  it('категория триггера уходит оператору причиной', async () => {
+    const h = harness();
+    await handleSupportMessage(h.ports, { text: 'хочу возврат', kind: 'text', now: NOW });
+
+    expect(h.staffNotified[0]).toMatchObject({ trigger: 'hard' });
+    expect(h.staffNotified[0]?.reason).toContain('refund');
+  });
+
+  it('ход из суточного лимита на триггер не тратится', async () => {
+    const h = harness({ aiReplies: DAILY_AI_REPLY_CAP });
+    // Даже при исчерпанном капе триггер срабатывает: человек важнее лимита.
+    const res = await handleSupportMessage(h.ports, { text: 'это мошенники', kind: 'text', now: NOW });
+    expect(res).toEqual({ status: 'escalated', trigger: 'hard' });
+  });
+
+  it('обычный вопрос триггер не задевает', async () => {
+    const h = harness();
+    await handleSupportMessage(h.ports, { text: 'когда придёт карта?', kind: 'text', now: NOW });
+    expect(h.modelCalls).toHaveLength(1);
+  });
+});
+
+describe('tool request_human (тикет 04)', () => {
+  it('модель позвала человека — переход с триггером model и причиной модели', async () => {
+    const h = harness({ modelReply: { text: 'Передаю оператору.', requestHuman: 'вопрос про документы' } });
+    const res = await handleSupportMessage(h.ports, { text: 'нужна справка', kind: 'text', now: NOW });
+
+    expect(res).toEqual({ status: 'escalated', trigger: 'model' });
+    expect(h.transitions.find((t) => t.to === 'operator')).toMatchObject({ trigger: 'model' });
+    expect(h.staffNotified[0]).toMatchObject({ trigger: 'model', reason: 'вопрос про документы' });
+  });
+
+  it('после эскалации текст модели клиенту НЕ отправляется — ему уже сказано «передаю оператору»', async () => {
+    const h = harness({ modelReply: { text: 'Сейчас всё узнаю.', requestHuman: 'причина' } });
+    await handleSupportMessage(h.ports, { text: 'вопрос', kind: 'text', now: NOW });
+
+    const texts = h.sent.map((m) => m.text);
+    expect(texts).not.toContain('Сейчас всё узнаю.');
+    expect(texts.some((t) => t.startsWith('Передаю оператору'))).toBe(true);
+  });
+
+  it('повторный вызов в уже переданном разговоре не плодит уведомлений', async () => {
+    const h = harness({ modelReply: { text: '', requestHuman: 'ещё раз' } });
+    // Первый ход — передал.
+    await handleSupportMessage(h.ports, { text: 'вопрос', kind: 'text', now: NOW });
+    // Разговор теперь у оператора: второй ход модели вообще не случится.
+    const res = await handleSupportMessage(h.ports, { text: 'и ещё', kind: 'text', now: NOW });
+
+    expect(res).toEqual({ status: 'operator_leads' });
+    expect(h.staffNotified).toHaveLength(1);
+  });
+});
+
+describe('выходной фильтр (тикет 04)', () => {
+  it('запрещённое слово в ответе: клиент видит нейтральную фразу, разговор уходит человеку', async () => {
+    const h = harness({ modelReply: { text: 'Карту выпускает PaySpace, всё надёжно.' } });
+    const res = await handleSupportMessage(h.ports, { text: 'кто выпускает карту?', kind: 'text', now: NOW });
+
+    expect(res).toEqual({ status: 'escalated', trigger: 'guard' });
+    const texts = h.sent.map((m) => m.text);
+    expect(texts.some((t) => t.includes('PaySpace'))).toBe(false);
+    expect(texts[0]).toBe(SUPPORT_GUARDED);
+  });
+
+  it('пойманный ответ НЕ записывается в переписку как ответ помощника', async () => {
+    const h = harness({ modelReply: { text: 'Наша комиссия 30%.' } });
+    await handleSupportMessage(h.ports, { text: 'какой процент?', kind: 'text', now: NOW });
+
+    const aiRows = h.appended.filter((r) => r.meta?.source === 'support_ai');
+    expect(aiRows).toHaveLength(0);
+    // А реплика клиента — есть: её пишет модуль до любого исхода.
+    expect(h.appended.some((r) => r.role === 'user')).toBe(true);
+  });
+
+  it('событие аналитики помечает ход как guarded', async () => {
+    const h = harness({ modelReply: { text: 'Статус payment_review.' } });
+    await handleSupportMessage(h.ports, { text: 'статус?', kind: 'text', now: NOW });
+
+    expect(h.events).toContainEqual({ name: 'support_ai_reply', toolsUsed: 0, guarded: true });
+    expect(h.events).toContainEqual({ name: 'support_escalated', trigger: 'guard' });
+  });
+
+  it('чистый ответ проходит без задержек', async () => {
+    const h = harness({ modelReply: { text: 'Карта придёт в Telegram после оплаты.' } });
+    expect(await handleSupportMessage(h.ports, { text: 'когда карта?', kind: 'text', now: NOW })).toEqual({
+      status: 'answered',
+    });
+  });
+});
+
+describe('сообщение клиента в режиме оператора (тикет 04)', () => {
+  it('пишется с маркером обращения, срок сбрасывается в null, персонал уведомлён', async () => {
+    const h = harness({ snapshot: operator });
+    const res = await handleSupportMessage(h.ports, { text: 'вы тут?', kind: 'text', now: NOW });
+
+    expect(res).toEqual({ status: 'operator_leads' });
+    expect(h.touches).toContainEqual({ mode: 'operator', modeExpiresAt: null });
+    expect(h.appended).toContainEqual(
+      expect.objectContaining({ role: 'user', meta: expect.objectContaining({ support_request: true }) }),
+    );
+    expect(h.staffFollowUps).toHaveLength(1);
+  });
+
+  it('уведомление персоналу дедупится: второе сообщение за полчаса не пингует', async () => {
+    const h = harness({ snapshot: operator, followUpNotifiedAt: new Date(NOW.getTime() - 10 * 60_000) });
+    await handleSupportMessage(h.ports, { text: 'ещё раз', kind: 'text', now: NOW });
+
+    expect(h.staffFollowUps).toHaveLength(0);
+  });
+
+  it('прошло больше получаса — пингуем снова', async () => {
+    const h = harness({ snapshot: operator, followUpNotifiedAt: new Date(NOW.getTime() - 31 * 60_000) });
+    await handleSupportMessage(h.ports, { text: 'ау', kind: 'text', now: NOW });
+
+    expect(h.staffFollowUps).toHaveLength(1);
   });
 });

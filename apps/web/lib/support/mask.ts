@@ -30,13 +30,30 @@ const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
  * Границы `(?<!\d)`/`(?!\d)` обязательны: без них шаблон откусывал бы кусок
  * длинного числа и превращал «1234567890123456789» в «[телефон]789».
  */
-const PHONE_RE = /(?<![\d+])\+?\d(?:[ .\-()]?\d){9,14}(?!\d)/g;
+const PHONE_RE = /(?<![\d+])\+?\d(?:[ .\-()]?\d){9,11}(?!\d)/g;
+
+/**
+ * Даты и время — НЕ телефон, но телефонный шаблон их ел: `2026-08-27 12:30`
+ * это 12 цифр с разделителями. Клиент пишет «оплатил 2026-08-27 в 12:30» —
+ * и модель видела «оплатил [телефон]:30». Закрываем их заранее, чтобы
+ * телефонный шаблон до них не дошёл; после маскирования ставим обратно.
+ */
+const DATE_TIME_RE = /\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?|\d{2}[./]\d{2}[./]\d{4}(?: \d{2}:\d{2})?/g;
 
 export function maskForModel(text: string): string {
   if (!text) return text;
-  const withoutEmails = text.replace(EMAIL_RE, '[email]');
+  // Даты вынимаем ДО всего: и телефонный, и карточный шаблон видят в них
+  // длинные числа. Плейсхолдер без цифр и без `@` — его ни один шаблон не
+  // тронет; возвращаем даты на место в конце.
+  const dates: string[] = [];
+  const withoutDates = text.replace(DATE_TIME_RE, (m) => {
+    dates.push(m);
+    return `\u0000D${dates.length - 1}\u0000`;
+  });
+  const withoutEmails = withoutDates.replace(EMAIL_RE, '[email]');
   // Карты — существующей функцией бота: у неё уже есть проверка Луна, и вторая
   // реализация того же правила была бы зеркалом (инвариант 10).
   const withoutCards = redactCardNumbers(withoutEmails);
-  return withoutCards.replace(PHONE_RE, '[телефон]');
+  const masked = withoutCards.replace(PHONE_RE, '[телефон]');
+  return masked.replace(/\u0000D(\d+)\u0000/g, (_, i: string) => dates[Number(i)] ?? '');
 }

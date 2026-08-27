@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { SUPPORT_BLOCK_TEXT } from './labels';
-import { SUPPORT_HISTORY_DAYS, supportReplyBlockReason, supportRoleLabel } from './support';
+import {
+  SUPPORT_HISTORY_DAYS,
+  canReturnToAi,
+  supportReplyBlockReason,
+  supportRoleLabel,
+  supportStateNote,
+} from './support';
 import { MESSAGES_RETENTION_DAYS } from '@/lib/retention-policy';
 
 const STAFF = 'staff-1';
@@ -79,8 +85,65 @@ describe('supportRoleLabel', () => {
     expect(supportRoleLabel('operator', null)).toBe('Оператор');
   });
 
+  it('помощник поддержки — отдельная подпись, а не «Бот»', () => {
+    // В БД оба — `assistant`. Менеджер обязан видеть, где приветствие
+    // Оплатишки, а где ответ ИИ-помощника, который мог ошибиться.
+    expect(supportRoleLabel('assistant', null, { source: 'support_ai' })).toBe('Помощник');
+    expect(supportRoleLabel('assistant', null, { source: 'static_greeting' })).toBe('Бот');
+    expect(supportRoleLabel('assistant', null, null)).toBe('Бот');
+  });
+
+  it('служебная строка подписана словом, а не сырой ролью', () => {
+    expect(supportRoleLabel('system', null)).toBe('Служебное');
+  });
+
   it('незнакомая роль показывается как есть', () => {
-    expect(supportRoleLabel('system', null)).toBe('system');
+    expect(supportRoleLabel('supervisor', null)).toBe('supervisor');
+  });
+});
+
+describe('supportStateNote', () => {
+  it('переход показывается режимом, триггером и причиной', () => {
+    expect(
+      supportStateNote({ source: 'support_state', from: 'ai', to: 'operator', trigger: 'hard', reason: 'refund: «возврат»' }),
+    ).toBe('Режим: Оператор · жёсткое слово · refund: «возврат»');
+  });
+
+  it('без причины — без хвоста', () => {
+    expect(supportStateNote({ source: 'support_state', from: 'idle', to: 'ai', trigger: 'button' })).toBe(
+      'Режим: Помощник · кнопка «Поддержка»',
+    );
+  });
+
+  it('незнакомый триггер показывается как есть, а не прячется', () => {
+    expect(supportStateNote({ source: 'support_state', to: 'idle', trigger: 'future_thing' })).toContain(
+      'future_thing',
+    );
+  });
+
+  it('обычная system-строка без нашей meta — null: показывать как есть', () => {
+    expect(supportStateNote({ source: 'something_else' })).toBeNull();
+    expect(supportStateNote(null)).toBeNull();
+  });
+});
+
+describe('canReturnToAi', () => {
+  it('ведущий может вернуть свой разговор', () => {
+    expect(canReturnToAi({ actorId: STAFF, actorRole: 'operator', assignedOperatorId: STAFF })).toBe(true);
+  });
+
+  it('чужой разговор вернуть нельзя — решение «я закончил» принимает тот, кто вёл', () => {
+    expect(canReturnToAi({ actorId: STAFF, actorRole: 'operator', assignedOperatorId: 'staff-2' })).toBe(
+      false,
+    );
+  });
+
+  it('админ может вернуть любой — сотрудник ушёл в отпуск, а разговор висит', () => {
+    expect(canReturnToAi({ actorId: STAFF, actorRole: 'admin', assignedOperatorId: 'staff-2' })).toBe(true);
+  });
+
+  it('свободный разговор (эскалация без захвата) вернуть может любой с правом', () => {
+    expect(canReturnToAi({ actorId: STAFF, actorRole: 'operator', assignedOperatorId: null })).toBe(true);
   });
 });
 

@@ -64,6 +64,16 @@ export type SupportModelReply = {
   incomplete: boolean;
 };
 
+/**
+ * Что модель может сделать ВО ВРЕМЯ хода через tools. Модуль отдаёт хуки
+ * порту, порт — обработчикам tools: так `request_human` из tool'а и жёсткий
+ * триггер идут ОДНИМ путём эскалации, а не двумя.
+ */
+export interface SupportModelHooks {
+  /** Модель позвала человека. Возвращает после того, как передача состоялась. */
+  requestHuman(reason: string): Promise<void>;
+}
+
 export interface SupportModelPort {
   /** Есть ли ключ. Флаг включён без ключа обязан вести себя как выключённый. */
   configured(): boolean;
@@ -75,6 +85,7 @@ export interface SupportModelPort {
    */
   reply(
     history: { role: 'user' | 'assistant'; content: string }[],
+    hooks: SupportModelHooks,
   ): Promise<SupportModelReply | null>;
 }
 
@@ -83,7 +94,7 @@ export interface SupportDeliveryPort {
   toClient(text: string, opts?: { withFinishButton?: boolean }): Promise<boolean>;
 }
 
-/** Уведомление персонала об эскалации. `false` — обращение НЕ доставлено. */
+/** Уведомление персонала. `false` — НЕ доставлено. */
 export interface SupportStaffPort {
   notifyEscalation(input: {
     trigger: SupportEscalationTrigger;
@@ -91,6 +102,14 @@ export interface SupportStaffPort {
     /** Последние реплики для контекста оператора. Уже замаскированы. */
     lastMessages: SupportHistoryRow[];
   }): Promise<boolean>;
+  /** Клиент написал в разговор, который ведёт человек. Текст уже замаскирован. */
+  notifyFollowUp(input: { text: string }): Promise<boolean>;
+  /**
+   * Когда персоналу в последний раз уходил пинг по ЭТОМУ разговору. Для
+   * дедупа: ждущий ответа клиент пишет пять сообщений подряд, а оператору
+   * нужен один пинг в полчаса, не пять.
+   */
+  lastFollowUpAt(): Promise<Date | null>;
 }
 
 export type SupportAnalyticsEvent =

@@ -217,7 +217,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       // принимает вебхуки платежей.
       const albumFirst =
         !message.media_group_id || claimMediaGroup(String(message.media_group_id));
-      if (isSupportAiEnabled() && albumFirst) {
+      if (isSupportAiEnabled() && !albumFirst) {
+        // Второе-десятое фото альбома: первое уже обработано (ответом
+        // помощника или подсказкой). Молча — иначе подсказка «картинки не
+        // разбираю» уходила бы поверх ответа помощника.
+        return;
+      }
+      if (isSupportAiEnabled()) {
         const ctx = await persistInbound(update, message);
         if (ctx) {
           const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
@@ -323,10 +329,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     if (isSupportAiEnabled()) {
       const ctx = await persistInbound(update, message);
       if (ctx) {
+        // Команду как реплику пишем сами: модуль пишет только то, что уйдёт
+        // модели, а «/support» ей не нужен. Текст после команды запишет модуль.
         await safeAppendMessage(
           ctx,
           'user',
-          text,
+          '/support',
           { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
           update.update_id,
         );
@@ -362,6 +370,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           await routeSupportIncoming(ctx, chatId, update, message, {
             text: inline,
             kind: 'text',
+            userMeta: { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
           });
         }
         return;
@@ -381,17 +390,34 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   });
 
   const ctx = await persistInbound(update, message);
+  const userMeta = {
+    telegram_update_id: update.update_id,
+    telegram_message_id: message.message_id,
+  };
   if (ctx) {
-    await safeAppendMessage(
-      ctx,
-      'user',
-      text,
-      {
-        telegram_update_id: update.update_id,
-        telegram_message_id: message.message_id,
-      },
-      update.update_id,
-    );
+    // ⚠️ При включённом помощнике реплику клиента пишет МОДУЛЬ поддержки —
+    // только он знает режим и ставит маркер обращения в `operator`. Бот
+    // пишет её сам лишь когда модуль сказал «сессии нет».
+    let writtenByModule = false;
+    if (isSupportAiEnabled()) {
+      const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
+        text,
+        kind: 'text',
+        userMeta,
+      });
+      if (outcome.status === 'operator_leads') {
+        // Разговор ведёт человек: он ответит из панели. Бот молчит, чтобы не
+        // вклиниваться в чужой диалог второй репликой.
+        return;
+      }
+      if (outcome.status !== 'not_in_session' && outcome.status !== 'state_unavailable') {
+        return;
+      }
+      writtenByModule = false;
+    }
+    if (!writtenByModule) {
+      await safeAppendMessage(ctx, 'user', text, userMeta, update.update_id);
+    }
 
     // Pending-state читаем ОДИН раз (meta последнего assistant-сообщения) и
     // диспатчим: ожидание описания для /support ИЛИ ожидание суммы для
@@ -402,26 +428,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     // оператору.
     if (await tryHandlePendingSupport(ctx, message, chatId, text, pendingMeta, update.update_id)) {
       return;
-    }
-
-    // Сессия помощника поддержки. Стоит ДО гейта `BOT_AI_ENABLED`: это
-    // РАЗНЫЕ контуры — продажный агент в чате выключен, а помощник отвечает
-    // тем, кто явно нажал «Поддержка». Вне сессии модуль возвращает
-    // `not_in_session`, и клиент проваливается в подсказку, как раньше:
-    // правило В3 (обращение создаёт только кнопка) не нарушено.
-    if (isSupportAiEnabled()) {
-      const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
-        text,
-        kind: 'text',
-      });
-      if (outcome.status === 'operator_leads') {
-        // Разговор ведёт человек: он ответит из панели. Бот молчит, чтобы не
-        // вклиниваться в чужой диалог второй репликой.
-        return;
-      }
-      if (outcome.status !== 'not_in_session' && outcome.status !== 'state_unavailable') {
-        return;
-      }
     }
 
     // Кнопочный флоу custom-amount (Airbnb и т.п.) — часть каталога, за флагом

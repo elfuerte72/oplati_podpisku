@@ -10,6 +10,7 @@ import { appendMessage } from './repositories/messages.ts';
 import { claimSupportConversation } from './repositories/panel.ts';
 import {
   countSupportAiReplies,
+  findLastStaffFollowUpAt,
   loadSupportHistory,
   findExpiredOperatorConversations,
   findUnansweredSupportConversations,
@@ -122,8 +123,18 @@ describe('миграция режимов разговора', () => {
       sql`SELECT handoff_mode, mode_expires_at FROM conversations ORDER BY handoff_mode`,
     );
     expect(modes.map((r) => r.handoff_mode).sort()).toEqual(['idle', 'operator']);
-    // Новая колонка появляется пустой: срока у унаследованных режимов нет.
-    expect(modes.every((r) => r.mode_expires_at === null)).toBe(true);
+
+    // `ai → idle` — без срока. `operator` — с УНАСЛЕДОВАННЫМ сроком в сутки:
+    // до миграции «подключиться» никто не отпускал, и `NULL` означал бы «ждём
+    // человека — не гаснет никогда»: клиент с такой строкой при включённом
+    // помощнике не получал бы ничего, пока оператор не нажмёт «Закрыть».
+    const byMode = new Map(modes.map((r) => [r.handoff_mode, r.mode_expires_at]));
+    expect(byMode.get('idle')).toBeNull();
+    const operatorExpiry = byMode.get('operator');
+    expect(operatorExpiry).not.toBeNull();
+    const ms = new Date(operatorExpiry as Date | string).getTime() - Date.now();
+    expect(ms).toBeGreaterThan(23 * 3_600_000);
+    expect(ms).toBeLessThan(25 * 3_600_000);
   });
 });
 
@@ -315,6 +326,53 @@ describe('transitionConversationMode', () => {
   });
 });
 
+describe('transitionConversationMode — повтор в том же режиме (РЕГРЕСС V11)', () => {
+  it('второй захват тем же оператором продлевает срок, но НЕ пишет служебную строку', async () => {
+    const operator = await makeStaff();
+    const conversation = await makeConversation({ mode: 'operator', assignedOperatorId: operator.id });
+    const claim = (expiresAt: Date) =>
+      transitionConversationMode(db, {
+        conversationId: conversation.id,
+        from: ['idle', 'ai', 'operator'],
+        to: 'operator',
+        trigger: 'operator_reply',
+        modeExpiresAt: expiresAt,
+        assignedOperatorId: operator.id,
+        onlyIfFreeOrOwnedBy: operator.id,
+      });
+
+    // Первый ответ — уже в operator с тем же ведущим: тоже touch.
+    const first = await claim(minutesFromNow(60));
+    const later = minutesFromNow(24 * 60);
+    const second = await claim(later);
+
+    expect(first.transitioned).toBe(true);
+    expect(second).toMatchObject({ transitioned: true, touched: true });
+    expect((await getConversationState(db, conversation.id))?.modeExpiresAt?.getTime()).toBe(later.getTime());
+    // Три ответа оператора подряд не должны рисовать три «→ operator» в ленте.
+    expect(await systemRows(conversation.id)).toHaveLength(0);
+  });
+
+  it('смена ведущего — это переход, а не touch: служебная строка пишется', async () => {
+    const conversation = await makeConversation({ mode: 'ai', modeExpiresAt: minutesFromNow(30) });
+    const operator = await makeStaff();
+
+    const res = await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: ['idle', 'ai', 'operator'],
+      to: 'operator',
+      trigger: 'operator_reply',
+      modeExpiresAt: minutesFromNow(24 * 60),
+      assignedOperatorId: operator.id,
+      onlyIfFreeOrOwnedBy: operator.id,
+    });
+
+    expect(res).toMatchObject({ transitioned: true });
+    expect(res.touched).toBeFalsy();
+    expect(await systemRows(conversation.id)).toHaveLength(1);
+  });
+});
+
 describe('touchConversationMode', () => {
   it('продлевает срок, НЕ плодя служебных строк', async () => {
     const conversation = await makeConversation({ mode: 'ai', modeExpiresAt: minutesFromNow(1) });
@@ -389,7 +447,14 @@ describe('выборки крона поддержки', () => {
 
   it('«без ответа»: клиент ждёт дольше порога — попадает в выборку', async () => {
     const conversation = await makeConversation({ mode: 'operator', modeExpiresAt: null });
-    await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'помогите' });
+    // Маркер обращения — ТОТ ЖЕ предикат, что у панели: иначе бейдж «без
+    // ответа» и пинг крона считались бы по разным правилам.
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'помогите',
+      meta: { support_request: true },
+    });
     await db
       .update(schema.messages)
       .set({ createdAt: hoursAgo(3) })
@@ -408,6 +473,7 @@ describe('выборки крона поддержки', () => {
       conversationId: conversation.id,
       role: 'user',
       content: 'помогите',
+      meta: { support_request: true },
     });
     await db.update(schema.messages).set({ createdAt: hoursAgo(3) }).where(eq(schema.messages.id, asked.id));
     const replied = await appendMessage(db, {
@@ -426,7 +492,23 @@ describe('выборки крона поддержки', () => {
 
   it('«без ответа»: клиент написал только что — порог не пройден', async () => {
     const conversation = await makeConversation({ mode: 'operator', modeExpiresAt: null });
-    await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'ещё вопрос' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'ещё вопрос',
+      meta: { support_request: true },
+    });
+
+    const ids = (await findUnansweredSupportConversations(db, { olderThan: hoursAgo(2), limit: 50 })).map(
+      (r) => r.conversationId,
+    );
+    expect(ids).not.toContain(conversation.id);
+  });
+
+  it('«без ответа»: реплика БЕЗ маркера обращения не считается — как и в панели (РЕГРЕСС V14)', async () => {
+    const conversation = await makeConversation({ mode: 'operator', modeExpiresAt: null });
+    const row = await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'просто текст' });
+    await db.update(schema.messages).set({ createdAt: hoursAgo(5) }).where(eq(schema.messages.id, row.id));
 
     const ids = (await findUnansweredSupportConversations(db, { olderThan: hoursAgo(2), limit: 50 })).map(
       (r) => r.conversationId,
@@ -440,6 +522,7 @@ describe('выборки крона поддержки', () => {
       conversationId: conversation.id,
       role: 'user',
       content: 'вопрос',
+      meta: { support_request: true },
     });
     await db.update(schema.messages).set({ createdAt: hoursAgo(5) }).where(eq(schema.messages.id, asked.id));
 
@@ -588,6 +671,57 @@ describe('loadSupportHistory (контекст помощника)', () => {
   });
 });
 
+describe('findLastStaffFollowUpAt (дедуп пингов персоналу)', () => {
+  it('пингов не было — null', async () => {
+    const conversation = await makeConversation({ mode: 'operator' });
+    expect(await findLastStaffFollowUpAt(db, conversation.id)).toBeNull();
+  });
+
+  it('возвращает время ПОСЛЕДНЕГО пинга, не первого', async () => {
+    const conversation = await makeConversation({ mode: 'operator' });
+    const first = new Date('2026-08-27T10:00:00Z');
+    const second = new Date('2026-08-27T11:00:00Z');
+    for (const at of [first, second]) {
+      const row = await appendMessage(db, {
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: '[персонал уведомлён]',
+        meta: { source: 'support_follow_up_ping', staff_pinged_at: at.toISOString() },
+      });
+      await db.update(schema.messages).set({ createdAt: at }).where(eq(schema.messages.id, row.id));
+    }
+
+    expect((await findLastStaffFollowUpAt(db, conversation.id))?.getTime()).toBe(second.getTime());
+  });
+
+  it('пинг чужого разговора не считается', async () => {
+    const mine = await makeConversation({ mode: 'operator' });
+    const alien = await makeConversation({ mode: 'operator' });
+    await appendMessage(db, {
+      conversationId: alien.id,
+      role: 'assistant',
+      content: '[персонал уведомлён]',
+      meta: { source: 'support_follow_up_ping', staff_pinged_at: new Date().toISOString() },
+    });
+
+    expect(await findLastStaffFollowUpAt(db, mine.id)).toBeNull();
+  });
+
+  it('строка пинга в контекст помощника не попадает', async () => {
+    const conversation = await makeConversation({ mode: 'ai' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: '[персонал уведомлён]',
+      meta: { source: 'support_follow_up_ping', staff_pinged_at: new Date().toISOString() },
+    });
+    await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'вопрос' });
+
+    const history = await loadSupportHistory(db, { conversationId: conversation.id, limit: 20 });
+    expect(history.map((r) => r.content)).toEqual(['вопрос']);
+  });
+});
+
 describe('совместимость с панелью', () => {
   it('«подключиться» из панели работает поверх нового дефолта idle', async () => {
     const operator = await makeStaff();
@@ -600,6 +734,19 @@ describe('совместимость с панелью', () => {
     const state = await getConversationState(db, conversation.id);
     expect(state?.mode).toBe('operator');
     expect(state?.assignedOperatorId).toBe(operator.id);
+    // Единый писатель режима: захват оставляет след, как любой переход (V12).
+    expect(await systemRows(conversation.id)).toHaveLength(1);
+  });
+
+  it('«подключиться» к чужому — taken, к несуществующему — not_found', async () => {
+    const first = await makeStaff();
+    const second = await makeStaff();
+    const conversation = await makeConversation({ mode: 'operator', assignedOperatorId: first.id });
+
+    expect(await claimSupportConversation(db, { conversationId: conversation.id, staffId: second.id })).toBe('taken');
+    expect(
+      await claimSupportConversation(db, { conversationId: '00000000-0000-0000-0000-000000000000', staffId: second.id }),
+    ).toBe('not_found');
   });
 
   it('«подключиться» из сессии помощника гасит срок: взять себе — не значит ответить', async () => {

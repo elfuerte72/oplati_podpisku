@@ -15,7 +15,7 @@ process.env.TELEGRAM_BOT_TOKEN = '123:test-token';
 const h = vi.hoisted(() => ({
   trackMock: vi.fn(),
   sendMock: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true),
-  appendMock: vi.fn(async () => undefined),
+  appendMock: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
   startMock: vi.fn(async () => undefined),
   supportCommandMock: vi.fn(async () => undefined),
   supportCallbackMock: vi.fn(async () => undefined),
@@ -104,7 +104,7 @@ vi.mock('./vpn-flow', () => ({
 }));
 
 import { handleTelegramUpdate } from './handle-update';
-import { __resetSilentHintMemory } from './silent-hint';
+import { __resetMediaGroupMemory, __resetSilentHintMemory } from './silent-hint';
 import { SILENT_TEXT_HINT } from './templates';
 
 let updateId = 5000;
@@ -122,7 +122,7 @@ function textUpdate(text: string) {
   };
 }
 
-function photoUpdate() {
+function photoUpdate(mediaGroupId?: string) {
   return {
     update_id: ++updateId,
     message: {
@@ -131,6 +131,7 @@ function photoUpdate() {
       chat: { id: 42, type: 'private' as const },
       from: { id: 7, is_bot: false, first_name: 'Клиент' },
       photo: [{ file_id: 'f1', file_unique_id: 'u1', width: 10, height: 10 }],
+      ...(mediaGroupId ? { media_group_id: mediaGroupId } : {}),
     },
   };
 }
@@ -155,6 +156,7 @@ function callbackUpdate(data: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   __resetSilentHintMemory();
+  __resetMediaGroupMemory();
   h.state.botAiEnabled = false;
   h.state.supportAiEnabled = true;
   h.state.persist = true;
@@ -275,6 +277,26 @@ describe('свободный текст', () => {
     expect(h.sendMock).not.toHaveBeenCalled();
   });
 
+  it('РЕГРЕСС V2: в сессии реплику клиента бот НЕ пишет — её пишет модуль, иначе дубль в ленте', async () => {
+    await handleTelegramUpdate(textUpdate('когда придёт карта?') as never);
+
+    expect(h.appendMock).not.toHaveBeenCalled();
+    // Meta бота (id апдейта/сообщения) уезжает модулю, чтобы строка была
+    // неотличима от той, что писал бы бот.
+    expect(h.routeIncomingMock.mock.calls[0]?.[4]).toMatchObject({
+      userMeta: expect.objectContaining({ telegram_message_id: expect.any(Number) }),
+    });
+  });
+
+  it('вне сессии (idle) реплику клиента пишет бот, как раньше', async () => {
+    h.routeIncomingMock.mockResolvedValue({ status: 'not_in_session' });
+    await handleTelegramUpdate(textUpdate('помогите') as never);
+
+    // Одна реплика клиента (вторая запись — подсказка `assistant`, это норма).
+    const userWrites = h.appendMock.mock.calls.filter((c) => c[1] === 'user');
+    expect(userWrites).toHaveLength(1);
+  });
+
   it('вне сессии (idle) — прежняя подсказка с кнопкой: обращение создаёт только нажатие', async () => {
     h.routeIncomingMock.mockResolvedValue({ status: 'not_in_session' });
     await handleTelegramUpdate(textUpdate('помогите') as never);
@@ -299,6 +321,17 @@ describe('свободный текст', () => {
 });
 
 describe('медиа', () => {
+  it('РЕГРЕСС V3: хвост альбома молчит — первое фото уже получило ответ', async () => {
+    h.routeIncomingMock.mockResolvedValue({ status: 'media_rejected' });
+    await handleTelegramUpdate(photoUpdate('album-1') as never);
+    await handleTelegramUpdate(photoUpdate('album-1') as never);
+    await handleTelegramUpdate(photoUpdate('album-1') as never);
+
+    expect(h.routeIncomingMock).toHaveBeenCalledTimes(1);
+    // Ни одной подсказки «картинки не разбираю» поверх ответа помощника.
+    expect(h.sendMock).not.toHaveBeenCalled();
+  });
+
   it('в сессии помощника разбирается модулем — подсказка не дублируется', async () => {
     h.routeIncomingMock.mockResolvedValue({ status: 'media_rejected' });
     await handleTelegramUpdate(photoUpdate() as never);

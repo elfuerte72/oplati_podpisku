@@ -12,7 +12,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke:support": "tsx scripts/support-smoke.ts"
+    "smoke:support": "tsx scripts/support-smoke.ts",
+    "eval:support": "tsx scripts/support-eval.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",

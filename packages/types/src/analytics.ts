@@ -294,6 +294,12 @@ export const ANALYTICS_MILESTONES = {
     description: 'Довёл до конца: подписка оплачена нашей картой на сайте сервиса.',
     source: "order_events.event_type = 'subscription_activated'",
   },
+  handoff_requested: {
+    title: 'Позвал оператора из продажного диалога',
+    description:
+      'AI-агент продаж вызвал `request_human` по заказу. С 2026-08-27 это ведёт в общий механизм эскалации поддержки (переход разговора к оператору + уведомление персонала); строка в `order_events` — аудит-след по заказу. Телеметрией не дублируется.',
+    source: "order_events.event_type = 'handoff_requested'",
+  },
   payment_issue: {
     title: 'Пожаловался на оплату',
     description: 'Карта не прошла на сайте сервиса — обращение ушло оператору.',

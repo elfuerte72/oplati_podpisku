@@ -28,9 +28,15 @@ function errorText(code: string | undefined): string {
 export function SupportReply({
   conversationId,
   needsAssign,
+  canReturn = false,
+  canClose = false,
 }: {
   conversationId: string;
   needsAssign: boolean;
+  /** «Вернуть помощнику» — только ведущему и админу, только в режиме оператора. */
+  canReturn?: boolean;
+  /** «Закрыть» — в любом режиме оператора. */
+  canClose?: boolean;
 }) {
   const router = useRouter();
   const [text, setText] = useState('');
@@ -55,6 +61,27 @@ export function SupportReply({
     const releaseBusy = markPanelBusy();
     try {
       const { ok, data } = await post('/api/panel/support/assign', { conversationId });
+      if (!ok) {
+        setError(errorText((data as { error?: string } | null)?.error));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError(FALLBACK_ERROR_TEXT);
+    } finally {
+      setBusy(false);
+      releaseBusy();
+    }
+  }
+
+  // Обе операции — простой POST без тела ввода: решение уже принято нажатием.
+  async function transition(url: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const releaseBusy = markPanelBusy();
+    try {
+      const { ok, data } = await post(url, { conversationId });
       if (!ok) {
         setError(errorText((data as { error?: string } | null)?.error));
         return;
@@ -132,6 +159,31 @@ export function SupportReply({
           {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
         </button>
       </form>
+
+      {canReturn || canClose ? (
+        <p className="panel-muted" style={{ marginTop: 12 }}>
+          {canReturn ? (
+            <button
+              type="button"
+              className="panel-button panel-button--secondary"
+              onClick={() => transition('/api/panel/support/return')}
+              disabled={busy}
+            >
+              {ACTION_TITLES.returnToAi}
+            </button>
+          ) : null}{' '}
+          {canClose ? (
+            <button
+              type="button"
+              className="panel-button panel-button--secondary"
+              onClick={() => transition('/api/panel/support/close')}
+              disabled={busy}
+            >
+              {ACTION_TITLES.closeSupport}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
     </>
   );
 }

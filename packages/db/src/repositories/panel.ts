@@ -25,6 +25,7 @@ import {
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
+import { transitionConversationMode } from './support.ts';
 import {
   PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
@@ -1116,6 +1117,12 @@ export type PanelSupportMessage = {
   content: string;
   /** Имя сотрудника для строк оператора. */
   staffName: string | null;
+  /**
+   * Meta строки — панели она нужна для двух вещей: отличить ответ ПОМОЩНИКА
+   * (`source: 'support_ai'`) от прочих ответов бота и показать у служебной
+   * строки перехода триггер и причину. Наружу из панели не уходит.
+   */
+  meta: Record<string, unknown> | null;
   createdAt: Date;
 };
 
@@ -1168,6 +1175,7 @@ export async function getSupportThreadForPanel(
       role: messages.role,
       content: messages.content,
       staffName: staff.displayName,
+      meta: messages.meta,
       createdAt: messages.createdAt,
     })
     .from(messages)
@@ -1194,6 +1202,7 @@ export async function getSupportThreadForPanel(
       role: row.role,
       content: row.content,
       staffName: row.staffName,
+      meta: row.meta,
       createdAt: row.createdAt,
     })),
     hasMore,
@@ -1211,32 +1220,27 @@ export async function claimSupportConversation(
   db: DB,
   input: { conversationId: string; staffId: string },
 ): Promise<'claimed' | 'taken' | 'not_found'> {
-  const rows = await db.execute<{ id: string }>(sql`
-    UPDATE conversations
-       SET handoff_mode = 'operator',
-           assigned_operator_id = ${input.staffId},
-           -- ⚠️ Срок режима ОБНУЛЯЕТСЯ, и это не косметика. «Подключиться» —
-           -- это «беру себе», а не «ответил»: обращение остаётся неотвеченным,
-           -- а неотвеченное не гаснет никогда (спека §1). Разговор приходит
-           -- сюда из режима помощника, где на нём висит срок «плюс 30 минут», и
-           -- сохранённый срок означал бы, что через полчаса крон хозяйства
-           -- поддержки закроет обращение, на которое оператор ещё не ответил.
-           mode_expires_at = NULL,
-           updated_at = now()
-     WHERE id = ${input.conversationId}
-       AND (assigned_operator_id IS NULL OR assigned_operator_id = ${input.staffId})
-    RETURNING id
-  `);
-  if (rows.length > 0) return 'claimed';
-
+  // Через ЕДИНСТВЕННОГО писателя режима — иначе «подключиться» было бы
+  // вторым, рукописным UPDATE тех же колонок рядом с `transitionConversationMode`,
+  // и правило про `mode_expires_at` жило бы в двух местах.
+  //
+  // ⚠️ Срок = NULL: «подключиться» — это «беру себе», а не «ответил».
+  // Неотвеченное обращение не гаснет никогда (спека §1); разговор приходит
+  // сюда из режима помощника со сроком «+30 минут», и сохранённый срок
+  // означал бы, что крон закроет обращение, на которое никто не ответил.
+  const res = await transitionConversationMode(db, {
+    conversationId: input.conversationId,
+    from: ['idle', 'ai', 'operator'],
+    to: 'operator',
+    trigger: 'operator_claim',
+    modeExpiresAt: null,
+    assignedOperatorId: input.staffId,
+    onlyIfFreeOrOwnedBy: input.staffId,
+  });
+  if (res.transitioned) return 'claimed';
   // Отличаем «занято коллегой» от «диалога нет»: одинаковый ответ отправлял бы
   // менеджера искать несуществующего коллегу.
-  const exists = await db
-    .select({ id: conversations.id })
-    .from(conversations)
-    .where(eq(conversations.id, input.conversationId))
-    .limit(1);
-  return exists.length > 0 ? 'taken' : 'not_found';
+  return res.state ? 'taken' : 'not_found';
 }
 
 /**

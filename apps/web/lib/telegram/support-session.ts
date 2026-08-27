@@ -75,12 +75,18 @@ export async function routeSupportIncoming(
   chatId: number,
   update: TelegramUpdate,
   message: TelegramMessage,
-  input: { text: string; kind: 'text' | 'media'; mediaKind?: 'photo' | 'file' },
+  input: {
+    text: string;
+    kind: 'text' | 'media';
+    mediaKind?: 'photo' | 'file';
+    userMeta?: Record<string, unknown>;
+  },
 ): Promise<SupportOutcome> {
   const ports = supportPorts(contextOf(ctx, chatId, update.update_id, message.from));
   const outcome = await handleSupportMessage(ports, {
     text: input.text,
     kind: input.kind,
+    ...(input.userMeta ? { userMeta: input.userMeta } : {}),
     ...(input.kind === 'media'
       ? { mediaPlaceholder: SUPPORT_MEDIA_PLACEHOLDER[input.mediaKind ?? 'file'] }
       : {}),

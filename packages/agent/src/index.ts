@@ -35,6 +35,13 @@ export {
   type ToolExecution,
 } from './run.ts';
 export {
+  dispatchSupportTool,
+  supportTools,
+  type SupportOrderView,
+  type SupportServiceInstructions,
+  type SupportToolHandlers,
+} from './support-tools.ts';
+export {
   buildSupportKnowledgeBase,
   buildSupportSystemPrompt,
   type SupportFacts,

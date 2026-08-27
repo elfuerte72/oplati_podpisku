@@ -357,6 +357,28 @@ export const requestHumanInput = z.object({
 });
 export type RequestHumanInput = z.infer<typeof requestHumanInput>;
 
+/**
+ * Входы read-only tools помощника поддержки (спека §6). Как и у продажных:
+ * границы валидируют сырой `tool_use.input` модели ДО обработчика.
+ *
+ * ⚠️ `userId` во входах НЕТ намеренно — его подставляет приложение из
+ * контекста. Модель, придумавшая чужой id, не должна иметь способа его
+ * передать.
+ */
+export const getMyOrdersInput = z.object({});
+export type GetMyOrdersInput = z.infer<typeof getMyOrdersInput>;
+
+export const getServiceInstructionsInput = z.object({
+  query: z.string().min(1).max(200),
+});
+export type GetServiceInstructionsInput = z.infer<typeof getServiceInstructionsInput>;
+
+/** `request_human` в поддержке: `orderId` не нужен, разговор один на клиента. */
+export const supportRequestHumanInput = z.object({
+  reason: z.string().min(1).max(2000),
+});
+export type SupportRequestHumanInput = z.infer<typeof supportRequestHumanInput>;
+
 export const handoffReason = z.enum([
   'user_requested',
   'ai_uncertain',

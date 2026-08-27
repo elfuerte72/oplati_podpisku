@@ -31,5 +31,13 @@ ALTER TABLE "conversations" ADD COLUMN "mode_expires_at" timestamp with time zon
 -- Крон хозяйства поддержки ищет истёкшие режимы раз в 15 минут, а таблица
 -- ретеншеном не чистится: без индекса это seq scan по всей истории клиентов.
 CREATE INDEX "conversations_mode_expires_at_idx" ON "conversations" USING btree ("mode_expires_at");--> statement-breakpoint
--- Строки с ведущим оператором (`operator`) не трогаем — там человек в диалоге.
-UPDATE "conversations" SET "handoff_mode" = 'idle' WHERE "handoff_mode" = 'ai';
+-- Строки `ai` → `idle`: поле никто не читал, «сессии помощника» там не было.
+UPDATE "conversations" SET "handoff_mode" = 'idle' WHERE "handoff_mode" = 'ai';--> statement-breakpoint
+-- Строки `operator` — от кнопки «Подключиться» в панели, которую до этой
+-- миграции ничто не отпускало. Оставить им `mode_expires_at = NULL` значило
+-- бы «ждём ответа человека — не гаснет никогда»: клиент с такой строкой при
+-- включённом помощнике не получал бы НИЧЕГО ни на текст, ни на кнопку, пока
+-- оператор не нажмёт «Закрыть». В `idle` их тоже не переводим — там мог быть
+-- живой разговор с человеком. Компромисс: сутки на ответ, как после реплики
+-- оператора, дальше крон закроет сам.
+UPDATE "conversations" SET "mode_expires_at" = now() + interval '24 hours' WHERE "handoff_mode" = 'operator';

@@ -16,11 +16,15 @@ import {
   COLUMN_TITLES,
   PAGE_TITLES,
   SUPPORT_BLOCK_TEXT,
+  SUPPORT_MODE_LABELS,
 } from '@/lib/panel/labels';
+import { lookupLabel } from '@/lib/panel/format';
 import {
   SUPPORT_HISTORY_DAYS,
+  canReturnToAi,
   supportReplyBlockReason,
   supportRoleLabel,
+  supportStateNote,
 } from '@/lib/panel/support';
 
 /**
@@ -68,6 +72,15 @@ export default async function PanelSupportThreadPage({
     actorId: access.actor.id,
   });
   const mine = thread.assignedOperatorId === access.actor.id;
+  const modeLabel = lookupLabel(SUPPORT_MODE_LABELS, thread.handoffMode) ?? thread.handoffMode;
+  const inOperatorMode = thread.handoffMode === 'operator';
+  const mayReturn =
+    inOperatorMode &&
+    canReturnToAi({
+      actorId: access.actor.id,
+      actorRole: access.actor.role,
+      assignedOperatorId: thread.assignedOperatorId,
+    });
 
   return (
     <PanelShell actor={access.actor}>
@@ -79,6 +92,8 @@ export default async function PanelSupportThreadPage({
         }
       >
         <p className="panel-muted">
+          {COLUMN_TITLES.mode}: {modeLabel}
+          {' · '}
           {thread.assignedOperatorName
             ? `${COLUMN_TITLES.responsible}: ${thread.assignedOperatorName}${mine ? ' (вы)' : ''}`
             : 'Ответственного нет'}
@@ -104,17 +119,29 @@ export default async function PanelSupportThreadPage({
           <p className="panel-empty">{CELL_TEXT.noMessages}</p>
         ) : (
           <ol className="panel-thread">
-            {thread.messages.map((message) => (
-              <li key={message.id} className={`panel-thread__item panel-thread__item--${message.role}`}>
-                <div className="panel-muted">
-                  {supportRoleLabel(message.role, message.staffName)} ·{' '}
-                  <LocalTime iso={message.createdAt.toISOString()} />
-                </div>
-                {/* Текст клиента печатается как есть: React экранирует его сам,
-                    а разметку мы здесь не включаем намеренно. */}
-                <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
-              </li>
-            ))}
+            {thread.messages.map((message) => {
+              // Служебная строка перехода режима — серая одна строка с
+              // триггером и причиной, а не реплика. Клиенту она не уходила.
+              const note = supportStateNote(message.meta);
+              if (note) {
+                return (
+                  <li key={message.id} className="panel-thread__item panel-thread__item--system panel-muted">
+                    {note} · <LocalTime iso={message.createdAt.toISOString()} />
+                  </li>
+                );
+              }
+              return (
+                <li key={message.id} className={`panel-thread__item panel-thread__item--${message.role}`}>
+                  <div className="panel-muted">
+                    {supportRoleLabel(message.role, message.staffName, message.meta)} ·{' '}
+                    <LocalTime iso={message.createdAt.toISOString()} />
+                  </div>
+                  {/* Текст клиента печатается как есть: React экранирует его сам,
+                      а разметку мы здесь не включаем намеренно. */}
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
+                </li>
+              );
+            })}
           </ol>
         )}
       </section>
@@ -127,6 +154,8 @@ export default async function PanelSupportThreadPage({
           <SupportReply
             conversationId={thread.conversationId}
             needsAssign={thread.assignedOperatorId === null}
+            canReturn={mayReturn}
+            canClose={inOperatorMode}
           />
         )}
       </section>

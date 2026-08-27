@@ -84,5 +84,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Добор пропущенных реферальных начислений (каждый час, :15)
 15 * * * *   root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/referral-recovery 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
+# Хозяйство поддержки: автозакрытие разговоров у оператора после 24 ч тишины клиента
+# + алёрт «обращение без ответа > 2 ч» в рабочее время (каждые 15 мин, :07)
+7-59/15 * * * * root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/support-housekeeping 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
+
 # Месячная прогрессия партнёрских статусов (1-е число, 02:00 UTC)
 0 2 1 * *    root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/referral-rollup 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err

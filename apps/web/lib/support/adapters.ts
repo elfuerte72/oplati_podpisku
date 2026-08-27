@@ -6,13 +6,14 @@ import { InlineKeyboard } from 'grammy';
 import {
   appendMessage,
   countSupportAiReplies,
+  findLastStaffFollowUpAt,
   getConversationState,
   getDb,
   loadSupportHistory,
   touchConversationMode,
   transitionConversationMode,
 } from '@oplati/db';
-import { isSupportAiConfigured, runProfile } from '@oplati/agent';
+import { dispatchSupportTool, isSupportAiConfigured, runProfile, supportTools } from '@oplati/agent';
 
 import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
@@ -30,6 +31,7 @@ import type {
 } from './ports';
 import { buildSupportProfile } from './profile';
 import { SUPPORT_FINISH_BUTTON, SUPPORT_FINISH_CALLBACK } from './texts';
+import { createSupportToolHandlers } from './tools';
 
 /**
  * Боевые реализации портов модуля поддержки.
@@ -140,9 +142,22 @@ function modelAdapter(ctx: SupportRequestContext): SupportModelPort {
       }
       return ok;
     },
-    reply: async (history) => {
+    reply: async (history, hooks) => {
       const startedAt = Date.now();
-      const profile = buildSupportProfile({ userId: ctx.userId });
+      // Tools собираются НА ХОД: `request_human` из них ведёт в хук модуля, и
+      // тем самым в тот же переход, что и жёсткий триггер.
+      const handlers = createSupportToolHandlers({
+        userId: ctx.userId,
+        requestHuman: async (reason) => {
+          await hooks.requestHuman(reason);
+          return { acknowledged: true as const };
+        },
+      });
+      const profile = buildSupportProfile({
+        userId: ctx.userId,
+        tools: supportTools,
+        dispatch: (name, rawInput) => dispatchSupportTool(handlers, name, rawInput),
+      });
       let result;
       try {
         // «Печатает…» — существующая обёртка бота: ход синхронный и заметно
@@ -167,6 +182,10 @@ function modelAdapter(ctx: SupportRequestContext): SupportModelPort {
       log.info({
         event: 'support.ai_reply',
         conversationId: ctx.conversationId,
+        // Ход помощника случается только в режиме `ai` — поле здесь ради
+        // единообразия с `support.escalated`, чтобы по LogQL оба события
+        // читались одним фильтром `mode`.
+        mode: 'ai',
         model: profile.model,
         toolCalls: result.toolCalls.length,
         incomplete: result.incomplete,
@@ -201,6 +220,16 @@ function deliveryAdapter(ctx: SupportRequestContext): SupportDeliveryPort {
 function staffAdapter(ctx: SupportRequestContext): SupportStaffPort {
   return {
     notifyEscalation: async (input) => {
+      // ⚠️ Текста клиента в логе НЕТ — только факты: триггер, причина
+      // (категория слова или фраза модели), число реплик в контексте.
+      log.info({
+        event: 'support.escalated',
+        conversationId: ctx.conversationId,
+        mode: 'operator',
+        trigger: input.trigger,
+        reason: input.reason,
+        contextMessages: input.lastMessages.length,
+      });
       // Последние реплики клиента — контекст оператору. Ответы помощника не
       // берём: оператор откроет ленту в панели, а в личку важно donести, ЧТО
       // спрашивал человек.
@@ -220,6 +249,32 @@ function staffAdapter(ctx: SupportRequestContext): SupportStaffPort {
       });
       return await sendToSupportOperator(message, { updateId: ctx.updateId });
     },
+    notifyFollowUp: async (input) => {
+      const message = buildSupportOperatorMessage({
+        telegramId: ctx.telegramId,
+        firstName: ctx.displayName ?? undefined,
+        username: ctx.username ?? undefined,
+        description: `[клиент написал в разговор, который ведёт оператор]\n${input.text}`,
+      });
+      const delivered = await sendToSupportOperator(message, { updateId: ctx.updateId });
+      if (delivered) {
+        // Факт пинга — в БД, на строке клиента: по нему считается дедуп.
+        // `system`, а не `assistant`: клиент этой строки не получал, и в
+        // ленте панели она не должна выглядеть репликой бота.
+        await appendMessage(
+          getDb(),
+          {
+            conversationId: ctx.conversationId,
+            role: 'system',
+            content: '[персонал уведомлён о новом сообщении]',
+            meta: { source: 'support_follow_up_ping', staff_pinged_at: new Date().toISOString() },
+          },
+          dbLog,
+        );
+      }
+      return delivered;
+    },
+    lastFollowUpAt: async () => await findLastStaffFollowUpAt(getDb(), ctx.conversationId),
   };
 }
 

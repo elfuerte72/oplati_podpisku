@@ -30,6 +30,7 @@ export {
 export {
   countSupportAiReplies,
   findExpiredOperatorConversations,
+  findLastStaffFollowUpAt,
   findUnansweredSupportConversations,
   getConversationState,
   loadSupportHistory,

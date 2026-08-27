@@ -18,6 +18,16 @@ import { requestHuman } from './request-human.ts';
 export type ToolContext = {
   userId: string;
   conversationId: string;
+  /**
+   * Передать разговор человеку ОБЩИМ механизмом поддержки (переход режима +
+   * уведомление персонала). Опционально: у веб-чата нет Telegram, и передать
+   * там некуда — остаётся прежняя запись `handoff_requested` в `order_events`.
+   *
+   * ⚠️ Колбэк, а не импорт модуля поддержки: `tool-handlers` — граница между
+   * агентом и приложением, и тянуть сюда grammY с адаптерами значило бы, что
+   * веб-чат грузит бота ради tool'а, который ему не нужен.
+   */
+  escalateToHuman?: (reason: string) => Promise<void>;
 };
 
 export function createToolHandlers(ctx: ToolContext): ToolHandlers {
@@ -26,6 +36,11 @@ export function createToolHandlers(ctx: ToolContext): ToolHandlers {
     propose_order: (input) => proposeOrder({ ...input, userId: ctx.userId, conversationId: ctx.conversationId }),
     confirm_order: (input) => confirmOrder({ ...input, userId: ctx.userId }),
     request_human: (input) =>
-      requestHuman({ ...input, userId: ctx.userId, conversationId: ctx.conversationId }),
+      requestHuman({
+        ...input,
+        userId: ctx.userId,
+        conversationId: ctx.conversationId,
+        ...(ctx.escalateToHuman ? { escalateToHuman: ctx.escalateToHuman } : {}),
+      }),
   };
 }

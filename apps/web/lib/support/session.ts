@@ -2,7 +2,9 @@ import { SUPPORT_AI_META_SOURCE, type SupportEscalationTrigger } from '@oplati/t
 
 import { toAgentHistory } from '../chat/history';
 
+import { matchHardTrigger } from './hard-triggers';
 import { maskForModel } from './mask';
+import { guardModelOutput } from './output-guard';
 import type {
   ConversationSnapshot,
   SupportCloseReason,
@@ -15,8 +17,10 @@ import {
   SUPPORT_CAP_REACHED,
   SUPPORT_CLOSED_BY_CLIENT,
   SUPPORT_GREETING,
+  SUPPORT_GUARDED,
   SUPPORT_MEDIA_TO_AI,
   SUPPORT_MEDIA_TO_OPERATOR,
+  SUPPORT_OPERATOR_LEADS,
 } from './texts';
 
 /**
@@ -46,6 +50,13 @@ export const DAILY_AI_REPLY_CAP = 100;
 
 /** Сколько строк переписки подаём модели. */
 export const HISTORY_LIMIT = 20;
+
+/**
+ * Как часто пингуем персонал о новых сообщениях клиента в разговоре, который
+ * ведёт человек. Ждущий ответа пишет пять раз подряд — оператору нужен один
+ * пинг, не пять.
+ */
+export const FOLLOW_UP_DEDUP_MINUTES = 30;
 
 /** Префикс, которым реплики живого оператора помечаются для модели. */
 export const OPERATOR_HISTORY_PREFIX = 'Оператор: ';
@@ -84,6 +95,22 @@ export type SupportOutcome =
   | { status: 'operator_leads' }
   /** Состояние прочитать не удалось: БД недоступна. */
   | { status: 'state_unavailable' };
+
+/**
+ * Закрыть сессию помощника: `ai → idle` без срока и ведущего. Четыре места
+ * звали переход с одинаковым телом — разъезд одного из них (забытый
+ * `assignedOperatorId: null`) оставлял бы призрачного ведущего.
+ */
+async function closeToIdle(ports: SupportPorts, trigger: string): Promise<boolean> {
+  const { transitioned } = await ports.state.transition({
+    from: 'ai',
+    to: 'idle',
+    trigger,
+    modeExpiresAt: null,
+    assignedOperatorId: null,
+  });
+  return transitioned;
+}
 
 function sessionDeadline(now: Date): Date {
   return new Date(now.getTime() + SESSION_TTL_MINUTES * MINUTE_MS);
@@ -130,9 +157,10 @@ export async function openSupportSession(
   const { mode, expired } = effectiveMode(snapshot, now);
 
   if (mode === 'operator') {
-    // Разговор у человека — молча ничего не делаем: перевод обратно в
-    // помощника отменил бы решение оператора, а второе приветствие поверх
-    // живой переписки с человеком читается как сбой.
+    // Разговор у человека: перевод обратно в помощника отменил бы решение
+    // оператора. Но и МОЛЧАТЬ нельзя — человек нажал кнопку и ждёт хоть
+    // чего-то; говорим, кто ведёт и что ответ придёт сюда же.
+    await ports.delivery.toClient(SUPPORT_OPERATOR_LEADS);
     return { status: 'operator_leads' };
   }
 
@@ -141,6 +169,10 @@ export async function openSupportSession(
     await ports.state.touch('ai', sessionDeadline(now));
     return { status: 'already_open' };
   }
+
+  // Ключа нет — сессию НЕ открываем: приветствие без единого ответа за ним
+  // хуже, чем сразу сегодняшний флоу к человеку. Порт сам алёртит.
+  if (!ports.model.configured()) return { status: 'unavailable' };
 
   // ⚠️ `from` включает `ai`, а не только `idle`. У ИСТЁКШЕЙ сессии в БД
   // по-прежнему записано `ai` — срок гаснет лениво, отдельного сторожа нет.
@@ -173,9 +205,11 @@ export async function openSupportSession(
 /**
  * Обработать входящее клиента.
  *
- * ⚠️ Текст клиента в переписку пишет ВЫЗЫВАЮЩИЙ (бот делает это для любого
- * сообщения, не только в сессии). Модуль записывает то, что порождает сам:
- * ответы помощника и подпись вложения.
+ * ⚠️ Текст клиента в переписку пишет МОДУЛЬ, а не бот — потому что только
+ * модуль знает режим: в `operator` строке нужен маркер обращения (панель
+ * считает «без ответа» от последнего такого), в `ai` — обычная реплика, а в
+ * `idle` бот пишет сам, как раньше. Пиши и бот, и модуль — реплика клиента
+ * лежала бы в ленте дважды.
  */
 export async function handleSupportMessage(
   ports: SupportPorts,
@@ -184,6 +218,8 @@ export async function handleSupportMessage(
     kind: 'text' | 'media';
     /** Что положить в переписку вместо вложения: «[фото]» / «[файл]». */
     mediaPlaceholder?: string;
+    /** Meta строки клиента (id апдейта/сообщения Telegram) — как пишет бот. */
+    userMeta?: Record<string, unknown>;
     now?: Date;
   },
 ): Promise<SupportOutcome> {
@@ -198,13 +234,7 @@ export async function handleSupportMessage(
   if (expired) {
     // Хороним истёкшую сессию, чтобы в БД и в панели не висел вечный `ai`.
     // Сбой перехода некритичен: клиент всё равно уходит по ветке `idle`.
-    await ports.state.transition({
-      from: 'ai',
-      to: 'idle',
-      trigger: 'ttl',
-      modeExpiresAt: null,
-      assignedOperatorId: null,
-    });
+    await closeToIdle(ports, 'ttl');
     ports.analytics.track({ name: 'support_session_closed', reason: 'ttl' });
   }
 
@@ -216,10 +246,17 @@ export async function handleSupportMessage(
       }
       return { status: 'media_rejected' };
     }
+    await noteClientFollowUp(ports, input.text, now, input.userMeta);
     return { status: 'operator_leads' };
   }
 
   if (mode === 'idle') return { status: 'not_in_session' };
+
+  // Реплика клиента в сессии помощника — ДО любого исхода ниже: и жёсткий
+  // триггер, и кап, и ответ модели должны видеть её в ленте.
+  if (input.kind === 'text') {
+    await ports.state.append({ role: 'user', content: input.text, meta: input.userMeta });
+  }
 
   if (input.kind === 'media') {
     await ports.delivery.toClient(SUPPORT_MEDIA_TO_AI, { withFinishButton: true });
@@ -230,6 +267,18 @@ export async function handleSupportMessage(
     return { status: 'media_rejected' };
   }
 
+  // Жёсткий триггер — ПЕРВЫМ, до ключа и до капа. «Верните деньги» или «вы
+  // мошенники» должны попасть к человеку независимо от того, доступна ли
+  // модель и остался ли у клиента лимит: человек важнее и того и другого.
+  const hard = matchHardTrigger(input.text);
+  if (hard) {
+    return await escalate(ports, {
+      trigger: 'hard',
+      reason: `${hard.category}: «${hard.matched}»`,
+      now,
+    });
+  }
+
   // Ключа нет при включённом флаге — ведём себя РОВНО как при выключённом
   // флаге (спека §10): сессию гасим, клиент уходит в сегодняшний флоу к
   // человеку. ⚠️ Именно гасим, а не эскалируем: эскалация запирает разговор в
@@ -237,34 +286,36 @@ export async function handleSupportMessage(
   // забытая переменная окружения превращала бы КАЖДОГО написавшего в
   // недостижимого для бота. Алёрт о пропавшем ключе шлёт сам порт.
   if (!ports.model.configured()) {
-    await ports.state.transition({
-      from: 'ai',
-      to: 'idle',
-      trigger: 'ai_disabled',
-      modeExpiresAt: null,
-      assignedOperatorId: null,
-    });
+    await closeToIdle(ports, 'ai_disabled');
     return { status: 'not_in_session' };
   }
 
   const used = await ports.state.countAiReplies(new Date(now.getTime() - 24 * HOUR_MS));
   if (used >= DAILY_AI_REPLY_CAP) {
     await ports.delivery.toClient(SUPPORT_CAP_REACHED);
-    await ports.state.transition({
-      from: 'ai',
-      to: 'idle',
-      trigger: 'cap',
-      modeExpiresAt: null,
-      assignedOperatorId: null,
-    });
+    await closeToIdle(ports, 'cap');
     ports.analytics.track({ name: 'support_session_closed', reason: 'cap' });
     return { status: 'capped' };
   }
 
   const history = await loadMaskedHistory(ports, input.text);
 
+  // Tool `request_human` эскалирует ПРЯМО во время хода — тем же путём, что
+  // жёсткий триггер. Модуль запоминает факт, чтобы после хода не отправить
+  // клиенту ещё и текст модели поверх «передаю оператору».
+  let escalatedByModel: string | null = null;
+  const hooks = {
+    requestHuman: async (reason: string) => {
+      escalatedByModel = reason;
+      await escalate(ports, { trigger: 'model', reason, now });
+    },
+  };
+
   // `null` — помощник недоступен; порт уже записал причину в лог и Sentry.
-  const reply = await ports.model.reply(history);
+  const reply = await ports.model.reply(history, hooks);
+  if (escalatedByModel !== null) {
+    return { status: 'escalated', trigger: 'model' };
+  }
   if (!reply) {
     return await escalate(ports, { trigger: 'ai_unavailable', reason: null, now });
   }
@@ -274,6 +325,20 @@ export async function handleSupportMessage(
     // Пустой ответ — это молчание бота, которое читается как поломка. Отдаём
     // клиента человеку: сказать нам нечего.
     return await escalate(ports, { trigger: 'ai_unavailable', reason: null, now });
+  }
+
+  // Выходной фильтр — гарантия там, где промпт лишь просьба. Пойманный ответ
+  // клиент не видит и в переписку он не пишется: строка с «PaySpace» в ленте
+  // панели — тоже утечка, пусть и внутрь.
+  const verdict = guardModelOutput(text);
+  if (!verdict.ok) {
+    ports.analytics.track({ name: 'support_ai_reply', toolsUsed: reply.toolsUsed.length, guarded: true });
+    return await escalate(ports, {
+      trigger: 'guard',
+      reason: `${verdict.category}: «${verdict.matched}»`,
+      now,
+      clientText: SUPPORT_GUARDED,
+    });
   }
 
   await ports.delivery.toClient(text, { withFinishButton: true });
@@ -319,6 +384,34 @@ async function loadMaskedHistory(
     currentText,
     { operatorPrefix: OPERATOR_HISTORY_PREFIX, mask: maskForModel },
   );
+}
+
+/**
+ * Клиент написал в разговор, который ведёт человек.
+ *
+ * Строка помечается маркером обращения — «без ответа» в панели считается от
+ * ПОСЛЕДНЕГО сообщения клиента, а не от первого. Срок режима сбрасывается в
+ * `null`: ждём ответа человека, и такой разговор не гаснет. Персонал пингуется
+ * с дедупом: ждущий пишет подряд, а оператору хватит одного пинга в полчаса.
+ */
+async function noteClientFollowUp(
+  ports: SupportPorts,
+  text: string,
+  now: Date,
+  userMeta: Record<string, unknown> | undefined,
+): Promise<void> {
+  await ports.state.touch('operator', null);
+  await ports.state.append({
+    role: 'user',
+    content: text,
+    meta: { ...userMeta, support_request: true, source: 'support_follow_up' },
+  });
+
+  const last = await ports.staff.lastFollowUpAt();
+  const dedupUntil = last ? last.getTime() + FOLLOW_UP_DEDUP_MINUTES * MINUTE_MS : 0;
+  if (now.getTime() < dedupUntil) return;
+
+  await ports.staff.notifyFollowUp({ text: maskForModel(text) });
 }
 
 /**
@@ -413,14 +506,7 @@ export async function closeSupportSession(
   }
   const { expired } = effectiveMode(snapshot, now);
 
-  const { transitioned } = await ports.state.transition({
-    from: 'ai',
-    to: 'idle',
-    trigger: expired ? 'ttl' : input.reason,
-    modeExpiresAt: null,
-    assignedOperatorId: null,
-  });
-  if (!transitioned) return { closed: false };
+  if (!(await closeToIdle(ports, expired ? 'ttl' : input.reason))) return { closed: false };
 
   // Истёкшую сессию хороним МОЛЧА в любом случае: клиент её уже покинул, и
   // «диалог завершён» через час после ухода читается как спам.
