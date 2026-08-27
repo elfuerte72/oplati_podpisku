@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
@@ -5,11 +6,18 @@ import { z } from 'zod';
 import { getDb, getSupportThreadForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { SupportReply } from '@/components/panel/SupportReply';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
+  ACTION_TITLES,
+  CELL_TEXT,
+  COLUMN_TITLES,
+  PAGE_TITLES,
   SUPPORT_BLOCK_TEXT,
+} from '@/lib/panel/labels';
+import {
   SUPPORT_HISTORY_DAYS,
   supportReplyBlockReason,
   supportRoleLabel,
@@ -29,6 +37,8 @@ import {
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: PAGE_TITLES.request };
+
 const idSchema = z.string().uuid();
 
 export default async function PanelSupportThreadPage({
@@ -40,7 +50,7 @@ export default async function PanelSupportThreadPage({
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} live={false}>
-        <PanelForbidden title="Обращение" />
+        <PanelForbidden title={PAGE_TITLES.request} />
       </PanelShell>
     );
   }
@@ -61,20 +71,21 @@ export default async function PanelSupportThreadPage({
 
   return (
     <PanelShell actor={access.actor}>
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">
+      <PanelPageHeader
+        title={
           <Link href={`/admin/clients/${thread.client.id}`}>
-            {thread.client.displayName ?? thread.client.telegramId ?? 'Клиент без имени'}
+            {thread.client.displayName ?? thread.client.telegramId ?? CELL_TEXT.clientNoName}
           </Link>
-        </h1>
+        }
+      >
         <p className="panel-muted">
           {thread.assignedOperatorName
-            ? `Ведёт ${thread.assignedOperatorName}${mine ? ' (это ты)' : ''}`
-            : 'Никто не ведёт диалог'}
+            ? `${COLUMN_TITLES.responsible}: ${thread.assignedOperatorName}${mine ? ' (вы)' : ''}`
+            : 'Ответственного нет'}
           {' · '}
-          <Link href="/admin/support">все обращения</Link>
+          <Link href="/admin/support">{ACTION_TITLES.allRequests}</Link>
         </p>
-      </section>
+      </PanelPageHeader>
 
       <section className="panel-card" style={{ marginBottom: 16 }}>
         <h2 className="panel-title">Переписка</h2>
@@ -90,7 +101,7 @@ export default async function PanelSupportThreadPage({
         </p>
 
         {thread.messages.length === 0 ? (
-          <p className="panel-empty">Сообщений нет.</p>
+          <p className="panel-empty">{CELL_TEXT.noMessages}</p>
         ) : (
           <ol className="panel-thread">
             {thread.messages.map((message) => (

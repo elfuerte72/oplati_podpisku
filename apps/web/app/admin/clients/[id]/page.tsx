@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
@@ -5,6 +6,7 @@ import { z } from 'zod';
 import { getClientDetailForPanel, getDb } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
   cardStatusLabel,
@@ -14,6 +16,7 @@ import {
   orderStatusTone,
 } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { CELL_TEXT, COLUMN_TITLES, PAGE_TITLES } from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
 
 /**
@@ -28,6 +31,8 @@ import { clientReachability } from '@/lib/panel/reachability';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: PAGE_TITLES.client };
+
 const clientIdSchema = z.string().uuid();
 
 export default async function PanelClientPage({
@@ -41,7 +46,7 @@ export default async function PanelClientPage({
     // «Заказы» на ней говорила бы человеку, что он в другом разделе.
     return (
       <PanelShell actor={access.actor} live={false}>
-        <PanelForbidden title="Клиент" />
+        <PanelForbidden title={PAGE_TITLES.client} />
       </PanelShell>
     );
   }
@@ -64,8 +69,7 @@ export default async function PanelClientPage({
 
   return (
     <PanelShell actor={access.actor}>
-      <div className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">{client.displayName ?? 'Клиент без имени'}</h1>
+      <PanelPageHeader title={client.displayName ?? CELL_TEXT.clientNoName}>
         <p className="panel-muted">
           {client.telegramId ? `Telegram ${client.telegramId}` : client.hasWebSession ? 'Только сайт' : 'Без канала связи'} · с{' '}
           <LocalTime iso={client.createdAt.toISOString()} />
@@ -75,7 +79,7 @@ export default async function PanelClientPage({
             {reach.reason}: клиент оформил заказ на сайте и Telegram не привязал.
           </p>
         )}
-      </div>
+      </PanelPageHeader>
 
       <div className="panel-grid">
         <section className="panel-card">
@@ -84,17 +88,17 @@ export default async function PanelClientPage({
               норма, а не сбой, и экран не должен выглядеть сломанным. */}
           <dl className="panel-dl">
             <dt>Email</dt>
-            <dd>{client.email ?? <span className="panel-muted">не оставлял</span>}</dd>
+            <dd>{client.email ?? <span className="panel-muted">{CELL_TEXT.notLeft}</span>}</dd>
             <dt>Телефон</dt>
             <dd>
-              {client.phone ?? <span className="panel-muted">не оставлял</span>}
+              {client.phone ?? <span className="panel-muted">{CELL_TEXT.notLeft}</span>}
               {client.phone && client.phoneSource ? (
                 <span className="panel-muted">
                   {' '}
                   ·{' '}
                   {client.phoneSource === 'telegram'
-                    ? 'из Telegram, верифицирован'
-                    : 'введён руками'}
+                    ? CELL_TEXT.phoneFromTelegram
+                    : CELL_TEXT.phoneManual}
                 </span>
               ) : null}
             </dd>
@@ -116,7 +120,7 @@ export default async function PanelClientPage({
         </section>
 
         <section className="panel-card">
-          <h2 className="panel-title">Партнёрские связи</h2>
+          <h2 className="panel-title">Партнёрство</h2>
           <dl className="panel-dl">
             <dt>Кто привёл</dt>
             <dd>
@@ -124,22 +128,22 @@ export default async function PanelClientPage({
                 <Link href={`/admin/clients/${detail.referredBy.id}`}>
                   {detail.referredBy.displayName ??
                     detail.referredBy.telegramId ??
-                    'без имени'}
+                    CELL_TEXT.noName}
                 </Link>
               ) : (
-                <span className="panel-muted">никто</span>
+                <span className="panel-muted">{CELL_TEXT.none}</span>
               )}
             </dd>
             <dt>Кого привёл</dt>
             <dd>
               {detail.referrals.length === 0 ? (
-                <span className="panel-muted">никого</span>
+                <span className="panel-muted">{CELL_TEXT.nobody}</span>
               ) : (
                 detail.referrals.map((r, i) => (
                   <span key={r.id}>
                     {i > 0 ? ', ' : ''}
                     <Link href={`/admin/clients/${r.id}`}>
-                      {r.displayName ?? r.telegramId ?? 'без имени'}
+                      {r.displayName ?? r.telegramId ?? CELL_TEXT.noName}
                     </Link>
                   </span>
                 ))
@@ -152,17 +156,17 @@ export default async function PanelClientPage({
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">Заказы</h2>
         {detail.orders.length === 0 ? (
-          <p className="panel-muted">Заказов не было.</p>
+          <p className="panel-muted">{CELL_TEXT.noOrders}</p>
         ) : (
           <div className="panel-table-scroll">
             <table className="panel-table">
               <thead>
                 <tr>
-                  <th>Номер</th>
-                  <th>Сервис</th>
-                  <th>Сумма</th>
-                  <th>Статус</th>
-                  <th>Создан</th>
+                  <th>{COLUMN_TITLES.order}</th>
+                  <th>{COLUMN_TITLES.service}</th>
+                  <th className="panel-num">{COLUMN_TITLES.amount}</th>
+                  <th>{COLUMN_TITLES.status}</th>
+                  <th>{COLUMN_TITLES.created}</th>
                 </tr>
               </thead>
               <tbody>
@@ -172,7 +176,7 @@ export default async function PanelClientPage({
                       <Link href={`/admin/orders/${order.shortId}`}>{order.shortId}</Link>
                     </td>
                     <td>{order.serviceName ?? '—'}</td>
-                    <td>{formatKopecks(order.amountRubKopecks)}</td>
+                    <td className="panel-num">{formatKopecks(order.amountRubKopecks)}</td>
                     <td>
                       <span
                         className={`panel-status panel-status--${orderStatusTone(order.status)}`}
@@ -205,16 +209,16 @@ export default async function PanelClientPage({
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">Карты</h2>
         {detail.cards.length === 0 ? (
-          <p className="panel-muted">Карт не выпускалось.</p>
+          <p className="panel-muted">{CELL_TEXT.noCards}</p>
         ) : (
           <div className="panel-table-scroll">
             <table className="panel-table">
               <thead>
                 <tr>
-                  <th>Номер</th>
-                  <th>Статус</th>
-                  <th>Баланс</th>
-                  <th>Выпущена</th>
+                  <th>{COLUMN_TITLES.cardNumber}</th>
+                  <th>{COLUMN_TITLES.status}</th>
+                  <th className="panel-num">{COLUMN_TITLES.cardBalance}</th>
+                  <th>{COLUMN_TITLES.cardIssuedAt}</th>
                 </tr>
               </thead>
               <tbody>
@@ -222,7 +226,7 @@ export default async function PanelClientPage({
                   <tr key={card.id}>
                     <td>{card.panMasked}</td>
                     <td>{cardStatusLabel(card.status)}</td>
-                    <td>{formatUsdCents(card.balanceUsdCents)}</td>
+                    <td className="panel-num">{formatUsdCents(card.balanceUsdCents)}</td>
                     <td className="panel-muted">
                       <LocalTime iso={card.createdAt.toISOString()} />
                     </td>

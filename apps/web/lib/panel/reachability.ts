@@ -12,6 +12,8 @@
  * кнопку, которая молча ничего не сделает.
  */
 
+import { CELL_TEXT } from './labels';
+
 export type ClientReachability = {
   reachable: boolean;
   /** Текст для экрана, когда писать некуда. */
@@ -26,7 +28,7 @@ export function clientReachability(client: {
   }
   return {
     reachable: false,
-    reason: 'нет Telegram, ответить нечем',
+    reason: CELL_TEXT.noTelegram,
   };
 }
 

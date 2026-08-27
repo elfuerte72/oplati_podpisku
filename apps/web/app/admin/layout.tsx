@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 
+import { PANEL_TITLE_SUFFIX } from '@/lib/panel/labels';
+
 import './panel.css';
 
 /**
@@ -10,8 +12,13 @@ import './panel.css';
  * Next рендерится и для страницы входа, где актора ещё нет.
  */
 
+/**
+ * Заголовок вкладки собирается шаблоном: страница называет только свой раздел
+ * («Заказы»), суффикс один на панель. Четыре открытые вкладки обязаны
+ * различаться — с одним заголовком на весь раздел они были неотличимы.
+ */
 export const metadata: Metadata = {
-  title: 'Панель — Оплатишка',
+  title: { default: PANEL_TITLE_SUFFIX, template: `%s — ${PANEL_TITLE_SUFFIX}` },
   robots: { index: false, follow: false },
 };
 

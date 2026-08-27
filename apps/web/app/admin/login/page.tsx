@@ -1,8 +1,11 @@
+import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 import { TelegramLoginButton } from '@/components/panel/TelegramLoginButton';
 import { serverEnv } from '@/lib/env.server';
+import { lookupLabel } from '@/lib/panel/format';
+import { LOGIN_ERROR_TEXT, PAGE_TITLES } from '@/lib/panel/labels';
 import { readPanelActor } from '@/lib/panel/session';
 
 /**
@@ -16,20 +19,7 @@ import { readPanelActor } from '@/lib/panel/session';
 
 export const dynamic = 'force-dynamic';
 
-const ERROR_TEXT: Record<string, string> = {
-  denied: 'Доступ закрыт. Если это ошибка — попроси владельца проверить твой доступ.',
-  bad_signature: 'Не удалось проверить подпись Telegram. Попробуй войти ещё раз.',
-  malformed: 'Не удалось проверить подпись Telegram. Попробуй войти ещё раз.',
-  expired: 'Вход просрочен — на него есть несколько минут. Нажми кнопку заново.',
-  restart: 'Сессия входа истекла. Начни заново.',
-  enrollment_lost: 'Привязка приложения с кодами не завершилась. Начни заново.',
-  // Длительность НЕ называем: окно живёт в `lib/ratelimit.ts`, и текст с
-  // числом стал бы зеркалом, которое молча разъедется при тюнинге лимита.
-  rate_limited: 'Слишком много попыток входа. Подожди немного и попробуй снова.',
-  not_configured: 'Вход в панель не настроен. Это на нашей стороне — напиши владельцу.',
-  unavailable: 'Сейчас не получилось — что-то на нашей стороне. Попробуй через минуту.',
-  replayed: 'Эта ссылка входа уже использована. Нажми кнопку Telegram заново.',
-};
+export const metadata: Metadata = { title: PAGE_TITLES.login };
 
 export default async function PanelLoginPage({
   searchParams,
@@ -41,7 +31,8 @@ export default async function PanelLoginPage({
 
   const params = await searchParams;
   const rawError = typeof params.e === 'string' ? params.e : undefined;
-  const errorText = rawError ? (ERROR_TEXT[rawError] ?? ERROR_TEXT.denied) : null;
+  // Код приходит из адреса, то есть снаружи, — читаем словарь через `lookupLabel`.
+  const errorText = rawError ? (lookupLabel(LOGIN_ERROR_TEXT, rawError) ?? LOGIN_ERROR_TEXT.denied) : null;
 
   const botUsername = serverEnv.TELEGRAM_LOGIN_BOT_USERNAME;
   const authUrl = await buildAuthUrl();

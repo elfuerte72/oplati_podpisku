@@ -20,7 +20,7 @@ describe('clientReachability', () => {
     const res = clientReachability({ telegramId: null });
 
     expect(res.reachable).toBe(false);
-    expect(res.reason).toBe('нет Telegram, ответить нечем');
+    expect(res.reason).toBe('Нет Telegram');
   });
 
   it('пустая строка и пробелы — это тоже «писать некуда»', () => {

@@ -1,3 +1,7 @@
+import type { StaffRole } from '@oplati/db';
+
+import { canAccess, type PanelSection } from './permissions';
+
 /**
  * Рабочий стол панели (тикет 08) — решение «что показать», отделённое от
  * разметки.
@@ -46,4 +50,49 @@ export function isDeskQuiet(signals: DeskSignals): boolean {
     signals.unansweredSupportCount === 0 &&
     !signals.balanceLow
   );
+}
+
+/**
+ * Счётчики в меню (редизайн, тикет 02).
+ *
+ * Панель отвечает на вопрос «что мне сделать сейчас», и число работы должно
+ * быть видно ИЗ МЕНЮ, а не выясняться обходом разделов. Считается теми же
+ * выборками, что питают рабочий стол, — здесь только решение «что показать».
+ */
+/**
+ * Разделы, у которых есть счётчик. ЕДИНСТВЕННЫЙ список: от него выводятся и
+ * тип чисел, и цикл ниже, и проверка в оболочке — добавить раздел, забыв одно
+ * из трёх мест, нельзя.
+ */
+export const MENU_BADGE_SECTIONS = ['pending', 'support'] as const satisfies readonly PanelSection['capability'][];
+
+export type MenuBadgeSection = (typeof MENU_BADGE_SECTIONS)[number];
+
+export function isMenuBadgeSection(capability: string): capability is MenuBadgeSection {
+  return (MENU_BADGE_SECTIONS as readonly string[]).includes(capability);
+}
+
+/** Числа по разделам. `null` — не получили (база не ответила), и это не ноль. */
+export type MenuCounts = Record<MenuBadgeSection, number | null>;
+
+/**
+ * Какие числа рисовать рядом с пунктами меню.
+ *
+ * Ноль не показывается (ноль не выглядит как задача), `null` не показывается
+ * (это «не получили», и «0» здесь был бы утверждением о том, чего мы не
+ * проверяли), а раздел, закрытый роли, числа не получает вовсе — даже если
+ * вызывающий его посчитал.
+ */
+export function menuBadges(
+  role: StaffRole,
+  counts: MenuCounts,
+): Partial<Record<MenuBadgeSection, number>> {
+  const badges: Partial<Record<MenuBadgeSection, number>> = {};
+  for (const section of MENU_BADGE_SECTIONS) {
+    if (!canAccess(role, section)) continue;
+    const count = counts[section];
+    if (count === null || count <= 0) continue;
+    badges[section] = count;
+  }
+  return badges;
 }

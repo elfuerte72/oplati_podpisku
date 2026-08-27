@@ -1,5 +1,7 @@
 'use client';
 
+import { ACTION_TITLES } from '@/lib/panel/labels';
+
 /**
  * Экран ошибки панели.
  *
@@ -25,11 +27,11 @@ export default function PanelError({
     <div className="panel-card" style={{ margin: 24 }}>
       <h1 className="panel-title">Экран не открылся</h1>
       <p className="panel-muted">
-        Данные не загрузились — обычно это ненадолго. Попробуй обновить; если повторяется,
-        посмотри Sentry: {error.digest ? `код ${error.digest}` : 'запись есть в логе'}.
+        Данные не загрузились — обычно это ненадолго. Попробуйте обновить; если повторяется,
+        сообщите владельцу{error.digest ? ` код ${error.digest}` : ''}.
       </p>
       <button type="button" className="panel-button" onClick={reset} style={{ marginTop: 12 }}>
-        Обновить
+        {ACTION_TITLES.refresh}
       </button>
     </div>
   );

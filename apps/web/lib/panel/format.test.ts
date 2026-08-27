@@ -12,6 +12,7 @@ import {
   orderStatusTone,
   providerStatusLabel,
 } from './format';
+import { ORDER_STATUS_LABELS } from './labels';
 
 describe('formatKopecks', () => {
   // Разделитель тысяч у ru-RU — НЕразрывный пробел (U+00A0): в плотной таблице
@@ -68,9 +69,11 @@ describe('formatAge', () => {
 });
 
 describe('подписи статусов', () => {
-  it('известные статусы переведены', () => {
-    expect(orderStatusLabel('payment_review')).toBe('на проверке банка');
-    expect(orderStatusLabel('pending_payment')).toBe('ждёт оплаты');
+  it('известные статусы берутся из словаря панели', () => {
+    // Сами слова закреплены в `labels.test.ts`; здесь — что функция читает
+    // именно словарь, а не свою копию.
+    expect(orderStatusLabel('payment_review')).toBe(ORDER_STATUS_LABELS.payment_review);
+    expect(orderStatusLabel('pending_payment')).toBe('Ожидает оплаты');
   });
 
   it('незнакомый статус показывается как есть, а не роняет экран', () => {
@@ -85,9 +88,11 @@ describe('подписи статусов', () => {
     expect(orderStatusTone('draft')).toBe('muted');
   });
 
-  it('код холда антифрода подписан — иначе «7» ничего не говорит', () => {
-    expect(providerStatusLabel(7)).toBe('7 — проверка банка');
-    expect(providerStatusLabel(1)).toBe('1 — оплачен');
+  it('код холда антифрода подписан, и код остаётся рядом с текстом', () => {
+    // Менеджер копирует код в обращение к Freekassa: «Проверка (7)» читается
+    // словом, а число не теряется.
+    expect(providerStatusLabel(7)).toBe('Проверка (7)');
+    expect(providerStatusLabel(1)).toBe('Оплачен (1)');
   });
 
   it('неизвестный код показывается числом, а не прочерком', () => {
@@ -155,22 +160,23 @@ describe('cardStatusLabel / paymentStatusLabel', () => {
   it('каждый статус карты подписан', () => {
     // `recycled` менеджеру не говорит ничего: это закрытая по сроку жизни
     // карта, а не сбой, и решение по заказу принимают по этой строке.
-    expect(cardStatusLabel('active')).toBe('активна');
-    expect(cardStatusLabel('idle')).toBe('простаивает');
-    expect(cardStatusLabel('recycled')).toBe('закрыта');
+    expect(cardStatusLabel('active')).toBe('Активна');
+    expect(cardStatusLabel('idle')).toBe('Простаивает');
+    expect(cardStatusLabel('recycled')).toBe('Закрыта');
   });
 
   it('каждый статус платежа подписан', () => {
-    expect(paymentStatusLabel('succeeded')).toBe('оплачен');
-    expect(paymentStatusLabel('failed')).toBe('не прошёл');
-    expect(paymentStatusLabel('refunded')).toBe('возвращён');
+    expect(paymentStatusLabel('succeeded')).toBe('Оплачен');
+    expect(paymentStatusLabel('failed')).toBe('Не прошёл');
+    expect(paymentStatusLabel('refunded')).toBe('Возвращён');
   });
 
-  it('«pending» на холде — «ждёт подтверждения», а не «ждёт оплаты»', () => {
+  it('«pending» на холде — «ожидает подтверждения», а не «ожидает оплаты»', () => {
     // При антифрод-холде деньги у клиента УЖЕ списаны, а строка платежа
-    // остаётся pending: claim не проходил. «Ждёт оплаты» на экране холдов было
-    // бы прямой ложью ровно в том случае, ради которого экран и заведён.
-    expect(paymentStatusLabel('pending')).toBe('ждёт подтверждения');
+    // остаётся pending: claim не проходил. «Ожидает оплаты» на экране проверки
+    // платежей было бы прямой ложью ровно в том случае, ради которого экран и
+    // заведён.
+    expect(paymentStatusLabel('pending')).toBe('Ожидает подтверждения');
   });
 
   it('незнакомый статус показывается как есть, а не роняет страницу', () => {

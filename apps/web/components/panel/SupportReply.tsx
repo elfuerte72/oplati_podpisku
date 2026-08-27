@@ -3,6 +3,13 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { lookupLabel } from '@/lib/panel/format';
+import {
+  ACTION_TITLES,
+  FALLBACK_ERROR_TEXT,
+  SUPPORT_ERROR_TEXT,
+  SUPPORT_NOT_RECORDED_TEXT,
+} from '@/lib/panel/labels';
 import { SUPPORT_REPLY_MAX, SUPPORT_REPLY_MIN } from '@/lib/panel/support';
 
 import { markPanelBusy } from './LiveRefresh';
@@ -14,21 +21,8 @@ import { markPanelBusy } from './LiveRefresh';
  * должно: клиент не знает, что за ботом человек.
  */
 
-const FALLBACK_ERROR = 'Не получилось. Обнови страницу и попробуй ещё раз.';
-
-const ERROR_TEXT: Record<string, string> = {
-  no_telegram: 'У клиента нет Telegram — ответить нечем.',
-  assigned_to_other: 'Диалог уже ведёт другой сотрудник.',
-  send_failed: 'Telegram не принял сообщение — скорее всего, клиент заблокировал бота.',
-  not_found: 'Диалог не найден.',
-  invalid_body: 'Слишком короткий или слишком длинный ответ.',
-  forbidden: 'Твоей роли этот раздел закрыт (или доступ отключили).',
-  unauthorized: 'Сессия истекла — войди заново.',
-};
-
 function errorText(code: string | undefined): string {
-  // `Object.hasOwn`: код приходит из тела ответа, то есть снаружи.
-  return (code && Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : undefined) ?? FALLBACK_ERROR;
+  return lookupLabel(SUPPORT_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT;
 }
 
 export function SupportReply({
@@ -67,7 +61,7 @@ export function SupportReply({
       }
       router.refresh();
     } catch {
-      setError(FALLBACK_ERROR);
+      setError(FALLBACK_ERROR_TEXT);
     } finally {
       setBusy(false);
       releaseBusy();
@@ -90,12 +84,12 @@ export function SupportReply({
       // Доставлено, но в переписку не записалось: следующий менеджер ответа не
       // увидит. Молчать об этом нельзя.
       if ((data as { warning?: string } | null)?.warning === 'not_recorded') {
-        setNote('Клиенту отправлено, но в переписку не записалось — предупреди коллег.');
+        setNote(SUPPORT_NOT_RECORDED_TEXT);
       }
       setText('');
       router.refresh();
     } catch {
-      setError(FALLBACK_ERROR);
+      setError(FALLBACK_ERROR_TEXT);
     } finally {
       setBusy(false);
       releaseBusy();
@@ -106,9 +100,9 @@ export function SupportReply({
     <>
       {needsAssign ? (
         <p className="panel-muted" style={{ marginBottom: 8 }}>
-          Диалог свободен. Подключись, чтобы коллеги видели, что им занимаются.{' '}
+          Диалог свободен. Подключитесь, чтобы коллеги видели, что им занимаются.{' '}
           <button type="button" className="panel-button" onClick={assign} disabled={busy}>
-            Подключиться
+            {ACTION_TITLES.assign}
           </button>
         </p>
       ) : null}
@@ -135,7 +129,7 @@ export function SupportReply({
           </p>
         ) : null}
         <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
-          {busy ? 'Отправляем…' : 'Отправить'}
+          {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
         </button>
       </form>
     </>

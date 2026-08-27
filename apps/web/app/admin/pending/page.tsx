@@ -1,13 +1,22 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { getDb, listPendingOrdersForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { RemindPayment } from '@/components/panel/RemindPayment';
 import { formatKopecks, orderStatusLabel, orderStatusTone } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { REMIND_BLOCK_TEXT, remindBlockReason, remindGateInput } from '@/lib/panel/remind';
+import {
+  CELL_TEXT,
+  COLUMN_TITLES,
+  EMPTY_TEXT,
+  REMIND_BLOCK_TEXT,
+  SECTION_TITLES,
+} from '@/lib/panel/labels';
+import { remindBlockReason, remindGateInput } from '@/lib/panel/remind';
 
 /**
  * `/admin/pending` — заказы, которые клиент оформил и не оплатил (спека §5.5).
@@ -22,12 +31,14 @@ import { REMIND_BLOCK_TEXT, remindBlockReason, remindGateInput } from '@/lib/pan
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: SECTION_TITLES.pending };
+
 export default async function PanelPendingPage() {
   const access = await panelPageAccess('pending');
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} current="/admin/pending" live={false}>
-        <PanelForbidden title="Недожатые заказы" />
+        <PanelForbidden title={SECTION_TITLES.pending} />
       </PanelShell>
     );
   }
@@ -37,32 +48,31 @@ export default async function PanelPendingPage() {
 
   return (
     <PanelShell actor={access.actor} current="/admin/pending">
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">Недожатые заказы</h1>
+      <PanelPageHeader title={SECTION_TITLES.pending}>
         <p className="panel-muted">
-          Клиент оформил заказ и не заплатил. Напоминание отправляет ссылку уже выставленного
+          Клиент оформил заказ и не оплатил. Напоминание отправляет ссылку уже выставленного
           счёта — новый не создаётся и срок не продлевается. Не чаще раза в сутки на заказ.
         </p>
-      </section>
+      </PanelPageHeader>
 
       {items.length === 0 ? (
         <div className="panel-card">
           {/* Поток около одного заказа в день: пустой экран — норма. */}
-          <p className="panel-empty">Недожатых заказов нет.</p>
+          <p className="panel-empty">{EMPTY_TEXT.pending}</p>
         </div>
       ) : (
         <div className="panel-card panel-table-scroll">
-          <table className="panel-table">
+          <table className="panel-table panel-table--cards">
             <thead>
               <tr>
-                <th>Заказ</th>
-                <th>Клиент</th>
-                <th>Сервис</th>
-                <th>Сумма</th>
-                <th>Статус</th>
-                <th>Возраст</th>
-                <th>Напоминали</th>
-                <th>Действие</th>
+                <th>{COLUMN_TITLES.order}</th>
+                <th>{COLUMN_TITLES.client}</th>
+                <th>{COLUMN_TITLES.service}</th>
+                <th className="panel-num">{COLUMN_TITLES.amount}</th>
+                <th>{COLUMN_TITLES.status}</th>
+                <th>{COLUMN_TITLES.created}</th>
+                <th>{COLUMN_TITLES.reminded}</th>
+                <th>{COLUMN_TITLES.action}</th>
               </tr>
             </thead>
             <tbody>
@@ -73,22 +83,24 @@ export default async function PanelPendingPage() {
                 const blocked = remindBlockReason(remindGateInput(item, now));
                 return (
                   <tr key={item.orderId}>
-                    <td>
+                    <td data-label={COLUMN_TITLES.order}>
                       <Link href={`/admin/orders/${item.shortId}`}>{item.shortId}</Link>
                     </td>
-                    <td>
+                    <td data-label={COLUMN_TITLES.client}>
                       <Link href={`/admin/clients/${item.client.id}`}>
-                        {item.client.displayName ?? item.client.telegramId ?? 'без имени'}
+                        {item.client.displayName ?? item.client.telegramId ?? CELL_TEXT.noName}
                       </Link>
                     </td>
-                    <td>{item.serviceName ?? '—'}</td>
-                    <td>{formatKopecks(item.amountRubKopecks)}</td>
-                    <td>
+                    <td data-label={COLUMN_TITLES.service}>{item.serviceName ?? '—'}</td>
+                    <td className="panel-num" data-label={COLUMN_TITLES.amount}>
+                      {formatKopecks(item.amountRubKopecks)}
+                    </td>
+                    <td data-label={COLUMN_TITLES.status}>
                       <span className={`panel-status panel-status--${orderStatusTone(item.status)}`}>
                         {orderStatusLabel(item.status)}
                       </span>
                     </td>
-                    <td>
+                    <td data-label={COLUMN_TITLES.created}>
                       <LocalAge iso={item.createdAt.toISOString()} />
                       {/* Срок заказа: у черновика это фиксация цены, у
                           выставленного счёта — его собственный TTL. Протухший
@@ -97,7 +109,9 @@ export default async function PanelPendingPage() {
                       {item.expiresAt ? (
                         <div className="panel-muted">
                           {item.expiresAt.getTime() <= now.getTime() ? (
-                            <span className="panel-status panel-status--muted">срок вышел</span>
+                            <span className="panel-status panel-status--muted">
+                              {CELL_TEXT.expired}
+                            </span>
                           ) : (
                             <>
                               до <LocalTime iso={item.expiresAt.toISOString()} />
@@ -106,7 +120,7 @@ export default async function PanelPendingPage() {
                         </div>
                       ) : null}
                     </td>
-                    <td className="panel-muted">
+                    <td data-label={COLUMN_TITLES.reminded} className="panel-muted">
                       {/* ⚠️ Сорванная доставка показывается ВМЕСТО времени
                           отправки: окно суток она съедает, и «напоминали в
                           14:20» там, где клиент ничего не получил, — та же
@@ -115,15 +129,16 @@ export default async function PanelPendingPage() {
                       (item.lastRemindedAt === null ||
                         item.lastRemindFailedAt > item.lastRemindedAt) ? (
                         <span className="panel-error">
-                          не доставлено <LocalTime iso={item.lastRemindFailedAt.toISOString()} />
+                          {CELL_TEXT.notDelivered}{' '}
+                          <LocalTime iso={item.lastRemindFailedAt.toISOString()} />
                         </span>
                       ) : item.lastRemindedAt ? (
                         <LocalTime iso={item.lastRemindedAt.toISOString()} />
                       ) : (
-                        'не напоминали'
+                        CELL_TEXT.notReminded
                       )}
                     </td>
-                    <td>
+                    <td className="panel-wrap" data-label={COLUMN_TITLES.action}>
                       {blocked ? (
                         <span className="panel-muted">{REMIND_BLOCK_TEXT[blocked]}</span>
                       ) : (
@@ -140,7 +155,7 @@ export default async function PanelPendingPage() {
 
       {hasMore ? (
         <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: недожатых заказов больше, чем помещается на экран.
+          Показаны не все: заказов больше, чем помещается на экран.
         </p>
       ) : null}
     </PanelShell>

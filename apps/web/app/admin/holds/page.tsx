@@ -1,30 +1,32 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { getDb, listHoldsForPanel } from '@oplati/db';
 import { FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
-import {
-  formatKopecks,
-  formatUsdCents,
-  orderStatusLabel,
-  providerStatusLabel,
-} from '@/lib/panel/format';
+import { formatKopecks, orderStatusLabel, providerStatusLabel } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
-import { readVccBalanceForPanel } from '@/lib/panel/vcc-balance';
 
 /**
- * `/admin/holds` — антифрод-холды Freekassa и остаток карточного счёта
- * (спека §5.4).
+ * `/admin/holds` — платежи на антифрод-проверке Freekassa (спека §5.4).
  *
  * ⚠️ Действий по холду тут НЕТ: исход решает провайдер. Экран даёт видимость с
  * первого дня (сегодня об этом узнают через семь дней и только владелец) и
  * готовый текст для обращения в поддержку Freekassa.
+ *
+ * Остаток карточного счёта отсюда уехал на рабочий стол (редизайн, тикет 02):
+ * к проверке платежей он отношения не имеет, а экран обязан отвечать на один
+ * вопрос.
  */
 
 export const dynamic = 'force-dynamic';
+
+export const metadata: Metadata = { title: SECTION_TITLES.holds };
 
 /**
  * Статус `7` — холд антифрода, подтверждён поддержкой Freekassa 2026-08-14.
@@ -38,90 +40,41 @@ export default async function PanelHoldsPage() {
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} current="/admin/holds" live={false}>
-        <PanelForbidden title="Холды банка" />
+        <PanelForbidden title={SECTION_TITLES.holds} />
       </PanelShell>
     );
   }
 
-  // Баланс и список — параллельно: чужой API не должен задерживать наш SQL.
-  const [{ items: holds, hasMore }, balance] = await Promise.all([
-    listHoldsForPanel(getDb()),
-    readVccBalanceForPanel(),
-  ]);
+  const { items: holds, hasMore } = await listHoldsForPanel(getDb());
 
   return (
     <PanelShell actor={access.actor} current="/admin/holds">
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h2 className="panel-title">Карточный счёт</h2>
-        {balance.state === 'ok' || balance.state === 'stale' ? (
-          <p>
-            <span
-              className={`panel-status panel-status--${balance.low ? 'danger' : 'ok'}`}
-              style={{ fontSize: 16 }}
-            >
-              {formatUsdCents(balance.balanceUsdCents)}
-            </span>{' '}
-            <span className="panel-muted">
-              {balance.pendingUsdCents > 0
-                ? `в пути ${formatUsdCents(balance.pendingUsdCents)} · `
-                : ''}
-              {balance.thresholdUsdCents > 0
-                ? `порог ${formatUsdCents(balance.thresholdUsdCents)}`
-                : 'порог не задан — предупреждение выключено'}
-              {/* Устаревшее число лучше прочерка: экран заводился ради того,
-                  чтобы увидеть нехватку заранее. Но молчать о возрасте нельзя —
-                  по этой цифре решают, хватит ли денег на следующий заказ. */}
-              {balance.state === 'stale' ? (
-                <>
-                  {' · '}
-                  <span className="panel-status panel-status--warn">
-                    данные на <LocalTime iso={balance.readAt.toISOString()} />, PaySpace не
-                    отвечает
-                  </span>
-                </>
-              ) : null}
-            </span>
-          </p>
-        ) : balance.state === 'unavailable' ? (
-          // Недоступный провайдер не роняет страницу: холды важнее баланса.
-          <p className="panel-muted">Баланс не получен — PaySpace не ответил.</p>
-        ) : (
-          <p className="panel-muted">PaySpace не настроен в этом окружении.</p>
-        )}
-        {(balance.state === 'ok' || balance.state === 'stale') && balance.low ? (
-          <p className="panel-error" style={{ marginTop: 8 }}>
-            Ниже порога. Пополнение приходит на следующий день, а каждая новая карта
-            списывает сумму заказа с буфером и надбавкой за выпуск.
-          </p>
-        ) : null}
-      </section>
-
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">Холды банка</h1>
+      <PanelPageHeader title={SECTION_TITLES.holds}>
         <p className="panel-muted">
-          Заказ на проверке банка не протухает, и закрыть его с нашей стороны нельзя —
-          исход решает провайдер. Статус <code>7</code> означает проверку антифрода.
+          Заказ с платежом на проверке не истекает по сроку, и закрыть его с нашей стороны
+          нельзя — исход решает провайдер. Статус «{providerStatusLabel(ANTIFRAUD_HOLD)}»
+          означает антифрод-проверку.
         </p>
-      </section>
+      </PanelPageHeader>
 
       {holds.length === 0 ? (
         <div className="panel-card">
           {/* Пусто — это норма: на 16 августа холдов было ноль. */}
-          <p className="panel-empty">Холдов нет.</p>
+          <p className="panel-empty">{EMPTY_TEXT.holds}</p>
         </div>
       ) : (
         <div className="panel-card panel-table-scroll">
-          <table className="panel-table">
+          <table className="panel-table panel-table--cards">
             <thead>
               <tr>
-                <th>Заказ</th>
-                <th>Клиент</th>
-                <th>Сумма</th>
-                <th>Статус заказа</th>
-                <th>Статус у провайдера</th>
-                <th>Сменился</th>
-                <th>Возраст</th>
-                <th>Клиенту ушло</th>
+                <th>{COLUMN_TITLES.order}</th>
+                <th>{COLUMN_TITLES.client}</th>
+                <th className="panel-num">{COLUMN_TITLES.amount}</th>
+                <th>{COLUMN_TITLES.orderStatus}</th>
+                <th>{COLUMN_TITLES.providerStatus}</th>
+                <th>{COLUMN_TITLES.providerStatusChangedAt}</th>
+                <th>{COLUMN_TITLES.created}</th>
+                <th>{COLUMN_TITLES.clientNotified}</th>
               </tr>
             </thead>
             <tbody>
@@ -129,28 +82,30 @@ export default async function PanelHoldsPage() {
                 const reach = clientReachability(hold.client);
                 return (
                   <tr key={hold.orderId}>
-                    <td>
+                    <td data-label={COLUMN_TITLES.order}>
                       <Link href={`/admin/orders/${hold.shortId}`}>{hold.shortId}</Link>
                     </td>
-                    <td>
+                    <td data-label={COLUMN_TITLES.client}>
                       <Link href={`/admin/clients/${hold.client.id}`}>
-                        {hold.client.displayName ?? hold.client.telegramId ?? 'без имени'}
+                        {hold.client.displayName ?? hold.client.telegramId ?? CELL_TEXT.noName}
                       </Link>
                     </td>
-                    <td>{formatKopecks(hold.amountRubKopecks)}</td>
-                    <td>{orderStatusLabel(hold.orderStatus)}</td>
-                    <td>{providerStatusLabel(hold.lastProviderStatus)}</td>
-                    <td className="panel-muted">
+                    <td className="panel-num" data-label={COLUMN_TITLES.amount}>
+                      {formatKopecks(hold.amountRubKopecks)}
+                    </td>
+                    <td data-label={COLUMN_TITLES.orderStatus}>{orderStatusLabel(hold.orderStatus)}</td>
+                    <td data-label={COLUMN_TITLES.providerStatus}>{providerStatusLabel(hold.lastProviderStatus)}</td>
+                    <td data-label={COLUMN_TITLES.providerStatusChangedAt} className="panel-muted">
                       {hold.lastProviderStatusAt ? (
                         <LocalTime iso={hold.lastProviderStatusAt.toISOString()} />
                       ) : (
                         '—'
                       )}
                     </td>
-                    <td>
+                    <td data-label={COLUMN_TITLES.created}>
                       <LocalAge iso={hold.orderCreatedAt.toISOString()} />
                     </td>
-                    <td className="panel-muted">
+                    <td data-label={COLUMN_TITLES.clientNotified} className="panel-muted">
                       {/* Чтобы менеджер не дублировал руками то, что автомат уже
                           отправил, — и, что важнее, чтобы он УВИДЕЛ клиента, до
                           которого сообщение не дошло. Поэтому здесь факт
@@ -160,7 +115,7 @@ export default async function PanelHoldsPage() {
                       {hold.clientNotifiedAt ? (
                         <LocalTime iso={hold.clientNotifiedAt.toISOString()} />
                       ) : !reach.reachable ? (
-                        'нечем — нет Telegram'
+                        CELL_TEXT.noTelegram
                       ) : hold.orderStatus === 'payment_review' &&
                         hold.lastProviderStatus === ANTIFRAUD_HOLD ? (
                         // Формулировка намеренно осторожная. Отметка появилась
@@ -171,9 +126,9 @@ export default async function PanelHoldsPage() {
                         // сообщение.
                         <span
                           className="panel-status panel-status--warn"
-                          title="Отметка об автосообщении ведётся с 18 августа. Для более старых холдов её нет, даже если сообщение ушло."
+                          title="Отметка об автосообщении ведётся с 18 августа. У более старых платежей её нет, даже если сообщение ушло."
                         >
-                          нет отметки
+                          {CELL_TEXT.noData}
                         </span>
                       ) : (
                         '—'
@@ -189,14 +144,14 @@ export default async function PanelHoldsPage() {
 
       {hasMore ? (
         <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: холдов больше, чем помещается на экран.
+          Показаны не все: платежей больше, чем помещается на экран.
         </p>
       ) : null}
 
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">Текст для поддержки Freekassa</h2>
         <p className="panel-muted">
-          Скопируй и подставь номер заказа и сумму — провайдер отвечает быстрее, когда
+          Скопируйте и подставьте номер заказа и сумму — провайдер отвечает быстрее, когда
           вопрос сформулирован конкретно.
         </p>
         <code className="panel-secret" style={{ whiteSpace: 'pre-wrap' }}>

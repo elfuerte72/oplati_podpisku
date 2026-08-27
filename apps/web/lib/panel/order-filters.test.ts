@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { PRESET_TITLES, SORT_TITLES } from './labels';
 import {
+  SORT_OPTIONS,
   STATUS_PRESETS,
   orderShortIdSchema,
   ordersHref,
@@ -69,6 +71,17 @@ describe('parseOrdersQuery', () => {
   it('каждый пресет ссылается на реальные статусы заказа', () => {
     for (const preset of STATUS_PRESETS) {
       expect(Array.isArray(preset.statuses)).toBe(true);
+    }
+  });
+
+  it('названия пресетов и сортировок берутся из словаря панели', () => {
+    // Ключ адреса не меняется, текст живёт в одном месте: «Недожатые» здесь
+    // было третьей копией термина.
+    for (const preset of STATUS_PRESETS) {
+      expect(preset.title).toBe(PRESET_TITLES[preset.key]);
+    }
+    for (const option of SORT_OPTIONS) {
+      expect(option.title).toBe(SORT_TITLES[option.key]);
     }
   });
 });

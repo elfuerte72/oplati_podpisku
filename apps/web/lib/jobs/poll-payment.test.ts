@@ -643,7 +643,9 @@ describe('pollPayments — уведомления менеджеру (тикет
     await pollPayments();
 
     expect(h.notifyStaffMock).toHaveBeenCalledWith(
-      expect.stringContaining('Холд банка'),
+      // Формулировка панели (редизайн 2026-08-27): «холд» — сленг эквайринга,
+      // менеджеру говорим «платёж на проверке банка».
+      expect.stringContaining('Платёж на проверке банка'),
       expect.objectContaining({ capability: 'holds' }),
     );
   });

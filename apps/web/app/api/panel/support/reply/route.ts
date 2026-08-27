@@ -5,6 +5,7 @@ import { appendMessage, getDb, getSupportThreadForPanel } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
+import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { SUPPORT_REPLY_MAX, SUPPORT_REPLY_MIN, supportReplyBlockReason } from '@/lib/panel/support';
 import { getBot } from '@/lib/telegram/bot';
 import { redactCardNumbers } from '@/lib/telegram/templates';
@@ -113,6 +114,10 @@ export async function POST(req: Request): Promise<Response> {
     Sentry.captureException(err, { tags: { source: 'panel.support', step: 'record' } });
     return Response.json({ ok: true, warning: 'not_recorded' });
   }
+
+  // Ответ записан — «без ответа» изменилось; счётчик в меню обязан увидеть это
+  // на ближайшем `router.refresh()`, а не через срок памятки.
+  invalidateMenuCounts('support');
 
   log.info({ event: 'panel.support.replied', staffId: guard.actor.id });
   return Response.json({ ok: true });

@@ -1,5 +1,9 @@
+import type { Metadata } from 'next';
+
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { SECTION_TITLES } from '@/lib/panel/labels';
 
 /**
  * `/admin/staff` — раздел «Персонал».
@@ -11,18 +15,21 @@ import { panelPageAccess } from '@/lib/panel/guard';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: SECTION_TITLES.staff };
+
 export default async function PanelStaffPage() {
   const { actor, allowed } = await panelPageAccess('staff');
 
   return (
     <PanelShell actor={actor} current="/admin/staff" live={false}>
       {allowed ? (
-        <div className="panel-card">
-          <h1 className="panel-title">Персонал</h1>
-          <p className="panel-muted">Список сотрудников и отключение доступа. Заведение — скриптом db:staff.</p>
-        </div>
+        <PanelPageHeader title={SECTION_TITLES.staff}>
+          <p className="panel-muted">
+            Список сотрудников и отключение доступа. Заведение — скриптом <code>db:staff</code>.
+          </p>
+        </PanelPageHeader>
       ) : (
-        <PanelForbidden title="Персонал" />
+        <PanelForbidden title={SECTION_TITLES.staff} />
       )}
     </PanelShell>
   );
