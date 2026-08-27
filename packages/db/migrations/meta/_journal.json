@@ -288,6 +288,13 @@
       "when": 1787575147691,
       "tag": "0040_elite_mad_thinker",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787813383259,
+      "tag": "0041_conscious_lilith",
+      "breakpoints": true
     }
   ]
 }

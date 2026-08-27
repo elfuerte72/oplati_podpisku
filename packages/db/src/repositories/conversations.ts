@@ -14,7 +14,10 @@ import { noopLogger, type RepoLogger } from './logger.ts';
  * webhook'ах, и часть переписки уезжала в осиротевший conversation.
  * Полный TTL/закрытие conversation придёт в milestone «Handoff оператору».
  *
- * `handoff_mode` оставляем default `'ai'` — `assigned_operator_id` остаётся NULL.
+ * Режим нового разговора — дефолт схемы `idle` («никто не отвечает»):
+ * `assigned_operator_id` остаётся NULL, а сессию помощника открывает только
+ * кнопка «Поддержка» (спека §1, правило В3). Раньше дефолтом был `ai`, но поле
+ * не читал никто.
  */
 
 export type GetOrCreateActiveConversationInput = {

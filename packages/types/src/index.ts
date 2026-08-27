@@ -411,6 +411,46 @@ export const SUPPORT_REQUEST_META_KEY = 'support_request';
 /** Дошло ли обращение до оператора. Недоставленное — авария конфигурации. */
 export const SUPPORT_DELIVERED_META_KEY = 'support_delivered';
 
+/**
+ * Режим разговора (`conversations.handoff_mode`) — кто сейчас отвечает клиенту:
+ * `idle` — никто (свободный текст получает подсказку с кнопкой «Поддержка»),
+ * `ai` — открыта сессия помощника, `operator` — разговор передан человеку и
+ * помощник молчит.
+ *
+ * Литералы обязаны побайтово совпадать с `handoffModeEnum` в `@oplati/db`.
+ */
+export const conversationMode = z.enum(['idle', 'ai', 'operator']);
+export type ConversationMode = z.infer<typeof conversationMode>;
+
+/**
+ * `meta.source` служебной строки перехода режима (`role='system'`). Такие
+ * строки видит панель, клиенту они не отправляются и помощнику в историю не
+ * подаются — читателей трое и они в разных пакетах, поэтому строка одна.
+ */
+export const SUPPORT_STATE_META_SOURCE = 'support_state';
+
+/**
+ * `meta.source` ответа помощника поддержки. По нему же считается суточный кап
+ * ходов: счётчик живёт в БД, а не в Redis, чтобы у него не было fail-open.
+ */
+export const SUPPORT_AI_META_SOURCE = 'support_ai';
+
+/**
+ * Почему разговор ушёл к человеку. Пишется в meta служебной строки перехода и
+ * в аналитику (`support_escalated{trigger}`).
+ */
+export const supportEscalationTrigger = z.enum([
+  /** Жёсткий список слов, проверенный ДО вызова модели. */
+  'hard',
+  /** Модель сама позвала человека tool'ом `request_human`. */
+  'model',
+  /** Помощник недоступен (таймаут / 5xx после ретраев / 401). */
+  'ai_unavailable',
+  /** Выходной фильтр поймал запрещённое слово в ответе модели. */
+  'guard',
+]);
+export type SupportEscalationTrigger = z.infer<typeof supportEscalationTrigger>;
+
 export type CardStatus = z.infer<typeof cardStatus>;
 
 export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);

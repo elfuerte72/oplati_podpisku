@@ -1215,6 +1215,13 @@ export async function claimSupportConversation(
     UPDATE conversations
        SET handoff_mode = 'operator',
            assigned_operator_id = ${input.staffId},
+           -- ⚠️ Срок режима ОБНУЛЯЕТСЯ, и это не косметика. «Подключиться» —
+           -- это «беру себе», а не «ответил»: обращение остаётся неотвеченным,
+           -- а неотвеченное не гаснет никогда (спека §1). Разговор приходит
+           -- сюда из режима помощника, где на нём висит срок «плюс 30 минут», и
+           -- сохранённый срок означал бы, что через полчаса крон хозяйства
+           -- поддержки закроет обращение, на которое оператор ещё не ответил.
+           mode_expires_at = NULL,
            updated_at = now()
      WHERE id = ${input.conversationId}
        AND (assigned_operator_id IS NULL OR assigned_operator_id = ${input.staffId})
