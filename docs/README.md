@@ -14,6 +14,7 @@
 |---|---|---|
 | [`../CLAUDE.md`](../CLAUDE.md) | операционная инструкция агента: стек, что работает сейчас, инварианты, команды, конвенции, границы пакетов | **всегда, перед любой работой** |
 | [`../AGENTS.md`](../AGENTS.md) | то же для не-Claude агентов: указатель на CLAUDE.md + чаще всего нарушаемые инварианты | если работаете другим агентом |
+| [`../CONTEXT.md`](../CONTEXT.md) | глоссарий домена: термины, о значении которых спорили (карточный фонд, требование заказа, обязательство, холд) | пишете код или тест и подбираете слово |
 | [`architecture.md`](architecture.md) | как устроена кодовая база и почему так | правите архитектуру, ищете, где что лежит |
 | [`BACKLOG.md`](BACKLOG.md) | **единственный** список «на потом»: отложенные задачи, открытые находки аудитов, идеи | планируете работу; закрыли задачу — вычёркиваете отсюда |
 | [`CHANGELOG.md`](CHANGELOG.md) | хронология изменений и фич | нужно понять, когда и зачем что-то появилось |
@@ -46,7 +47,7 @@
 | [`runbooks/deploy.md`](runbooks/deploy.md) | как деплоится prod и dev, контракт deploy-вебхука Dokploy, смоук после деплоя |
 | [`runbooks/backup-restore.md`](runbooks/backup-restore.md) | бэкапы в R2, учение по восстановлению, реальное восстановление прода |
 | [`runbooks/rollback.md`](runbooks/rollback.md) | откат кода и порядок гашения резервов. ⚠️ ветка «полный откат на Vercel+Supabase» мертва — резервы гасятся, см. `BACKLOG.md` |
-| [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki, Sentry, Better Stack |
+| [`runbooks/monitoring.md`](runbooks/monitoring.md) | где смотреть логи, ошибки, uptime: Grafana Loki + Synthetic Monitoring (внешний uptime), Sentry, алёрты в Telegram |
 | [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 | [`runbooks/server-migration.md`](runbooks/server-migration.md) | переезд контура на другой VPS (Dokploy → Dokploy): что чем переносится, порядок окна, грабли |
 | [`runbooks/vcc-funding.md`](runbooks/vcc-funding.md) | пополнение карточного фонда PaySpace: сколько держать, по какому сигналу пополнять, что делать при отказе клиенту |
@@ -90,7 +91,14 @@
 - `spec-2026-06-referral-program.md` + `plan-2026-06-referral-program.md` — спека и
   план рефералки. ⚠️ описывают **трёхуровневую** сеть; программу упростили до
   одного уровня 2026-07-02, так что содержимое противоречит текущему коду;
-- `plan-2026-06-phase2-payspace-cards.md` — фаза виртуальных карт.
+- `plan-2026-06-phase2-payspace-cards.md` — фаза виртуальных карт;
+- `plan-2026-07-freekassa-integration.md` — план интеграции Freekassa: исполнен, шлюз
+  основной с 2026-07-28 (`reference/payment-gateways.md`). ⚠️ Внутри «на проде только
+  Love&Pay» и «работать в ветке `feature/freekassa`» — это состояние на 26.07;
+- `plan-2026-08-audit-fixes.md` — ТЗ по находкам аудита 2026-08-10, пачки 1–13 закрыты
+  (итоги — `reference/testing.md`);
+- `spec-2026-08-referral-fixes.md` — целостность реферального ledger (T-1..T-8), выкачено
+  2026-08-14 вместе с миграцией 0030.
 
 ---
 
