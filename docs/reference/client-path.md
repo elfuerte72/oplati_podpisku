@@ -16,7 +16,7 @@
 
 ## Экраны
 
-Кнопочный каталог «сервис → тариф/сумма → заказ» (`CatalogView`, action `propose` → общий
+Все действия Mini App — один `POST /api/cabinet` с полем `action` (`snapshot`, `order`, `propose`, `confirm`, `update-contacts`, `payment-problem`, …; разбор — `lib/cabinet/actions.ts`). Кнопочный каталог «сервис → тариф/сумма → заказ» (`CatalogView`, action `propose` → общий
 `proposeFromCatalog`, channel `telegram`) → экран заказа с построчной разбивкой цены и кнопкой
 «Оплатить» (`payOrder` → ссылка шлюза через `tg.openLink`) → карта клиента с разовым показом
 реквизитов (`card-details`, live из PaySpace) → вход в партнёрку.
@@ -46,8 +46,9 @@ UI на SVG-иконках комикс-стиля (`components/comic/icons.tsx`
   и правка email/телефона; ручная правка помечает `phone_source='manual'` (номер из
   Telegram — `'telegram'`, верифицированный путь).
 - **Кнопка «Проблема с оплатой»** — на заказе до выпуска карты (ждёт оплаты / на
-  проверке / истёкший свежее 48 ч), Mini App + сайт (`PaymentProblemPanel`, роут
-  `POST /api/orders/problem`). «Я оплатил» переводит заказ «на проверку банка»
+  проверке / истёкший свежее 48 ч). Логика общая (`lib/cabinet/payment-issues`), адреса
+  разные: в Mini App — action `payment-problem` того же `POST /api/cabinet`
+  (`OrderDetailView`), на сайте — `PaymentProblemPanel` → `POST /api/orders/problem`. «Я оплатил» переводит заказ «на проверку банка»
   и шлёт DM оператору (дедуп час); «Хочу возврат» — DM без автоматики; «Другая
   проблема» — подсказка `/support`.
 - **Статус «Платёж на проверке банка»** (`payment_review`) виден на экране заказа:

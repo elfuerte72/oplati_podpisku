@@ -22,7 +22,7 @@ PaySpace выпускает долларовую карту, которой кл
 
 ## Гейты включения
 
-**Выпуск:** требует `PAYSPACE_API_KEY` (+ `PAYSPACE_REQUEST_SECRET` для подписи); без них guard `skipped_no_paypace` оставляет заказ в `paid` (ручной fulfillment). **Включён на Production (2026-06): ключи стоят, выпуск боевой** — оба окружения выпускают карты. `PAYSPACE_ACCOUNT_ID` больше не нужен (accountId неявен в ключе). **Операционный гейт беты — баланс VCC-субаккаунта:** на каждую карту нужно `цена + буфер (+$4 fee на новую карту)`; при низком балансе `createCard`/`topup` падает уже ПОСЛЕ приёма рублей → заказ в `failed`. Алёрт `vcc_balance.low` (порог `PAYSPACE_MIN_VCC_BALANCE_USD_CENTS`, дефолт $50) в cron `poll-payment`/`recycle-cards`.
+**Выпуск:** требует `PAYSPACE_API_KEY` (+ `PAYSPACE_REQUEST_SECRET` для подписи); без них guard `skipped_no_paypace` оставляет заказ в `paid` (ручной fulfillment). **Включён на Production (2026-06): ключи стоят, выпуск боевой** — оба окружения выпускают карты. `PAYSPACE_ACCOUNT_ID` больше не нужен (accountId неявен в ключе). **Операционный гейт беты — баланс VCC-субаккаунта:** на каждую карту нужно `цена + буфер (+$4 fee на новую карту)`; при низком балансе `createCard`/`topup` падает уже ПОСЛЕ приёма рублей → заказ в `failed`. Алёрт `vcc_balance.low` (порог `PAYSPACE_MIN_VCC_BALANCE_USD_CENTS`, дефолт `0` = относительный расчёт от типового заказа (два уровня, `runbooks/vcc-funding.md`)) в cron `poll-payment`/`recycle-cards`.
 
 ## Preflight фонда: не принимать деньги, если карту выпустить нечем
 

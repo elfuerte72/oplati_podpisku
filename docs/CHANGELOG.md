@@ -6,6 +6,74 @@
 
 ---
 
+## 2026-08-27 — Документация приведена к коду (сплошная сверка)
+
+Пять параллельных проверок всех документов против кода: карта докуметации,
+`architecture.md`, `testing.md`, `agents/*`, справочники `reference/*`, рунбуки,
+`BACKLOG.md`, `CLAUDE.md`, корневые `README.md`/`AGENTS.md`. Правило одно — «если
+документ противоречит коду, прав код»; ниже то, что противоречило.
+
+- **`CLAUDE.md`** — сжат (дерево структуры уехало в `docs/architecture.md`,
+  процедуры миграций и Telegram-секретов — в скилл `.claude/skills/deploy-and-migrations`,
+  теперь в git); абзац об админ-панели приведён к редизайну 2026-08-27 (остаток
+  карточного счёта — только на рабочем столе `/admin`; разделы «Ждут оплаты» /
+  «Проверка платежей»; словарь `labels.ts`, счётчики меню); «22 `pgTable`» → 21;
+  числа тестов — web 1601; добавлены `db:staff`/`db:init-roles` и предупреждение, что
+  `.env` корня указывает на старые Supabase-базы.
+- **`docs/architecture.md`** — раздел «Файловая система» переписан по реальному дереву
+  `apps/web` (панель, `api/panel`, `api/staff-bot`, `proxy.ts`, `lib/panel`,
+  `lib/freekassa`, `lib/payments`, `lib/rapira`, `lib/remnawave`, `lib/analytics`,
+  `lib/contacts`, `lib/alerts` и др.; несуществующий `lib/supabase/` убран,
+  `drizzle/` → `migrations/`); первый абзац больше не называет Love&Pay основным
+  шлюзом; RLS включён на ВСЕХ таблицах, у `services` отличается только политика;
+  в таблицу крон-джобов добавлен `keepalive` с пометкой «не в crontab».
+- **Корневой `README.md`** переписан целиком — прежний описывал Vercel + Supabase +
+  Vercel Cron как текущий контур, 16 таблиц, 5 крон-джобов, `PLAN.md`, которого нет.
+- **Справочники:** `env-vars.md` — дефолт `CLIENT_IP_MODE` = `traefik` (а не `vercel`),
+  `FREEKASSA_BUYER_FEE_PERCENT` = 6, пол витрины считает `orderFloorRub()` по АКТИВНОМУ
+  шлюзу, два уровня порога `PAYSPACE_MIN_VCC_BALANCE_USD_CENTS`, браузерный DSN —
+  отдельная `NEXT_PUBLIC_SENTRY_DSN`, добавлена `REMNAWAVE_SUBSCRIPTION_MONTHS`;
+  `payment-gateways.md` — комиссию Freekassa платит ПОКУПАТЕЛЬ (документ утверждал
+  обратное; код и клиентские тексты — покупатель), `INVOICE_TTL_HOURS` не существует —
+  у шлюзов раздельные сроки; `freekassa-api.md` — в перечень статусов добавлен `7`
+  (антифрод-холд); `virtual-cards.md` — порог алёрта относительный, а не «$50»;
+  `client-path.md` — «Проблема с оплатой» в Mini App идёт action'ом `payment-problem`
+  в `/api/cabinet`, а не роутом сайта; `remnawave-api.md` — срок подписки задаёт
+  `REMNAWAVE_SUBSCRIPTION_MONTHS` (дефолт без ограничения), не «+1 месяц»;
+  `ai-cost-protection.md` — слой 1 больше не Vercel WAF, а свой rate-limit
+  (Upstash, `CLIENT_IP_MODE=traefik`), оба AI-пути по умолчанию выключены, потолок
+  заказа $1200 для каталожных пополнений; `infrastructure.md` — список исключений
+  dev-miniapp, «46 переменных» → без числа, уточнение про копию прод-БД на бостонском VPS.
+- **Рунбуки:** `deploy.md` — схема пайплайна с `/api/ready` и автовыравниванием
+  `dev` (шаг workflow с 2026-07-30, а не ручной force-push); `monitoring.md` —
+  `ALERT_TELEGRAM_CHAT_ID` (было несуществующее `ALERT_CHAT_ID`), DM о холде банка в
+  таблице алёртов, уточнение drop/keep у Alloy; `payment-provider-switch.md` — состояние
+  на сегодня (Freekassa основной с 2026-07-28, `loveandpay` = откат), полный env-блок
+  (`FREEKASSA_MAX_AMOUNT_RUB`, `_BUYER_FEE_PERCENT`, `_SEND_TEL`, `_BASE_URL`).
+- **`docs/incidents.md`** — семь разделов со статусом ЗАКРЫТ перенесены из «Открытых»
+  в «Закрытые»; инциденты Vercel-эпохи (резерв, `DEPLOYMENT_PAUSED`, fallback курса,
+  РФ-доступ) получили строку «Обновлено 2026-08-27» с фактическим состоянием.
+- **`docs/BACKLOG.md`** — убраны тела закрытых пунктов (`CRON_SECRET`, алёрт VCC —
+  сжат до итога), устаревшие предпосылки Freekassa (активация кабинета, переключатель,
+  «что предстоит реализовать»), Metabase (домен есть с 2026-07-31), `poll-payment`
+  (параллелизм давно общий), `PHONE_REQUIRED_FROM_RUB` (задан).
+- **`docs/README.md`** — три исполненных плана переехали в `history/`
+  (`plan-2026-07-freekassa-integration.md`, `plan-2026-08-audit-fixes.md`,
+  `spec-2026-08-referral-fixes.md`) и описаны в карте; Better Stack убран из описания
+  мониторинга; добавлена строка про `CONTEXT.md` (глоссарий домена теперь в git).
+- **`testing.md`** — покрытие редизайна панели и подсистемы, которых в описании не было
+  (Remnawave, аналитика, каталог, `/api/ready`); `agents/*` — `.scratch/` может
+  держать закрытые треки как локальный архив, wayfinder-раскладка помечена как
+  неиспользуемая, `CONTEXT.md` существует.
+- **Код (только комментарии и мёртвый CI):** комментарий `PANEL_HOST` в `env.ts`
+  утверждал «не задан → гейт выключен», хотя в production он fail-closed; комментарий
+  `LOVEANDPAY_MIN_AMOUNT_RUB` ссылался на старый пол витрины; `sentry.ts` ссылался на
+  несуществующий `docs/observability.md`; `infra/crontab.example` описывал удалённый шаг
+  `active→idle`. **Удалён workflow `keepalive-dev-db.yml`** — он раз в три дня пинговал
+  мёртвую dev-Supabase и падал (три последних запуска — failure).
+
+---
+
 ## 2026-08-27 — Админ-панель: язык интерфейса, структура экранов, оформление
 
 Второй проход по панели после выката 19 августа. Функциональность операций не

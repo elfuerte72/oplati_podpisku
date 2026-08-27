@@ -75,7 +75,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Напоминание о продлении подписки (ежедневно 07:00 UTC)
 0 7 * * *    root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/renewal-reminder 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
-# Recycle карт: active→idle→release + алёрт низкого VCC-баланса (ежедневно 03:30 UTC)
+# Recycle карт: закрытие карт старше CARD_LIFETIME_DAYS (release) + алёрт низкого VCC-баланса (ежедневно 03:30 UTC)
 30 3 * * *   root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/recycle-cards 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Retention: чистка messages >90д, raw_payload >180д (ежедневно 04:15 UTC)
