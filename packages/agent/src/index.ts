@@ -35,6 +35,11 @@ export {
   type ToolExecution,
 } from './run.ts';
 export {
+  buildSupportKnowledgeBase,
+  buildSupportSystemPrompt,
+  type SupportFacts,
+} from './support-prompt.ts';
+export {
   getSupportClient,
   isSupportAiConfigured,
   supportModel,

@@ -14,17 +14,28 @@ import type { MessageHistoryItem } from '@oplati/db';
  *   - гарантируем, что последнее сообщение — `user` (текущий ввод уже записан
  *     в БД до вызова, но подстраховываемся).
  *
- * Используется ОБОИМИ каналами (веб-чат и Telegram) — не дублировать логику.
+ * Используется ВСЕМИ тремя контурами (веб-чат, продажный бот, помощник
+ * поддержки) — не дублировать логику. Различия контуров задаются `opts`:
+ *   - `operatorPrefix` — реплики живого оператора помечаются им, чтобы модель
+ *     видела, что часть ответов давал человек, и не спорила с ним;
+ *   - `mask` — преобразование КАЖДОЙ реплики перед отправкой провайдеру.
+ *     Маскировать снаружи нельзя: история берётся из БД внутри этой функции,
+ *     и текущее сообщение прошло бы маску, а вчерашнее с номером карты — нет.
  */
 export function toAgentHistory(
   history: MessageHistoryItem[],
   currentUserText: string,
+  opts: { operatorPrefix?: string; mask?: (text: string) => string } = {},
 ): AgentMessage[] {
+  const mask = opts.mask ?? ((t: string) => t);
   const mapped = history
     .filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'operator')
     .map((m) => ({
       role: (m.role === 'operator' ? 'assistant' : m.role) as 'user' | 'assistant',
-      content: m.content,
+      content:
+        m.role === 'operator' && opts.operatorPrefix
+          ? `${opts.operatorPrefix}${mask(m.content)}`
+          : mask(m.content),
     }));
 
   const collapsed: AgentMessage[] = [];
@@ -45,7 +56,7 @@ export function toAgentHistory(
 
   const last = collapsed[collapsed.length - 1];
   if (!last || last.role !== 'user') {
-    collapsed.push({ role: 'user', content: currentUserText });
+    collapsed.push({ role: 'user', content: mask(currentUserText) });
   }
 
   return collapsed;

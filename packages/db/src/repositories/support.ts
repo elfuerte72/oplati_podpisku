@@ -327,24 +327,51 @@ export async function countSupportAiReplies(
 }
 
 /**
- * Последние строки разговора для истории помощника и для панели.
+ * `meta.source` строк, которые в контекст помощника подавать НЕЛЬЗЯ.
+ *
+ * Разговор в БД один на клиента и копит всё подряд: приветствие Оплатишки на
+ * каждый `/start`, подсказки «бот не молчит», реплики продажного агента. Дай
+ * их помощнику — и окно из двадцати строк наполовину состоит из «/start» и
+ * маскота на «ты», который спорит с его же системным текстом («вы не
+ * Оплатишка»). Помощник начинает отвечать не своим голосом и не по делу.
+ *
+ * Денилист, а не allowlist: пропустить в контекст лишнее служебное сообщение
+ * дешевле, чем потерять настоящую реплику клиента.
+ *
+ * ⚠️ Подставляется через `NOT IN`, а НЕ через `<> ALL (...)`: массив drizzle
+ * разворачивает в кортеж `($1, $2, $3)`, а `ALL` требует массив или подзапрос —
+ * запрос падал на синтаксисе (поймано тестом, до прода не доехало).
+ */
+const NON_CONVERSATIONAL_SOURCES = ['static_greeting', 'silent_hint', 'support_greeting'];
+
+/**
+ * Последние строки разговора для истории помощника.
  *
  * Служебные строки переходов отброшены В SQL, а не после выборки: иначе окно в
  * 20 строк наполовину состояло бы из невидимых клиенту записей, и помощник
- * получал бы половину контекста.
+ * получал бы половину контекста. По той же причине в SQL отброшены команды
+ * бота: «/start» как реплика клиента не значит ничего.
  */
 export async function loadSupportHistory(
   db: DB,
   input: { conversationId: string; limit: number },
 ): Promise<{ role: 'user' | 'assistant' | 'operator'; content: string; createdAt: Date }[]> {
-  const rows = await db
-    .select({ role: messages.role, content: messages.content, createdAt: messages.createdAt })
-    .from(messages)
-    .where(and(eq(messages.conversationId, input.conversationId), sql`${messages.role} <> 'system'`))
-    .orderBy(sql`${messages.createdAt} DESC`, sql`${messages.id} DESC`)
-    .limit(input.limit);
+  const rows = await db.execute<{
+    role: 'user' | 'assistant' | 'operator';
+    content: string;
+    created_at: Date | string;
+  }>(sql`
+    SELECT role, content, created_at
+      FROM messages
+     WHERE conversation_id = ${input.conversationId}
+       AND role <> 'system'
+       AND coalesce(meta ->> 'source', '') NOT IN ${NON_CONVERSATIONAL_SOURCES}
+       AND content NOT LIKE '/%'
+     ORDER BY created_at DESC, id DESC
+     LIMIT ${input.limit}
+  `);
 
   return rows
     .reverse()
-    .map((r) => ({ role: r.role as 'user' | 'assistant' | 'operator', content: r.content, createdAt: r.createdAt }));
+    .map((r) => ({ role: r.role, content: r.content, createdAt: new Date(r.created_at) }));
 }

@@ -15,6 +15,8 @@ import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
 
 import { handleLinkDeepLink } from './link-flow';
+import { SUPPORT_START_PAYLOAD } from './links';
+import { isSupportAiEnabled, openSupportFromBot, resetSupportOnStart } from './support-session';
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
 import {
@@ -34,6 +36,7 @@ import {
  */
 
 const log = childLogger('telegram-bot');
+
 
 /**
  * Команда `/start` (с любыми deep-link payload'ами после пробела): upsert
@@ -113,6 +116,22 @@ export async function handleStartCommand(
       { source: 'static_greeting' },
       update.update_id,
     );
+
+    if (isSupportAiEnabled()) {
+      // Deep-link `?start=support` — третья дверь в поддержку рядом с кнопкой и
+      // командой: по ней ведут Mini App и сайт, у которых своего канала связи с
+      // клиентом нет.
+      if (startPayloadRaw.toLowerCase() === SUPPORT_START_PAYLOAD) {
+        await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
+        await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
+        return;
+      }
+      // ⚠️ Любой другой `/start` СБРАСЫВАЕТ помощника — молча. Это выход из
+      // сессии для человека, который «залип» в разговоре: он видит привычное
+      // меню, а не продолжение переписки. Разговор, который ведёт ОПЕРАТОР, не
+      // трогается: удержание снимает человек, а не команда клиента.
+      await resetSupportOnStart(ctx, chatId, update.update_id, message.from?.id ?? chatId);
+    }
   }
 
   await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());

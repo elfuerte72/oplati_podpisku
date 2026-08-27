@@ -119,3 +119,33 @@ export function __resetSilentHintMemory(): void {
 export function __silentHintMemorySize(): number {
   return memory.size;
 }
+
+/**
+ * Альбом уже обработан в этом процессе?
+ *
+ * Telegram шлёт ОТДЕЛЬНЫЙ апдейт на каждое фото альбома с общим
+ * `media_group_id`. Без этой проверки альбом из десяти кадров означал бы
+ * десять походов в БД (upsert клиента, поиск разговора, чтение режима) — и это
+ * в том же процессе, что принимает вебхуки платежей.
+ *
+ * Память процесса, а не Redis: альбом приходит подряд и почти всегда в один
+ * контейнер, а лишний поход в БД — не авария. Потолок тот же, что у подсказки.
+ */
+const albums = new Map<string, number>();
+const ALBUM_TTL_MS = 60_000;
+
+export function claimMediaGroup(groupId: string, now: number = Date.now()): boolean {
+  const seen = albums.get(groupId);
+  if (seen !== undefined && seen > now) return false;
+  if (albums.size >= MEMORY_MAX_ENTRIES) {
+    for (const [key, until] of albums) if (until <= now) albums.delete(key);
+    if (albums.size >= MEMORY_MAX_ENTRIES) albums.clear();
+  }
+  albums.set(groupId, now + ALBUM_TTL_MS);
+  return true;
+}
+
+/** Только для тестов: сбросить память альбомов между сценариями. */
+export function __resetMediaGroupMemory(): void {
+  albums.clear();
+}

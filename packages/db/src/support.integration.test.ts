@@ -10,6 +10,7 @@ import { appendMessage } from './repositories/messages.ts';
 import { claimSupportConversation } from './repositories/panel.ts';
 import {
   countSupportAiReplies,
+  loadSupportHistory,
   findExpiredOperatorConversations,
   findUnansweredSupportConversations,
   getConversationState,
@@ -494,6 +495,96 @@ describe('countSupportAiReplies (кап 100 ходов в сутки)', () => {
     await db.update(schema.messages).set({ createdAt: hoursAgo(30) }).where(eq(schema.messages.id, old.id));
 
     expect(await countSupportAiReplies(db, { userId: user.id, since: hoursAgo(24) })).toBe(0);
+  });
+});
+
+describe('loadSupportHistory (контекст помощника)', () => {
+  it('служебные строки, приветствие Оплатишки, подсказки и команды в контекст НЕ идут', async () => {
+    const conversation = await makeConversation({ mode: 'ai' });
+
+    // Разговор в БД один на клиента и копит всё подряд: маскот на «ты» спорил
+    // бы с системным текстом помощника («вы не Оплатишка»), а «/start» как
+    // реплика клиента не значит ничего — и оба съедали бы окно в 20 строк.
+    await appendMessage(db, { conversationId: conversation.id, role: 'user', content: '/start' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Привет! Я Оплатишка, помогу оплатить подписку.',
+      meta: { source: 'static_greeting' },
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'В переписке я не отвечаю',
+      meta: { source: 'silent_hint' },
+    });
+    await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: 'ai',
+      to: 'operator',
+      trigger: 'hard',
+      modeExpiresAt: null,
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'когда придёт карта?',
+    });
+
+    const history = await loadSupportHistory(db, { conversationId: conversation.id, limit: 20 });
+    expect(history.map((r) => r.content)).toEqual(['когда придёт карта?']);
+  });
+
+  it('настоящие реплики клиента, помощника и оператора остаются и идут в хронологии', async () => {
+    const operator = await makeStaff();
+    const conversation = await makeConversation({ mode: 'ai' });
+
+    // ⚠️ Время проставляем явно. `now()` в Postgres — время ТРАНЗАКЦИИ, и три
+    // вставки подряд в тесте попадают в одну микросекунду; порядок внутри
+    // ничьей разрешает тай-брейкер по случайному uuid, то есть произволен.
+    // В проде реплики разделены секундами разговора, ничьих там нет.
+    const first = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'первый',
+    });
+    const second = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'второй',
+      meta: { source: SUPPORT_AI_META_SOURCE },
+    });
+    const third = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'третий',
+      staffId: operator.id,
+    });
+    await db.update(schema.messages).set({ createdAt: hoursAgo(3) }).where(eq(schema.messages.id, first.id));
+    await db.update(schema.messages).set({ createdAt: hoursAgo(2) }).where(eq(schema.messages.id, second.id));
+    await db.update(schema.messages).set({ createdAt: hoursAgo(1) }).where(eq(schema.messages.id, third.id));
+
+    const history = await loadSupportHistory(db, { conversationId: conversation.id, limit: 20 });
+    expect(history.map((r) => `${r.role}:${r.content}`)).toEqual([
+      'user:первый',
+      'assistant:второй',
+      'operator:третий',
+    ]);
+  });
+
+  it('окно режет ХВОСТ переписки, а не начало', async () => {
+    const conversation = await makeConversation({ mode: 'ai' });
+    let ago = 3;
+    for (const n of ['a', 'b', 'c']) {
+      const row = await appendMessage(db, { conversationId: conversation.id, role: 'user', content: n });
+      await db
+        .update(schema.messages)
+        .set({ createdAt: hoursAgo(ago--) })
+        .where(eq(schema.messages.id, row.id));
+    }
+
+    const history = await loadSupportHistory(db, { conversationId: conversation.id, limit: 2 });
+    expect(history.map((r) => r.content)).toEqual(['b', 'c']);
   });
 });
 

@@ -1,7 +1,11 @@
 import 'server-only';
 
 import { serverEnv } from '@/lib/env.server';
-import { telegramBotLink, telegramMiniAppLink } from '@/lib/telegram/links';
+import {
+  telegramBotLink,
+  telegramMiniAppLink,
+  SUPPORT_START_PAYLOAD,
+} from '@/lib/telegram/links';
 
 /**
  * Telegram deep-link'и, которые зависят от short name зарегистрированного в
@@ -24,6 +28,20 @@ export function cabinetDeepLink(botUsername: string): string {
   return shortName
     ? telegramMiniAppLink(botUsername, shortName)
     : telegramBotLink(botUsername, 'cabinet');
+}
+
+/**
+ * Ссылка «открыть поддержку в боте»: `telegram.me/<bot>?start=support`.
+ *
+ * Нужна тем поверхностям, у которых своего канала связи с клиентом нет —
+ * Mini App и сайту: отвечает помощник только в Telegram, и вести туда надо
+ * ссылкой, а не советом «найдите кнопку в меню».
+ *
+ * ⚠️ Всегда bot-deep-link, а НЕ Mini App: ссылка на приложение открыла бы
+ * витрину, а не разговор.
+ */
+export function supportDeepLink(botUsername: string): string {
+  return telegramBotLink(botUsername, SUPPORT_START_PAYLOAD);
 }
 
 /**

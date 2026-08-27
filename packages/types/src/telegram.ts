@@ -45,6 +45,10 @@ const telegramMessageSchema = z.object({
       user_id: z.number().int().optional(),
     })
     .optional(),
+  // Идентификатор альбома: Telegram шлёт ОТДЕЛЬНЫЙ апдейт на каждое фото, и
+  // все они несут один `media_group_id`. По нему обработчик схлопывает альбом
+  // в одно действие вместо десяти (иначе десять фото = десять походов в БД).
+  media_group_id: z.string().optional(),
   // Медиа-поля: парсим только наличие. Структуру (file_id, mime_type и т.п.)
   // не разбираем — нам нужно лишь определить тип контента для шаблонного ответа.
   photo: z.array(z.unknown()).optional(),

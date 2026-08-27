@@ -38,7 +38,7 @@ const AWAITING_SUPPORT_META_KEY = 'awaiting_support_message';
 // копия строки здесь была бы зеркалом (см. докблок в types).
 
 /** «/support <текст>» / «/support@bot <текст>» → «<текст>»; «/support» → null. */
-function extractSupportInline(text: string): string | null {
+export function extractSupportInline(text: string): string | null {
   const match = text.match(/^\/support(?:@\S+)?\s+([\s\S]+)$/);
   const body = match?.[1]?.trim();
   return body && body.length > 0 ? body : null;

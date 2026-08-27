@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./prompts": "./src/prompts.ts",
-    "./tools": "./src/tools.ts"
+    "./tools": "./src/tools.ts",
+    "./support-prompt": "./src/support-prompt.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
