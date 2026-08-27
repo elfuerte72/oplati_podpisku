@@ -48,12 +48,6 @@ type Slot<T> = { promise: Promise<T | null>; at: number };
 
 const memo: { pending?: Slot<PendingTotals>; support?: Slot<number> } = {};
 
-/** Только для тестов: сбросить памятку между сценариями. */
-export function resetMenuCountsMemoForTests(): void {
-  delete memo.pending;
-  delete memo.support;
-}
-
 /**
  * Дедлайн без отмены: postgres-js запрос не прервать, но ждать его дольше
  * бюджета страница не обязана — число гаснет, запрос дорабатывает в фоне.
@@ -79,33 +73,54 @@ function withDeadline<T>(section: keyof typeof memo, work: Promise<T>): Promise<
   });
 }
 
+/**
+ * Памяткой владеет ТОЛЬКО эта функция: она кладёт слот и она же убирает его,
+ * если запрос не ответил, — неудача буквально не хранится, а не «протухает по
+ * волшебному времени».
+ */
 function through<T>(
   section: MenuBadgeSection,
-  slot: Slot<T> | undefined,
+  get: () => Slot<T> | undefined,
+  set: (slot: Slot<T> | undefined) => void,
   run: () => Promise<T>,
   now: number,
-): Slot<T> {
-  if (slot && now - slot.at < COUNT_TTL_MS) return slot;
+): Promise<T | null> {
+  const slot = get();
+  if (slot && now - slot.at < COUNT_TTL_MS) return slot.promise;
   // `run` — под промисом: синхронный бросок `getDb()` (не задан `DATABASE_URL`)
   // иначе обходил бы `withDeadline` и ронял оболочку вместе со страницей.
   const fresh: Slot<T> = { promise: withDeadline(section, Promise.resolve().then(run)), at: now };
-  // Неудачу не запоминаем: `at: 0` делает слот протухшим для следующего вызова.
+  set(fresh);
   void fresh.promise.then((value) => {
-    if (value === null) fresh.at = 0;
+    if (value === null && get() === fresh) set(undefined);
   });
-  return fresh;
+  return fresh.promise;
 }
 
 /** Заказов, ждущих оплаты, и их сумма — для стола и меню. `null` — не получили. */
 export function readPendingTotals(now: number = Date.now()): Promise<PendingTotals | null> {
-  memo.pending = through('pending', memo.pending, () => countPendingOrdersForPanel(getDb()), now);
-  return memo.pending.promise;
+  return through(
+    'pending',
+    () => memo.pending,
+    (slot) => {
+      memo.pending = slot;
+    },
+    () => countPendingOrdersForPanel(getDb()),
+    now,
+  );
 }
 
 /** Обращений без ответа. `null` — не получили. */
 export function readUnansweredSupportCount(now: number = Date.now()): Promise<number | null> {
-  memo.support = through('support', memo.support, () => countUnansweredSupportRequests(getDb()), now);
-  return memo.support.promise;
+  return through(
+    'support',
+    () => memo.support,
+    (slot) => {
+      memo.support = slot;
+    },
+    () => countUnansweredSupportRequests(getDb()),
+    now,
+  );
 }
 
 /**
