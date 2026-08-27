@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { PANEL_PENDING_ORDER_STATUSES, type PanelOrderSort } from '@oplati/db';
 import { orderStatus, type OrderStatus } from '@oplati/types';
 
+import { PRESET_TITLES, SORT_TITLES } from './labels';
+
 /**
  * Разбор адреса экрана заказов. Параметры адреса — граница (инвариант 5),
  * поэтому Zod, а не «взять что дали».
@@ -15,18 +17,18 @@ import { orderStatus, type OrderStatus } from '@oplati/types';
 
 /** Готовые наборы статусов — то, что спрашивают чаще всего. */
 export const STATUS_PRESETS = [
-  { key: 'all', title: 'Все', statuses: [] },
+  { key: 'all', title: PRESET_TITLES.all, statuses: [] },
   {
     key: 'live',
-    title: 'В работе',
+    title: PRESET_TITLES.live,
     statuses: ['ready_for_payment', 'pending_payment', 'payment_review', 'paid', 'in_fulfillment'],
   },
-  // Тот же набор, что у экрана `/admin/pending`: два определения «недожатых» в
-  // одной панели означали бы два разных списка под одним словом.
-  { key: 'unpaid', title: 'Недожатые', statuses: PANEL_PENDING_ORDER_STATUSES },
-  { key: 'review', title: 'Холд банка', statuses: ['payment_review'] },
-  { key: 'failed', title: 'Провалились', statuses: ['failed'] },
-  { key: 'completed', title: 'Выполнены', statuses: ['completed'] },
+  // Тот же набор, что у экрана `/admin/pending`: два определения «ждут оплаты»
+  // в одной панели означали бы два разных списка под одним словом.
+  { key: 'unpaid', title: PRESET_TITLES.unpaid, statuses: PANEL_PENDING_ORDER_STATUSES },
+  { key: 'review', title: PRESET_TITLES.review, statuses: ['payment_review'] },
+  { key: 'failed', title: PRESET_TITLES.failed, statuses: ['failed'] },
+  { key: 'completed', title: PRESET_TITLES.completed, statuses: ['completed'] },
 ] as const satisfies ReadonlyArray<{
   key: string;
   title: string;
@@ -42,10 +44,10 @@ const presetKeySchema = z.enum(
 const sortSchema = z.enum(['newest', 'oldest', 'amount_desc', 'amount_asc']);
 
 export const SORT_OPTIONS: ReadonlyArray<{ key: PanelOrderSort; title: string }> = [
-  { key: 'newest', title: 'Свежие' },
-  { key: 'oldest', title: 'Старые' },
-  { key: 'amount_desc', title: 'Дорогие' },
-  { key: 'amount_asc', title: 'Дешёвые' },
+  { key: 'newest', title: SORT_TITLES.newest },
+  { key: 'oldest', title: SORT_TITLES.oldest },
+  { key: 'amount_desc', title: SORT_TITLES.amount_desc },
+  { key: 'amount_asc', title: SORT_TITLES.amount_asc },
 ];
 
 /** Потолок поиска — тот же, что в репозитории; длиннее вводить незачем. */

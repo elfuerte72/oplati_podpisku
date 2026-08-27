@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  SUPPORT_BLOCK_TEXT,
-  SUPPORT_HISTORY_DAYS,
-  supportReplyBlockReason,
-  supportRoleLabel,
-} from './support';
+import { SUPPORT_BLOCK_TEXT } from './labels';
+import { SUPPORT_HISTORY_DAYS, supportReplyBlockReason, supportRoleLabel } from './support';
 import { MESSAGES_RETENTION_DAYS } from '@/lib/retention-policy';
 
 const STAFF = 'staff-1';
@@ -74,13 +70,13 @@ describe('supportReplyBlockReason', () => {
 describe('supportRoleLabel', () => {
   it('бот и оператор различаются', () => {
     // Клиент их не различает, а менеджер обязан видеть, где ответил автомат.
-    expect(supportRoleLabel('assistant', null)).toBe('бот');
-    expect(supportRoleLabel('operator', 'Максим')).toBe('оператор · Максим');
-    expect(supportRoleLabel('user', null)).toBe('клиент');
+    expect(supportRoleLabel('assistant', null)).toBe('Бот');
+    expect(supportRoleLabel('operator', 'Максим')).toBe('Оператор · Максим');
+    expect(supportRoleLabel('user', null)).toBe('Клиент');
   });
 
   it('оператор без имени всё равно оператор', () => {
-    expect(supportRoleLabel('operator', null)).toBe('оператор');
+    expect(supportRoleLabel('operator', null)).toBe('Оператор');
   });
 
   it('незнакомая роль показывается как есть', () => {

@@ -1,5 +1,7 @@
 import type { StaffRole } from '@oplati/db';
 
+import { SECTION_TITLES } from './labels';
+
 /**
  * Права в панели: две роли и таблица возможностей.
  *
@@ -55,8 +57,12 @@ export function canAccess(role: StaffRole, capability: PanelCapability): boolean
 
 export type PanelSection = {
   href: string;
-  title: string;
-  capability: PanelCapability;
+  /**
+   * Право раздела — оно же ключ названия в словаре (`SECTION_TITLES`): пункт
+   * меню без названия или с чужим названием не собирается по типу, а не
+   * ловится глазами.
+   */
+  capability: keyof typeof SECTION_TITLES;
 };
 
 /**
@@ -64,20 +70,21 @@ export type PanelSection = {
  * действия сейчас, партнёры и персонал в конце.
  */
 export const PANEL_SECTIONS: readonly PanelSection[] = [
-  { href: '/admin/orders', title: 'Заказы', capability: 'orders' },
-  { href: '/admin/pending', title: 'Недожатые', capability: 'pending' },
-  { href: '/admin/holds', title: 'Холды банка', capability: 'holds' },
-  { href: '/admin/support', title: 'Поддержка', capability: 'support' },
-  { href: '/admin/partners', title: 'Партнёры', capability: 'partners' },
-  { href: '/admin/staff', title: 'Персонал', capability: 'staff' },
+  { href: '/admin/orders', capability: 'orders' },
+  { href: '/admin/pending', capability: 'pending' },
+  { href: '/admin/holds', capability: 'holds' },
+  { href: '/admin/support', capability: 'support' },
+  { href: '/admin/partners', capability: 'partners' },
+  { href: '/admin/staff', capability: 'staff' },
 ];
 
-export type PanelSectionForRole = PanelSection & { allowed: boolean };
+export type PanelSectionForRole = PanelSection & { title: string; allowed: boolean };
 
 /** Меню для роли: показываем ВСЁ, помечая недоступное (см. заголовок). */
 export function sectionsFor(role: StaffRole): PanelSectionForRole[] {
   return PANEL_SECTIONS.map((section) => ({
     ...section,
+    title: SECTION_TITLES[section.capability],
     allowed: canAccess(role, section.capability),
   }));
 }

@@ -3,6 +3,9 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { lookupLabel } from '@/lib/panel/format';
+import { ACTION_TITLES, FALLBACK_ERROR_TEXT, PAYOUT_ERROR_TEXT } from '@/lib/panel/labels';
+
 import { markPanelBusy } from './LiveRefresh';
 
 /**
@@ -10,22 +13,11 @@ import { markPanelBusy } from './LiveRefresh';
  *
  * ⚠️ Это РЕАЛЬНЫЕ деньги партнёра, поэтому обе кнопки требуют подтверждения —
  * не диалогом браузера (он блокирует поток и ломает автоматизацию), а вторым
- * нажатием: первое раскрывает подпись «нажми ещё раз».
+ * нажатием: первое меняет подпись на «Подтвердить …».
  *
  * ⚠️ «Выплачено» НЕ переводит деньги: перевод владелец делает вручную, панель
  * лишь фиксирует факт.
  */
-
-const FALLBACK_ERROR = 'Не получилось. Обнови страницу и попробуй ещё раз.';
-
-const ERROR_TEXT: Record<string, string> = {
-  wrong_status: 'Заявку уже обработали — обнови страницу.',
-  forbidden: 'Раздел доступен только владельцу.',
-  unauthorized: 'Сессия истекла — войди заново.',
-  unavailable: 'Что-то на нашей стороне. Загляни в Sentry.',
-  partner_suspended: 'Партнёр заблокирован антифродом — выплату провести нельзя.',
-  not_found: 'Заявки больше нет — обнови страницу.',
-};
 
 type Action = 'paid' | 'reject';
 
@@ -63,14 +55,13 @@ export function PayoutDecision({
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         const code = (data as { error?: string } | null)?.error;
-        const text = code && Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : undefined;
-        setError(text ?? FALLBACK_ERROR);
+        setError(lookupLabel(PAYOUT_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT);
         return;
       }
       setConfirming(null);
       router.refresh();
     } catch {
-      setError(FALLBACK_ERROR);
+      setError(FALLBACK_ERROR_TEXT);
     } finally {
       setBusy(false);
       releaseBusy();
@@ -90,7 +81,7 @@ export function PayoutDecision({
             onClick={() => decide('paid')}
             disabled={busy}
           >
-            {confirming === 'paid' ? 'Точно выплачено?' : 'Выплачено'}
+            {confirming === 'paid' ? ACTION_TITLES.payoutPaidConfirm : ACTION_TITLES.payoutPaid}
           </button>
         )}
         <button
@@ -99,7 +90,7 @@ export function PayoutDecision({
           onClick={() => decide('reject')}
           disabled={busy}
         >
-          {confirming === 'reject' ? 'Точно отклонить?' : 'Отклонить'}
+          {confirming === 'reject' ? ACTION_TITLES.payoutRejectConfirm : ACTION_TITLES.payoutReject}
         </button>
       </div>
       {error ? (

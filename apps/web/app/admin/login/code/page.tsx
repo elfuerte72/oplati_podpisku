@@ -1,5 +1,8 @@
+import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 
+import { lookupLabel } from '@/lib/panel/format';
+import { ACTION_TITLES, CODE_ERROR_TEXT, PAGE_TITLES } from '@/lib/panel/labels';
 import { buildStaffOtpAuthUri } from '@/lib/panel/login';
 import { readPendingStaffForEnrollment } from '@/lib/panel/session';
 
@@ -15,13 +18,7 @@ import { readPendingStaffForEnrollment } from '@/lib/panel/session';
 
 export const dynamic = 'force-dynamic';
 
-const ERROR_TEXT: Record<string, string> = {
-  bad_code: 'Код не подошёл. Попробуй ещё раз.',
-  // Отдельный текст: человек, дважды отправивший форму, иначе решит, что
-  // сломалась привязка, и начнёт перевыпускать ключ.
-  code_used: 'Этот код уже использован. Дождись следующего — он меняется каждые 30 секунд.',
-  rate_limited: 'Слишком много попыток. Подожди немного и попробуй снова.',
-};
+export const metadata: Metadata = { title: PAGE_TITLES.loginCode };
 
 export default async function PanelCodePage({
   searchParams,
@@ -34,7 +31,7 @@ export default async function PanelCodePage({
 
   const params = await searchParams;
   const rawError = typeof params.e === 'string' ? params.e : undefined;
-  const errorText = rawError ? ERROR_TEXT[rawError] : undefined;
+  const errorText = lookupLabel(CODE_ERROR_TEXT, rawError);
 
   // Привязка не завершена — показываем секрет. После подтверждения этот блок
   // не появится больше никогда: `totp_confirmed_at` заполнен.
@@ -45,9 +42,9 @@ export default async function PanelCodePage({
       <div className="panel-login-card">
         {secret ? (
           <div className="panel-card">
-            <h1 className="panel-title">Привяжи приложение с кодами</h1>
+            <h1 className="panel-title">Привяжите приложение с кодами</h1>
             <p className="panel-muted">
-              Добавь ключ в Google Authenticator или совместимое приложение и введи код,
+              Добавьте ключ в Google Authenticator или совместимое приложение и введите код,
               который оно покажет. Ключ виден до первого подтверждения — после него панель
               не покажет его больше никогда.
             </p>
@@ -88,13 +85,13 @@ export default async function PanelCodePage({
               autoFocus
             />
             <button type="submit" className="panel-button">
-              Войти
+              {ACTION_TITLES.signIn}
             </button>
           </div>
         </form>
 
         <p className="panel-muted">
-          Потерял приложение с кодами — перевыдачу делает владелец скриптом.
+          Если приложение с кодами потеряно — перевыдачу делает владелец.
         </p>
       </div>
     </div>

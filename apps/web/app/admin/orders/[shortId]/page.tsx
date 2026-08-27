@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
@@ -5,6 +6,7 @@ import { getDb, getOrderDetailForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
 import { ManualFulfillment } from '@/components/panel/ManualFulfillment';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
   cardStatusLabel,
@@ -22,8 +24,9 @@ import {
   canStartManualFulfillment,
   isStartedManually,
 } from '@/lib/panel/fulfillment';
-import { canAccess } from '@/lib/panel/permissions';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { CELL_TEXT, COLUMN_TITLES, SECTION_TITLES } from '@/lib/panel/labels';
+import { canAccess } from '@/lib/panel/permissions';
 import { orderShortIdSchema } from '@/lib/panel/order-filters';
 
 /**
@@ -38,6 +41,16 @@ import { orderShortIdSchema } from '@/lib/panel/order-filters';
 
 export const dynamic = 'force-dynamic';
 
+/** Вкладка называется номером заказа — иначе пять открытых карточек неотличимы. */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ shortId: string }>;
+}): Promise<Metadata> {
+  const parsed = orderShortIdSchema.safeParse((await params).shortId);
+  return { title: parsed.success ? parsed.data.toUpperCase() : SECTION_TITLES.orders };
+}
+
 export default async function PanelOrderPage({
   params,
 }: {
@@ -47,7 +60,7 @@ export default async function PanelOrderPage({
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} current="/admin/orders" live={false}>
-        <PanelForbidden title="Заказы" />
+        <PanelForbidden title={SECTION_TITLES.orders} />
       </PanelShell>
     );
   }
@@ -68,15 +81,18 @@ export default async function PanelOrderPage({
 
   return (
     <PanelShell actor={access.actor} current="/admin/orders">
-      <div className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">
-          {order.shortId}{' '}
-          <span className={`panel-status panel-status--${orderStatusTone(order.status)}`}>
-            {orderStatusLabel(order.status)}
-          </span>
-        </h1>
+      <PanelPageHeader
+        title={
+          <>
+            {order.shortId}{' '}
+            <span className={`panel-status panel-status--${orderStatusTone(order.status)}`}>
+              {orderStatusLabel(order.status)}
+            </span>
+          </>
+        }
+      >
         <p className="panel-muted">
-          {detail.serviceName ?? 'сервис не указан'} · создан{' '}
+          {detail.serviceName ?? CELL_TEXT.serviceNotSpecified} · создан{' '}
           <LocalTime iso={order.createdAt.toISOString()} />
           {order.expiresAt ? (
             <>
@@ -85,7 +101,7 @@ export default async function PanelOrderPage({
             </>
           ) : null}
         </p>
-      </div>
+      </PanelPageHeader>
 
       <div className="panel-grid">
         <section className="panel-card">
@@ -94,19 +110,19 @@ export default async function PanelOrderPage({
             <dt>Имя</dt>
             <dd>
               <Link href={`/admin/clients/${client.id}`}>
-                {client.displayName ?? 'без имени'}
+                {client.displayName ?? CELL_TEXT.noName}
               </Link>
             </dd>
             <dt>Telegram</dt>
             <dd>
               {client.telegramId ?? (
                 // Писать некуда — это надо сказать прямо, а не оставить пустоту.
-                <span className="panel-muted">нет Telegram, ответить нечем</span>
+                <span className="panel-muted">{CELL_TEXT.noTelegram}</span>
               )}
             </dd>
             <dt>Email</dt>
             <dd>{client.email ?? <span className="panel-muted">—</span>}</dd>
-            <dt>Ведёт</dt>
+            <dt>{COLUMN_TITLES.responsible}</dt>
             <dd>{detail.assignedOperatorName ?? <span className="panel-muted">—</span>}</dd>
           </dl>
         </section>
@@ -145,19 +161,19 @@ export default async function PanelOrderPage({
           <h2 className="panel-title">Карта</h2>
           {detail.card ? (
             <dl className="panel-dl">
-              <dt>Номер</dt>
+              <dt>{COLUMN_TITLES.cardNumber}</dt>
               <dd>{detail.card.panMasked}</dd>
-              <dt>Статус</dt>
+              <dt>{COLUMN_TITLES.status}</dt>
               <dd>{cardStatusLabel(detail.card.status)}</dd>
-              <dt>Баланс</dt>
+              <dt>{COLUMN_TITLES.cardBalance}</dt>
               <dd>{formatUsdCents(detail.card.balanceUsdCents)}</dd>
-              <dt>Выпущена</dt>
+              <dt>{COLUMN_TITLES.cardIssuedAt}</dt>
               <dd>
                 <LocalTime iso={detail.card.createdAt.toISOString()} />
               </dd>
             </dl>
           ) : (
-            <p className="panel-muted">Карта не выпускалась.</p>
+            <p className="panel-muted">{CELL_TEXT.cardNotIssued}</p>
           )}
         </section>
       </div>
@@ -174,8 +190,9 @@ export default async function PanelOrderPage({
             canStartManualFulfillment(order.status, detail.hasSucceededPayment) ? (
               <>
                 <p className="panel-muted">
-                  Заказ числится провалившимся. Если его выдали руками — отметь это: пока он
-                  `failed`, он не в выручке, а комиссия партнёра по нему погашена.
+                  Заказ завершился ошибкой. Если его выдали вручную — отметьте это: пока заказ
+                  в статусе «{orderStatusLabel('failed')}», он не учитывается в выручке, а
+                  комиссия партнёра по нему погашена.
                 </p>
                 <ManualFulfillment shortId={order.shortId} action="start" />
               </>
@@ -185,13 +202,13 @@ export default async function PanelOrderPage({
               // выручку то, чего мы не получали.
               <p className="panel-muted">
                 Успешного платежа по заказу нет, поэтому вручную выдать его нельзя. Если
-                деньги всё-таки пришли — сверь платёж у провайдера, прежде чем что-то менять.
+                деньги всё-таки пришли — сверьте платёж у провайдера, прежде чем что-то менять.
               </p>
             )
           ) : (
             <>
               <p className="panel-muted">
-                Заказ в работе. Отметь «выдал», когда клиент получил всё, что оплатил.
+                Заказ в работе. Отметьте его выданным, когда клиент получил всё, что оплатил.
               </p>
               <ManualFulfillment shortId={order.shortId} action="complete" />
             </>
@@ -202,19 +219,19 @@ export default async function PanelOrderPage({
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">Платежи</h2>
         {detail.payments.length === 0 ? (
-          <p className="panel-muted">Счетов по заказу не было.</p>
+          <p className="panel-muted">{CELL_TEXT.noPayments}</p>
         ) : (
           <div className="panel-table-scroll">
             <table className="panel-table">
               <thead>
                 <tr>
-                  <th>Провайдер</th>
-                  <th>Счёт</th>
-                  <th>Сумма</th>
-                  <th>Статус</th>
-                  <th>Статус у провайдера</th>
-                  <th>Создан</th>
-                  <th>Оплачен</th>
+                  <th>{COLUMN_TITLES.provider}</th>
+                  <th>{COLUMN_TITLES.invoice}</th>
+                  <th className="panel-num">{COLUMN_TITLES.amount}</th>
+                  <th>{COLUMN_TITLES.status}</th>
+                  <th>{COLUMN_TITLES.providerStatus}</th>
+                  <th>{COLUMN_TITLES.created}</th>
+                  <th>{COLUMN_TITLES.paidAt}</th>
                 </tr>
               </thead>
               <tbody>
@@ -224,7 +241,7 @@ export default async function PanelOrderPage({
                     <td className="panel-muted">
                       {payment.providerInvoiceNumber ?? payment.providerRef}
                     </td>
-                    <td>{formatKopecks(payment.amountRubKopecks)}</td>
+                    <td className="panel-num">{formatKopecks(payment.amountRubKopecks)}</td>
                     <td>{paymentStatusLabel(payment.status)}</td>
                     <td>
                       {providerStatusLabel(payment.lastProviderStatus)}
@@ -256,7 +273,7 @@ export default async function PanelOrderPage({
       <section className="panel-card" style={{ marginTop: 16 }}>
         <h2 className="panel-title">История</h2>
         {detail.events.length === 0 ? (
-          <p className="panel-muted">Событий нет.</p>
+          <p className="panel-muted">{CELL_TEXT.noEvents}</p>
         ) : (
           <ol className="panel-timeline">
             {detail.events.map((event) => (

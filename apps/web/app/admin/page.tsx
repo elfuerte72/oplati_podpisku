@@ -1,18 +1,22 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import {
-  countPendingOrdersForPanel,
-  countUnansweredSupportRequests,
-  getDb,
-  listHoldsForPanel,
-  listPendingOrdersForPanel,
-  listSupportRequestsForPanel,
-} from '@oplati/db';
+import { getDb, listHoldsForPanel, listPendingOrdersForPanel } from '@oplati/db';
 
+import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelShell } from '@/components/panel/PanelShell';
 import { isDeskQuiet } from '@/lib/panel/desk';
 import { formatKopecks, formatUsdCents } from '@/lib/panel/format';
 import { requirePanelActor } from '@/lib/panel/guard';
+import { readPendingTotals, readUnansweredSupportCount } from '@/lib/panel/menu-counts';
+import {
+  ACTION_TITLES,
+  CELL_TEXT,
+  EMPTY_TEXT,
+  PAGE_TITLES,
+  SECTION_TITLES,
+} from '@/lib/panel/labels';
 import { canAccess } from '@/lib/panel/permissions';
 import { readVccBalanceForPanel } from '@/lib/panel/vcc-balance';
 
@@ -34,6 +38,8 @@ import { readVccBalanceForPanel } from '@/lib/panel/vcc-balance';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: PAGE_TITLES.desk };
+
 export default async function PanelHomePage() {
   // Стартовый экран не требует отдельного права: его видит любой вошедший
   // сотрудник. Просить у гейта чужое право ради получения актора — способ
@@ -46,20 +52,21 @@ export default async function PanelHomePage() {
   const canHolds = canAccess(actor.role, 'holds');
   const canSupport = canAccess(actor.role, 'support');
 
-  const [pending, pendingTotals, holds, balance, support, unansweredCount] = await Promise.all([
+  const [pending, pendingTotals, holds, balance, unansweredCount] = await Promise.all([
     canPending ? listPendingOrdersForPanel(db, { limit: 5 }) : Promise.resolve(null),
     // Число и деньги — из БАЗЫ, а не по пяти видимым строкам: «5+ на 50 000 ₽»
     // при сорока заказах на 200 000 ₽ занижает ровно то, ради чего блок и
     // существует. Тот же запрет, что пачка 3 ввела на карточке клиента.
-    canPending ? countPendingOrdersForPanel(db) : Promise.resolve(null),
+    // Читатель общий с меню (`menu-counts.ts`): иначе та же выборка шла бы
+    // дважды на каждый рендер стола.
+    canPending ? readPendingTotals() : Promise.resolve(null),
     canHolds ? listHoldsForPanel(db, 5) : Promise.resolve(null),
     canHolds ? readVccBalanceForPanel() : Promise.resolve(null),
-    canSupport ? listSupportRequestsForPanel(db, { limit: 5 }) : Promise.resolve(null),
     // Счётчик — из БАЗЫ: «новых» может не оказаться среди пяти свежих строк
     // (клиент написал вчера, ему не ответили, сегодня пришло пять отвеченных),
     // и стол утверждал бы «все обращения отвечены» ровно в том случае, ради
     // которого блок и заведён.
-    canSupport ? countUnansweredSupportRequests(db) : Promise.resolve(null),
+    canSupport ? readUnansweredSupportCount() : Promise.resolve(null),
   ]);
 
   // ⚠️ `unavailable` — это `null` («не смотрели / не получили»), а НЕ `false`.
@@ -79,23 +86,19 @@ export default async function PanelHomePage() {
 
   return (
     <PanelShell actor={actor}>
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">Что требует внимания</h1>
-        {quiet ? (
-          <p className="panel-muted">
-            Всё спокойно: недожатых заказов нет, банк ничего не держит, денег на карточном счёте
-            хватает. Это нормальное состояние — поток около одного заказа в день.
-          </p>
-        ) : (
-          <p className="panel-muted">Ниже — только то, что сейчас требует действия.</p>
-        )}
-      </section>
+      <PanelPageHeader title="Что требует внимания">
+        <p className="panel-muted">{quiet ? EMPTY_TEXT.desk : EMPTY_TEXT.deskAttention}</p>
+      </PanelPageHeader>
 
       <div className="panel-grid">
         {canPending ? (
           <section className="panel-card">
-            <h2 className="panel-title">Недожатые заказы</h2>
-            {pendingTotals && pendingTotals.count > 0 ? (
+            <h2 className="panel-title">{SECTION_TITLES.pending}</h2>
+            {/* `null` — «не получили», и это НЕ «всё оплачено»: утверждать
+                факт, которого никто не читал, стол не имеет права. */}
+            {pendingTotals === null ? (
+              <p className="panel-muted">{CELL_TEXT.countUnavailable}</p>
+            ) : pendingTotals.count > 0 ? (
               <>
                 <p>
                   <span className="panel-status panel-status--warn" style={{ fontSize: 16 }}>
@@ -115,17 +118,17 @@ export default async function PanelHomePage() {
                 ) : null}
               </>
             ) : (
-              <p className="panel-empty">Все заказы оплачены.</p>
+              <p className="panel-empty">{EMPTY_TEXT.pending}</p>
             )}
             <p style={{ marginTop: 8 }}>
-              <Link href="/admin/pending">Открыть список</Link>
+              <Link href="/admin/pending">{ACTION_TITLES.openList}</Link>
             </p>
           </section>
         ) : null}
 
         {canHolds ? (
           <section className="panel-card">
-            <h2 className="panel-title">Холды банка</h2>
+            <h2 className="panel-title">{SECTION_TITLES.holds}</h2>
             {holds && holds.items.length > 0 ? (
               <p>
                 <span className="panel-status panel-status--danger" style={{ fontSize: 16 }}>
@@ -135,10 +138,10 @@ export default async function PanelHomePage() {
                 <span className="panel-muted">платежей на проверке или с отказом</span>
               </p>
             ) : (
-              <p className="panel-empty">Банк ничего не держит.</p>
+              <p className="panel-empty">{EMPTY_TEXT.holds}</p>
             )}
             <p style={{ marginTop: 8 }}>
-              <Link href="/admin/holds">Открыть список</Link>
+              <Link href="/admin/holds">{ACTION_TITLES.openList}</Link>
             </p>
           </section>
         ) : null}
@@ -146,7 +149,9 @@ export default async function PanelHomePage() {
         {canSupport ? (
           <section className="panel-card">
             <h2 className="panel-title">Новые обращения</h2>
-            {unansweredCount !== null && unansweredCount > 0 ? (
+            {unansweredCount === null ? (
+              <p className="panel-muted">{CELL_TEXT.countUnavailable}</p>
+            ) : unansweredCount > 0 ? (
               <p>
                 <span className="panel-status panel-status--warn" style={{ fontSize: 16 }}>
                   {unansweredCount}
@@ -154,10 +159,10 @@ export default async function PanelHomePage() {
                 <span className="panel-muted">без ответа</span>
               </p>
             ) : (
-              <p className="panel-empty">Все обращения отвечены.</p>
+              <p className="panel-empty">{EMPTY_TEXT.supportAllAnswered}</p>
             )}
             <p style={{ marginTop: 8 }}>
-              <Link href="/admin/support">Открыть список</Link>
+              <Link href="/admin/support">{ACTION_TITLES.openList}</Link>
             </p>
           </section>
         ) : null}
@@ -175,9 +180,25 @@ export default async function PanelHomePage() {
                     {formatUsdCents(balance.balanceUsdCents)}
                   </span>{' '}
                   <span className="panel-muted">
+                    {balance.pendingUsdCents > 0
+                      ? `в пути ${formatUsdCents(balance.pendingUsdCents)} · `
+                      : ''}
                     {balance.thresholdUsdCents > 0
                       ? `порог ${formatUsdCents(balance.thresholdUsdCents)}`
-                      : 'порог не задан'}
+                      : CELL_TEXT.thresholdNotSetAlertOff}
+                    {/* Устаревшее число лучше прочерка, но молчать о возрасте
+                        нельзя: по этой цифре решают, хватит ли денег на
+                        следующий заказ. Раньше пометка жила на экране проверки
+                        платежей — теперь баланс показывается только здесь. */}
+                    {balance.state === 'stale' ? (
+                      <>
+                        {' · '}
+                        <span className="panel-status panel-status--warn">
+                          данные на <LocalTime iso={balance.readAt.toISOString()} />, PaySpace
+                          не отвечает
+                        </span>
+                      </>
+                    ) : null}
                   </span>
                 </p>
                 {balance.low ? (
@@ -188,9 +209,9 @@ export default async function PanelHomePage() {
                 ) : null}
               </>
             ) : balance?.state === 'unavailable' ? (
-              <p className="panel-muted">Баланс не получен — PaySpace не ответил.</p>
+              <p className="panel-muted">{CELL_TEXT.balanceUnavailable}</p>
             ) : (
-              <p className="panel-muted">PaySpace не настроен в этом окружении.</p>
+              <p className="panel-muted">{CELL_TEXT.balanceNotConfigured}</p>
             )}
           </section>
         ) : null}

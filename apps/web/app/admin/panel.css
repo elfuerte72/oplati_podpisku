@@ -21,6 +21,27 @@
   --panel-warn: #d8a44f;
   --panel-ok: #4fb87a;
 
+  /*
+   * Граница ИНТЕРАКТИВНЫХ элементов (поля, кнопки). WCAG 2.2, 1.4.11 требует
+   * ≥3:1 к подложке; прежний --panel-border (#2a2f39) давал 1.30:1 на карточке
+   * и 1.40:1 на фоне поля — на телефоне при солнце поля не видно. Расчёт
+   * (относительная яркость, sRGB): #66708a на #101216 = 3.79:1, на #171a20 =
+   * 3.53:1, на #1e222a = 3.23:1. Структурные разделители остаются тихими: у
+   * них требования нет.
+   */
+  --panel-border-strong: #66708a;
+
+  /*
+   * Радиусы. Строго концентричный внешний = 6 + 16 (отступ карточки) = 22px
+   * читался бы пузырём на плотной таблице; 12/6 даёт видимую вложенность без
+   * этого. Пилюли статусов (999) из правила исключены.
+   */
+  --panel-radius-card: 12px;
+  --panel-radius-control: 6px;
+
+  /* Кольцо фокуса: зазор цветом фона, чтобы читалось и на кнопке, и на поле. */
+  --panel-focus-ring: 0 0 0 2px var(--panel-bg), 0 0 0 4px var(--panel-accent);
+
   min-height: 100%;
   background: var(--panel-bg);
   color: var(--panel-text);
@@ -101,8 +122,41 @@
 .panel-card {
   background: var(--panel-surface);
   border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border-radius: var(--panel-radius-card);
   padding: 16px;
+}
+
+/* Шапка экрана: заголовок + пояснение слева, действия справа. */
+.panel-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.panel-page-header__main {
+  flex: 1;
+  min-width: 0;
+}
+.panel-page-header__aside {
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+
+/* Счётчик работы в меню. Ноль и «не получили» не рисуются вовсе. */
+.panel-nav-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel-warn);
+  color: #1a1408;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-title {
@@ -123,7 +177,7 @@
 
 .panel-error {
   border: 1px solid var(--panel-danger);
-  border-radius: 8px;
+  border-radius: var(--panel-radius-control);
   padding: 10px 12px;
   color: #ffd9d3;
   background: rgba(216, 96, 79, 0.12);
@@ -134,15 +188,27 @@
   align-items: center;
   gap: 6px;
   padding: 7px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius-control);
+  border: 1px solid var(--panel-border-strong);
   background: var(--panel-surface-2);
   color: var(--panel-text);
   font: inherit;
   cursor: pointer;
+  /* Перечисляем свойства явно: `transition: all` тянет за собой всё подряд. */
+  transition-property: scale, border-color, background-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
 }
 .panel-button:hover {
   border-color: var(--panel-accent);
+}
+/* Отклик на нажатие: 0.96 — меньше уже читается как рывок. */
+.panel-button:active:not([disabled]) {
+  scale: 0.96;
+}
+.panel-button:focus-visible {
+  outline: none;
+  box-shadow: var(--panel-focus-ring);
 }
 .panel-button[disabled] {
   opacity: 0.5;
@@ -151,15 +217,31 @@
 
 .panel-input {
   padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius-control);
+  border: 1px solid var(--panel-border-strong);
   background: var(--panel-bg);
   color: var(--panel-text);
   font: inherit;
 }
-.panel-input:focus {
-  outline: 2px solid var(--panel-accent);
-  outline-offset: 1px;
+.panel-input:focus-visible {
+  outline: none;
+  border-color: var(--panel-accent);
+  box-shadow: var(--panel-focus-ring);
+}
+
+.panel a:focus-visible {
+  outline: none;
+  border-radius: 3px;
+  box-shadow: var(--panel-focus-ring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-button {
+    transition: none;
+  }
+  .panel-button:active:not([disabled]) {
+    scale: none;
+  }
 }
 
 .panel-code-input {
@@ -173,7 +255,7 @@
 .panel-secret {
   display: block;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--panel-radius-control);
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -216,19 +298,32 @@
   white-space: nowrap;
 }
 
+/* Обычный регистр: кириллица капсом читается медленнее и занимает шире. */
 .panel-table th {
   color: var(--panel-muted);
   font-weight: 500;
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+}
+
+/* Количественное — вправо, вместе с заголовком: колонку сумм сканируют по
+   правому краю. Даты, номера и телефоны остаются слева. */
+.panel-table .panel-num {
+  text-align: right;
+}
+
+/* Ячейка с текстом в несколько слов (причина, почему кнопки нет): переносится,
+   а не тянет всю таблицу в горизонтальную прокрутку. */
+.panel-table .panel-wrap {
+  white-space: normal;
+  max-width: 360px;
 }
 
 .panel-table tbody tr:hover {
   background: var(--panel-surface-2);
 }
 
-/* Горизонтальная прокрутка вместо перелома вёрстки: панель читают с телефона. */
+/* Горизонтальная прокрутка вместо перелома вёрстки — для таблиц, у которых
+   нет карточной раскладки. */
 .panel-table-scroll {
   overflow-x: auto;
 }
@@ -240,6 +335,56 @@
   .panel-actor {
     margin-left: 0;
     width: 100%;
+  }
+  .panel-page-header {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Списки, которые читают с телефона, раскладываются карточками: строка
+     таблицы становится карточкой, каждая ячейка — парой «подпись: значение»
+     из `data-label`. Восемь колонок с `nowrap` в горизонтальной прокрутке
+     на телефоне не прочитать. */
+  .panel-table--cards thead {
+    display: none;
+  }
+  .panel-table--cards,
+  .panel-table--cards tbody,
+  .panel-table--cards tr,
+  .panel-table--cards td {
+    display: block;
+  }
+  .panel-table--cards tr {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--panel-radius-control);
+    padding: 6px 10px;
+    margin-bottom: 10px;
+  }
+  .panel-table--cards tr:last-child {
+    margin-bottom: 0;
+  }
+  .panel-table--cards tbody tr:hover {
+    background: transparent;
+  }
+  .panel-table--cards td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 4px 0;
+    border-bottom: none;
+    white-space: normal;
+    text-align: right;
+  }
+  .panel-table--cards td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    color: var(--panel-muted);
+    font-size: 12px;
+    text-align: left;
+  }
+  .panel-table--cards td:empty {
+    display: none;
   }
 }
 

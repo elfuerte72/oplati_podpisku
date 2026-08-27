@@ -1,10 +1,19 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { getDb, listSupportRequestsForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { panelPageAccess } from '@/lib/panel/guard';
+import {
+  ACTION_TITLES,
+  CELL_TEXT,
+  COLUMN_TITLES,
+  EMPTY_TEXT,
+  SECTION_TITLES,
+} from '@/lib/panel/labels';
 
 /**
  * `/admin/support` — обращения клиентов (спека §5.6).
@@ -17,12 +26,14 @@ import { panelPageAccess } from '@/lib/panel/guard';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: SECTION_TITLES.support };
+
 export default async function PanelSupportPage() {
   const access = await panelPageAccess('support');
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} current="/admin/support" live={false}>
-        <PanelForbidden title="Поддержка" />
+        <PanelForbidden title={SECTION_TITLES.support} />
       </PanelShell>
     );
   }
@@ -31,28 +42,27 @@ export default async function PanelSupportPage() {
 
   return (
     <PanelShell actor={access.actor} current="/admin/support">
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">Поддержка</h1>
+      <PanelPageHeader title={SECTION_TITLES.support}>
         <p className="panel-muted">
           Клиент нажал «Поддержка» или написал <code>/support</code>. Ответ приходит ему от бота —
           что за ботом человек, клиент не знает.
         </p>
-      </section>
+      </PanelPageHeader>
 
       {items.length === 0 ? (
         <div className="panel-card">
           {/* Четыре обращения за три месяца — пустой экран это норма. */}
-          <p className="panel-empty">Обращений нет.</p>
+          <p className="panel-empty">{EMPTY_TEXT.support}</p>
         </div>
       ) : (
         <div className="panel-card panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
-                <th>Клиент</th>
-                <th>Написал</th>
-                <th>Ответили</th>
-                <th>Кто ведёт</th>
+                <th>{COLUMN_TITLES.client}</th>
+                <th>{COLUMN_TITLES.writtenAt}</th>
+                <th>{COLUMN_TITLES.repliedAt}</th>
+                <th>{COLUMN_TITLES.responsible}</th>
                 <th />
               </tr>
             </thead>
@@ -61,12 +71,12 @@ export default async function PanelSupportPage() {
                 <tr key={item.conversationId}>
                   <td>
                     <Link href={`/admin/clients/${item.client.id}`}>
-                      {item.client.displayName ?? item.client.telegramId ?? 'без имени'}
+                      {item.client.displayName ?? item.client.telegramId ?? CELL_TEXT.noName}
                     </Link>
                     {item.lastRequestDelivered ? null : (
                       // Обращение не дошло до оператора — это наша авария
                       // конфигурации, а клиент считает, что написал.
-                      <div className="panel-error">не доставлено оператору</div>
+                      <div className="panel-error">{CELL_TEXT.notDeliveredToOperator}</div>
                     )}
                   </td>
                   <td>
@@ -76,12 +86,12 @@ export default async function PanelSupportPage() {
                     {item.lastOperatorReplyAt ? (
                       <LocalTime iso={item.lastOperatorReplyAt.toISOString()} />
                     ) : (
-                      <span className="panel-status panel-status--warn">не отвечали</span>
+                      <span className="panel-status panel-status--warn">{CELL_TEXT.notAnswered}</span>
                     )}
                   </td>
                   <td className="panel-muted">{item.assignedOperatorName ?? '—'}</td>
                   <td>
-                    <Link href={`/admin/support/${item.conversationId}`}>Открыть</Link>
+                    <Link href={`/admin/support/${item.conversationId}`}>{ACTION_TITLES.open}</Link>
                   </td>
                 </tr>
               ))}

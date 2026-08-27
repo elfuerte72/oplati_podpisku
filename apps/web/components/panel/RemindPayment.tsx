@@ -3,6 +3,9 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { lookupLabel } from '@/lib/panel/format';
+import { ACTION_TITLES, FALLBACK_ERROR_TEXT, REMIND_ERROR_TEXT } from '@/lib/panel/labels';
+
 import { markPanelBusy } from './LiveRefresh';
 
 /**
@@ -15,20 +18,6 @@ import { markPanelBusy } from './LiveRefresh';
  * На время запроса на `<body>` вешается `data-panel-busy`: живое обновление не
  * перерисовывает экран посреди операции.
  */
-
-const FALLBACK_ERROR = 'Не получилось. Обнови страницу и попробуй ещё раз.';
-
-const ERROR_TEXT: Record<string, string> = {
-  too_soon: 'Уже напоминали за последние сутки.',
-  no_invoice: 'Счёт не выставлялся — отправлять нечего.',
-  invoice_expired: 'Счёт протух — напоминать нечем, клиенту нужно оформить заказ заново.',
-  unavailable: 'Что-то на нашей стороне: бот недоступен. Загляни в Sentry.',
-  no_telegram: 'У клиента нет Telegram.',
-  send_failed: 'Telegram не принял сообщение — скорее всего, клиент заблокировал бота.',
-  not_found: 'Заказ уже не в списке недожатых.',
-  forbidden: 'Твоей роли этот раздел закрыт (или доступ отключили).',
-  unauthorized: 'Сессия истекла — войди заново.',
-};
 
 export function RemindPayment({ shortId }: { shortId: string }) {
   const router = useRouter();
@@ -50,28 +39,28 @@ export function RemindPayment({ shortId }: { shortId: string }) {
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         const code = (data as { error?: string } | null)?.error;
-        // `Object.hasOwn`: код приходит из тела ответа, то есть снаружи.
-        const text = code && Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : undefined;
-        setError(text ?? FALLBACK_ERROR);
+        setError(lookupLabel(REMIND_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT);
         return;
       }
       setDone(true);
       router.refresh();
     } catch {
       // Сеть отвалилась. Молчать нельзя: менеджер решит, что напомнил.
-      setError(FALLBACK_ERROR);
+      setError(FALLBACK_ERROR_TEXT);
     } finally {
       setBusy(false);
       releaseBusy();
     }
   }
 
-  if (done && !error) return <span className="panel-status panel-status--ok">отправлено</span>;
+  if (done && !error) {
+    return <span className="panel-status panel-status--ok">{ACTION_TITLES.sent}</span>;
+  }
 
   return (
     <>
       <button type="button" className="panel-button" onClick={send} disabled={busy}>
-        {busy ? 'Отправляем…' : 'Напомнить'}
+        {busy ? ACTION_TITLES.sending : ACTION_TITLES.remind}
       </button>
       {error ? (
         <div className="panel-error" style={{ marginTop: 6 }}>

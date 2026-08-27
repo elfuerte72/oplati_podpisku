@@ -1,12 +1,15 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { getDb, listReferralPayoutsForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { PayoutDecision } from '@/components/panel/PayoutDecision';
 import { formatUsdCents } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { ACTION_TITLES, CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT } from '@/lib/panel/labels';
 import { isPayoutDecidable, payoutStatusLabel } from '@/lib/panel/payouts';
 
 /**
@@ -27,6 +30,8 @@ import { isPayoutDecidable, payoutStatusLabel } from '@/lib/panel/payouts';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = { title: ACTION_TITLES.payoutRequests };
+
 export default async function PanelPayoutsPage({
   searchParams,
 }: {
@@ -36,7 +41,7 @@ export default async function PanelPayoutsPage({
   if (!access.allowed) {
     return (
       <PanelShell actor={access.actor} current="/admin/partners" live={false}>
-        <PanelForbidden title="Заявки на вывод" />
+        <PanelForbidden title={ACTION_TITLES.payoutRequests} />
       </PanelShell>
     );
   }
@@ -46,38 +51,40 @@ export default async function PanelPayoutsPage({
 
   return (
     <PanelShell actor={access.actor} current="/admin/partners">
-      <section className="panel-card" style={{ marginBottom: 16 }}>
-        <h1 className="panel-title">Заявки на вывод</h1>
-        <p className="panel-muted">
-          Панель фиксирует факт: деньги переводятся ВРУЧНУЮ, автоматической выплаты нет.
-          «Выплачено» ставит статус, «Отклонить» возвращает сумму в баланс партнёра.{' '}
-          <Link href="/admin/partners">партнёры</Link>
-          {' · '}
-          {showAll ? (
-            <Link href="/admin/partners/payouts">только открытые</Link>
+      <PanelPageHeader
+        title={ACTION_TITLES.payoutRequests}
+        aside={
+          showAll ? (
+            <Link href="/admin/partners/payouts">{ACTION_TITLES.onlyOpen}</Link>
           ) : (
-            <Link href="/admin/partners/payouts?all=1">показать закрытые</Link>
-          )}
+            <Link href="/admin/partners/payouts?all=1">{ACTION_TITLES.showClosed}</Link>
+          )
+        }
+      >
+        <p className="panel-muted">
+          Панель фиксирует факт: деньги переводятся вручную, автоматической выплаты нет.
+          «{ACTION_TITLES.payoutPaid}» ставит статус, «{ACTION_TITLES.payoutReject}» возвращает
+          сумму в баланс партнёра. <Link href="/admin/partners">{ACTION_TITLES.allPartners}</Link>
         </p>
-      </section>
+      </PanelPageHeader>
 
       {items.length === 0 ? (
         <div className="panel-card">
           {/* На 16 августа заявок было ноль — пустой экран это норма. */}
-          <p className="panel-empty">{showAll ? 'Заявок нет.' : 'Открытых заявок нет.'}</p>
+          <p className="panel-empty">{showAll ? EMPTY_TEXT.payouts : EMPTY_TEXT.payoutsOpen}</p>
         </div>
       ) : (
         <div className="panel-card panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
-                <th>Партнёр</th>
-                <th>Сумма</th>
-                <th>Способ</th>
-                <th>Статус</th>
-                <th>Подана</th>
-                <th>Баланс сейчас</th>
-                <th>Действие</th>
+                <th>{COLUMN_TITLES.partner}</th>
+                <th className="panel-num">{COLUMN_TITLES.amount}</th>
+                <th>{COLUMN_TITLES.method}</th>
+                <th>{COLUMN_TITLES.status}</th>
+                <th>{COLUMN_TITLES.requestedAt}</th>
+                <th className="panel-num">{COLUMN_TITLES.balanceNow}</th>
+                <th>{COLUMN_TITLES.action}</th>
               </tr>
             </thead>
             <tbody>
@@ -85,28 +92,28 @@ export default async function PanelPayoutsPage({
                 <tr key={payout.payoutId}>
                   <td>
                     <Link href={`/admin/clients/${payout.userId}`}>
-                      {payout.displayName ?? payout.telegramId ?? 'без имени'}
+                      {payout.displayName ?? payout.telegramId ?? CELL_TEXT.noName}
                     </Link>
                     {/* Заявку заблокированного партнёра выплатить нельзя — гейт
                         стоит в операции, но узнать об этом ДО нажатия честнее. */}
                     {payout.suspended ? (
-                      <div className="panel-error">заблокирован антифродом</div>
+                      <div className="panel-error">{CELL_TEXT.suspended}</div>
                     ) : null}
                   </td>
-                  <td>
+                  <td className="panel-num">
                     {formatUsdCents(payout.amountUsdCents)}
                     {payout.feeUsdCents !== null && payout.feeUsdCents > 0 ? (
                       <div className="panel-muted">
-                        комиссия вывода {formatUsdCents(payout.feeUsdCents)}
+                        {CELL_TEXT.payoutFee} {formatUsdCents(payout.feeUsdCents)}
                       </div>
                     ) : null}
                   </td>
-                  <td className="panel-muted">{payout.method ?? 'не указан'}</td>
+                  <td className="panel-muted">{payout.method ?? CELL_TEXT.notSpecified}</td>
                   <td>{payoutStatusLabel(payout.status)}</td>
                   <td className="panel-muted">
                     <LocalTime iso={payout.requestedAt.toISOString()} />
                   </td>
-                  <td className={payout.balanceUsdCents < 0 ? 'panel-error' : undefined}>
+                  <td className={payout.balanceUsdCents < 0 ? 'panel-num panel-error' : 'panel-num'}>
                     {formatUsdCents(payout.balanceUsdCents)}
                   </td>
                   <td>

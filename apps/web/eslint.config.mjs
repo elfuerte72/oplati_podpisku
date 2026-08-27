@@ -23,6 +23,7 @@ const eslintConfig = defineConfig([
       "lib/panel/fulfillment.ts",
       "lib/panel/live.ts",
       "lib/panel/format.ts",
+      "lib/panel/labels.ts",
       "lib/panel/support.ts",
       "lib/retention-policy.ts",
     ],

@@ -6,6 +6,8 @@
  * служебных пометок.
  */
 
+import { THREAD_ROLE_LABELS } from './labels';
+
 /** Пустой ответ отправлять нечего, а простыню Telegram не примет. */
 export const SUPPORT_REPLY_MIN = 2;
 export const SUPPORT_REPLY_MAX = 3500;
@@ -17,15 +19,11 @@ export const SUPPORT_REPLY_MAX = 3500;
  */
 export { MESSAGES_RETENTION_DAYS as SUPPORT_HISTORY_DAYS } from '@/lib/retention-policy';
 
-/** Почему поля ответа нет. Показывается вместо него — молчащий экран хуже. */
+/**
+ * Почему поля ответа нет. Показывается вместо него — молчащий экран хуже.
+ * Тексты — `SUPPORT_BLOCK_TEXT` в словаре панели (`labels.ts`).
+ */
 export type SupportReplyBlockReason = 'no_telegram' | 'assigned_to_other';
-
-export const SUPPORT_BLOCK_TEXT: Record<SupportReplyBlockReason, string> = {
-  no_telegram:
-    'У клиента нет Telegram — ответить нечем. Он писал с сайта, и обратного адреса у нас нет.',
-  assigned_to_other:
-    'Диалог ведёт другой сотрудник. Двое, отвечающие одному клиенту, — худший исход, чем задержка.',
-};
 
 export function supportReplyBlockReason(input: {
   clientTelegramId: string | null;
@@ -46,8 +44,10 @@ export function supportReplyBlockReason(input: {
  * обязан видеть, где ответил автомат, а где живой человек.
  */
 export function supportRoleLabel(role: string, staffName: string | null): string {
-  if (role === 'user') return 'клиент';
-  if (role === 'operator') return staffName ? `оператор · ${staffName}` : 'оператор';
-  if (role === 'assistant') return 'бот';
+  if (role === 'user') return THREAD_ROLE_LABELS.user;
+  if (role === 'operator') {
+    return staffName ? `${THREAD_ROLE_LABELS.operator} · ${staffName}` : THREAD_ROLE_LABELS.operator;
+  }
+  if (role === 'assistant') return THREAD_ROLE_LABELS.assistant;
   return role;
 }

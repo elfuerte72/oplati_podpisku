@@ -8,6 +8,8 @@ import {
   MANUAL_FULFILLMENT_COMMENT_MIN,
   type ManualFulfillmentAction,
 } from '@/lib/panel/fulfillment';
+import { lookupLabel } from '@/lib/panel/format';
+import { ACTION_TITLES, FALLBACK_ERROR_TEXT, FULFILLMENT_ERROR_TEXT } from '@/lib/panel/labels';
 
 import { markPanelBusy } from './LiveRefresh';
 
@@ -22,18 +24,6 @@ import { markPanelBusy } from './LiveRefresh';
  * признак, по которому живое обновление не перерисовывает экран посреди
  * действия (`LiveRefresh`).
  */
-
-/** Текст на случай, когда код отказа незнаком или ответа не было вовсе. */
-const FALLBACK_ERROR = 'Не получилось: что-то на нашей стороне. Попробуй через минуту.';
-
-const ERROR_TEXT: Record<string, string> = {
-  comment_required: 'Опиши, что именно выдали — одной строки достаточно.',
-  not_paid: 'Успешного платежа по заказу нет — выдавать нечего. Сверь платёж у провайдера.',
-  wrong_status: 'Статус заказа изменился. Обнови страницу и посмотри, что с ним стало.',
-  not_found: 'Заказ не найден.',
-  forbidden: 'Раздел доступен только владельцу.',
-  unauthorized: 'Сессия истекла — войди заново.',
-};
 
 export function ManualFulfillment({
   shortId,
@@ -67,11 +57,9 @@ export function ManualFulfillment({
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
         const code = (data as { error?: string } | null)?.error;
-        // `Object.hasOwn`, а не `ERROR_TEXT[code]`: код приходит из тела ответа,
-        // то есть снаружи. Строка `toString` в поле `error` дала бы функцию
-        // вместо текста и уронила бы форму на рендере.
-        const text = code && Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : undefined;
-        setError(text ?? FALLBACK_ERROR);
+        // Код приходит из тела ответа, то есть снаружи, — читаем словарь только
+        // через `lookupLabel` (защита от ключей прототипа живёт в одном месте).
+        setError(lookupLabel(FULFILLMENT_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT);
         return;
       }
       setComment('');
@@ -79,7 +67,7 @@ export function ManualFulfillment({
     } catch {
       // Сеть отвалилась. Молчать нельзя: человек должен знать, что заказ НЕ
       // переведён, иначе он решит, что выдача записана, и уйдёт.
-      setError(FALLBACK_ERROR);
+      setError(FALLBACK_ERROR_TEXT);
     } finally {
       setBusy(false);
       releaseBusy();
@@ -91,7 +79,7 @@ export function ManualFulfillment({
       {action === 'start' ? (
         <>
           <label htmlFor="fulfillment-comment" className="panel-muted">
-            Что выдали руками (обязательно)
+            Что выдали вручную (обязательно)
           </label>
           <textarea
             id="fulfillment-comment"
@@ -114,7 +102,7 @@ export function ManualFulfillment({
       ) : null}
 
       <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
-        {action === 'start' ? 'Беру в ручную выдачу' : 'Выдал'}
+        {action === 'start' ? ACTION_TITLES.fulfillmentStart : ACTION_TITLES.fulfillmentComplete}
       </button>
     </form>
   );

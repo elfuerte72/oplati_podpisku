@@ -1,5 +1,7 @@
 import Link from 'next/link';
 
+import { ACTION_TITLES } from '@/lib/panel/labels';
+
 /**
  * 404 ВНУТРИ панели.
  *
@@ -17,10 +19,10 @@ export default function PanelNotFound() {
         <div className="panel-card">
           <h1 className="panel-title">Ничего не нашлось</h1>
           <p className="panel-muted">
-            Проверь номер заказа — в нём пять символов после `ORD-`. Или вернись к списку.
+            Проверьте номер заказа — в нём пять символов после «ORD-». Или вернитесь к списку.
           </p>
           <p style={{ marginTop: 12 }}>
-            <Link href="/admin/orders">К заказам</Link>
+            <Link href="/admin/orders">{ACTION_TITLES.toOrders}</Link>
           </p>
         </div>
       </div>
