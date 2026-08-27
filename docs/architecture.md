@@ -4,7 +4,7 @@
 
 ## Что это за продукт
 
-«Оплати подписку» — сервис оплаты иностранных подписок для русскоязычных пользователей. Клиент пишет в Telegram-бот или веб-чат, что хочет оплатить (Netflix, ChatGPT Plus, любой другой сервис), — AI-агент «Оплатишка» находит актуальную цену, создаёт заказ (комиссия `COMMISSION_PERCENT`: на проде 30%, дефолт в коде 10%), выставляет счёт в RUB через Love&Pay. После оплаты — автоматическая выдача виртуальных USD-карт через PaySpace (**на проде включена**; при недоступности ключей — ручное исполнение оператором). Есть одноуровневая партнёрская (реферальная) программа — вознаграждение партнёрам с оплат их прямых рефералов (Этапы A–D на проде, soft-start за флагом `REFERRAL_ENABLED`).
+«Оплати подписку» — сервис оплаты иностранных подписок для русскоязычных пользователей. Клиент пишет в Telegram-бот или веб-чат, что хочет оплатить (Netflix, ChatGPT Plus, любой другой сервис), — AI-агент «Оплатишка» находит актуальную цену, создаёт заказ (комиссия `COMMISSION_PERCENT`: на проде 30%, дефолт в коде 10%), выставляет счёт в RUB через Freekassa (основной шлюз с 2026-07-28; Love&Pay — резерв). После оплаты — автоматическая выдача виртуальных USD-карт через PaySpace (**на проде включена**; при недоступности ключей — ручное исполнение оператором). Есть одноуровневая партнёрская (реферальная) программа — вознаграждение партнёрам с оплат их прямых рефералов (Этапы A–D на проде, soft-start за флагом `REFERRAL_ENABLED`).
 
 ## Архитектурный паттерн: Modular Monolith
 
@@ -52,9 +52,9 @@
 
 Drizzle ORM поверх self-host Postgres 17 на том же VPS (переезд с Supabase 2026-07-24).
 
-- `src/schema.ts` — вся схема: 21 таблица + enum'ы. RLS включён везде, кроме публичного каталога `services` (public-read активных записей; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
-- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert), `cards`, `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
-- `drizzle/` — forward-only миграции; `scripts/seed-catalog.ts` — идемпотентный seed каталога.
+- `src/schema.ts` — вся схема: 21 таблица + enum'ы. RLS включён на ВСЕХ таблицах (`enableRLS()`); публичный каталог `services` отличается не отсутствием RLS, а политикой public-read активных записей (остальные — deny-by-default, доступ только `service_role`/прямое подключение; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
+- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert, атомарные `claimPaymentSucceeded`/`claimPaymentTerminal`), `cards`, `link-tokens` (привязка Telegram к веб-сессии), `staff` (персонал панели: TOTP-привязка, одноразовый claim окна кода), `panel` (все выборки админ-панели — своих SQL в панели нет), `vpn-subscriptions`, `vcc-balance` (снимки фонда и резервы под заказ), `ai-usage` (дневной токен-бюджет), `analytics`, `freekassa` (nonce), `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
+- `migrations/` — forward-only миграции Drizzle (`meta/_journal.json` запекается в образ и сверяется `/api/ready`); `scripts/seed-catalog.ts` — идемпотентный seed каталога, `scripts/manage-staff.ts` — заведение персонала панели (`db:staff`).
 - `repositories/logger.ts` — интерфейс `RepoLogger` (pino-shape), чтобы пакет не зависел от pino.
 
 ### `packages/agent` — AI
@@ -67,45 +67,77 @@ Drizzle ORM поверх self-host Postgres 17 на том же VPS (перее�
 
 ### `apps/web` — всё остальное
 
+Один деплой на всё: сайт, бот, Mini App-кабинет, API и **админ-панель** (`admin.oplatishka.com`
+ведёт на тот же сервис через Traefik; отдельного приложения у панели нет).
+
 ```
 app/
-  page.tsx                        веб-чат (главная страница)
-  styleguide/                     витрина UI-компонентов
+  page.tsx                        веб-чат (главная страница); about/ privacy/ terms/ styleguide/
+  cabinet/                        Telegram Mini App — личный кабинет
+  partner/                        веб-страница партнёрского кабинета
+  payment-success/                страница после оплаты
+  admin/                          админ-панель: login/ (+ code/), orders/[shortId], clients/[id],
+                                  pending/, holds/, support/[conversationId], partners/ (+ [userId],
+                                  payouts/), staff/; свои стили panel.css, error.tsx, not-found.tsx
   api/
-    bot/route.ts                  Telegram webhook
-    chat/route.ts + history/ + clear/   веб-чат API
-    payments/create/              создание инвойса L&P (internal, X-Internal-Token)
-    payments/loveandpay/          webhook L&P
-    orders/confirm/ + status/     подтверждение и статус заказа
-    cabinet/ + cabinet/referral/  API мини-аппа + партнёрского кабинета (POST, initData|cookie)
-    cron/                         7 cron-эндпоинтов (авторизация CRON_SECRET)
-    admin/telegram-webhook/       управление webhook бота без раскрытия токена
-    health/route.ts               liveness
-  partner/page.tsx                веб-страница партнёрского кабинета /partner
+    bot/                          Telegram webhook клиентского бота
+    staff-bot/                    точка приёма бота ПЕРСОНАЛА (свой secret-token)
+    chat/ + history/ + clear/     веб-чат
+    orders/propose|confirm|status|problem   заказ на сайте и в Mini App
+    payments/create/              счёт у текущего шлюза (+ preflight карточного фонда)
+    payments/freekassa/ + loveandpay/       webhook'и ОБОИХ шлюзов (работают всегда)
+    cabinet/ + cabinet/referral/  API Mini App (подпись initData) и партнёрского кабинета
+    auth/telegram/                привязка Telegram к веб-сессии (link-токены)
+    panel/                        операции панели: auth/ (telegram, totp, logout),
+                                  orders/ (fulfillment, remind), support/ (assign, reply),
+                                  partners/payout
+    cron/                         8 эндпоинтов (CRON_SECRET); расписание — infra/crontab.example
+    alerts/sentry/                приём алёртов Sentry
+    analytics/ catalog/ profile/  телеметрия, витрина каталога, профиль веб-сессии
+    admin/telegram-webhook/       set/get/delete webhook бота без раскрытия токена
+    health/ + ready/              liveness (без БД) и readiness (журнал миграций)
+proxy.ts                          гейт по хосту: /admin и /api/panel отвечают 404 вне PANEL_HOST
+instrumentation.ts                Sentry server/edge + fail-fast env
 components/
-  chat/                           компоненты чата (сообщения, инпут, панель заказа)
-  comic/                          комикс-примитивы (halftone, маскот, штамп «ОПЛАЧЕНО»)
-  cabinet/ + partner/             мини-апп кабинет + PartnerCabinet (один дашборд рефералки)
+  chat/ comic/ intro/ catalog/    сайт: чат, комикс-примитивы, интро, кнопочный каталог
+  info/                           статические страницы (about/privacy/terms): оболочка, футер, бейдж Freekassa
+  cabinet/ partner/ contacts/     Mini App-кабинет, партнёрский кабинет, плашка контактов
+  panel/                          UI панели: PanelShell (меню со счётчиками), PanelPageHeader,
+                                  кнопки операций (RemindPayment, ManualFulfillment, PayoutDecision,
+                                  SupportReply), LocalTime, LiveRefresh
 lib/
   env.ts / env.server.ts          Zod-валидация env, lazy; server-only re-export
-  logger.ts                       pino + redact PII + childLogger(module)
-  sentry.ts                       beforeSend PII-scrubber
-  supabase/                       browser / server / admin клиенты
-  telegram/                       grammY bot singleton, handle-update (диспатч), templates
+  logger.ts / sentry.ts           pino + redact PII; beforeSend-скраббер Sentry
+  http.ts / dedup.ts / redis.ts   fetch с таймаутом на чтение тела; claimOnce (Redis); клиент Redis
+  ratelimit.ts / client-ip.ts     Upstash sliding window по бакетам; источник identity (CLIENT_IP_MODE)
+  pricing.ts / retention-policy.ts   округление цены вверх до рубля; сроки хранения
+  billing-address.ts / deployment-url.ts   адрес плательщика для шлюза; публичный URL стенда
+  panel/                          админ-панель: labels (словарь всех текстов), permissions (роли),
+                                  login/totp/telegram-login/token/session (вход и сессия), guard
+                                  (гейт операции и страницы, Origin), menu-counts (счётчики меню),
+                                  desk, remind, fulfillment, payouts, support, format, vcc-balance
+  telegram/                       grammY bot singleton, handle-update (роутер) + флоу: start-menu,
+                                  link-flow, support-flow, catalog-callbacks, agent-dialog,
+                                  vpn-flow; templates, amount; staff-bot-client (бот персонала)
   tool-handlers/                  реализация ToolHandlers (мост agent → db)
-  loveandpay/                     клиент, HMAC-подпись, webhook-handlers (+ Vitest)
-  pay-space/                      клиент PaySpace (createCard/topupCard/getCard) — на проде включён;
-                                  здесь же гейт денежного пути: funding.ts (формула требования
-                                  фонда), preflight.ts (решение + занятие), snapshot.ts (запись
-                                  снимка баланса)
-  catalog/                        витрина кнопочного флоу: build/load/propose + пер-сервисные
-                                  инструкции оплаты (instructions.ts, «Важно перед оплатой»)
-  referral/                       захват реферера (capture) + начисление (accrue) + исполнитель выплат (payout-executor, mock)
-  cabinet/                        кабинеты: снапшот/auth Mini App (read, live-balance,
-                                  payment-issues) + referral-* партнёрского кабинета
+  payments/                       gateway (выбор шлюза), capacity (текст отказа preflight), expiry
+  freekassa/ + loveandpay/        клиенты, подписи, webhook-handlers обоих шлюзов
+  rapira/                         курс USDT/RUB (askPrice) + fallback
+  pay-space/                      клиент PaySpace; гейт фонда: funding (требование заказа),
+                                  preflight (решение + занятие), snapshot (снимок баланса)
+  remnawave/                      клиент панели VPN (ссылки-подписки)
+  catalog/                        витрина кнопочного флоу: build/load/propose + инструкции оплаты
+  referral/                       захват реферера, начисление, реверс, исполнитель выплат (mock)
+  cabinet/                        Mini App: auth (initData), read (снапшот, денилист событий),
+                                  actions, live-balance, payment-issues; referral-* партнёрки
+  contacts/                       email/телефон/IP плательщика: гейты, redact, троттлинг IP
+  alerts/                         notify-ops (DM владельцу), notify-staff (персоналу через бота
+                                  входа), дедуп окон
+  analytics/                      track (server, never-throw) + client (sendBeacon) + identity
+  ai/                             дневной токен-бюджет
+  security/                       timing-safe сравнение
   jobs/                           логика cron-джобов + dispatcher
   chat/                           cookie-сессия и история веб-чата
-instrumentation.ts                Sentry server/edge + fail-fast env
 ```
 
 ## Как это работает: основные сценарии
