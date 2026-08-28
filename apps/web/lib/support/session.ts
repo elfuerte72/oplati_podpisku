@@ -446,12 +446,16 @@ export async function escalate(
   },
 ): Promise<SupportOutcome> {
   const now = input.now ?? new Date();
+  // Причина от модели (`request_human`) пересказывает слова клиента — в ней
+  // может оказаться номер карты. В служебную строку и в DM персоналу — под
+  // маской, как и история.
+  const reason = input.reason === null ? null : maskForStaff(input.reason);
 
   const { transitioned } = await ports.state.transition({
     from: ['idle', 'ai'],
     to: 'operator',
     trigger: input.trigger,
-    reason: input.reason,
+    reason,
     // ⚠️ null, а не срок: неотвеченное обращение не гаснет никогда.
     modeExpiresAt: null,
     assignedOperatorId: null,
@@ -474,7 +478,7 @@ export async function escalate(
 
   const delivered = await ports.staff.notifyEscalation({
     trigger: input.trigger,
-    reason: input.reason,
+    reason,
     lastMessages: lastMessages.map((m) => ({ ...m, content: maskForStaff(m.content) })),
   });
 

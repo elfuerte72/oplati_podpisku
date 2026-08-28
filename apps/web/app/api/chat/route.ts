@@ -28,6 +28,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { serverEnv } from '@/lib/env.server';
+import { isSupportAiEnabled } from '@/lib/telegram/support-session';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { rememberClientIp } from '@/lib/contacts/track-ip';
@@ -81,10 +82,19 @@ const RATE_LIMITED_TEXT =
  * покупка на сайте кнопочная, поэтому вместо агента — мгновенная заготовка,
  * уводящая в каталог. UI не меняется, сообщение рисуется обычным пузырём.
  */
-const CHAT_DISABLED_TEXT =
+const CHAT_DISABLED_BASE =
   'Я принимаю заказы через каталог — нажмите «Выбрать сервис», и оформим всё в пару кликов. ' +
-  'Нужна помощь — поддержка живёт в нашем Telegram-боте: команда /start, кнопка «Поддержка». ' +
-  'Там на вопросы отвечает помощник поддержки, а при необходимости подключается оператор.';
+  'Нужна помощь — поддержка живёт в нашем Telegram-боте: команда /start, кнопка «Поддержка». ';
+// Кто ответит в боте — зависит от флага помощника: обещать помощника, которого
+// выключили, значит обещать то, чего клиент не получит.
+function chatDisabledText(): string {
+  return (
+    CHAT_DISABLED_BASE +
+    (isSupportAiEnabled()
+      ? 'Там на вопросы отвечает помощник поддержки, а при необходимости подключается оператор.'
+      : 'Там вам ответит оператор.')
+  );
+}
 
 type WebChatContext = { userId: string; conversationId: string };
 
@@ -157,7 +167,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!serverEnv.WEB_AI_ENABLED) {
     log.info({ event: 'web-chat.disabled_by_flag', messageLength: text.length });
     return NextResponse.json(
-      { ok: true, text: CHAT_DISABLED_TEXT, toolCalls: [] },
+      { ok: true, text: chatDisabledText(), toolCalls: [] },
       { status: 200 },
     );
   }

@@ -28,7 +28,7 @@ type Harness = {
   ports: SupportPorts;
   sent: { text: string; withFinishButton: boolean }[];
   appended: { role: string; content: string; meta?: Record<string, unknown> }[];
-  transitions: { from: unknown; to: string; trigger: string; modeExpiresAt: Date | null }[];
+  transitions: { from: unknown; to: string; trigger: string; modeExpiresAt: Date | null; reason: string | null }[];
   touches: { mode: string; modeExpiresAt: Date | null }[];
   events: { name: string; [k: string]: unknown }[];
   staffNotified: { trigger: string; reason: string | null }[];
@@ -86,6 +86,7 @@ function harness(over: Partial<{
             to: input.to,
             trigger: input.trigger,
             modeExpiresAt: input.modeExpiresAt,
+            reason: input.reason ?? null,
           });
           // ⚠️ Двойник ОБЯЗАН уважать `from`, как условный UPDATE в БД. Пока он
           // соглашался на любой переход, тест не видел главного: у истёкшей
@@ -457,6 +458,18 @@ describe('деградация помощника', () => {
 });
 
 describe('эскалация', () => {
+  it('причина от модели — под маской персонала: номер карты не едет ни в строку, ни в DM', async () => {
+    const h = harness();
+    await escalate(h.ports, {
+      trigger: 'model',
+      reason: 'клиент платил картой 4111 1111 1111 1111 и просит человека',
+      now: NOW,
+    });
+    expect(h.staffNotified[0]?.reason).not.toContain('4111 1111 1111 1111');
+    expect(h.staffNotified[0]?.reason).toContain('просит человека');
+    expect(h.transitions[0]?.reason).not.toContain('4111 1111 1111 1111');
+  });
+
   it('неотвеченное обращение не гаснет: срок режима — null', async () => {
     const h = harness();
     await escalate(h.ports, { trigger: 'hard', reason: 'человек', now: NOW });

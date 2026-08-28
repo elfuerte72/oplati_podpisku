@@ -16,6 +16,7 @@ import {
 import { dispatchSupportTool, isSupportAiConfigured, runProfile, supportTools } from '@oplati/agent';
 
 import { trackServer } from '@/lib/analytics/track';
+import { redactCardNumbers } from '@/lib/telegram/templates';
 import { childLogger } from '@/lib/logger';
 
 import { sendSafely, withTypingIndicator } from '../telegram/send';
@@ -116,7 +117,9 @@ function stateAdapter(ctx: SupportRequestContext): SupportStatePort {
         {
           conversationId: ctx.conversationId,
           role: row.role,
-          content: row.content,
+          // Номер карты в БД не пишется (как в `safeAppendMessage` бота):
+          // переписку читает панель, и полный PAN там не нужен никому.
+          content: redactCardNumbers(row.content),
           meta: row.meta ?? null,
         },
         dbLog,

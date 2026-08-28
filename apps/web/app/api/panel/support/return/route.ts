@@ -71,6 +71,10 @@ export async function POST(req: Request): Promise<Response> {
     actorName: guard.actor.displayName,
     modeExpiresAt: sessionDeadline(new Date()),
     assignedOperatorId: null,
+    // Владение — В ПРЕДИКАТЕ UPDATE, а не только в `canReturnToAi` выше:
+    // между проверкой и переходом разговор мог захватить коллега, и вернуть
+    // помощнику чужой разговор нельзя. Админу — можно любой.
+    onlyIfFreeOrOwnedBy: guard.actor.role === 'admin' ? undefined : guard.actor.id,
   });
   if (!res.transitioned) {
     // Разговор уже не у оператора — вернуть нечего. Не ошибка: кнопку нажали

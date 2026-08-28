@@ -168,3 +168,19 @@ describe('пустая строка в env = «не задано»', () => {
     expect(env.COMMISSION_PERCENT).toBe(30);
   });
 });
+
+describe('SUPPORT_AI_BASE_URL', () => {
+  it('только https: ключ помощника уходит в заголовке каждого запроса', async () => {
+    await expect(loadEnv({ SUPPORT_AI_BASE_URL: 'http://api.example.com/anthropic' })).rejects.toThrow(
+      /SUPPORT_AI_BASE_URL/,
+    );
+    const env = await loadEnv({ SUPPORT_AI_BASE_URL: 'https://api.example.com/anthropic' });
+    expect(env.SUPPORT_AI_BASE_URL).toBe('https://api.example.com/anthropic');
+  });
+
+  it('пустая строка — «не задано», дефолт остаётся в коде агента', async () => {
+    const env = await loadEnv({ SUPPORT_AI_BASE_URL: '' });
+    expect(env.SUPPORT_AI_BASE_URL).toBeUndefined();
+  });
+});
+

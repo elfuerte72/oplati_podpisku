@@ -78,10 +78,12 @@ export function guardModelOutput(text: string): GuardVerdict {
   if (!text) return { ok: true };
   for (const { category, patterns } of DENYLIST) {
     for (const pattern of patterns) {
-      const m = pattern.exec(text);
-      if (!m) continue;
-      if (category === 'internal' && SNAKE_CASE_ALLOW.has(m[0].toLowerCase())) continue;
-      return { ok: false, category, matched: m[0] };
+      // ВСЕ совпадения, а не первое: «e_mail … payment_review» иначе проходил
+      // бы целиком — разрешённое первое совпадение прятало запрещённое второе.
+      for (const m of text.matchAll(new RegExp(pattern.source, `${pattern.flags}g`))) {
+        if (category === 'internal' && SNAKE_CASE_ALLOW.has(m[0].toLowerCase())) continue;
+        return { ok: false, category, matched: m[0] };
+      }
     }
   }
   return { ok: true };

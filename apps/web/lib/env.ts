@@ -475,7 +475,8 @@ const serverEnvSchema = z.object({
   // читается `process.env`. Схема проверяет только форму заданного значения:
   // продублируй дефолт — и правка одной стороны молча меняла бы поведение лишь
   // одного из двух вызывающих.
-  SUPPORT_AI_BASE_URL: optionalEnvString(z.string().url()),
+  // Только https: ключ уходит в заголовке каждого запроса (как у Remnawave).
+  SUPPORT_AI_BASE_URL: optionalEnvString(z.string().url().startsWith('https://')),
   // `deepseek-v4-pro` — запасной вариант, если flash «болтает».
   SUPPORT_AI_MODEL: optionalEnvString(),
 

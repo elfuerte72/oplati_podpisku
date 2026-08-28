@@ -110,6 +110,22 @@ describe('POST /api/panel/support/return', () => {
     expect(h.transition).not.toHaveBeenCalled();
   });
 
+  it('владение — в предикате перехода (TOCTOU): менеджер — только свой/свободный, админ — любой', async () => {
+    // Между `canReturnToAi` и UPDATE разговор мог захватить коллега: проверка
+    // до перехода это не ловит, предикат в самом UPDATE — ловит.
+    await POST(request({ conversationId: CONVERSATION_ID }));
+    expect(h.transition).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ onlyIfFreeOrOwnedBy: STAFF_ID }),
+    );
+
+    h.transition.mockClear();
+    h.readPanelActor.mockImplementation(async () => actor('admin'));
+    await POST(request({ conversationId: CONVERSATION_ID }));
+    const call = h.transition.mock.calls[0]?.[1] as { onlyIfFreeOrOwnedBy?: string } | undefined;
+    expect(call?.onlyIfFreeOrOwnedBy).toBeUndefined();
+  });
+
   it('админ возвращает любой — сотрудник в отпуске, разговор висит', async () => {
     h.readPanelActor.mockImplementation(async () => actor('admin'));
     h.getThread.mockImplementation(async () => thread({ assignedOperatorId: OTHER_STAFF }));
