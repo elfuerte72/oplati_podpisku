@@ -715,3 +715,14 @@ describe('сообщение клиента в режиме оператора (
     expect(h.staffFollowUps).toHaveLength(1);
   });
 });
+
+describe('plain text для Telegram', () => {
+  it('markdown модели снимается до доставки и записи: клиент не видит звёздочек', async () => {
+    const h = harness({ modelReply: { text: 'Ваш заказ **оплачен**.\n### Дальше\n- ждать карту' } });
+    await handleSupportMessage(h.ports, { text: 'где заказ', kind: 'text', now: NOW });
+
+    const sent = h.sent.find((s) => s.text.includes('оплачен'))?.text;
+    expect(sent).toBe('Ваш заказ оплачен.\nДальше\n— ждать карту');
+    expect(h.appended.find((r) => r.role === 'assistant')?.content).toBe(sent);
+  });
+});
