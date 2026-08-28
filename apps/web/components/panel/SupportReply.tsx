@@ -25,6 +25,13 @@ function errorText(code: string | undefined): string {
   return lookupLabel(SUPPORT_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT;
 }
 
+/** Строковое поле из ответа роута панели — сужением, без утверждения типа. */
+function readField(data: unknown, key: 'error' | 'warning'): string | undefined {
+  if (typeof data !== 'object' || data === null || !(key in data)) return undefined;
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
 export function SupportReply({
   conversationId,
   needsAssign,
@@ -65,7 +72,7 @@ export function SupportReply({
     try {
       const { ok, data } = await post('/api/panel/support/assign', { conversationId });
       if (!ok) {
-        setError(errorText((data as { error?: string } | null)?.error));
+        setError(errorText(readField(data, 'error')));
         return;
       }
       router.refresh();
@@ -86,7 +93,7 @@ export function SupportReply({
     try {
       const { ok, data } = await post(url, { conversationId });
       if (!ok) {
-        setError(errorText((data as { error?: string } | null)?.error));
+        setError(errorText(readField(data, 'error')));
         return;
       }
       router.refresh();
@@ -108,12 +115,12 @@ export function SupportReply({
     try {
       const { ok, data } = await post('/api/panel/support/reply', { conversationId, text });
       if (!ok) {
-        setError(errorText((data as { error?: string } | null)?.error));
+        setError(errorText(readField(data, 'error')));
         return;
       }
       // Доставлено, но в переписку не записалось: следующий менеджер ответа не
       // увидит. Молчать об этом нельзя.
-      if ((data as { warning?: string } | null)?.warning === 'not_recorded') {
+      if (readField(data, 'warning') === 'not_recorded') {
         setNote(SUPPORT_NOT_RECORDED_TEXT);
       }
       setText('');

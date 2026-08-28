@@ -130,7 +130,13 @@ export async function transitionConversationMode(
       const sameOwner =
         input.assignedOperatorId === undefined ||
         current?.assignedOperatorId === input.assignedOperatorId;
-      if (current && current.mode === to && sameOwner) {
+      // Тот же предикат «свободен или мой», что и у UPDATE ниже: без него
+      // touch продлевал бы срок ЧУЖОГО разговора, который UPDATE отверг бы.
+      const freeOrOwned =
+        input.onlyIfFreeOrOwnedBy === undefined ||
+        current?.assignedOperatorId === null ||
+        current?.assignedOperatorId === input.onlyIfFreeOrOwnedBy;
+      if (current && current.mode === to && sameOwner && freeOrOwned) {
         await tx.execute(sql`
           UPDATE conversations
              SET mode_expires_at = ${isoOrNull(modeExpiresAt)},

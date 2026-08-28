@@ -112,6 +112,9 @@ jobs:
     # который двигает ref ветки. Остальные job'ы остаются на чтении.
     permissions:
       contents: write
+      # `gh workflow run` из шага выравнивания: пуш ref'а токеном GITHUB_TOKEN
+      # workflow не запускает, а workflow_dispatch — единственное исключение.
+      actions: write
     steps:
       # Значения из github.* — ТОЛЬКО через env, без прямой подстановки ${{ }} в
       # тело скрипта: `github.ref_name` приходит извне, и ветка с кавычками или
@@ -387,6 +390,16 @@ jobs:
           fi
           if gh api -X PATCH "repos/$REPO/git/refs/heads/dev" -f "sha=$MAIN_SHA" -F force=true >/dev/null; then
             echo "dev выровнена по main ($MAIN_SHA): содержимое совпадало, обновлена только история."
+            # ⚠️ Пуш ref'а токеном GITHUB_TOKEN НЕ запускает workflow (правило
+            # GitHub против рекурсии) — dev-стенд после выравнивания не
+            # пересобирался с 2026-07-30 и жил на образе последнего РУЧНОГО пуша в
+            # dev (замечено 2026-08-28: `startedAt` от 19.08 при dev = main).
+            # Исключение из правила — workflow_dispatch: запускаем сборку dev явно.
+            if gh workflow run deploy.yml --ref dev >/dev/null; then
+              echo "Запущен деплой dev-стенда по выровненной ветке."
+            else
+              echo "::warning::dev выровнена, но её деплой не запустился — запустить вручную: gh workflow run deploy.yml --ref dev"
+            fi
           else
             echo "::warning::Не удалось обновить dev (нет прав или ветка защищена) — сделать вручную."
           fi

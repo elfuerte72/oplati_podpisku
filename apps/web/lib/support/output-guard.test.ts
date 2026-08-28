@@ -90,6 +90,14 @@ describe('guardModelOutput — внутренние статусы', () => {
   it('обычное подчёркивание в тексте не считается статусом', () => {
     expect(guardModelOutput('Введите e_mail без пробелов.').ok).toBe(true);
   });
+
+  it('РЕГРЕСС (CodeRabbit): разрешённый e_mail первым не прячет статус следом', () => {
+    // `exec` смотрел только первое совпадение: «e_mail» разрешён — и
+    // «payment_review» после него проходил целиком.
+    const res = guardModelOutput('Проверьте e_mail, заказ в статусе payment_review.');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.matched).toBe('payment_review');
+  });
 });
 
 describe('guardModelOutput — модель и инфраструктура', () => {

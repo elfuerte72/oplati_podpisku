@@ -353,6 +353,34 @@ describe('transitionConversationMode — повтор в том же режим�
     expect(await systemRows(conversation.id)).toHaveLength(0);
   });
 
+  it('touch чужого разговора отвергается: onlyIfFreeOrOwnedBy действует и без assignedOperatorId', async () => {
+    // Без `assignedOperatorId` во входе `sameOwner` считался истинным, и touch
+    // продлевал срок чужого разговора — тот самый, который условный UPDATE
+    // ниже отверг бы.
+    const owner = await makeStaff();
+    const other = await makeStaff();
+    const conversation = await makeConversation({
+      mode: 'operator',
+      assignedOperatorId: owner.id,
+      modeExpiresAt: minutesFromNow(60),
+    });
+
+    const res = await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: ['idle', 'ai', 'operator'],
+      to: 'operator',
+      trigger: 'operator_reply',
+      modeExpiresAt: minutesFromNow(24 * 60),
+      onlyIfFreeOrOwnedBy: other.id,
+    });
+
+    expect(res.transitioned).toBe(false);
+    expect(res.touched).toBeFalsy();
+    const state = await getConversationState(db, conversation.id);
+    expect(state?.assignedOperatorId).toBe(owner.id);
+    expect(state?.modeExpiresAt?.getTime()).toBeLessThan(minutesFromNow(120).getTime());
+  });
+
   it('смена ведущего — это переход, а не touch: служебная строка пишется', async () => {
     const conversation = await makeConversation({ mode: 'ai', modeExpiresAt: minutesFromNow(30) });
     const operator = await makeStaff();
