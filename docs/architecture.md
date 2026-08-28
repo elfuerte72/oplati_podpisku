@@ -91,7 +91,7 @@ app/
     panel/                        операции панели: auth/ (telegram, totp, logout),
                                   orders/ (fulfillment, remind), support/ (assign, reply),
                                   partners/payout
-    cron/                         8 эндпоинтов (CRON_SECRET); расписание — infra/crontab.example
+    cron/                         9 эндпоинтов (CRON_SECRET); расписание — infra/crontab.example
     alerts/sentry/                приём алёртов Sentry
     analytics/ catalog/ profile/  телеметрия, витрина каталога, профиль веб-сессии
     admin/telegram-webhook/       set/get/delete webhook бота без раскрытия токена
@@ -185,6 +185,7 @@ draft → clarifying → kyc_required ⇄ clarifying
 | `retention` | 04:15 UTC | чистка `messages` (90 д), `payments.raw_payload` (180 д) и протухших занятий карточного фонда (7 д) |
 | `referral-recovery` | каждый час | добор пропущенных реферальных начислений (бэкстоп) |
 | `referral-rollup` | 1-е число, 02:00 UTC | месячная прогрессия статусов партнёров (гейт `REFERRAL_ENABLED`) |
+| `support-housekeeping` | каждые 15 мин (`:07`, мимо `expire-payments`) | разговоры у оператора без реплик клиента дольше 24 ч → `idle` с уведомлением клиенту; обращения «без ответа» дольше 2 ч в рабочее время → алёрт персоналу с правом `support` (дедуп 4 ч, пустой штат → владельцу). На VPS с 2026-08-28 |
 
 ### 5. Поддержка: помощник и оператор
 
