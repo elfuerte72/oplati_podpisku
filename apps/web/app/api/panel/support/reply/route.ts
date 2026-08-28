@@ -7,7 +7,7 @@ import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
 import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { SUPPORT_REPLY_MAX, SUPPORT_REPLY_MIN, supportReplyBlockReason } from '@/lib/panel/support';
-import { OPERATOR_TTL_HOURS } from '@/lib/support/session';
+import { operatorDeadline } from '@/lib/support/session';
 import { OPERATOR_REPLY_PREFIX } from '@/lib/support/texts';
 import { getBot } from '@/lib/telegram/bot';
 import { redactCardNumbers } from '@/lib/telegram/templates';
@@ -89,7 +89,7 @@ export async function POST(req: Request): Promise<Response> {
     from: ['idle', 'ai', 'operator'],
     to: 'operator',
     trigger: 'operator_reply',
-    modeExpiresAt: new Date(Date.now() + OPERATOR_TTL_HOURS * 60 * 60 * 1000),
+    modeExpiresAt: operatorDeadline(new Date()),
     assignedOperatorId: guard.actor.id,
     onlyIfFreeOrOwnedBy: guard.actor.id,
   });

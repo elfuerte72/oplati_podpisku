@@ -61,6 +61,8 @@ export {
   type RouteDecision,
   type RouteKind,
 } from './router.ts';
+import type { CatalogItem } from './catalog.ts';
+export type { CatalogItem } from './catalog.ts';
 
 /**
  * Контракт инструментов AI-агента (MVP: Love & Pay + app.pay.space).
@@ -70,13 +72,6 @@ export {
  * Результаты сериализуются в `tool_result` и подаются обратно в модель —
  * структуру держим стабильной.
  */
-export interface CatalogItem {
-  id: string;
-  slug: string;
-  name: string;
-  requiresKyc: boolean;
-}
-
 export interface ProposeOrderResult {
   orderId: string;
   shortId: string;

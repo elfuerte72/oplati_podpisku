@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { maskForModel } from './mask';
+import { maskForModel, maskForStaff } from './mask';
 
 /**
  * Маскирование перед отправкой стороннему провайдеру (спека §11).
@@ -65,3 +65,20 @@ describe('maskForModel', () => {
     expect(maskForModel('когда придёт карта?')).toBe('когда придёт карта?');
   });
 });
+
+describe('maskForStaff', () => {
+  it('оператору — только карта под маской; телефон и почта остаются: они нужны для сверки', () => {
+    const text = 'Платил с карты 4111 1111 1111 1111, телефон +7 999 123-45-67, почта ivan@example.com';
+    const out = maskForStaff(text);
+    expect(out).not.toContain('4111 1111 1111 1111');
+    expect(out).toContain('+7 999 123-45-67');
+    expect(out).toContain('ivan@example.com');
+  });
+
+  it('модели — всё под маской, оператору — нет: две маски намеренно разные', () => {
+    const text = 'телефон +7 999 123-45-67';
+    expect(maskForModel(text)).not.toContain('123-45-67');
+    expect(maskForStaff(text)).toContain('123-45-67');
+  });
+});
+

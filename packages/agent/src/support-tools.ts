@@ -7,7 +7,7 @@ import {
 } from '@oplati/types';
 import type { ZodError, ZodType, ZodTypeDef } from 'zod';
 
-import type { CatalogItem } from './index.ts';
+import type { CatalogItem } from './catalog.ts';
 import type { ToolExecution } from './run.ts';
 
 /**

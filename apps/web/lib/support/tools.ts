@@ -29,26 +29,20 @@ const log = childLogger('support.tools');
 /** Сколько заказов показываем модели: свежих хватает, история за год не нужна. */
 const ORDERS_LIMIT = 5;
 
+// Без `try`: Node с полным ICU (официальный образ) эти вызовы не роняет, а
+// проглоченная ошибка форматирования прятала бы сломанную сборку без ICU.
 function formatDeadline(date: Date): string {
-  try {
-    return date.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: 'numeric',
-      month: 'long',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return date.toISOString();
-  }
+  return date.toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: 'numeric',
+    month: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function formatDate(date: Date): string {
-  try {
-    return date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long' });
-  } catch {
-    return date.toISOString().slice(0, 10);
-  }
+  return date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long' });
 }
 
 export type SupportToolsContext = {

@@ -398,7 +398,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     // ⚠️ При включённом помощнике реплику клиента пишет МОДУЛЬ поддержки —
     // только он знает режим и ставит маркер обращения в `operator`. Бот
     // пишет её сам лишь когда модуль сказал «сессии нет».
-    let writtenByModule = false;
     if (isSupportAiEnabled()) {
       const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
         text,
@@ -413,11 +412,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       if (outcome.status !== 'not_in_session' && outcome.status !== 'state_unavailable') {
         return;
       }
-      writtenByModule = false;
+      // Сессии нет или состояние не прочитать — дальше бот работает как без
+      // помощника, и реплику пишет сам.
     }
-    if (!writtenByModule) {
-      await safeAppendMessage(ctx, 'user', text, userMeta, update.update_id);
-    }
+    await safeAppendMessage(ctx, 'user', text, userMeta, update.update_id);
 
     // Pending-state читаем ОДИН раз (meta последнего assistant-сообщения) и
     // диспатчим: ожидание описания для /support ИЛИ ожидание суммы для

@@ -208,7 +208,7 @@ export const ANALYTICS_EVENTS = {
   support_escalated: {
     title: 'Разговор передан оператору',
     description:
-      'Помощник передал разговор человеку. props.stage — триггер: hard (жёсткое слово), model (решение модели), ai_unavailable (авария помощника), guard (выходной фильтр).',
+      'Разговор перешёл к человеку. props.stage — триггер: hard (жёсткое слово), model (решение модели), ai_unavailable (авария помощника), guard (выходной фильтр) — это помощник передал сам; operator_reply — оператор ответил из панели и тем перехватил разговор у помощника (или из idle).',
     channel: 'bot',
     origin: 'server',
     props: ['stage'],

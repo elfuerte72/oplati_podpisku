@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import type { ConversationMode } from '@oplati/types';
+import type { ConversationMode, ConversationModeTrigger } from '@oplati/types';
 import {
   SUPPORT_AI_META_SOURCE,
   SUPPORT_REQUEST_META_KEY,
@@ -9,6 +9,13 @@ import {
 import { conversations, messages } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
+
+/**
+ * `Date` в raw-sql-фрагмент передавать нельзя — только ISO-строку (конвенция
+ * кода): postgres-js на проде падает на сериализации, а PGlite в тестах `Date`
+ * переваривает, и регресс невидим в зелёном прогоне.
+ */
+const isoOrNull = (date: Date | null): string | null => (date === null ? null : date.toISOString());
 
 /**
  * Машина состояний разговора поддержки (спека `.scratch/support-ai/spec.md` §1).
@@ -35,9 +42,14 @@ export type TransitionConversationModeInput = {
   from: ConversationMode | readonly ConversationMode[];
   to: ConversationMode;
   /** Что вызвало переход — попадает в meta служебной строки и в аналитику. */
-  trigger: string;
+  trigger: ConversationModeTrigger;
   /** Человекочитаемая причина для оператора (категория слова, текст модели). */
   reason?: string | null;
+  /**
+   * Кто провёл переход руками — имя сотрудника из панели. Отдельное поле, а не
+   * `reason`: причина отвечает «почему» (жёсткое слово, срок), а это — «кто».
+   */
+  actorName?: string | null;
   /**
    * Новый срок режима. Передаётся ВСЕГДА и явно: «забыли обновить» здесь
    * означает либо вечно живую сессию помощника, либо обращение, которое
@@ -104,8 +116,9 @@ export async function transitionConversationMode(
   input: TransitionConversationModeInput,
   log: RepoLogger = noopLogger,
 ): Promise<TransitionConversationModeResult> {
-  const { conversationId, to, trigger, reason = null, modeExpiresAt } = input;
-  const fromModes = Array.isArray(input.from) ? input.from : [input.from as ConversationMode];
+  const { conversationId, to, trigger, reason = null, actorName = null, modeExpiresAt } = input;
+  const fromModes: readonly ConversationMode[] =
+    typeof input.from === 'string' ? [input.from] : input.from;
 
   return await db.transaction(async (tx) => {
     // ⚠️ Повтор в ТОМ ЖЕ режиме с ТЕМ ЖЕ ведущим — это touch, а не переход:
@@ -120,7 +133,7 @@ export async function transitionConversationMode(
       if (current && current.mode === to && sameOwner) {
         await tx.execute(sql`
           UPDATE conversations
-             SET mode_expires_at = ${modeExpiresAt === null ? null : modeExpiresAt.toISOString()},
+             SET mode_expires_at = ${isoOrNull(modeExpiresAt)},
                  updated_at = now()
            WHERE id = ${conversationId}
         `);
@@ -144,10 +157,7 @@ export async function transitionConversationMode(
 
     const assignments = [
       sql`handoff_mode = ${to}`,
-      // ⚠️ `Date` в raw-sql-фрагмент передавать нельзя — только ISO-строку
-      // (конвенция кода): postgres-js на проде падает на сериализации, а PGlite
-      // в тестах `Date` переваривает, и регресс невидим в зелёном прогоне.
-      sql`mode_expires_at = ${modeExpiresAt === null ? null : modeExpiresAt.toISOString()}`,
+      sql`mode_expires_at = ${isoOrNull(modeExpiresAt)}`,
       sql`updated_at = now()`,
     ];
     if (input.assignedOperatorId !== undefined) {
@@ -196,6 +206,7 @@ export async function transitionConversationMode(
         to,
         trigger,
         ...(reason ? { reason } : {}),
+        ...(actorName ? { actor: actorName } : {}),
       },
     });
 
@@ -229,9 +240,7 @@ export async function touchConversationMode(
 ): Promise<boolean> {
   const rows = await db.execute<{ id: string }>(sql`
     UPDATE conversations
-       SET mode_expires_at = ${
-         input.modeExpiresAt === null ? null : input.modeExpiresAt.toISOString()
-       },
+       SET mode_expires_at = ${isoOrNull(input.modeExpiresAt)},
            updated_at = now()
      WHERE id = ${input.conversationId}
        AND handoff_mode = ${input.mode}

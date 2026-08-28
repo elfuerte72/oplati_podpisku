@@ -1,13 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { SUPPORT_BLOCK_TEXT } from './labels';
-import {
-  SUPPORT_HISTORY_DAYS,
-  canReturnToAi,
-  supportReplyBlockReason,
-  supportRoleLabel,
-  supportStateNote,
-} from './support';
+import { SUPPORT_HISTORY_DAYS, supportReplyBlockReason, supportRoleLabel, supportStateNote } from './support';
+import { canReturnToAi } from './permissions';
 import { MESSAGES_RETENTION_DAYS } from '@/lib/retention-policy';
 
 const STAFF = 'staff-1';
@@ -113,6 +108,21 @@ describe('supportStateNote', () => {
     expect(supportStateNote({ source: 'support_state', from: 'idle', to: 'ai', trigger: 'button' })).toBe(
       'Режим: Помощник · кнопка «Поддержка»',
     );
+  });
+
+  it('РЕГРЕСС финального ревью: у захвата из панели есть подпись, а не сырой ключ', () => {
+    // `operator_claim` пишет `claimSupportConversation`; словаря он не знал —
+    // менеджер видел бы «operator_claim». Теперь словарь типизирован всем
+    // `ConversationModeTrigger`, и пропуск не собирается.
+    const note = supportStateNote({ source: 'support_state', from: 'idle', to: 'operator', trigger: 'operator_claim' });
+    expect(note).toBe('Режим: Оператор · подключился оператор');
+    expect(note).not.toContain('operator_claim');
+  });
+
+  it('кто провёл переход руками — отдельным полем, а не «причиной»', () => {
+    expect(
+      supportStateNote({ source: 'support_state', from: 'operator', to: 'idle', trigger: 'operator_close', actor: 'Менеджер' }),
+    ).toBe('Режим: Закрыт · закрыл оператор · Менеджер');
   });
 
   it('незнакомый триггер показывается как есть, а не прячется', () => {

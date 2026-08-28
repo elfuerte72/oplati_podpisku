@@ -386,7 +386,17 @@ describe('медиа', () => {
     });
 
     expect(h.sent[0]?.text).toBe(SUPPORT_MEDIA_TO_OPERATOR);
-    expect(h.appended).toContainEqual({ role: 'user', content: '[файл]' });
+    // Вложение — реплика клиента, как и текст: маркер обращения, touch и
+    // пинг персоналу. Иначе клиент, ответивший скриншотом, через сутки
+    // закрывался бы как «молчавший», а «без ответа» его не видел бы.
+    expect(h.appended).toContainEqual(
+      expect.objectContaining({
+        role: 'user',
+        content: '[файл]',
+        meta: expect.objectContaining({ support_request: true }),
+      }),
+    );
+    expect(h.touches).toContainEqual({ mode: 'operator', modeExpiresAt: null });
   });
 });
 

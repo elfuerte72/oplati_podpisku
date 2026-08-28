@@ -660,6 +660,8 @@ export const OPERATOR_HOURS = {
   fromHour: 10,
   toHour: 22,
   tz: 'Europe/Moscow',
+  /** Подпись пояса в текстах клиенту — рядом с `tz`, чтобы не разъехались. */
+  tzLabel: 'МСК',
 } as const;
 
 /**

@@ -54,7 +54,7 @@ export async function POST(req: Request): Promise<Response> {
     from: 'operator',
     to: 'idle',
     trigger: 'operator_close',
-    reason: guard.actor.displayName,
+    actorName: guard.actor.displayName,
     modeExpiresAt: null,
     assignedOperatorId: null,
   });

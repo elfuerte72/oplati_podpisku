@@ -88,3 +88,19 @@ export function sectionsFor(role: StaffRole): PanelSectionForRole[] {
     allowed: canAccess(role, section.capability),
   }));
 }
+
+/**
+ * «Вернуть помощнику» — только ведущему или админу.
+ *
+ * Чужой разговор возвращать нельзя по той же причине, по какой нельзя в нём
+ * отвечать: решение «я закончил» принимает тот, кто вёл. Админ — исключение:
+ * сотрудник ушёл в отпуск, а разговор висит.
+ */
+export function canReturnToAi(input: {
+  actorId: string;
+  actorRole: StaffRole;
+  assignedOperatorId: string | null;
+}): boolean {
+  if (input.actorRole === 'admin') return true;
+  return input.assignedOperatorId === null || input.assignedOperatorId === input.actorId;
+}

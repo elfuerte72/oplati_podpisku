@@ -19,13 +19,8 @@ import {
   SUPPORT_MODE_LABELS,
 } from '@/lib/panel/labels';
 import { lookupLabel } from '@/lib/panel/format';
-import {
-  SUPPORT_HISTORY_DAYS,
-  canReturnToAi,
-  supportReplyBlockReason,
-  supportRoleLabel,
-  supportStateNote,
-} from '@/lib/panel/support';
+import { SUPPORT_HISTORY_DAYS, supportReplyBlockReason, supportRoleLabel, supportStateNote } from '@/lib/panel/support';
+import { canReturnToAi } from '@/lib/panel/permissions';
 
 /**
  * `/admin/support/<conversationId>` — переписка и ответ клиенту (спека §5.6).
@@ -148,16 +143,19 @@ export default async function PanelSupportThreadPage({
 
       <section className="panel-card">
         <h2 className="panel-title">Ответить</h2>
-        {blocked ? (
-          <p className="panel-muted">{SUPPORT_BLOCK_TEXT[blocked]}</p>
-        ) : (
+        {blocked ? <p className="panel-muted">{SUPPORT_BLOCK_TEXT[blocked]}</p> : null}
+        {/* Поле ответа закрыто чужим захватом или отсутствием Telegram, но
+            «Вернуть помощнику» (админу) и «Закрыть» операции разрешают — без
+            кнопок админ не мог бы отпустить разговор ушедшего в отпуск коллеги. */}
+        {!blocked || mayReturn || inOperatorMode ? (
           <SupportReply
             conversationId={thread.conversationId}
             needsAssign={thread.assignedOperatorId === null}
+            canReply={!blocked}
             canReturn={mayReturn}
             canClose={inOperatorMode}
           />
-        )}
+        ) : null}
       </section>
     </PanelShell>
   );

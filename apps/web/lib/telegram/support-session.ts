@@ -32,7 +32,7 @@ export function isSupportAiEnabled(): boolean {
   return serverEnv.SUPPORT_AI_ENABLED;
 }
 
-function contextOf(
+export function supportRequestContext(
   ctx: PersistContext,
   chatId: number,
   updateId: number,
@@ -57,7 +57,7 @@ export async function openSupportFromBot(
   from: TelegramMessage['from'],
   surface: SupportSurface,
 ): Promise<OpenSupportResult> {
-  const ports = supportPorts(contextOf(ctx, chatId, updateId, from));
+  const ports = supportPorts(supportRequestContext(ctx, chatId, updateId, from));
   const result = await openSupportSession(ports, { surface });
   log.info({ event: 'telegram.support.session_open', chatId, surface, status: result.status });
   return result;
@@ -82,7 +82,7 @@ export async function routeSupportIncoming(
     userMeta?: Record<string, unknown>;
   },
 ): Promise<SupportOutcome> {
-  const ports = supportPorts(contextOf(ctx, chatId, update.update_id, message.from));
+  const ports = supportPorts(supportRequestContext(ctx, chatId, update.update_id, message.from));
   const outcome = await handleSupportMessage(ports, {
     text: input.text,
     kind: input.kind,

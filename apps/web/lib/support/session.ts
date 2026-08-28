@@ -1,9 +1,13 @@
-import { SUPPORT_AI_META_SOURCE, type SupportEscalationTrigger } from '@oplati/types';
+import {
+  SUPPORT_AI_META_SOURCE,
+  type ConversationModeTrigger,
+  type SupportEscalationTrigger,
+} from '@oplati/types';
 
 import { toAgentHistory } from '../chat/history';
 
 import { matchHardTrigger } from './hard-triggers';
-import { maskForModel } from './mask';
+import { maskForModel, maskForStaff } from './mask';
 import { guardModelOutput } from './output-guard';
 import type {
   ConversationSnapshot,
@@ -12,15 +16,16 @@ import type {
   SupportSurface,
 } from './ports';
 import {
-  aiUnavailableText,
-  escalationText,
   SUPPORT_CAP_REACHED,
   SUPPORT_CLOSED_BY_CLIENT,
   SUPPORT_GREETING,
   SUPPORT_GUARDED,
+  SUPPORT_MEDIA_PLACEHOLDER,
   SUPPORT_MEDIA_TO_AI,
   SUPPORT_MEDIA_TO_OPERATOR,
   SUPPORT_OPERATOR_LEADS,
+  aiUnavailableText,
+  escalationText,
 } from './texts';
 
 /**
@@ -101,7 +106,7 @@ export type SupportOutcome =
  * звали переход с одинаковым телом — разъезд одного из них (забытый
  * `assignedOperatorId: null`) оставлял бы призрачного ведущего.
  */
-async function closeToIdle(ports: SupportPorts, trigger: string): Promise<boolean> {
+async function closeToIdle(ports: SupportPorts, trigger: ConversationModeTrigger): Promise<boolean> {
   const { transitioned } = await ports.state.transition({
     from: 'ai',
     to: 'idle',
@@ -112,7 +117,7 @@ async function closeToIdle(ports: SupportPorts, trigger: string): Promise<boolea
   return transitioned;
 }
 
-function sessionDeadline(now: Date): Date {
+export function sessionDeadline(now: Date): Date {
   return new Date(now.getTime() + SESSION_TTL_MINUTES * MINUTE_MS);
 }
 
@@ -240,10 +245,17 @@ export async function handleSupportMessage(
 
   if (mode === 'operator') {
     if (input.kind === 'media') {
+      // Вложение — тоже реплика клиента (спека §1: `operator → operator` —
+      // touch; §8 — маркер обращения и пинг персоналу). Без этого клиент,
+      // ответивший оператору скриншотом, через сутки закрывался бы кроном как
+      // «молчавший», а «без ответа» его не видел бы.
       await ports.delivery.toClient(SUPPORT_MEDIA_TO_OPERATOR);
-      if (input.mediaPlaceholder) {
-        await ports.state.append({ role: 'user', content: input.mediaPlaceholder });
-      }
+      await noteClientFollowUp(
+        ports,
+        input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.file,
+        now,
+        input.userMeta,
+      );
       return { status: 'media_rejected' };
     }
     await noteClientFollowUp(ports, input.text, now, input.userMeta);
@@ -411,7 +423,7 @@ async function noteClientFollowUp(
   const dedupUntil = last ? last.getTime() + FOLLOW_UP_DEDUP_MINUTES * MINUTE_MS : 0;
   if (now.getTime() < dedupUntil) return;
 
-  await ports.staff.notifyFollowUp({ text: maskForModel(text) });
+  await ports.staff.notifyFollowUp({ text: maskForStaff(text) });
 }
 
 /**
@@ -463,7 +475,7 @@ export async function escalate(
   const delivered = await ports.staff.notifyEscalation({
     trigger: input.trigger,
     reason: input.reason,
-    lastMessages: lastMessages.map((m) => ({ ...m, content: maskForModel(m.content) })),
+    lastMessages: lastMessages.map((m) => ({ ...m, content: maskForStaff(m.content) })),
   });
 
   await ports.state.append({
@@ -489,7 +501,13 @@ export async function escalate(
  */
 export async function closeSupportSession(
   ports: SupportPorts,
-  input: { reason: SupportCloseReason; silent?: boolean; now?: Date },
+  input: {
+    // Без `operator`: оператор закрывает разговор роутом панели (`operator_close`),
+    // а не через модуль — здесь только закрытия со стороны клиента и системы.
+    reason: Exclude<SupportCloseReason, 'operator'>;
+    silent?: boolean;
+    now?: Date;
+  },
 ): Promise<{ closed: boolean }> {
   const now = input.now ?? new Date();
   const snapshot = await ports.state.read();

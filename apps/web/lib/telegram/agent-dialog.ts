@@ -28,7 +28,7 @@ import { childLogger } from '@/lib/logger';
 import { createToolHandlers } from '@/lib/tool-handlers';
 
 import { supportPorts } from '@/lib/support/adapters';
-import { isSupportAiEnabled } from './support-session';
+import { isSupportAiEnabled, supportRequestContext } from './support-session';
 import { escalate } from '@/lib/support/session';
 
 import { buildConfirmKeyboard } from './catalog-callbacks';
@@ -177,16 +177,10 @@ export async function runAgentDialog(
           ...(isSupportAiEnabled()
             ? {
                 escalateToHuman: async (reason: string) => {
-            const ports = supportPorts({
-              conversationId: ctx.conversationId,
-              userId: ctx.userId,
-              chatId,
-              telegramId: update.message?.from?.id ?? chatId,
-              updateId: update.update_id,
-              displayName: update.message?.from?.first_name ?? null,
-              username: update.message?.from?.username ?? null,
-            });
-            await escalate(ports, { trigger: 'model', reason });
+                  const ports = supportPorts(
+                    supportRequestContext(ctx, chatId, update.update_id, update.message?.from),
+                  );
+                  await escalate(ports, { trigger: 'model', reason });
                 },
               }
             : {}),

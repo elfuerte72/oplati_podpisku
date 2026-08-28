@@ -6,8 +6,13 @@
  * служебных пометок.
  */
 
-import { SUPPORT_AI_META_SOURCE, SUPPORT_STATE_META_SOURCE } from '@oplati/types';
+import {
+  SUPPORT_AI_META_SOURCE,
+  SUPPORT_STATE_META_SOURCE,
+  type ConversationModeTrigger,
+} from '@oplati/types';
 
+import { lookupLabel } from './format';
 import { SUPPORT_MODE_LABELS, THREAD_ROLE_LABELS } from './labels';
 
 /** Пустой ответ отправлять нечего, а простыню Telegram не примет. */
@@ -75,18 +80,22 @@ export function supportStateNote(meta: Record<string, unknown> | null | undefine
   const to = typeof meta.to === 'string' ? meta.to : null;
   const trigger = typeof meta.trigger === 'string' ? meta.trigger : null;
   const reason = typeof meta.reason === 'string' ? meta.reason : null;
-  const modeLabel = to ? SUPPORT_MODE_LABELS[to as keyof typeof SUPPORT_MODE_LABELS] ?? to : '?';
+  const actor = typeof meta.actor === 'string' ? meta.actor : null;
+  const modeLabel = to ? (lookupLabel(SUPPORT_MODE_LABELS, to) ?? to) : '?';
   const parts = [`Режим: ${modeLabel}`];
-  if (trigger) parts.push(SUPPORT_TRIGGER_LABELS[trigger] ?? trigger);
+  // Незнакомый триггер (строка из БД старше словаря) показывается как есть —
+  // это лучше пустоты: менеджер хотя бы видит идентификатор.
+  if (trigger) parts.push(lookupLabel(SUPPORT_TRIGGER_LABELS, trigger) ?? trigger);
+  if (actor) parts.push(actor);
   if (reason) parts.push(reason);
   return parts.join(' · ');
 }
 
 /**
- * Кто вызвал переход — человеческим словом. Ключи — триггеры из модуля
- * поддержки (`lib/support/session.ts`) и панели; незнакомый показывается как есть.
+ * Кто вызвал переход — человеческим словом. Ключи — ВЕСЬ `ConversationModeTrigger`
+ * (`satisfies`): новый триггер без подписи не соберётся, а не покажется сырым.
  */
-const SUPPORT_TRIGGER_LABELS: Record<string, string> = {
+const SUPPORT_TRIGGER_LABELS = {
   button: 'кнопка «Поддержка»',
   command: 'команда /support',
   deeplink: 'ссылка из приложения',
@@ -100,23 +109,8 @@ const SUPPORT_TRIGGER_LABELS: Record<string, string> = {
   client: 'клиент завершил',
   ai_disabled: 'помощник выключен',
   operator_reply: 'ответ оператора',
+  operator_claim: 'подключился оператор',
   operator_return: 'возврат помощнику',
   operator_close: 'закрыл оператор',
   auto: 'автозакрытие',
-};
-
-/**
- * «Вернуть помощнику» — только ведущему или админу.
- *
- * Чужой разговор возвращать нельзя по той же причине, по какой нельзя в нём
- * отвечать: решение «я закончил» принимает тот, кто вёл. Админ — исключение:
- * сотрудник ушёл в отпуск, а разговор висит.
- */
-export function canReturnToAi(input: {
-  actorId: string;
-  actorRole: string;
-  assignedOperatorId: string | null;
-}): boolean {
-  if (input.actorRole === 'admin') return true;
-  return input.assignedOperatorId === null || input.assignedOperatorId === input.actorId;
-}
+} as const satisfies Record<ConversationModeTrigger, string>;

@@ -5,8 +5,8 @@ import { getDb, getSupportThreadForPanel, transitionConversationMode } from '@op
 import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
-import { canReturnToAi } from '@/lib/panel/support';
-import { SESSION_TTL_MINUTES } from '@/lib/support/session';
+import { canReturnToAi } from '@/lib/panel/permissions';
+import { sessionDeadline } from '@/lib/support/session';
 import { SUPPORT_RETURNED_TO_AI } from '@/lib/support/texts';
 import { getBot } from '@/lib/telegram/bot';
 
@@ -68,7 +68,8 @@ export async function POST(req: Request): Promise<Response> {
     from: 'operator',
     to: 'ai',
     trigger: 'operator_return',
-    modeExpiresAt: new Date(Date.now() + SESSION_TTL_MINUTES * 60 * 1000),
+    actorName: guard.actor.displayName,
+    modeExpiresAt: sessionDeadline(new Date()),
     assignedOperatorId: null,
   });
   if (!res.transitioned) {

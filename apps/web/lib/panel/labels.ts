@@ -25,6 +25,7 @@
 
 import type {
   CardStatus,
+  ConversationMode,
   FREEKASSA_ORDER_STATUS,
   OrderStatus,
   PaymentStatus,
@@ -32,7 +33,6 @@ import type {
 } from '@oplati/types';
 
 import type { RemindBlockReason } from './remind';
-import type { ConversationMode } from '@oplati/types';
 import type { SupportReplyBlockReason } from './support';
 
 /** Названия разделов меню. Ключ — право (`PanelCapability`), у которого есть экран. */

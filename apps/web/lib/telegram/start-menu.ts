@@ -15,6 +15,7 @@ import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
 
 import { handleLinkDeepLink } from './link-flow';
+import { handleSupportCommand } from './support-flow';
 import { SUPPORT_START_PAYLOAD } from './links';
 import { isSupportAiEnabled, openSupportFromBot, resetSupportOnStart } from './support-session';
 import { persistInbound, safeAppendMessage } from './persist';
@@ -117,15 +118,21 @@ export async function handleStartCommand(
       update.update_id,
     );
 
-    if (isSupportAiEnabled()) {
-      // Deep-link `?start=support` — третья дверь в поддержку рядом с кнопкой и
-      // командой: по ней ведут Mini App и сайт, у которых своего канала связи с
-      // клиентом нет.
-      if (startPayloadRaw.toLowerCase() === SUPPORT_START_PAYLOAD) {
-        await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
-        await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
-        return;
+    // Deep-link `?start=support` — третья дверь в поддержку рядом с кнопкой и
+    // командой: по ней ведут Mini App и сайт, у которых своего канала связи с
+    // клиентом нет. Без помощника (флаг, ключ, непрочитанное состояние) —
+    // сегодняшний флоу к человеку, как по кнопке: ссылка обещала поддержку,
+    // а не меню.
+    if (startPayloadRaw.toLowerCase() === SUPPORT_START_PAYLOAD) {
+      await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
+      if (isSupportAiEnabled()) {
+        const opened = await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
+        if (opened.status !== 'unavailable') return;
       }
+      await handleSupportCommand(update, message, chatId, '/support');
+      return;
+    }
+    if (isSupportAiEnabled()) {
       // ⚠️ Любой другой `/start` СБРАСЫВАЕТ помощника — молча. Это выход из
       // сессии для человека, который «залип» в разговоре: он видит привычное
       // меню, а не продолжение переписки. Разговор, который ведёт ОПЕРАТОР, не

@@ -9,7 +9,6 @@ import {
   transitionConversationMode,
 } from '@oplati/db';
 
-import { notifyOps } from '../alerts/notify-ops.ts';
 import { notifyStaff } from '../alerts/notify-staff.ts';
 import { trackServer } from '../analytics/track.ts';
 import { childLogger } from '../logger.ts';
@@ -112,19 +111,18 @@ async function alertUnanswered(now: Date): Promise<number> {
 
     // Дедуп — по разговору и с окном на вызов: ключ без окна держал бы
     // «раз и навсегда», а нужно «раз в четыре часа, пока висит».
+    // ⚠️ Фолбэк владельцу — ВСТРОЕННЫЙ (`notifyStaff` при пустом штате сам
+    // зовёт `notifyOps`), а не свой `notifyOps` рядом: окно дедупа `notifyStaff`
+    // занимает только по факту доставки — персоналу ИЛИ владельцу через свой
+    // фолбэк. Свой обход фолбэка это окно не занимал, и на проде, где `staff`
+    // пуст до заведения персонала, владелец получал бы пинг о том же обращении
+    // на каждом прогоне — раз в 15 минут вместо раз в четыре часа.
     const res = await notifyStaff(text, {
       capability: 'support',
       dedupKey: `support-unanswered-${row.conversationId}`,
       dedupWindowMs: UNANSWERED_ALERT_DEDUP_MS,
-      fallbackToOps: false,
     });
     if (res.deduped) continue;
-
-    if (res.delivered === 0) {
-      // Штат пуст (на проде `staff` пуст до ручного заведения) — владельцу.
-      // Молчание здесь неотличимо от тишины, а обращение живое.
-      await notifyOps(text);
-    }
     alerted += 1;
   }
 

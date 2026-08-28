@@ -110,7 +110,7 @@ describe('POST /api/panel/support/close', () => {
 
     expect(h.transition).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ reason: 'Менеджер' }),
+      expect.objectContaining({ actorName: 'Менеджер' }),
     );
   });
 

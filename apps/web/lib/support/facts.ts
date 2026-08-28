@@ -5,8 +5,8 @@ import type { SupportFacts } from '@oplati/agent';
 
 import { serverEnv } from '@/lib/env.server';
 import { currentInvoiceTtlHours } from '@/lib/payments/gateway';
+import { PRICE_LOCK_TTL_HOURS } from '@/lib/pricing';
 import { OPERATOR_HOURS } from '@/lib/telegram/templates';
-import { PRICE_LOCK_TTL_HOURS } from '@/lib/tool-handlers/propose-order';
 
 /**
  * Динамические факты для базы знаний помощника (спека §5).
@@ -25,7 +25,7 @@ export function collectSupportFacts(): SupportFacts {
     operatorHours: {
       fromHour: OPERATOR_HOURS.fromHour,
       toHour: OPERATOR_HOURS.toHour,
-      tzLabel: 'МСК',
+      tzLabel: OPERATOR_HOURS.tzLabel,
     },
     phoneRequiredFromRub: serverEnv.PHONE_REQUIRED_FROM_RUB ?? null,
   };

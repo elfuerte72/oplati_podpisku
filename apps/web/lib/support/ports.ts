@@ -1,4 +1,8 @@
-import type { ConversationMode, SupportEscalationTrigger } from '@oplati/types';
+import type {
+  ConversationMode,
+  ConversationModeTrigger,
+  SupportEscalationTrigger,
+} from '@oplati/types';
 
 /**
  * Порты модуля поддержки (спека §3, «Testing Decisions» п. 1).
@@ -23,7 +27,7 @@ export type ConversationSnapshot = {
 export type SupportTransitionInput = {
   from: ConversationMode | readonly ConversationMode[];
   to: ConversationMode;
-  trigger: string;
+  trigger: ConversationModeTrigger;
   reason?: string | null;
   modeExpiresAt: Date | null;
   assignedOperatorId?: string | null;

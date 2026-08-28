@@ -43,8 +43,8 @@ export const SUPPORT_FINISH_CALLBACK = 'support:finish';
  */
 export function escalationText(now: Date = new Date()): string {
   return isWithinOperatorHours(now)
-    ? `Передаю оператору. Он ответит здесь же, обычно в течение часа (рабочее время ${OPERATOR_HOURS.fromHour}:00–${OPERATOR_HOURS.toHour}:00 МСК).`
-    : `Передаю оператору. Сейчас нерабочее время — ответим после ${OPERATOR_HOURS.fromHour}:00 МСК, здесь же.`;
+    ? `Передаю оператору. Он ответит здесь же, обычно в течение часа (рабочее время ${OPERATOR_HOURS.fromHour}:00–${OPERATOR_HOURS.toHour}:00 ${OPERATOR_HOURS.tzLabel}).`
+    : `Передаю оператору. Сейчас нерабочее время — ответим после ${OPERATOR_HOURS.fromHour}:00 ${OPERATOR_HOURS.tzLabel}, здесь же.`;
 }
 
 /**
@@ -55,7 +55,7 @@ export function escalationText(now: Date = new Date()): string {
 export function aiUnavailableText(now: Date = new Date()): string {
   const tail = isWithinOperatorHours(now)
     ? ''
-    : ` Сейчас нерабочее время — ответим после ${OPERATOR_HOURS.fromHour}:00 МСК.`;
+    : ` Сейчас нерабочее время — ответим после ${OPERATOR_HOURS.fromHour}:00 ${OPERATOR_HOURS.tzLabel}.`;
   return `Помощник сейчас недоступен — передаю оператору. Он ответит здесь же.${tail}`;
 }
 

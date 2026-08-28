@@ -34,7 +34,7 @@ let _supportClient: Anthropic | undefined;
  * превращалось в запрос к провайдеру с пустым ключом.
  */
 export function isSupportAiConfigured(): boolean {
-  // `||` — `KEY=` в env это «не задано», а не пустой ключ.
+  // `Boolean()` — `KEY=` в env это «не задано», а не пустой ключ.
   return Boolean(process.env.SUPPORT_AI_API_KEY);
 }
 

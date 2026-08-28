@@ -473,6 +473,38 @@ export const supportEscalationTrigger = z.enum([
 ]);
 export type SupportEscalationTrigger = z.infer<typeof supportEscalationTrigger>;
 
+/**
+ * Кто вызвал переход режима разговора — ключ служебной строки `support_state`
+ * (`meta.trigger`) и словаря подписей в панели. Список один на три пакета
+ * (модуль поддержки, роуты панели, крон): у `Record<string, string>` пропущенная
+ * подпись показывалась бы менеджеру сырым идентификатором, и никто бы этого не
+ * заметил до первого такого перехода на проде.
+ */
+export const conversationModeTrigger = z.enum([
+  // Эскалация к человеку — те же четыре, что в `supportEscalationTrigger`.
+  'hard',
+  'model',
+  'ai_unavailable',
+  'guard',
+  // Открытие сессии помощника: с какой двери вошёл клиент.
+  'button',
+  'command',
+  'deeplink',
+  // Закрытие сессии помощника.
+  'ttl',
+  'cap',
+  'start',
+  'client',
+  'ai_disabled',
+  // Панель и крон.
+  'operator_reply',
+  'operator_claim',
+  'operator_return',
+  'operator_close',
+  'auto',
+]);
+export type ConversationModeTrigger = z.infer<typeof conversationModeTrigger>;
+
 export type CardStatus = z.infer<typeof cardStatus>;
 
 export const paymentStatus = z.enum(['pending', 'succeeded', 'failed', 'refunded']);

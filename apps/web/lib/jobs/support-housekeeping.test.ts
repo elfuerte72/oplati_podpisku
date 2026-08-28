@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   transitioned: true,
   sent: [] as { telegramId: string; text: string }[],
   sendOk: true,
-  staffNotified: [] as { text: string; dedupKey?: string }[],
+  staffNotified: [] as { text: string; dedupKey?: string; fallbackToOps?: boolean }[],
   staffDelivered: 1,
   opsNotified: [] as string[],
   tracked: [] as { name: string; props?: Record<string, unknown> }[],
@@ -53,8 +53,11 @@ vi.mock('@/lib/telegram/bot', () => ({
   }),
 }));
 vi.mock('@/lib/alerts/notify-staff', () => ({
-  notifyStaff: vi.fn(async (text: string, opts: { dedupKey?: string }) => {
-    h.staffNotified.push({ text, dedupKey: opts.dedupKey });
+  notifyStaff: vi.fn(async (text: string, opts: { dedupKey?: string; fallbackToOps?: boolean }) => {
+    h.staffNotified.push({ text, dedupKey: opts.dedupKey, fallbackToOps: opts.fallbackToOps });
+    // Контракт настоящего `notifyStaff`: пустой штат — владельцу через свой
+    // фолбэк, и только эта доставка занимает окно дедупа.
+    if (h.staffDelivered === 0 && opts.fallbackToOps !== false) h.opsNotified.push(text);
     return { delivered: h.staffDelivered, failed: 0, deduped: false };
   }),
 }));
@@ -195,6 +198,10 @@ describe('алёрт «без ответа»', () => {
 
     expect(h.opsNotified).toHaveLength(1);
     expect(h.opsNotified[0]).toContain('без ответа');
+    // Фолбэк — встроенный, не обход: окно дедупа занимает только `notifyStaff`
+    // по факту своей доставки владельцу. Свой `notifyOps` мимо него давал бы
+    // пинг на каждом прогоне крона.
+    expect(h.staffNotified[0]?.fallbackToOps).not.toBe(false);
   });
 
   it('текст называет, сколько часов клиент ждёт', async () => {
