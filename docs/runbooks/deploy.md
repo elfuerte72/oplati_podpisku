@@ -509,10 +509,20 @@ curl -sD - -o /dev/null https://www.oplatishka.com/ | grep -i 'report-uri.*sentr
    в Comments тикетов 02 и 08.
 4. **`SUPPORT_AI_ENABLED=1` на dev** → нажать «Поддержка» в `@dev_test_podpiska_bot`,
    проверить приветствие, ответ, «Завершить», `/start`-сброс, эскалацию словом «оператор».
-5. **Строка крона на VPS** — `support-housekeeping` из `infra/crontab.example` в
-   `/etc/cron.d/oplatishka` (сдвиг `:07`, чтобы не совпадать с `expire-payments`).
+5. **Строка крона на VPS** — `support-housekeeping` в `/etc/cron.d/oplatishka` (сдвиг `:07`,
+   чтобы не совпадать с `expire-payments`). ⚠️ Не копировать строку из `infra/crontab.example`
+   буквально: установленный файл ходит с `--resolve www.oplatishka.com:443:127.0.0.1` (мимо DNS,
+   прямо в Traefik) и тегом `logger -t oplatishka-cron-<job>` — брать образец с соседней строки.
+   Проверка — тот же `curl` руками с `--config /etc/oplatishka/cron.conf`: ответ
+   `{"ok":true,"closed":N,"alerted":M}`; cron перечитывает файл сам по mtime.
 6. **`SUPPORT_AI_ENABLED=1` на prod** + redeploy. Персонал должен один раз запустить бота
    входа — иначе пинги «без ответа» уйдут владельцу через `notifyOps`.
+
+**Состояние на 2026-08-28:** шаги 1 (миграция на prod и dev), 2 (ключ — ТОЛЬКО на prod, в dev-env
+его нет), 3 (смоук: модель `deepseek-v4-flash` подтверждена; `eval:support` не гонялся), 5 (крон,
+бэкап файла `/root/cron.d-oplatishka.bak-*`) и 6 (флаг включён, env записан через API с бэкапом
+`/root/env-backup-prod-*.txt`) выполнены; шаг 4 (dev) пропущен по решению владельца — тестировал
+лично в проде. Персонал в `staff` не заведён: алёрты «без ответа» идут владельцу.
 
 Откат — `SUPPORT_AI_ENABLED=0` + redeploy: кнопка снова ведёт в двухшаговый флоу к человеку,
 миграцию откатывать не нужно (колонка и значение enum безвредны).

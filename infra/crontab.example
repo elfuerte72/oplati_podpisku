@@ -67,6 +67,12 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # не начислится вообще (находка A-4). Сейчас на VPS Etc/UTC — проверено.
 
 # Подстраховка webhook'ов L&P + recovery зависших paid + healthcheck (каждые 5 мин)
+# ⚠️ Установленный на VPS файл (2026-07-28) отличается от этого шаблона формой строки:
+#   `curl … --resolve www.oplatishka.com:443:127.0.0.1 … https://www.oplatishka.com/api/cron/<job>`
+#   (мимо DNS, прямо в локальный Traefik) и тег `logger -t oplatishka-cron-<job>` вместо общего
+#   `-t oplatishka-cron -p cron.err`; `flock` у poll-payment там не стоит. Добавляя джоб на
+#   живом сервере, бери образец с СОСЕДНЕЙ строки файла, а не отсюда — так добавлен
+#   support-housekeeping 2026-08-28. Шаблон остаётся источником расписания и списка джобов.
 */5 * * * *  root  flock -n /var/lock/oplatishka-poll-payment.lock curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/poll-payment 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
 
 # Похороны просроченных заказов: pending_payment + протухшие черновики (каждые 15 мин)
