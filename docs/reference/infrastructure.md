@@ -29,8 +29,8 @@
 
 ⚠️ **Одно исключение — VPN-панель Remnawave `panel.mxpkn8ns.ru`: она осталась на бостонском
 VPS `177.7.34.106`** (проверено 2026-08-14, отвечает), и кнопка «VPN» в боте ходит туда. Там же
-личный бот `Vanya_bot`, свой Dokploy и остановленная прод-БД `oplatishka-db-ry3smb` — холодный
-резерв эпохи переезда; погашен он или нет, по коду не видно, разбор в
+личный бот `Vanya_bot`, свой Dokploy и остановленная КОПИЯ прод-БД с тем же именем `oplatishka-db-ry3smb` —
+холодный резерв эпохи переезда (⚠️ боевая `oplatishka-db-ry3smb` живёт на `187.124.172.104`); погашена копия или нет, по коду не видно, разбор в
 [`docs/BACKLOG.md`](../BACKLOG.md).
 
 Таблица стендов (домены, БД, боты, модели, ключи) живёт в `CLAUDE.md` — она нужна при
@@ -52,7 +52,7 @@ VPS на `http://127.0.0.1:3000` — Traefik и basic-auth при этом не 
 `apps/web` (кросс-импорты между `apps/*` запрещены, а ей нужны `lib/telegram`,
 `lib/pay-space`, `lib/alerts`), поэтому Traefik просто ведёт её домен на тот же
 сервис `oplatishka-web-<хеш>:3000`. Второе приложение означало бы вторую сборку
-того же образа и дубль всех 46 переменных окружения.
+того же образа и дубль всего env-блока (десятки переменных — `env-vars.md`).
 
 Разделение держится ДВУМЯ вещами, ни одна из которых не в Traefik:
 
@@ -110,7 +110,7 @@ json-file растёт неограниченно.
 ## Деплой
 
 **Деплой — ТОЛЬКО через `.github/workflows/deploy.yml`** (push в `main`/`dev` → gate
-typecheck+тесты+lint → `POST /api/deploy/<refreshToken>` → **проверка, что прод реально
+typecheck+тесты+lint+build → `POST /api/deploy/<refreshToken>` → **проверка, что прод реально
 обновился**: `/api/health` отдаёт `startedAt` позже момента триггера, иначе workflow красный;
 провал любого шага → сообщение в Telegram, если заданы `DEPLOY_ALERT_BOT_TOKEN`/`DEPLOY_ALERT_CHAT_ID`).
 Принятый триггер не равен выкаченному релизу — до 2026-07-25 пайплайн заканчивался на «сборка
@@ -173,7 +173,7 @@ base64 -i my.sql | ssh root@187.124.172.104 "base64 -d > /tmp/q.sql && \
 серверы Telegram (скачивают картинки для `sendMediaGroup`) получают `401`.
 Исключения вынесены отдельными файлами Traefik на VPS, Dokploy их не
 перегенерирует: `oplatishka-dev-webhook.yml` (`/api/bot`) и
-`oplatishka-dev-miniapp.yml` (`/cabinet`, `/api/cabinet`, `/api/catalog`, `/_next`, картинки).
+`oplatishka-dev-miniapp.yml` (`/cabinet`, `/api/cabinet`, `/api/catalog`, `/_next`, `/service-icons`, `/mascot`, `/intro`, `/vpn`, картинки — точный список в `infra/traefik/oplatishka-dev-miniapp.yml.example`).
 ⚠️ Список путей — исчерпывающий по факту: пропущенный `/api/catalog` давал
 открывшийся кабинет с пустым экраном «Каталог не открылся». При добавлении
 экранов в Mini App сверять `grep -rhoE "'/api/[a-z/_-]*'" components/cabinet`.

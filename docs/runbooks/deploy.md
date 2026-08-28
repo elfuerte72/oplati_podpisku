@@ -11,10 +11,12 @@
 
 ```
 push в main / dev
-  → gate: pnpm typecheck + pnpm -r test + pnpm lint
+  → gate: pnpm typecheck + pnpm -r test + pnpm lint + pnpm build
   → POST https://dokploypanel.oplatishka.com/api/deploy/<refreshToken>   (до 10 попыток)
   → Dokploy собирает образ и подменяет контейнер
   → проверка: /api/health отдаёт startedAt, отличный от снятого до триггера
+  → проверка готовности релиза: /api/ready (журнал миграций в образе = журнал в БД)
+  → (только main) выровнять dev по main, если dev не ушёл вперёд
   → провал любого шага → сообщение в Telegram
 ```
 
@@ -71,15 +73,17 @@ gh api repos/elfuerte72/oplati_podpisku/rulesets/19137923 \
 
 ```
 feature-ветка → push в dev → тест на dev.oplatishka.com → PR в main → CI → squash
-             → прод пересобирается → git push --force-with-lease origin origin/main:dev
+             → прод пересобирается → dev выравнивается по main (шаг workflow)
 ```
 
-Последний шаг обязателен: без него `dev` копит состояние, которого нет ни в
+Выравнивание обязательно: без него `dev` копит состояние, которого нет ни в
 одной PR, и перестаёт что-либо доказывать. 2026-07-27..28 ветка разошлась с
 `main` на 9 коммитов — стенд тестировал код, которого на проде уже не было.
-Сброс делается вручную, а не шагом workflow, ровно по той причине, по которой он
-и нужен: если на dev параллельно проверяются две фичи, а смержена одна,
-автоматический force-push снёс бы вторую.
+С 2026-07-30 это шаг `deploy.yml` «Выровнять dev по main после релиза»: он
+двигает `dev` на `main` ТОЛЬКО когда `compare/main...dev` пуст (на dev нет
+своих коммитов). Если на dev параллельно проверяется вторая фича, шаг
+пропускается, и выравнивание делается руками после её мержа:
+`git push --force-with-lease origin origin/main:dev`.
 
 **Чем dev отличается от прода — и что из этого следует для тестов**
 

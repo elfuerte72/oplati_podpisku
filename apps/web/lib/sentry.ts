@@ -4,7 +4,7 @@ import type * as SentryTypes from '@sentry/nextjs';
  * Общие хелперы Sentry для client/server/edge.
  *
  * Основная задача — `beforeSend`-скраббер, который вычищает PII по денилисту
- * из `docs/observability.md`:
+ * (денилист живёт здесь же; куда смотреть — `docs/runbooks/monitoring.md`):
  *   content, message, text, email, phone, card, password, token.
  *
  * Применяется на всех трёх runtime'ах (client/server/edge).
