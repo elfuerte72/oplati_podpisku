@@ -13,7 +13,9 @@ import {
   COLUMN_TITLES,
   EMPTY_TEXT,
   SECTION_TITLES,
+  SUPPORT_MODE_LABELS,
 } from '@/lib/panel/labels';
+import { lookupLabel } from '@/lib/panel/format';
 
 /**
  * `/admin/support` — обращения клиентов (спека §5.6).
@@ -62,6 +64,7 @@ export default async function PanelSupportPage() {
                 <th>{COLUMN_TITLES.client}</th>
                 <th>{COLUMN_TITLES.writtenAt}</th>
                 <th>{COLUMN_TITLES.repliedAt}</th>
+                <th>{COLUMN_TITLES.mode}</th>
                 <th>{COLUMN_TITLES.responsible}</th>
                 <th />
               </tr>
@@ -88,6 +91,13 @@ export default async function PanelSupportPage() {
                     ) : (
                       <span className="panel-status panel-status--warn">{CELL_TEXT.notAnswered}</span>
                     )}
+                  </td>
+                  <td>
+                    {/* Режим — кто сейчас отвечает клиенту. Незнакомое значение
+                        enum показываем как есть, а не прячем: это сигнал разъезда. */}
+                    <span className={`panel-status panel-status--mode-${item.handoffMode}`}>
+                      {lookupLabel(SUPPORT_MODE_LABELS, item.handoffMode) ?? item.handoffMode}
+                    </span>
                   </td>
                   <td className="panel-muted">{item.assignedOperatorName ?? '—'}</td>
                   <td>

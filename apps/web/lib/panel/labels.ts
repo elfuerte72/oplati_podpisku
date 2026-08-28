@@ -25,6 +25,7 @@
 
 import type {
   CardStatus,
+  ConversationMode,
   FREEKASSA_ORDER_STATUS,
   OrderStatus,
   PaymentStatus,
@@ -161,7 +162,20 @@ export const THREAD_ROLE_LABELS = {
   user: 'Клиент',
   operator: 'Оператор',
   assistant: 'Бот',
+  assistantAi: 'Помощник',
+  system: 'Служебное',
 } as const;
+
+/**
+ * Режим разговора поддержки — кто сейчас отвечает клиенту. Ключи — значения
+ * `conversations.handoff_mode`; типизировано по enum, чтобы новое значение
+ * ломало сборку, а не показывалось сырым.
+ */
+export const SUPPORT_MODE_LABELS = {
+  idle: 'Закрыт',
+  ai: 'Помощник',
+  operator: 'Оператор',
+} as const satisfies Record<ConversationMode, string>;
 
 /** Заголовки колонок таблиц. Один текст на одну сущность во всей панели. */
 export const COLUMN_TITLES = {
@@ -187,6 +201,7 @@ export const COLUMN_TITLES = {
   cardIssuedAt: 'Выпущена',
   writtenAt: 'Написал',
   repliedAt: 'Ответили',
+  mode: 'Режим',
   referralsCount: 'Привёл',
   accrued: 'Начислено',
   balance: 'Баланс',
@@ -221,6 +236,8 @@ export const ACTION_TITLES = {
   payoutRejectConfirm: 'Подтвердить отклонение',
   assign: 'Подключиться',
   reply: 'Отправить',
+  returnToAi: 'Вернуть помощнику',
+  closeSupport: 'Закрыть',
   toOrders: 'К заказам',
   allRequests: 'Все обращения',
   allPartners: 'Все партнёры',
@@ -362,6 +379,7 @@ export const SUPPORT_ERROR_TEXT: Record<string, string> = {
   ...SUPPORT_BLOCK_TEXT,
   send_failed: 'Telegram не принял сообщение — скорее всего, клиент заблокировал бота.',
   not_found: 'Диалог не найден.',
+  not_in_operator_mode: 'Разговор уже не у оператора — обновите страницу.',
   invalid_body: 'Слишком короткий или слишком длинный ответ.',
 };
 

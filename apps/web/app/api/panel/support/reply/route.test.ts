@@ -13,9 +13,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   readPanelActor: vi.fn(),
   getThread: vi.fn(),
-  appendMessage: vi.fn(async (..._args: unknown[]) => ({ id: 'm1' })),
-  sendMessage: vi.fn(async (..._args: unknown[]) => {}),
+  appendMessage: vi.fn<(...args: unknown[]) => Promise<{ id: string }>>(async () => ({ id: 'm1' })),
+  sendMessage: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
   captureException: vi.fn(),
+  // Захват разговора (тикет 07): по умолчанию удаётся. `transitioned: false`
+  // моделирует «чужой разговор» — условие «свободен или мой» не совпало.
+  transition: vi.fn<(...args: unknown[]) => Promise<{ transitioned: boolean; state: null }>>(
+    async () => ({ transitioned: true, state: null }),
+  ),
+  track: vi.fn(),
 }));
 
 vi.mock('@/lib/panel/session', () => ({ readPanelActor: h.readPanelActor }));
@@ -38,8 +44,11 @@ vi.mock('@oplati/db', async (importOriginal) => {
     getDb: () => ({}) as unknown,
     getSupportThreadForPanel: h.getThread,
     appendMessage: h.appendMessage,
+    transitionConversationMode: h.transition,
   };
 });
+
+vi.mock('@/lib/analytics/track', () => ({ trackServer: h.track }));
 
 vi.mock('@/lib/telegram/bot', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessage } }),
@@ -97,6 +106,9 @@ beforeEach(() => {
   h.appendMessage.mockReset();
   h.sendMessage.mockReset();
   h.captureException.mockClear();
+  h.transition.mockReset();
+  h.transition.mockImplementation(async () => ({ transitioned: true, state: null }));
+  h.track.mockClear();
   h.readPanelActor.mockImplementation(async () => actor('operator'));
   h.getThread.mockImplementation(async () => thread());
   h.appendMessage.mockImplementation(async () => ({ id: 'm1' }));
@@ -108,7 +120,9 @@ describe('POST /api/panel/support/reply — доступ', () => {
     const res = await POST(request({ conversationId: CONVERSATION_ID, text: 'Разобрались!' }));
 
     expect(res.status).toBe(200);
-    expect(h.sendMessage).toHaveBeenCalledWith('555', 'Разобрались!');
+    // Клиент видит префикс «Оператор: » (спека §7 п. 3) — он обязан отличать
+    // человека от помощника.
+    expect(h.sendMessage).toHaveBeenCalledWith('555', 'Оператор: Разобрались!');
   });
 
   it('не вошедший получает 401', async () => {
@@ -168,7 +182,9 @@ describe('POST /api/panel/support/reply — правила', () => {
     const stored = (h.appendMessage.mock.calls[0]?.[1] as { content: string }).content;
     expect(sent).not.toContain('5395020388220113');
     expect(sent).not.toContain('5395 0203 8822 0113');
-    expect(stored).toBe(sent);
+    // Клиенту — с префиксом «Оператор: » (спека §7 п. 3), в базе — без него:
+    // маскирование одинаковое, отличие только в свойстве доставки.
+    expect(sent).toBe(`Оператор: ${stored}`);
   });
 
   it('запись идёт ПОСЛЕ отправки', async () => {
@@ -274,5 +290,64 @@ describe('POST /api/panel/support/reply — правила', () => {
 
     expect(res.status).toBe(404);
     expect(h.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/panel/support/reply — ответ = захват (тикет 07)', () => {
+  it('ответ атомарно переводит разговор в режим оператора и закрепляет за собой', async () => {
+    await POST(request({ conversationId: CONVERSATION_ID, text: 'Готово' }));
+
+    expect(h.transition).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        conversationId: CONVERSATION_ID,
+        to: 'operator',
+        trigger: 'operator_reply',
+        assignedOperatorId: STAFF_ID,
+        onlyIfFreeOrOwnedBy: STAFF_ID,
+      }),
+    );
+  });
+
+  it('срок режима после ответа — 24 часа', async () => {
+    const before = Date.now();
+    await POST(request({ conversationId: CONVERSATION_ID, text: 'Готово' }));
+
+    const call = h.transition.mock.calls[0]?.[1] as { modeExpiresAt: Date } | undefined;
+    const ms = (call?.modeExpiresAt.getTime() ?? 0) - before;
+    expect(ms).toBeGreaterThan(23.9 * 3_600_000);
+    expect(ms).toBeLessThan(24.1 * 3_600_000);
+  });
+
+  it('РЕГРЕСС V11: повторный ответ в своём разговоре — touch, событие эскалации НЕ пишется', async () => {
+    h.transition.mockImplementation(async () => ({ transitioned: true, touched: true, state: null }));
+    await POST(request({ conversationId: CONVERSATION_ID, text: 'Ещё раз' }));
+
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.track).not.toHaveBeenCalled();
+  });
+
+  it('первый ответ — настоящий переход: событие эскалации пишется один раз', async () => {
+    await POST(request({ conversationId: CONVERSATION_ID, text: 'Готово' }));
+    expect(h.track).toHaveBeenCalledTimes(1);
+  });
+
+  it('захват не удался (чужой разговор) — 409, клиенту ничего не уходит', async () => {
+    h.transition.mockImplementation(async () => ({ transitioned: false, state: null }));
+
+    const res = await POST(request({ conversationId: CONVERSATION_ID, text: 'Готово' }));
+
+    expect(res.status).toBe(409);
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.appendMessage).not.toHaveBeenCalled();
+  });
+
+  it('в БД текст лежит БЕЗ префикса — префикс свойство доставки, не содержания', async () => {
+    await POST(request({ conversationId: CONVERSATION_ID, text: 'Готово' }));
+
+    expect(h.appendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ content: 'Готово', role: 'operator' }),
+    );
   });
 });

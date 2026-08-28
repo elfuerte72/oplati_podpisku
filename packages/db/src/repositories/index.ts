@@ -28,6 +28,22 @@ export {
 } from './conversations.ts';
 
 export {
+  countSupportAiReplies,
+  findExpiredOperatorConversations,
+  findLastStaffFollowUpAt,
+  findUnansweredSupportConversations,
+  getConversationState,
+  loadSupportHistory,
+  touchConversationMode,
+  transitionConversationMode,
+  type ConversationState,
+  type SupportConversationRef,
+  type TransitionConversationModeInput,
+  type TransitionConversationModeResult,
+  type UnansweredSupportConversation,
+} from './support.ts';
+
+export {
   appendMessage,
   deleteOldMessages,
   getLastAssistantMessageMeta,

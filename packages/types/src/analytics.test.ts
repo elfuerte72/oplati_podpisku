@@ -19,9 +19,9 @@ import {
 } from './analytics.ts';
 
 describe('реестр событий', () => {
-  it('16 собственных событий и 9 вех', () => {
-    expect(ANALYTICS_EVENT_NAMES).toHaveLength(16);
-    expect(Object.keys(ANALYTICS_MILESTONES)).toHaveLength(9);
+  it('21 собственное событие и 10 вех', () => {
+    expect(ANALYTICS_EVENT_NAMES).toHaveLength(21);
+    expect(Object.keys(ANALYTICS_MILESTONES)).toHaveLength(10);
   });
 
   it('имена событий и вех не пересекаются', () => {
@@ -209,7 +209,7 @@ describe('схема приёма', () => {
 describe('analyticsDictionaryRows', () => {
   it('отдаёт все события и вехи с описаниями', () => {
     const rows = analyticsDictionaryRows();
-    expect(rows).toHaveLength(16 + 9);
+    expect(rows).toHaveLength(21 + 10);
     for (const row of rows) {
       expect(row.description.length).toBeGreaterThan(20);
     }

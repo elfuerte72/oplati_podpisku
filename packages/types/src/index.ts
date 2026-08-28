@@ -357,6 +357,28 @@ export const requestHumanInput = z.object({
 });
 export type RequestHumanInput = z.infer<typeof requestHumanInput>;
 
+/**
+ * Входы read-only tools помощника поддержки (спека §6). Как и у продажных:
+ * границы валидируют сырой `tool_use.input` модели ДО обработчика.
+ *
+ * ⚠️ `userId` во входах НЕТ намеренно — его подставляет приложение из
+ * контекста. Модель, придумавшая чужой id, не должна иметь способа его
+ * передать.
+ */
+export const getMyOrdersInput = z.object({});
+export type GetMyOrdersInput = z.infer<typeof getMyOrdersInput>;
+
+export const getServiceInstructionsInput = z.object({
+  query: z.string().min(1).max(200),
+});
+export type GetServiceInstructionsInput = z.infer<typeof getServiceInstructionsInput>;
+
+/** `request_human` в поддержке: `orderId` не нужен, разговор один на клиента. */
+export const supportRequestHumanInput = z.object({
+  reason: z.string().min(1).max(2000),
+});
+export type SupportRequestHumanInput = z.infer<typeof supportRequestHumanInput>;
+
 export const handoffReason = z.enum([
   'user_requested',
   'ai_uncertain',
@@ -410,6 +432,78 @@ export const SUPPORT_REQUEST_META_KEY = 'support_request';
 
 /** Дошло ли обращение до оператора. Недоставленное — авария конфигурации. */
 export const SUPPORT_DELIVERED_META_KEY = 'support_delivered';
+
+/**
+ * Режим разговора (`conversations.handoff_mode`) — кто сейчас отвечает клиенту:
+ * `idle` — никто (свободный текст получает подсказку с кнопкой «Поддержка»),
+ * `ai` — открыта сессия помощника, `operator` — разговор передан человеку и
+ * помощник молчит.
+ *
+ * Литералы обязаны побайтово совпадать с `handoffModeEnum` в `@oplati/db`.
+ */
+export const conversationMode = z.enum(['idle', 'ai', 'operator']);
+export type ConversationMode = z.infer<typeof conversationMode>;
+
+/**
+ * `meta.source` служебной строки перехода режима (`role='system'`). Такие
+ * строки видит панель, клиенту они не отправляются и помощнику в историю не
+ * подаются — читателей трое и они в разных пакетах, поэтому строка одна.
+ */
+export const SUPPORT_STATE_META_SOURCE = 'support_state';
+
+/**
+ * `meta.source` ответа помощника поддержки. По нему же считается суточный кап
+ * ходов: счётчик живёт в БД, а не в Redis, чтобы у него не было fail-open.
+ */
+export const SUPPORT_AI_META_SOURCE = 'support_ai';
+
+/**
+ * Почему разговор ушёл к человеку. Пишется в meta служебной строки перехода и
+ * в аналитику (`support_escalated{trigger}`).
+ */
+export const supportEscalationTrigger = z.enum([
+  /** Жёсткий список слов, проверенный ДО вызова модели. */
+  'hard',
+  /** Модель сама позвала человека tool'ом `request_human`. */
+  'model',
+  /** Помощник недоступен (таймаут / 5xx после ретраев / 401). */
+  'ai_unavailable',
+  /** Выходной фильтр поймал запрещённое слово в ответе модели. */
+  'guard',
+]);
+export type SupportEscalationTrigger = z.infer<typeof supportEscalationTrigger>;
+
+/**
+ * Кто вызвал переход режима разговора — ключ служебной строки `support_state`
+ * (`meta.trigger`) и словаря подписей в панели. Список один на три пакета
+ * (модуль поддержки, роуты панели, крон): у `Record<string, string>` пропущенная
+ * подпись показывалась бы менеджеру сырым идентификатором, и никто бы этого не
+ * заметил до первого такого перехода на проде.
+ */
+export const conversationModeTrigger = z.enum([
+  // Эскалация к человеку — те же четыре, что в `supportEscalationTrigger`.
+  'hard',
+  'model',
+  'ai_unavailable',
+  'guard',
+  // Открытие сессии помощника: с какой двери вошёл клиент.
+  'button',
+  'command',
+  'deeplink',
+  // Закрытие сессии помощника.
+  'ttl',
+  'cap',
+  'start',
+  'client',
+  'ai_disabled',
+  // Панель и крон.
+  'operator_reply',
+  'operator_claim',
+  'operator_return',
+  'operator_close',
+  'auto',
+]);
+export type ConversationModeTrigger = z.infer<typeof conversationModeTrigger>;
 
 export type CardStatus = z.infer<typeof cardStatus>;
 

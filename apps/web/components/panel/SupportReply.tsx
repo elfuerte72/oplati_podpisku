@@ -28,9 +28,18 @@ function errorText(code: string | undefined): string {
 export function SupportReply({
   conversationId,
   needsAssign,
+  canReply = true,
+  canReturn = false,
+  canClose = false,
 }: {
   conversationId: string;
   needsAssign: boolean;
+  /** Поле ответа. `false` — только кнопки переходов: ответить нельзя, отпустить можно. */
+  canReply?: boolean;
+  /** «Вернуть помощнику» — только ведущему и админу, только в режиме оператора. */
+  canReturn?: boolean;
+  /** «Закрыть» — в любом режиме оператора. */
+  canClose?: boolean;
 }) {
   const router = useRouter();
   const [text, setText] = useState('');
@@ -55,6 +64,27 @@ export function SupportReply({
     const releaseBusy = markPanelBusy();
     try {
       const { ok, data } = await post('/api/panel/support/assign', { conversationId });
+      if (!ok) {
+        setError(errorText((data as { error?: string } | null)?.error));
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError(FALLBACK_ERROR_TEXT);
+    } finally {
+      setBusy(false);
+      releaseBusy();
+    }
+  }
+
+  // Обе операции — простой POST без тела ввода: решение уже принято нажатием.
+  async function transition(url: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const releaseBusy = markPanelBusy();
+    try {
+      const { ok, data } = await post(url, { conversationId });
       if (!ok) {
         setError(errorText((data as { error?: string } | null)?.error));
         return;
@@ -98,7 +128,7 @@ export function SupportReply({
 
   return (
     <>
-      {needsAssign ? (
+      {canReply && needsAssign ? (
         <p className="panel-muted" style={{ marginBottom: 8 }}>
           Диалог свободен. Подключитесь, чтобы коллеги видели, что им занимаются.{' '}
           <button type="button" className="panel-button" onClick={assign} disabled={busy}>
@@ -107,31 +137,61 @@ export function SupportReply({
         </p>
       ) : null}
 
-      <form onSubmit={reply}>
-        <textarea
-          className="panel-input"
-          style={{ display: 'block', width: '100%', minHeight: 96 }}
-          value={text}
-          minLength={SUPPORT_REPLY_MIN}
-          maxLength={SUPPORT_REPLY_MAX}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Ответ уйдёт клиенту от имени бота"
-          required
-        />
-        {error ? (
-          <p className="panel-error" style={{ marginTop: 8 }}>
-            {error}
-          </p>
-        ) : null}
-        {note ? (
-          <p className="panel-error" style={{ marginTop: 8 }}>
-            {note}
-          </p>
-        ) : null}
-        <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
-          {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
-        </button>
-      </form>
+      {canReply ? (
+        <form onSubmit={reply}>
+          <textarea
+            className="panel-input"
+            style={{ display: 'block', width: '100%', minHeight: 96 }}
+            value={text}
+            minLength={SUPPORT_REPLY_MIN}
+            maxLength={SUPPORT_REPLY_MAX}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Ответ уйдёт клиенту от имени бота"
+            required
+          />
+          <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
+            {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
+          </button>
+        </form>
+      ) : null}
+
+      {/* Ошибка — вне формы: отказ «Вернуть»/«Закрыть» обязан быть виден и там,
+          где поля ответа нет. */}
+      {error ? (
+        <p className="panel-error" style={{ marginTop: 8 }}>
+          {error}
+        </p>
+      ) : null}
+      {note ? (
+        <p className="panel-error" style={{ marginTop: 8 }}>
+          {note}
+        </p>
+      ) : null}
+
+      {canReturn || canClose ? (
+        <p className="panel-muted" style={{ marginTop: 12 }}>
+          {canReturn ? (
+            <button
+              type="button"
+              className="panel-button panel-button--secondary"
+              onClick={() => transition('/api/panel/support/return')}
+              disabled={busy}
+            >
+              {ACTION_TITLES.returnToAi}
+            </button>
+          ) : null}{' '}
+          {canClose ? (
+            <button
+              type="button"
+              className="panel-button panel-button--secondary"
+              onClick={() => transition('/api/panel/support/close')}
+              disabled={busy}
+            >
+              {ACTION_TITLES.closeSupport}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
     </>
   );
 }

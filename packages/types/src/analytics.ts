@@ -189,6 +189,45 @@ export const ANALYTICS_EVENTS = {
     origin: 'server',
     props: ['surface', 'stage'],
   },
+  support_session_started: {
+    title: 'Открыл сессию помощника поддержки',
+    description:
+      'Клиент вошёл в поддержку кнопкой, командой /support или ссылкой — открылась сессия помощника. props.surface: button | command | deeplink.',
+    channel: 'bot',
+    origin: 'server',
+    props: ['surface'],
+  },
+  support_ai_reply: {
+    title: 'Помощник ответил клиенту',
+    description:
+      'Один ход помощника поддержки. props.count — сколько инструментов он вызвал; props.gate=guarded означает, что ответ погасил выходной фильтр и клиент увидел нейтральную фразу вместо него.',
+    channel: 'bot',
+    origin: 'server',
+    props: ['count', 'gate'],
+  },
+  support_escalated: {
+    title: 'Разговор передан оператору',
+    description:
+      'Разговор перешёл к человеку. props.stage — триггер: hard (жёсткое слово), model (решение модели), ai_unavailable (авария помощника), guard (выходной фильтр) — это помощник передал сам; operator_reply — оператор ответил из панели и тем перехватил разговор у помощника (или из idle).',
+    channel: 'bot',
+    origin: 'server',
+    props: ['stage'],
+  },
+  support_returned_to_ai: {
+    title: 'Оператор вернул разговор помощнику',
+    description: 'Оператор нажал «Вернуть помощнику» в панели — рутину снова ведёт бот.',
+    channel: 'bot',
+    origin: 'server',
+    props: [],
+  },
+  support_session_closed: {
+    title: 'Разговор поддержки завершён',
+    description:
+      'props.stage — кем и почему: client (кнопка «Завершить»), operator (закрыл оператор), ttl (30 минут молчания), auto (крон закрыл через сутки после ответа оператора), start (клиент ушёл в /start), cap (исчерпан суточный лимит ходов).',
+    channel: 'bot',
+    origin: 'server',
+    props: ['stage'],
+  },
 } as const satisfies Record<string, AnalyticsEventSpec>;
 
 export type AnalyticsEventName = keyof typeof ANALYTICS_EVENTS;
@@ -254,6 +293,12 @@ export const ANALYTICS_MILESTONES = {
     title: 'Подтвердил, что подписка работает',
     description: 'Довёл до конца: подписка оплачена нашей картой на сайте сервиса.',
     source: "order_events.event_type = 'subscription_activated'",
+  },
+  handoff_requested: {
+    title: 'Позвал оператора из продажного диалога',
+    description:
+      'AI-агент продаж вызвал `request_human` по заказу. С 2026-08-27 это ведёт в общий механизм эскалации поддержки (переход разговора к оператору + уведомление персонала); строка в `order_events` — аудит-след по заказу. Телеметрией не дублируется.',
+    source: "order_events.event_type = 'handoff_requested'",
   },
   payment_issue: {
     title: 'Пожаловался на оплату',

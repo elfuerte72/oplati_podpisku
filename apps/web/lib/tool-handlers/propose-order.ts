@@ -19,6 +19,7 @@ import { childLogger } from '../logger.ts';
 import { orderFloorRub } from '../payments/gateway.ts';
 import { roundUpToWholeRubles } from '../pricing.ts';
 import { resolveUsdtRubRate } from '../rapira/rates.ts';
+import { PRICE_LOCK_TTL_HOURS } from '@/lib/pricing';
 
 /**
  * Tool `propose_order`. Считает итоговую сумму в RUB:
@@ -48,10 +49,6 @@ import { resolveUsdtRubRate } from '../rapira/rates.ts';
  */
 
 const log = childLogger('tool.propose_order');
-// Фиксация цены: снапшот курса живёт 2 часа (решение владельца 2026-07-18;
-// было 24 — суточный односторонний опцион на курс за счёт маржи). Протухший
-// черновик хоронит cron expire-payments / гейт payments-create (H-2).
-const TTL_HOURS = 2;
 
 /**
  * Типизированные ошибки бизнес-границ. Агентский tool-loop передаёт модели
@@ -338,7 +335,7 @@ export async function proposeOrder(input: {
   // чтобы 95.2345 RUB/USDT хранился как 952345. Это совместимо с `usdt_rub_rate_kopecks integer`.
   const usdtRubRateKopecks = Math.round(rate * 10_000);
 
-  const expiresAt = new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + PRICE_LOCK_TTL_HOURS * 60 * 60 * 1000);
 
   const order = await createDraftOrder(
     db,

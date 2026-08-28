@@ -27,6 +27,10 @@ import { toAgentHistory } from '@/lib/chat/history';
 import { childLogger } from '@/lib/logger';
 import { createToolHandlers } from '@/lib/tool-handlers';
 
+import { supportPorts } from '@/lib/support/adapters';
+import { isSupportAiEnabled, supportRequestContext } from './support-session';
+import { escalate } from '@/lib/support/session';
+
 import { buildConfirmKeyboard } from './catalog-callbacks';
 import { safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely, splitForTelegram, TELEGRAM_MESSAGE_LIMIT, withTypingIndicator } from './send';
@@ -163,6 +167,23 @@ export async function runAgentDialog(
         const toolHandlers = createToolHandlers({
           userId: ctx.userId,
           conversationId: ctx.conversationId,
+          // «Позвать оператора» у продажного агента — тот же механизм, что у
+          // помощника поддержки: переход разговора в `operator` + уведомление
+          // персонала. Иначе включение `BOT_AI_ENABLED` оживило бы путь, где
+          // команда никого не зовёт.
+          // ⚠️ Только при включённом помощнике: без него режим `operator`
+          // некому снять — панельные кнопки есть, но клиент до них не
+          // достучится, и одна команда модели запирала бы разговор навсегда.
+          ...(isSupportAiEnabled()
+            ? {
+                escalateToHuman: async (reason: string) => {
+                  const ports = supportPorts(
+                    supportRequestContext(ctx, chatId, update.update_id, update.message?.from),
+                  );
+                  await escalate(ports, { trigger: 'model', reason });
+                },
+              }
+            : {}),
         });
         return runAgent(agentHistory, {
           userId: ctx.userId,

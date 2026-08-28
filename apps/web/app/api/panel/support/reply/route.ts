@@ -1,14 +1,17 @@
 import * as Sentry from '@sentry/nextjs';
 import { z } from 'zod';
 
-import { appendMessage, getDb, getSupportThreadForPanel } from '@oplati/db';
+import { appendMessage, getDb, getSupportThreadForPanel, transitionConversationMode } from '@oplati/db';
 
 import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
 import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { SUPPORT_REPLY_MAX, SUPPORT_REPLY_MIN, supportReplyBlockReason } from '@/lib/panel/support';
+import { operatorDeadline } from '@/lib/support/session';
+import { OPERATOR_REPLY_PREFIX } from '@/lib/support/texts';
 import { getBot } from '@/lib/telegram/bot';
 import { redactCardNumbers } from '@/lib/telegram/templates';
+import { trackServer } from '@/lib/analytics/track';
 
 /**
  * POST /api/panel/support/reply — ответ клиенту из панели (тикет 10, спека §6.3).
@@ -23,6 +26,11 @@ import { redactCardNumbers } from '@/lib/telegram/templates';
  * Порядок «отправили → записали» намеренный: строка в переписке — это ЗАПИСЬ
  * произошедшего. Записать раньше отправки значило бы показать следующему
  * менеджеру ответ, которого клиент не получал, и тот не стал бы отвечать.
+ *
+ * С тикета 07 ответ = ЗАХВАТ: разговор атомарно переходит в режим оператора
+ * (условие «свободен или мой»), помощник замолкает, срок режима — 24 часа.
+ * Клиент видит ответ с префиксом «Оператор: », в БД текст лежит БЕЗ префикса:
+ * префикс — свойство доставки, а не содержания.
  */
 
 export const dynamic = 'force-dynamic';
@@ -73,6 +81,23 @@ export async function POST(req: Request): Promise<Response> {
   const telegramId = thread.client.telegramId;
   if (!telegramId) return Response.json({ ok: false, error: 'no_telegram' }, { status: 409 });
 
+  // Захват ДО отправки: если разговор не в режиме оператора — перевести и
+  // закрепить за собой атомарно. Чужой не перебивается (409, как и раньше);
+  // проигравшему честно говорим, а не молча шлём второй ответ одному клиенту.
+  const claim = await transitionConversationMode(db, {
+    conversationId: body.conversationId,
+    from: ['idle', 'ai', 'operator'],
+    to: 'operator',
+    trigger: 'operator_reply',
+    modeExpiresAt: operatorDeadline(new Date()),
+    assignedOperatorId: guard.actor.id,
+    onlyIfFreeOrOwnedBy: guard.actor.id,
+  });
+  if (!claim.transitioned) {
+    log.warn({ event: 'panel.support.claim_lost', staffId: guard.actor.id });
+    return Response.json({ ok: false, error: 'assigned_to_other' }, { status: 409 });
+  }
+
   // Маскируем ДО отправки: и в Telegram, и в базу уходит один и тот же текст,
   // иначе клиент видит номер карты, которого в истории нет.
   const text = redactCardNumbers(body.text);
@@ -91,7 +116,9 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   try {
-    await bot.api.sendMessage(telegramId, text);
+    // Префикс — только в доставке. Клиент обязан отличать человека от
+    // помощника (спека §7 п. 3), а в БД лежит то, что написал оператор.
+    await bot.api.sendMessage(telegramId, `${OPERATOR_REPLY_PREFIX}${text}`);
   } catch (err) {
     // Чаще всего — клиент заблокировал бота. Менеджер обязан это увидеть, а не
     // считать, что ответил.
@@ -118,6 +145,17 @@ export async function POST(req: Request): Promise<Response> {
   // Ответ записан — «без ответа» изменилось; счётчик в меню обязан увидеть это
   // на ближайшем `router.refresh()`, а не через срок памятки.
   invalidateMenuCounts('support');
+
+  // Событие — только при РЕАЛЬНОМ переходе к оператору. Третий ответ подряд
+  // в своём разговоре — это touch срока, а не третья эскалация в воронке.
+  if (!claim.touched) {
+    trackServer({
+      name: 'support_escalated',
+      telegramId,
+      props: { stage: 'operator_reply' },
+      eventKey: `panel-reply-${body.conversationId}-${Date.now()}`,
+    });
+  }
 
   log.info({ event: 'panel.support.replied', staffId: guard.actor.id });
   return Response.json({ ok: true });

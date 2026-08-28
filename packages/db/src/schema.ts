@@ -33,7 +33,14 @@ export const staffRoleEnum = pgEnum('staff_role', [
   'admin',
 ]);
 
-export const handoffModeEnum = pgEnum('handoff_mode', ['ai', 'operator']);
+/**
+ * Кто отвечает клиенту в разговоре. `idle` добавлен ОТДЕЛЬНОЙ миграцией
+ * (правило CLAUDE.md про enum) и стал дефолтом: до появления помощника поле
+ * никто не читал, и дефолт `ai` означал бы «с новым клиентом уже говорит
+ * помощник». Значения обязаны побайтово совпадать с `conversationMode`
+ * в `@oplati/types`.
+ */
+export const handoffModeEnum = pgEnum('handoff_mode', ['idle', 'ai', 'operator']);
 
 export const messageRoleEnum = pgEnum('message_role', [
   'user',
@@ -219,7 +226,15 @@ export const conversations = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     channel: userChannelEnum('channel').notNull(),
-    handoffMode: handoffModeEnum('handoff_mode').default('ai').notNull(),
+    handoffMode: handoffModeEnum('handoff_mode').default('idle').notNull(),
+    /**
+     * Когда текущий режим сам вернётся в `idle`, если никто не напишет.
+     * Одно значение на оба режима: 30 минут молчания в `ai`, 24 часа после
+     * ответа оператора в `operator`. `null` в `operator` — ждём ответа
+     * человека, и такой разговор не гаснет НИКОГДА (неотвеченное обращение
+     * потерять нельзя).
+     */
+    modeExpiresAt: timestamp('mode_expires_at', { withTimezone: true }),
     assignedOperatorId: uuid('assigned_operator_id').references(() => staff.id),
     telegramTopicId: integer('telegram_topic_id'), // id форум-топика в группе операторов
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -228,6 +243,11 @@ export const conversations = pgTable(
   (t) => ({
     userIdx: index('conversations_user_id_idx').on(t.userId),
     operatorIdx: index('conversations_operator_id_idx').on(t.assignedOperatorId),
+    // Крон хозяйства поддержки бежит раз в 15 минут и ищет разговоры с
+    // истёкшим сроком. `conversations` ретеншеном не чистится и растёт вместе
+    // с числом клиентов навсегда — без индекса это seq scan по всей истории
+    // каждые 15 минут в том же процессе, что принимает вебхуки платежей.
+    modeExpiresIdx: index('conversations_mode_expires_at_idx').on(t.modeExpiresAt),
   }),
 ).enableRLS();
 
