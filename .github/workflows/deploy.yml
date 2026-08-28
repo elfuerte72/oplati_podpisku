@@ -395,7 +395,9 @@ jobs:
             # пересобирался с 2026-07-30 и жил на образе последнего РУЧНОГО пуша в
             # dev (замечено 2026-08-28: `startedAt` от 19.08 при dev = main).
             # Исключение из правила — workflow_dispatch: запускаем сборку dev явно.
-            if gh workflow run deploy.yml --ref dev >/dev/null; then
+            # `--repo` обязателен: у этого job'а нет checkout, и без него gh
+            # падает на «not a git repository» (первый прогон 2026-08-28).
+            if gh workflow run deploy.yml --ref dev --repo "$REPO" >/dev/null; then
               echo "Запущен деплой dev-стенда по выровненной ветке."
             else
               echo "::warning::dev выровнена, но её деплой не запустился — запустить вручную: gh workflow run deploy.yml --ref dev"
