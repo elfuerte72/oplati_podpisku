@@ -9,6 +9,7 @@ import { toAgentHistory } from '../chat/history';
 import { matchHardTrigger } from './hard-triggers';
 import { maskForModel, maskForStaff } from './mask';
 import { guardModelOutput } from './output-guard';
+import { toTelegramPlainText } from './plain-text';
 import type {
   ConversationSnapshot,
   SupportCloseReason,
@@ -332,7 +333,8 @@ export async function handleSupportMessage(
     return await escalate(ports, { trigger: 'ai_unavailable', reason: null, now });
   }
 
-  const text = reply.text.trim();
+  // Разметку снимаем ДО фильтра, доставки и записи: в БД — то, что ушло клиенту.
+  const text = toTelegramPlainText(reply.text).trim();
   if (!text) {
     // Пустой ответ — это молчание бота, которое читается как поломка. Отдаём
     // клиента человеку: сказать нам нечего.
