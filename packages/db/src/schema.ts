@@ -14,9 +14,14 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  smallint,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import { DEFAULT_REFERRAL_RATE_L1_BPS } from '@oplati/types';
+import {
+  DEFAULT_REFERRAL_RATE_L1_BPS,
+  FUNNEL_ONCE_PER_USER_KINDS,
+  FUNNEL_SURVEY_KINDS,
+} from '@oplati/types';
 import type {
   OrderParameters,
   PricingPolicy,
@@ -129,6 +134,11 @@ export const users = pgTable(
     // троттлингом (см. touchUserLastSeenIp), nullable — у старых строк его нет.
     lastSeenIp: text('last_seen_ip'),
     lastSeenIpAt: timestamp('last_seen_ip_at', { withTimezone: true }),
+    // Воронка обратной связи: клиент нажал «Больше не напоминать» — исходящие
+    // сообщения воронки к нему не уходят НИКОГДА (проверка в привратнике
+    // apps/web/lib/funnel/gate.ts). Транзакционные сообщения (счета, реквизиты
+    // карты, статусы платежа) поле не читают — это его покупка, а не маркетинг.
+    funnelOptOutAt: timestamp('funnel_opt_out_at', { withTimezone: true }),
     // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
     // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
     // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —
@@ -899,5 +909,100 @@ export const attachments = pgTable(
     // без индексов сканирует attachments целиком.
     orderIdx: index('attachments_order_id_idx').on(t.orderId),
     messageIdx: index('attachments_message_id_idx').on(t.messageId),
+  }),
+).enableRLS();
+
+// ─── Воронка обратной связи и удержания ───────────────────────────────────
+// Спека `.scratch/retention-funnel/`. Обе таблицы — user-данные: RLS
+// deny-by-default без позитивных политик (инвариант 8), доступ только через
+// service_role/прямое подключение.
+
+/**
+ * Список kind'ов в предикат частичного индекса: `'a', 'b'`. Значения — из
+ * констант @oplati/types (zod-enum, не пользовательский ввод), поэтому
+ * `sql.raw` безопасен; интерполяция параметрами здесь не годится — предикат
+ * индекса должен быть литеральным DDL.
+ */
+function sqlKindList(kinds: readonly string[]): ReturnType<typeof sql.raw> {
+  return sql.raw(kinds.map((k) => `'${k}'`).join(', '));
+}
+
+/**
+ * Журнал отправленных сообщений воронки. Он же — атомарный claim («занять
+ * право на отправку» = INSERT с ON CONFLICT DO NOTHING, ноль строк = не шлём)
+ * и источник счётчиков бюджета (≤1/сутки, ≤3/неделя) в привратнике.
+ *
+ * Дедуп держат частичные UNIQUE, а не выборки джобы: окна выборок ШИРЕ шага
+ * крона (но-бэкфилл), и без claim'а два одновременных прогона слали бы одно
+ * и то же дважды (прецедент B-2 у напоминания о продлении).
+ */
+export const funnelSends = pgTable(
+  'funnel_sends',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Литералы — funnelKind в @oplati/types; text без pg-enum: предикаты
+    // частичных индексов ниже перечисляют kind'ы строками, и enum добавил бы
+    // второй источник тех же литералов в БД.
+    kind: text('kind').notNull(),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'cascade' }),
+    sentAt: timestamp('sent_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // Счётчики бюджета привратника: count по (user, окно) на каждую отправку.
+    userSentIdx: index('funnel_sends_user_id_sent_at_idx').on(t.userId, t.sentAt),
+    // Одноразовые сообщения — РОВНО один раз на клиента за жизнь. Предикат
+    // собирается из FUNNEL_ONCE_PER_USER_KINDS (@oplati/types) — живого
+    // зеркала списка нет; текст обязан совпадать со снимком миграции 0042,
+    // иначе db:generate увидит дрейф.
+    oncePerUserIdx: uniqueIndex('funnel_sends_once_per_user_idx')
+      .on(t.userId, t.kind)
+      .where(sql`${t.kind} IN (${sqlKindList(FUNNEL_ONCE_PER_USER_KINDS)})`),
+    // Оценка повторяется (не чаще раза в 90 дней — правило в привратнике),
+    // поэтому в одноразовый индекс не входит; её claim атомарен ПО ЗАКАЗУ.
+    ratingOncePerOrderIdx: uniqueIndex('funnel_sends_rating_once_per_order_idx')
+      .on(t.orderId)
+      .where(sql`${t.kind} = 'order_rating' AND ${t.orderId} IS NOT NULL`),
+  }),
+).enableRLS();
+
+/**
+ * Ответы клиентов на сообщения воронки: ключ нажатой кнопки-причины
+ * (`answer`) или оценка 1–5 (`score`). Повторное нажатие не дублирует и не
+ * перезаписывает — первый клик побеждает (частичные UNIQUE + ON CONFLICT
+ * DO NOTHING в recordClientFeedback).
+ */
+export const clientFeedback = pgTable(
+  'client_feedback',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id').references(() => orders.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    score: smallint('score'),
+    answer: text('answer'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('client_feedback_user_id_idx').on(t.userId),
+    // Выборка реферального касания: kind='order_rating' AND score>=4 AND
+    // created_at в окне — по вечно растущей таблице раз в 15 минут.
+    kindTimeIdx: index('client_feedback_kind_created_at_idx').on(t.kind, t.createdAt),
+    // Опросы одноразовые (сообщение уходит раз на клиента) → и ответ один.
+    surveyOncePerUserIdx: uniqueIndex('client_feedback_survey_once_per_user_idx')
+      .on(t.userId, t.kind)
+      .where(sql`${t.kind} IN (${sqlKindList(FUNNEL_SURVEY_KINDS)})`),
+    // Двойной клик по звезде — одна строка; первый клик побеждает.
+    ratingOncePerOrderIdx: uniqueIndex('client_feedback_rating_once_per_order_idx')
+      .on(t.orderId)
+      .where(sql`${t.kind} = 'order_rating' AND ${t.orderId} IS NOT NULL`),
+    scoreRange: check(
+      'client_feedback_score_range',
+      sql`${t.score} IS NULL OR (${t.score} >= 1 AND ${t.score} <= 5)`,
+    ),
   }),
 ).enableRLS();

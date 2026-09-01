@@ -25,10 +25,11 @@ import {
   claimSilentHint,
   releaseSilentHint,
 } from './silent-hint';
+import { handleFunnelCallback } from './funnel-callbacks';
 import { handleStartCommand } from './start-menu';
+import { openSupportEntry } from './support-entry';
 import {
   extractSupportInline,
-  handleSupportCallback,
   handleSupportCommand,
   tryHandlePendingSupport,
 } from './support-flow';
@@ -587,20 +588,17 @@ async function handleCallbackQuery(
         }
         return;
       }
-      if (isSupportAiEnabled()) {
-        const ctx = await resolveCallbackContext(cb, updateId);
-        if (ctx) {
-          const opened = await openSupportFromBot(ctx, chatId, updateId, cb.from, 'button');
-          if (opened.status === 'already_open') {
-            await sendSafely(chatId, SUPPORT_ALREADY_OPEN, updateId);
-          }
-          if (opened.status !== 'unavailable') return;
-        }
-        // Состояние не прочитать — сегодняшний флоу (он умеет без него).
-      }
-      await handleSupportCallback(cb, chatId, updateId);
+      // Общий вход по кнопке (support-entry.ts): им же пользуется «Другое»
+      // в опросах воронки — дверь в поддержку одна (правило В3).
+      await openSupportEntry(cb, chatId, updateId);
       return;
     }
+    case 'fb':
+      // Воронка обратной связи: ответы на опросы, оценка, отписка. Работает
+      // независимо от BOT_AI_ENABLED — это кнопки под сообщениями воронки,
+      // а не каталог.
+      await handleFunnelCallback(cb, chatId, parts, updateId);
+      return;
     case 'vpn':
       // VPN Оплатишки: выдача/перевыпуск ссылки-подписки Remnawave.
       if (parts[1] === 'refresh') {

@@ -96,3 +96,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Месячная прогрессия партнёрских статусов (1-е число, 02:00 UTC)
 0 2 1 * *    root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/referral-rollup 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
+
+# Воронка обратной связи: опросы после протухшего заказа и /start без заказа,
+# оценка после покупки, реферальное касание (каждые 15 мин, :11 — мимо
+# expire-payments и support-housekeeping). За флагом RETENTION_FUNNEL_ENABLED;
+# тихие часы и бюджет держит привратник в коде, не расписание.
+11-59/15 * * * * root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/funnel 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err

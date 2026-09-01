@@ -197,6 +197,19 @@ export {
   type PayoutStatus,
 } from './referral-payout.ts';
 
+// ─── Воронка обратной связи и удержания ───────────────────────────────────
+
+export {
+  funnelKind,
+  FUNNEL_ONCE_PER_USER_KINDS,
+  FUNNEL_SURVEY_KINDS,
+  expiredSurveyAnswer,
+  startSurveyAnswer,
+  type FunnelKind,
+  type ExpiredSurveyAnswer,
+  type StartSurveyAnswer,
+} from './funnel.ts';
+
 // ─── Поведенческая аналитика ──────────────────────────────────────────────
 
 export {

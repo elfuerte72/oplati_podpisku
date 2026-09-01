@@ -303,3 +303,21 @@ export {
   VCC_SNAPSHOT_PROVIDER,
   type VccBalanceSnapshot,
 } from './vcc-balance.ts';
+
+export {
+  getFunnelUserState,
+  setFunnelOptOut,
+  hasActiveOperatorConversation,
+  countFunnelSendsSince,
+  getLastFunnelSendAt,
+  claimFunnelSend,
+  recordClientFeedback,
+  findExpiredOrdersForSurvey,
+  findFreshUsersWithoutOrders,
+  findCompletedOrdersForRating,
+  findRatedUsersForReferralNudge,
+  type FunnelUserState,
+  type FunnelWindow,
+  type ExpiredOrderForSurvey,
+  type CompletedOrderForRating,
+} from './funnel.ts';

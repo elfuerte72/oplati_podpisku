@@ -9,6 +9,7 @@ import {
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { isValidLuhn } from '@oplati/types';
+import type { ExpiredSurveyAnswer, StartSurveyAnswer } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 // Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
@@ -84,6 +85,13 @@ export const START_CHANNEL_BUTTON = '📣 Telegram-канал';
 
 /** Публичный Telegram-канал Оплатишки (создан 2026-07-10). */
 export const TELEGRAM_CHANNEL_URL = telegramBotLink('ooplatishka');
+
+/**
+ * Подпись url-кнопки «Отзывы» в стартовом меню (живой чат отзывов). Адрес —
+ * из env `REVIEWS_CHAT_URL`; не задан → кнопка не рендерится (fail-quiet,
+ * прецедент — необязательные кнопки меню).
+ */
+export const START_REVIEWS_BUTTON = '💬 Отзывы';
 
 /** Подпись url-кнопки «Сайт» в стартовом меню (открывает главный сайт Оплатишки). */
 export const START_SITE_BUTTON = '🌐 Сайт';
@@ -678,3 +686,115 @@ export function isWithinOperatorHours(now: Date = new Date()): boolean {
   if (Number.isNaN(hour)) return true;
   return hour >= OPERATOR_HOURS.fromHour && hour < OPERATOR_HOURS.toHour;
 }
+
+// ─── Воронка обратной связи и удержания ───────────────────────────────────
+//
+// Все клиентские строки воронки живут ЗДЕСЬ (тикет 07): голос маскота, «ты»,
+// инлайновых текстов в джобах нет. Чек-лист домена: страна выпуска карты не
+// называется («картой», не «американской»); цифры и сроки — только из кода
+// или env; без обещаний; в приглашении к отзыву тема вознаграждений не
+// существует; слово «холд» занято антифрод-проверкой банка и здесь не
+// используется.
+
+/** Кнопка отписки под КАЖДЫМ сообщением воронки (история 6 спеки). */
+export const FUNNEL_OPTOUT_BUTTON = '🔕 Больше не напоминать';
+
+/** Ответ на нажатие «Больше не напоминать». */
+export const FUNNEL_OPTOUT_DONE_TEXT =
+  'Понял, с напоминаниями больше не пишу. Всё нужное — в меню /start.';
+
+/** Благодарность за ответ на опрос (msg1/msg2, любые кнопки кроме «Другое»). */
+export const FUNNEL_THANKS_TEXT = 'Спасибо! Теперь понятнее, что улучшать.';
+
+/** msg1: опрос после протухшего заказа — «что помешало оплатить?». */
+export const EXPIRED_SURVEY_TEXT =
+  'Похоже, оплата не сложилась. Подскажешь, что помешало? Ответ — в одну кнопку.';
+
+/**
+ * Подписи кнопок-причин msg1; ключи — expiredSurveyAnswer в @oplati/types.
+ * ⚠️ Формы гендерно-нейтральные («Непонятно», не «Не разобрался»): прошедшее
+ * время в русском выдаёт род, а пол клиента боту неизвестен.
+ */
+export const EXPIRED_SURVEY_ANSWER_LABELS = {
+  price: '💸 Дорого',
+  howto: '🤔 Непонятно, как оплатить',
+  changed: '🙅 Уже неактуально',
+  noservice: '🔍 Нет нужного сервиса',
+  other: '✍️ Другое',
+} as const satisfies Record<ExpiredSurveyAnswer, string>;
+
+/** msg2: опрос «/start без заказа» — «нашёл, что искал?» (нейтральная форма). */
+export const START_SURVEY_TEXT =
+  'Привет! Вижу, до заказа дело не дошло. Всё нашлось — или чего-то не хватило?';
+
+/** Подписи кнопок msg2; ключи — startSurveyAnswer в @oplati/types. */
+export const START_SURVEY_ANSWER_LABELS = {
+  thinking: '🤔 Ещё думаю',
+  noservice: '🔍 Нет нужного сервиса',
+  unclear: '❓ Непонятно, как это работает',
+  other: '✍️ Другое',
+} as const satisfies Record<StartSurveyAnswer, string>;
+
+/**
+ * msg3: оценка после покупки. Имя сервиса — из заказа; для custom-описаний —
+ * нейтральная форма без названия (описание писал клиент свободным текстом,
+ * возвращать его в лоб странно). Шкала 1–5 — механика кнопок `fb:rate:1..5`.
+ */
+export function buildOrderRatingText(serviceLabel: string | null): string {
+  const subject = serviceLabel ? `${serviceLabel} картой` : 'подписку картой';
+  return `Получилось оплатить ${subject}? Оцени от 1 до 5 — мне это очень поможет.`;
+}
+
+/** Ответ на оценку 4–5, когда чат отзывов настроен (кнопка-ссылка отдельно). */
+export const RATING_HIGH_TEXT =
+  'Ура, спасибо! Если есть минутка — расскажи о своём опыте в чате отзывов: другим это помогает решиться.';
+
+/** Ответ на оценку 4–5 без настроенного чата отзывов (REVIEWS_CHAT_URL пуст). */
+export const RATING_HIGH_TEXT_NO_LINK = 'Ура, спасибо! Рад, что всё получилось.';
+
+/** Подпись url-кнопки чата отзывов под ответом на оценку 4–5. */
+export const RATING_REVIEWS_BUTTON = '💬 Оставить отзыв';
+
+/** Ответ на оценку 1–3: сразу дверь в поддержку, без просьбы об отзыве. */
+export const RATING_LOW_TEXT =
+  'Спасибо за честность. Расскажи, что пошло не так, — нажми «Поддержка», я передам твой вопрос человеку.';
+
+/**
+ * DM персоналу при оценке 1–3 (уходит через notifyStaff, фолбэк — владельцу).
+ *
+ * Ссылка — раздел заказа в панели. При заданном `PANEL_HOST` — абсолютная
+ * (Telegram не делает кликабельным голый путь; ревью CodeRabbit PR #182),
+ * и именно с хоста ПАНЕЛИ: публичный домен на /admin отдаёт 404 (host-гейт
+ * `lib/panel/host.ts`), так что `deploymentBaseUrl()` здесь дал бы мёртвую
+ * ссылку. Без `PANEL_HOST` — прежний относительный путь, как у алёрта
+ * застрявшего заказа (poll-payment).
+ */
+export function buildLowRatingStaffAlert(input: {
+  score: number;
+  shortId: string;
+  panelHost?: string | null;
+}): string {
+  const orderPath = `/admin/orders/${input.shortId}`;
+  const link = input.panelHost ? `https://${input.panelHost}${orderPath}` : orderPath;
+  return (
+    `Клиент поставил ${input.score}/5 заказу ${input.shortId} — нужен взгляд человека: ` +
+    `${link}. Если напишет в поддержку — обращение придёт как обычно.`
+  );
+}
+
+/**
+ * msg4: реферальное касание после оценки ≥4. Цифры ставки НЕ называем — ставка
+ * живёт в effectiveReferralRates, и зашитый процент разъехался бы с ней
+ * (инвариант 10: зеркал не плодим). Ссылка — та же, что отдаёт кабинет.
+ */
+export function buildReferralNudgeText(link: string): string {
+  return (
+    'Кстати, у меня есть партнёрская программа: поделись ссылкой с друзьями ' +
+    'и получай процент с их оплат.\n\n' +
+    `Твоя ссылка: ${link}\n\n` +
+    'Подробности и баланс — в приложении, раздел «Партнёрская программа».'
+  );
+}
+
+/** Подпись web_app-кнопки под msg4 (открывает Mini App, партнёрский раздел внутри). */
+export const FUNNEL_PARTNER_BUTTON = '🤝 Открыть приложение';
