@@ -761,12 +761,24 @@ export const RATING_LOW_TEXT =
 
 /**
  * DM персоналу при оценке 1–3 (уходит через notifyStaff, фолбэк — владельцу).
- * Ссылка — раздел заказа в панели, как у алёрта застрявшего заказа.
+ *
+ * Ссылка — раздел заказа в панели. При заданном `PANEL_HOST` — абсолютная
+ * (Telegram не делает кликабельным голый путь; ревью CodeRabbit PR #182),
+ * и именно с хоста ПАНЕЛИ: публичный домен на /admin отдаёт 404 (host-гейт
+ * `lib/panel/host.ts`), так что `deploymentBaseUrl()` здесь дал бы мёртвую
+ * ссылку. Без `PANEL_HOST` — прежний относительный путь, как у алёрта
+ * застрявшего заказа (poll-payment).
  */
-export function buildLowRatingStaffAlert(input: { score: number; shortId: string }): string {
+export function buildLowRatingStaffAlert(input: {
+  score: number;
+  shortId: string;
+  panelHost?: string | null;
+}): string {
+  const orderPath = `/admin/orders/${input.shortId}`;
+  const link = input.panelHost ? `https://${input.panelHost}${orderPath}` : orderPath;
   return (
     `Клиент поставил ${input.score}/5 заказу ${input.shortId} — нужен взгляд человека: ` +
-    `/admin/orders/${input.shortId}. Если напишет в поддержку — обращение придёт как обычно.`
+    `${link}. Если напишет в поддержку — обращение придёт как обычно.`
   );
 }
 

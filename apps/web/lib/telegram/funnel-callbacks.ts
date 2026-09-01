@@ -222,12 +222,19 @@ export async function handleFunnelCallback(
         updateId,
         new InlineKeyboard().text(START_SUPPORT_BUTTON, 'support'),
       );
-      await notifyStaff(buildLowRatingStaffAlert({ score, shortId: order.shortId }), {
-        capability: 'support',
-        // DM и так уходит ровно один (гейт — факт вставки оценки); окно —
-        // страховка от неожиданных повторов, не основной механизм.
-        dedupKey: `funnel-rating-${orderId}`,
-      });
+      await notifyStaff(
+        buildLowRatingStaffAlert({
+          score,
+          shortId: order.shortId,
+          panelHost: serverEnv.PANEL_HOST ?? null,
+        }),
+        {
+          capability: 'support',
+          // DM и так уходит ровно один (гейт — факт вставки оценки); окно —
+          // страховка от неожиданных повторов, не основной механизм.
+          dedupKey: `funnel-rating-${orderId}`,
+        },
+      );
       return;
     }
     default:

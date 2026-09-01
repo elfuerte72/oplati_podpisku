@@ -11,6 +11,7 @@ import type { TelegramCallbackQuery } from '@oplati/types';
 const h = vi.hoisted(() => ({
   env: {
     REVIEWS_CHAT_URL: undefined as string | undefined,
+    PANEL_HOST: undefined as string | undefined,
     APP_URL: 'https://example.com',
   },
   state: {
@@ -197,6 +198,10 @@ describe('fb:rate — оценка и каскад', () => {
   });
 
   it('1–3 → клиенту дверь в поддержку ПЕРВОЙ, потом ровно один DM персоналу', async () => {
+    // Абсолютная ссылка с хоста ПАНЕЛИ (Telegram не кликает голый путь, а
+    // публичный домен на /admin отдаёт 404 — ревью CodeRabbit PR #182).
+    h.env.PANEL_HOST = 'admin.example.com';
+
     await callFb(`fb:rate:2:${OID}`);
 
     expect(h.sendMock).toHaveBeenCalledTimes(1);
@@ -209,7 +214,7 @@ describe('fb:rate — оценка и каскад', () => {
       { capability: string; dedupKey: string },
     ];
     expect(alertText).toContain('2/5');
-    expect(alertText).toContain('ORD-1');
+    expect(alertText).toContain('https://admin.example.com/admin/orders/ORD-1');
     expect(opts.capability).toBe('support');
 
     // Клиенту — первым (приоритет доставки клиенту).
