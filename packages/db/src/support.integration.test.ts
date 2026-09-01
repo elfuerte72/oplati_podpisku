@@ -105,10 +105,15 @@ describe('миграция режимов разговора', () => {
     // UPDATE. Здесь строки создаются старым дефолтом `ai`, как на проде.
     const legacy = await createTestDb({ stopBefore: '0041_' });
 
-    const userRows = await legacy.db
-      .insert(schema.users)
-      .values([{ telegramId: 'tg-legacy-ai' }, { telegramId: 'tg-legacy-operator' }])
-      .returning();
+    // Строки users — RAW SQL, а не drizzle insert: builder генерирует ЯВНЫЙ
+    // список колонок из ТЕКУЩЕЙ schema.ts, а колонки, добавленные миграциями
+    // ПОСЛЕ 0041 (первая — funnel_opt_out_at, 0042), в этой базе ещё не
+    // существуют — ровно ловушка «код новый, база старая» из CLAUDE.md.
+    const userRows = await legacy.db.execute<{ id: string }>(sql`
+      INSERT INTO users (telegram_id)
+      VALUES ('tg-legacy-ai'), ('tg-legacy-operator')
+      RETURNING id
+    `);
     const [aiUser, operatorUser] = [firstOf(userRows, 'user'), userRows[1]];
     if (!operatorUser) throw new Error('ожидались две строки users');
 

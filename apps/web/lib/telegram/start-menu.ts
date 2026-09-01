@@ -24,6 +24,7 @@ import {
   START_APP_BUTTON,
   START_CHANNEL_BUTTON,
   START_HOWTO_BUTTON,
+  START_REVIEWS_BUTTON,
   START_SITE_BUTTON,
   START_SUPPORT_BUTTON,
   START_VPN_BUTTON,
@@ -154,7 +155,7 @@ export async function handleStartCommand(
  * раскрытой.
  */
 export function buildStartMenuKeyboard(): InlineKeyboard {
-  return new InlineKeyboard()
+  const keyboard = new InlineKeyboard()
     .webApp(START_APP_BUTTON, miniAppUrl())
     .row()
     // ?src=tg — анти-петля: сайт видит, что визит из бота, и не показывает
@@ -168,6 +169,14 @@ export function buildStartMenuKeyboard(): InlineKeyboard {
     .text(START_VPN_BUTTON, 'vpn')
     .row()
     .url(START_CHANNEL_BUTTON, TELEGRAM_CHANNEL_URL);
+  // «Отзывы» — url-кнопка на живой чат отзывов (трек retention-funnel, тикет 02).
+  // Env не задан → кнопки нет: чат — внешний ресурс, и мёртвая ссылка хуже
+  // отсутствующей (fail-quiet, прецедент — необязательные кнопки меню).
+  const reviewsUrl = serverEnv.REVIEWS_CHAT_URL;
+  if (reviewsUrl) {
+    keyboard.row().url(START_REVIEWS_BUTTON, reviewsUrl);
+  }
+  return keyboard;
 }
 
 /**
