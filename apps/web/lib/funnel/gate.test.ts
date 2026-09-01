@@ -47,8 +47,14 @@ vi.mock('@oplati/db', () => ({
   getFunnelUserState: vi.fn(async () => h.state.user),
   hasActiveOperatorConversation: vi.fn(async () => h.state.operatorActive),
   countFunnelSendsSince: vi.fn(async (_db: unknown, _userId: string, since: Date) => {
-    // Скользящие окна: короткое (сутки) и длинное (неделя) различаем по since.
-    const ageMs = Date.now() - since.getTime();
+    // Скользящие окна: короткое (сутки) и длинное (неделя) различаем по
+    // расстоянию since от ЗАМОРОЖЕННОГО опорного времени тестов, а не от
+    // живого Date.now(): реальные часы уезжают от 2026-09-01 с каждым днём,
+    // и через сутки после мержа суточный вызов классифицировался бы как
+    // недельный — красный тест на main и заблокированный гейт деплоя
+    // (находка оси E full-review).
+    const REF = Date.parse('2026-09-01T09:00:00Z'); // = DAY_NOON_MSK
+    const ageMs = REF - since.getTime();
     return ageMs < 2 * 24 * 60 * 60 * 1000 ? h.state.sends24h : h.state.sends7d;
   }),
   getLastFunnelSendAt: vi.fn(async () => h.state.lastRatingAt),

@@ -133,6 +133,13 @@ describe('claimFunnelSend — атомарный claim на частичных U
     expect(await claimFunnelSend(db, { userId: user.id, kind: 'start_survey' })).toBe(true);
     expect(await claimFunnelSend(db, { userId: user.id, kind: 'referral_nudge' })).toBe(true);
   });
+
+  it('order_rating без orderId отбивается гардом: строку не покрыл бы ни один UNIQUE', async () => {
+    const user = await createTgUser();
+    await expect(claimFunnelSend(db, { userId: user.id, kind: 'order_rating' })).rejects.toThrow(
+      /требует orderId/,
+    );
+  });
 });
 
 describe('бюджет: счётчики по скользящим окнам', () => {
@@ -316,6 +323,20 @@ describe('findExpiredOrdersForSurvey (msg1) — окно и но-бэкфилл'
 
     const rows = await findExpiredOrdersForSurvey(db, window);
     expect(rows.map((r) => r.userId)).not.toContain(user.id);
+  });
+
+  it('границы окна включительные: события ровно на −24ч и ровно на −3ч попадают', async () => {
+    // BETWEEN в SQL включителен с обеих сторон — смежные прогоны крона
+    // перекрываются на границе, и это безопасно: дедуп держит claim.
+    const atFrom = await createTgUser();
+    await createOrderInStatus(atFrom.id, 'expired', window.from);
+    const atTo = await createTgUser();
+    await createOrderInStatus(atTo.id, 'expired', window.to);
+
+    const rows = await findExpiredOrdersForSurvey(db, window);
+    const ids = rows.map((r) => r.userId);
+    expect(ids).toContain(atFrom.id);
+    expect(ids).toContain(atTo.id);
   });
 
   it('клиент с уже отправленным опросом исключается из выборки', async () => {

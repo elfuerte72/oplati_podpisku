@@ -124,6 +124,13 @@ export async function claimFunnelSend(
   db: DBLike,
   input: { userId: string; kind: FunnelKind; orderId?: string | null },
 ): Promise<boolean> {
+  // У оценки арбитр конфликта — частичный UNIQUE по order_id: строка БЕЗ него
+  // не покрыта НИ ОДНИМ индексом, и такой claim всегда отвечал бы true —
+  // повторные отправки сдерживал бы только бюджет (ось A full-review).
+  // Ошибка программиста, не данных — поэтому throw, а не Result.
+  if (input.kind === 'order_rating' && !input.orderId) {
+    throw new Error('claimFunnelSend: kind=order_rating требует orderId (арбитр claim-а)');
+  }
   const rows = await db
     .insert(funnelSends)
     .values({ userId: input.userId, kind: input.kind, orderId: input.orderId ?? null })

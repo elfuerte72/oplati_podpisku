@@ -90,10 +90,22 @@ export async function runFunnelJob(opts: { now?: Date } = {}): Promise<FunnelJob
 
   log.info({ event: 'cron.funnel.start' });
 
-  await runExpiredSurveyPhase(now, result.expiredSurvey);
-  await runStartSurveyPhase(now, result.startSurvey);
-  await runOrderRatingPhase(now, result.orderRating);
-  await runReferralNudgePhase(now, result.referralNudge);
+  // Фазы изолированы друг от друга (ось E full-review): устойчивый сбой
+  // ВЫБОРКИ одной фазы (сломался запрос к одной таблице) не должен глушить
+  // остальные три вида сообщений до починки. Claim'ы при этом не сгорают —
+  // падение происходит до привратника.
+  await runPhaseSafely('expired_survey', result.expiredSurvey, () =>
+    runExpiredSurveyPhase(now, result.expiredSurvey),
+  );
+  await runPhaseSafely('start_survey', result.startSurvey, () =>
+    runStartSurveyPhase(now, result.startSurvey),
+  );
+  await runPhaseSafely('order_rating', result.orderRating, () =>
+    runOrderRatingPhase(now, result.orderRating),
+  );
+  await runPhaseSafely('referral_nudge', result.referralNudge, () =>
+    runReferralNudgePhase(now, result.referralNudge),
+  );
 
   log.info({
     event: 'cron.funnel.done',
@@ -110,6 +122,21 @@ function windowFor(now: Date, delayH: number, lookbackH: number): { from: Date; 
     from: new Date(now.getTime() - lookbackH * HOUR_MS),
     to: new Date(now.getTime() - delayH * HOUR_MS),
   };
+}
+
+/** Изоляция фазы: сбой (обычно выборки) — errors + Sentry, прогон идёт дальше. */
+async function runPhaseSafely(
+  phaseName: string,
+  phase: FunnelPhaseResult,
+  run: () => Promise<void>,
+): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    phase.errors++;
+    log.error({ event: 'cron.funnel.phase_error', phase: phaseName, err });
+    Sentry.captureException(err, { tags: { source: 'cron.funnel' }, extra: { phase: phaseName } });
+  }
 }
 
 /**
@@ -130,6 +157,11 @@ async function trySend(
   try {
     const res = await sendFunnelMessage(input);
     if (res.ok) phase.sent++;
+    // `send_failed` — неожиданный отказ Telegram при уже сожжённом claim'е:
+    // это авария, а не штатный пропуск, и в JSON прогона она обязана быть
+    // видна как ошибка (ось E full-review). `blocked` (403) остаётся
+    // skipped — клиент, заблокировавший бота, штатен.
+    else if (res.reason === 'send_failed') phase.errors++;
     else phase.skipped++;
   } catch (err) {
     phase.errors++;
@@ -158,7 +190,7 @@ async function runExpiredSurveyPhase(now: Date, phase: FunnelPhaseResult): Promi
       kind: 'expired_survey',
       orderId: row.orderId,
       now,
-      build: () => ({ text: EXPIRED_SURVEY_TEXT, keyboard: buildExpiredSurveyKeyboard() }),
+      build: () => ({ text: EXPIRED_SURVEY_TEXT, keyboard: buildExpiredSurveyKeyboard(row.orderId) }),
     });
   }
 }

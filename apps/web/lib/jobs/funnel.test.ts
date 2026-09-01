@@ -210,8 +210,9 @@ describe('msg1 — опрос протухшего заказа', () => {
     expect(msg?.chatId).toBe('tg-u1');
     expect(msg?.text).toBe(EXPIRED_SURVEY_TEXT);
     const callbacks = msg?.markup?.inline_keyboard.flat().map((b) => b.callback_data);
-    expect(callbacks).toContain('fb:exp:price');
-    expect(callbacks).toContain('fb:exp:other');
+    // Кнопки причин несут заказ-триггер (связка «причина ↔ заказ» в feedback).
+    expect(callbacks).toContain('fb:exp:price:o1');
+    expect(callbacks).toContain('fb:exp:other:o1');
     expect(callbacks).toContain('fb:optout');
 
     // Идемпотентность: тот же снимок БД (выборка окном шире шага крона всё
@@ -362,5 +363,47 @@ describe('бюджет между фазами', () => {
     expect(res.expiredSurvey.sent).toBe(1);
     expect(res.orderRating).toEqual({ sent: 0, skipped: 1, errors: 0 });
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('деградация прогона (история 18)', () => {
+  it('сбой одного кандидата — errors++, остальные обрабатываются', async () => {
+    addTgUser('bad');
+    addTgUser('good');
+    h.state.expiredRows = [
+      { orderId: 'ob', userId: 'bad' },
+      { orderId: 'og', userId: 'good' },
+    ];
+    const db = await import('@oplati/db');
+    vi.mocked(db.getFunnelUserState).mockImplementationOnce(async () => {
+      throw new Error('db down for one');
+    });
+
+    const res = await runFunnelJob({ now: NOON });
+
+    expect(res.expiredSurvey).toEqual({ sent: 1, skipped: 0, errors: 1 });
+    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('send_failed (не-403 отказ Telegram после claim) считается ошибкой, а не skip', async () => {
+    addTgUser('u10');
+    h.state.expiredRows = [{ orderId: 'o10', userId: 'u10' }];
+    h.sendMessageMock.mockRejectedValueOnce(new Error('telegram 500'));
+
+    const res = await runFunnelJob({ now: NOON });
+
+    expect(res.expiredSurvey).toEqual({ sent: 0, skipped: 0, errors: 1 });
+  });
+
+  it('сбой выборки одной фазы не глушит остальные фазы', async () => {
+    addTgUser('u11');
+    h.state.freshUsers = [{ userId: 'u11' }];
+    const db = await import('@oplati/db');
+    vi.mocked(db.findExpiredOrdersForSurvey).mockRejectedValueOnce(new Error('table broken'));
+
+    const res = await runFunnelJob({ now: NOON });
+
+    expect(res.expiredSurvey.errors).toBe(1);
+    expect(res.startSurvey).toEqual({ sent: 1, skipped: 0, errors: 0 });
   });
 });

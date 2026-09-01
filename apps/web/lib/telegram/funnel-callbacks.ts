@@ -55,21 +55,33 @@ const log = childLogger('telegram-funnel');
 
 const OPTOUT_CALLBACK = 'fb:optout';
 
-/** Опрос: кнопка на каждый ответ (столбиком) + отписка последней строкой. */
-function buildSurveyKeyboard(prefix: 'exp' | 'st', labels: Record<string, string>): InlineKeyboard {
+/**
+ * Опрос: кнопка на каждый ответ (столбиком) + отписка последней строкой.
+ * `suffix` — контекст в хвосте callback-data (`fb:<prefix>:<key>:<suffix>`).
+ */
+function buildSurveyKeyboard(
+  prefix: 'exp' | 'st',
+  labels: Readonly<Record<string, string>>,
+  suffix?: string,
+): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (const [key, label] of Object.entries(labels)) {
-    keyboard.text(label, `fb:${prefix}:${key}`).row();
+    keyboard.text(label, `fb:${prefix}:${key}${suffix ? `:${suffix}` : ''}`).row();
   }
   return keyboard.text(FUNNEL_OPTOUT_BUTTON, OPTOUT_CALLBACK);
 }
 
-/** msg1: пять причин + отписка. */
-export function buildExpiredSurveyKeyboard(): InlineKeyboard {
-  return buildSurveyKeyboard('exp', EXPIRED_SURVEY_ANSWER_LABELS);
+/**
+ * msg1: пять причин + отписка. Заказ-триггер едет в callback-data
+ * (`fb:exp:<key>:<orderId>`, 53 байта < лимита 64): без него ответ терял бы
+ * связку «причина ↔ заказ/сервис» навсегда (ось E full-review; спека держит
+ * `client_feedback.order_id` именно для этого).
+ */
+export function buildExpiredSurveyKeyboard(orderId: string): InlineKeyboard {
+  return buildSurveyKeyboard('exp', EXPIRED_SURVEY_ANSWER_LABELS, orderId);
 }
 
-/** msg2: четыре ответа + отписка. */
+/** msg2: четыре ответа + отписка (заказа-триггера по построению нет). */
 export function buildStartSurveyKeyboard(): InlineKeyboard {
   return buildSurveyKeyboard('st', START_SURVEY_ANSWER_LABELS);
 }
@@ -129,9 +141,20 @@ export async function handleFunnelCallback(
       const schema = sub === 'exp' ? expiredSurveyAnswer : startSurveyAnswer;
       const parsed = schema.safeParse(parts[2]);
       if (!parsed.success) break;
+      // Заказ-триггер msg1 — best-effort контекст: битый/чужой uuid НЕ
+      // отбрасывает ответ (ответ — про клиента), а просто пишется без связки.
+      let orderId: string | null = null;
+      if (sub === 'exp') {
+        const parsedOrder = z.string().uuid().safeParse(parts[3]);
+        if (parsedOrder.success) {
+          const order = await getOrderById(db, parsedOrder.data);
+          if (order && order.userId === ctx.userId) orderId = order.id;
+        }
+      }
       const inserted = await recordClientFeedback(db, {
         userId: ctx.userId,
         kind,
+        orderId,
         answer: parsed.data,
       });
       log.info({ event: 'funnel.feedback.answer', kind, answer: parsed.data, inserted, updateId });
@@ -156,12 +179,14 @@ export async function handleFunnelCallback(
       if (!Number.isInteger(score) || score < 1 || score > 5 || !orderIdParsed.success) break;
       const orderId = orderIdParsed.data;
       // Callback-data приходит от клиента и подделывается: заказ обязан
-      // принадлежать нажавшему, иначе чужой uuid писал бы оценку чужому
-      // заказу. Сбой БД здесь НЕ глотаем — он уедет в catch роута бота
-      // (лог + Sentry + 200), а клик просто останется без ответа.
+      // принадлежать нажавшему И быть завершённым — оценка спрашивается
+      // только по completed, а форж по своему черновику/expired писал бы
+      // мусор в client_feedback и дёргал DM персоналу (оси B и C
+      // full-review). Сбой БД здесь НЕ глотаем — он уедет в catch роута
+      // бота (лог + Sentry + 200), а клик просто останется без ответа.
       const order = await getOrderById(db, orderId);
-      if (!order || order.userId !== ctx.userId) {
-        log.warn({ event: 'funnel.rating.foreign_order', updateId, orderId });
+      if (!order || order.userId !== ctx.userId || order.status !== 'completed') {
+        log.warn({ event: 'funnel.rating.invalid_order', updateId, orderId });
         return;
       }
       const inserted = await recordClientFeedback(db, {

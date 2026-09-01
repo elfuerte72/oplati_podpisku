@@ -9,6 +9,7 @@ import {
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { isValidLuhn } from '@oplati/types';
+import type { ExpiredSurveyAnswer, StartSurveyAnswer } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 // Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
@@ -720,7 +721,7 @@ export const EXPIRED_SURVEY_ANSWER_LABELS = {
   changed: '🙅 Уже неактуально',
   noservice: '🔍 Нет нужного сервиса',
   other: '✍️ Другое',
-} as const;
+} as const satisfies Record<ExpiredSurveyAnswer, string>;
 
 /** msg2: опрос «/start без заказа» — «нашёл, что искал?» (нейтральная форма). */
 export const START_SURVEY_TEXT =
@@ -732,7 +733,7 @@ export const START_SURVEY_ANSWER_LABELS = {
   noservice: '🔍 Нет нужного сервиса',
   unclear: '❓ Непонятно, как это работает',
   other: '✍️ Другое',
-} as const;
+} as const satisfies Record<StartSurveyAnswer, string>;
 
 /**
  * msg3: оценка после покупки. Имя сервиса — из заказа; для custom-описаний —

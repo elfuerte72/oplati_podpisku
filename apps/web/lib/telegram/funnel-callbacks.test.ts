@@ -16,8 +16,8 @@ const h = vi.hoisted(() => ({
   state: {
     ctx: { userId: 'u1', conversationId: 'c1' } as { userId: string; conversationId: string } | null,
     recordResult: true,
-    order: { id: 'o1', userId: 'u1', shortId: 'ORD-1' } as
-      | { id: string; userId: string; shortId: string }
+    order: { id: 'o1', userId: 'u1', shortId: 'ORD-1', status: 'completed' } as
+      | { id: string; userId: string; shortId: string; status: string }
       | null,
   },
   sendMock: vi.fn(async (..._args: unknown[]) => true),
@@ -65,7 +65,7 @@ beforeEach(() => {
   h.env.REVIEWS_CHAT_URL = undefined;
   h.state.ctx = { userId: 'u1', conversationId: 'c1' };
   h.state.recordResult = true;
-  h.state.order = { id: OID, userId: 'u1', shortId: 'ORD-1' };
+  h.state.order = { id: OID, userId: 'u1', shortId: 'ORD-1', status: 'completed' };
 });
 
 describe('fb:optout', () => {
@@ -78,15 +78,44 @@ describe('fb:optout', () => {
 });
 
 describe('fb:exp / fb:st — ответы опросов', () => {
-  it('пишет ответ (kind + ключ) и благодарит', async () => {
+  it('пишет ответ (kind + ключ) и благодарит; без суффикса — без связки с заказом', async () => {
     await callFb('fb:exp:price');
 
     expect(h.recordMock).toHaveBeenCalledWith(expect.anything(), {
       userId: 'u1',
       kind: 'expired_survey',
+      orderId: null,
       answer: 'price',
     });
     expect(h.sendMock).toHaveBeenCalledWith(42, FUNNEL_THANKS_TEXT, 1001);
+  });
+
+  it('свой заказ в суффиксе привязывается к ответу; чужой/мусор — ответ без связки', async () => {
+    await callFb(`fb:exp:price:${OID}`);
+    expect(h.recordMock).toHaveBeenLastCalledWith(expect.anything(), {
+      userId: 'u1',
+      kind: 'expired_survey',
+      orderId: OID,
+      answer: 'price',
+    });
+
+    // Чужой заказ: ответ НЕ отбрасывается (он про клиента), связка — null.
+    h.state.order = { id: OID, userId: 'someone-else', shortId: 'ORD-X', status: 'expired' };
+    await callFb(`fb:exp:howto:${OID}`);
+    expect(h.recordMock).toHaveBeenLastCalledWith(expect.anything(), {
+      userId: 'u1',
+      kind: 'expired_survey',
+      orderId: null,
+      answer: 'howto',
+    });
+
+    await callFb('fb:exp:changed:not-a-uuid');
+    expect(h.recordMock).toHaveBeenLastCalledWith(expect.anything(), {
+      userId: 'u1',
+      kind: 'expired_survey',
+      orderId: null,
+      answer: 'changed',
+    });
   });
 
   it('повторное нажатие не дублирует строку и молчит', async () => {
@@ -104,6 +133,7 @@ describe('fb:exp / fb:st — ответы опросов', () => {
     expect(h.recordMock).toHaveBeenCalledWith(expect.anything(), {
       userId: 'u1',
       kind: 'expired_survey',
+      orderId: null,
       answer: 'other',
     });
     expect(h.supportEntryMock).toHaveBeenCalledTimes(1);
@@ -128,6 +158,7 @@ describe('fb:exp / fb:st — ответы опросов', () => {
     expect(h.recordMock).toHaveBeenCalledWith(expect.anything(), {
       userId: 'u1',
       kind: 'start_survey',
+      orderId: null,
       answer: 'noservice',
     });
     expect(vi.mocked(db.getOrderById)).not.toHaveBeenCalled();
@@ -197,13 +228,23 @@ describe('fb:rate — оценка и каскад', () => {
   });
 
   it('чужой или несуществующий заказ в callback-data → оценка не пишется', async () => {
-    h.state.order = { id: OID, userId: 'someone-else', shortId: 'ORD-X' };
+    h.state.order = { id: OID, userId: 'someone-else', shortId: 'ORD-X', status: 'completed' };
     await callFb(`fb:rate:5:${OID}`);
     expect(h.recordMock).not.toHaveBeenCalled();
 
     h.state.order = null;
     await callFb(`fb:rate:5:${OID2}`);
     expect(h.recordMock).not.toHaveBeenCalled();
+  });
+
+  it('свой, но НЕ completed заказ → оценка не пишется и DM не уходит (форж по черновику)', async () => {
+    h.state.order = { id: OID, userId: 'u1', shortId: 'ORD-1', status: 'expired' };
+
+    await callFb(`fb:rate:1:${OID}`);
+
+    expect(h.recordMock).not.toHaveBeenCalled();
+    expect(h.notifyStaffMock).not.toHaveBeenCalled();
+    expect(h.sendMock).not.toHaveBeenCalled();
   });
 
   it('score вне 1..5 и мусор в данных отбрасываются', async () => {
