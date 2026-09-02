@@ -3,6 +3,7 @@ import { and, count, desc, eq, gte, isNull, lte, sql, type SQL } from 'drizzle-o
 import { clientFeedback, conversations, funnelSends, orders, users } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
 import type { FunnelKind } from '@oplati/types';
+import { clampPanelLimit, clampPanelOffset } from './panel.ts';
 
 /**
  * Репозиторий воронки обратной связи (спека `.scratch/retention-funnel/`).
@@ -308,4 +309,118 @@ export async function findRatedUsersForReferralNudge(
     )
     .limit(SELECTION_BATCH_LIMIT);
   return rows;
+}
+
+// ─── Read-side для панели: лента «Обратная связь» (панель v2, тикет 14) ────
+//
+// Границы окна — ISO-строки, не `Date` (raw-`sql` Drizzle роняет postgres-js
+// на `Date`, PGlite молчит — инцидент 2026-08-15). Потолок страницы — общий
+// `clampPanelLimit` панели: экран читают глазами, не выгружают.
+
+export type PanelFeedbackRow = {
+  id: string;
+  createdAt: Date;
+  kind: FunnelKind;
+  score: number | null;
+  answer: string | null;
+  client: { id: string; displayName: string | null; telegramId: string | null };
+  /** Заказ-триггер, если есть: у оценки всегда, у опроса протухшего — обычно. */
+  order: { id: string; shortId: string; serviceName: string | null } | null;
+};
+
+/**
+ * Лента ответов за период, новые сверху. «Есть ещё» — выборкой на строку больше
+ * (как у остальных списков панели).
+ */
+export async function listClientFeedbackForPanel(
+  db: DB,
+  opts: { since: string; limit?: number; offset?: number },
+): Promise<{ items: PanelFeedbackRow[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
+  const rows = await db.execute<{
+    id: string;
+    created_at: string | Date;
+    kind: string;
+    score: number | null;
+    answer: string | null;
+    user_id: string;
+    display_name: string | null;
+    telegram_id: string | null;
+    order_id: string | null;
+    short_id: string | null;
+    service_name: string | null;
+    custom_description: string | null;
+  }>(sql`
+    SELECT f.id, f.created_at, f.kind, f.score, f.answer,
+           u.id AS user_id, u.display_name, u.telegram_id,
+           o.id AS order_id, o.short_id, s.name AS service_name,
+           o.custom_service_description AS custom_description
+    FROM client_feedback f
+    JOIN users u ON u.id = f.user_id
+    LEFT JOIN orders o ON o.id = f.order_id
+    LEFT JOIN services s ON s.id = o.service_id
+    WHERE f.created_at >= ${opts.since}::timestamptz
+    ORDER BY f.created_at DESC, f.id DESC
+    LIMIT ${maxRows + 1} OFFSET ${offset}
+  `);
+  const hasMore = rows.length > maxRows;
+  const items = rows.slice(0, maxRows).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
+    kind: r.kind as FunnelKind,
+    score: r.score === null ? null : Number(r.score),
+    answer: r.answer,
+    client: { id: r.user_id, displayName: r.display_name, telegramId: r.telegram_id },
+    order:
+      r.order_id && r.short_id
+        ? { id: r.order_id, shortId: r.short_id, serviceName: r.service_name ?? r.custom_description }
+        : null,
+  }));
+  return { items, hasMore };
+}
+
+export type PanelFeedbackSummaryRow = {
+  kind: FunnelKind;
+  /** Отправлено сообщений этого вида за период (`funnel_sends`). */
+  sent: number;
+  /** Ответов этого вида за период (`client_feedback`). */
+  answered: number;
+};
+
+/**
+ * Сводка по видам за период: отправлено / ответов. Доля считается на стороне
+ * витрины (`null` при `sent = 0`). Виды без событий возвращаются с нулями —
+ * строка на каждый `funnelKind`, кроме реферального касания: на него не
+ * отвечают кнопкой, и «доля ответов» у него не определена.
+ */
+export async function feedbackSummaryForPanel(
+  db: DB,
+  opts: { since: string },
+): Promise<PanelFeedbackSummaryRow[]> {
+  const rows = await db.execute<{ kind: string; sent: string | number; answered: string | number }>(sql`
+    SELECT k.kind,
+           (SELECT count(*) FROM funnel_sends fs
+             WHERE fs.kind = k.kind AND fs.sent_at >= ${opts.since}::timestamptz) AS sent,
+           (SELECT count(*) FROM client_feedback cf
+             WHERE cf.kind = k.kind AND cf.created_at >= ${opts.since}::timestamptz) AS answered
+    FROM (VALUES ('expired_survey'), ('start_survey'), ('order_rating')) AS k(kind)
+  `);
+  const byKind = new Map(rows.map((r) => [r.kind, r]));
+  return (['expired_survey', 'start_survey', 'order_rating'] as const).map((kind) => ({
+    kind,
+    sent: Number(byKind.get(kind)?.sent ?? 0),
+    answered: Number(byKind.get(kind)?.answered ?? 0),
+  }));
+}
+
+/** Ответов с момента `since` — для счётчика в меню (окно 24 ч задаёт вызывающий). */
+export async function countRecentClientFeedbackForPanel(
+  db: DB,
+  opts: { since: string },
+): Promise<number> {
+  const rows = await db.execute<{ cnt: string | number }>(sql`
+    SELECT count(*) AS cnt FROM client_feedback WHERE created_at >= ${opts.since}::timestamptz
+  `);
+  return Number(rows[0]?.cnt ?? 0);
 }

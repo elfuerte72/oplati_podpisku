@@ -64,7 +64,16 @@ export function isDeskQuiet(signals: DeskSignals): boolean {
  * тип чисел, и цикл ниже, и проверка в оболочке — добавить раздел, забыв одно
  * из трёх мест, нельзя.
  */
-export const MENU_BADGE_SECTIONS = ['pending', 'support'] as const satisfies readonly PanelSection['capability'][];
+export const MENU_BADGE_SECTIONS = [
+  'pending',
+  // Счётчик «Проверка платежей» (панель v2, тикет 13): та же выборка, что у
+  // экрана холдов, `count(*)` без потолка.
+  'holds',
+  'support',
+  // Ответы на опросы и оценки за последние 24 ч (тикет 14): «просмотрено» не
+  // заводим — это схема ради счётчика.
+  'feedback',
+] as const satisfies readonly PanelSection['capability'][];
 
 export type MenuBadgeSection = (typeof MENU_BADGE_SECTIONS)[number];
 

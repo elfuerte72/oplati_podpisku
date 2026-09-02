@@ -53,22 +53,38 @@ describe('isDeskQuiet', () => {
  */
 describe('menuBadges', () => {
   it('число работы показывается у своего раздела', () => {
-    expect(menuBadges('operator', { pending: 4, support: 2 })).toEqual({ pending: 4, support: 2 });
+    expect(menuBadges('operator', { pending: 4, holds: 1, support: 2, feedback: 3 })).toEqual({
+      pending: 4,
+      holds: 1,
+      support: 2,
+      feedback: 3,
+    });
   });
 
   it('ноль не показывается — ноль не выглядит как задача', () => {
-    expect(menuBadges('admin', { pending: 0, support: 0 })).toEqual({});
+    expect(menuBadges('admin', { pending: 0, holds: 0, support: 0, feedback: 0 })).toEqual({});
   });
 
   it('«не получили» (null) отличается от нуля и тоже не показывается', () => {
     // База не ответила — счётчика нет; «0» здесь был бы утверждением о том,
     // чего мы не проверяли.
-    expect(menuBadges('admin', { pending: null, support: 3 })).toEqual({ support: 3 });
+    expect(menuBadges('admin', { pending: null, holds: null, support: 3, feedback: null })).toEqual({
+      support: 3,
+    });
   });
 
   it('раздел, закрытый роли, счётчика не получает даже при известном числе', () => {
     // Роль без прав (`supervisor` не выдаётся) не должна видеть числа по
     // разделам, которые всё равно не откроет.
-    expect(menuBadges('supervisor', { pending: 4, support: 2 })).toEqual({});
+    expect(menuBadges('supervisor', { pending: 4, holds: 1, support: 2, feedback: 3 })).toEqual({});
+  });
+
+  it('бейджи «Проверка платежей» и «Обратная связь» видны и владельцу, и менеджеру (панель v2)', () => {
+    for (const role of ['admin', 'operator'] as const) {
+      expect(menuBadges(role, { pending: 0, holds: 2, support: 0, feedback: 5 })).toEqual({
+        holds: 2,
+        feedback: 5,
+      });
+    }
   });
 });

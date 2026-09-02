@@ -2,7 +2,13 @@ import 'server-only';
 
 import * as Sentry from '@sentry/nextjs';
 
-import { countPendingOrdersForPanel, countUnansweredSupportRequests, getDb } from '@oplati/db';
+import {
+  countHoldsForPanel,
+  countPendingOrdersForPanel,
+  countRecentClientFeedbackForPanel,
+  countUnansweredSupportRequests,
+  getDb,
+} from '@oplati/db';
 
 import type { StaffRole } from '@oplati/db';
 
@@ -61,7 +67,12 @@ export type PendingTotals = { count: number; sumKopecks: number };
  */
 type Slot<T> = { work: Promise<T | null>; at: number; done: boolean };
 
-const memo: { pending?: Slot<PendingTotals>; support?: Slot<number> } = {};
+const memo: {
+  pending?: Slot<PendingTotals>;
+  holds?: Slot<number>;
+  support?: Slot<number>;
+  feedback?: Slot<number>;
+} = {};
 const lastReportedAt: Partial<Record<MenuBadgeSection, number>> = {};
 
 /**
@@ -70,12 +81,12 @@ const lastReportedAt: Partial<Record<MenuBadgeSection, number>> = {};
  * свежий счётчик, а не переждать срок памятки.
  */
 export function invalidateMenuCounts(section?: MenuBadgeSection): void {
-  if (section === undefined || section === 'pending') delete memo.pending;
-  if (section === undefined || section === 'support') delete memo.support;
   if (section === undefined) {
-    delete lastReportedAt.pending;
-    delete lastReportedAt.support;
+    for (const key of Object.keys(memo) as MenuBadgeSection[]) delete memo[key];
+    for (const key of Object.keys(lastReportedAt) as MenuBadgeSection[]) delete lastReportedAt[key];
+    return;
   }
+  delete memo[section];
 }
 
 /** Дедлайн без отмены: запрос дорабатывает в фоне и кормит памятку. */
@@ -161,13 +172,54 @@ export function readUnansweredSupportCount(now: number = Date.now()): Promise<nu
 }
 
 /**
+ * Заказов на экране проверки платежей (панель v2, тикет 13). Та же выборка,
+ * что у списка холдов, без потолка. Вебхуки провайдеров панель не трогают —
+ * число догоняет по сроку памятки; ручная выдача сбрасывает явно.
+ */
+export function readHoldsCount(now: number = Date.now()): Promise<number | null> {
+  return through(
+    'holds',
+    () => memo.holds,
+    (slot) => {
+      memo.holds = slot;
+    },
+    () => countHoldsForPanel(getDb()),
+    now,
+  );
+}
+
+/** Окно счётчика обратной связи — ответы за последние сутки. */
+const FEEDBACK_BADGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ответов на опросы и оценок за последние 24 ч (тикет 14). Записи создаёт
+ * бот, инвалидацию никто не зовёт — TTL памятки догонит.
+ */
+export function readRecentFeedbackCount(now: number = Date.now()): Promise<number | null> {
+  return through(
+    'feedback',
+    () => memo.feedback,
+    (slot) => {
+      memo.feedback = slot;
+    },
+    () =>
+      countRecentClientFeedbackForPanel(getDb(), {
+        since: new Date(now - FEEDBACK_BADGE_WINDOW_MS).toISOString(),
+      }),
+    now,
+  );
+}
+
+/**
  * Числа для меню. Спрашиваем ТОЛЬКО при праве на раздел: роль без доступа не
  * должна получать числа по тому, что не откроет.
  */
 export async function readMenuCounts(role: StaffRole): Promise<MenuCounts> {
-  const [pending, support] = await Promise.all([
+  const [pending, holds, support, feedback] = await Promise.all([
     canAccess(role, 'pending') ? readPendingTotals().then((r) => r?.count ?? null) : null,
+    canAccess(role, 'holds') ? readHoldsCount() : null,
     canAccess(role, 'support') ? readUnansweredSupportCount() : null,
+    canAccess(role, 'feedback') ? readRecentFeedbackCount() : null,
   ]);
-  return { pending, support };
+  return { pending, holds, support, feedback };
 }

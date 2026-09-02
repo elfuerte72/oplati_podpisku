@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
 
 import {
   DEFAULT_REFERRAL_RATE_L1_BPS,
@@ -681,6 +681,41 @@ export type PanelHoldRow = {
 };
 
 /**
+ * ОБЩЕЕ условие «заказ на экране проверки платежей» — для списка и для
+ * счётчика в меню (панель v2, тикет 13). Одно место, а не два: разъезд между
+ * «что показывает экран» и «что считает бейдж» — зеркало, которое сверять
+ * глазами никто не будет.
+ *
+ * Ожидает JOIN `payments` (LEFT) к `orders`.
+ */
+function holdsCondition() {
+  return or(
+    // Заказ на проверке банка не протухает — показываем всегда.
+    eq(orders.status, 'payment_review'),
+    and(
+      inArray(payments.lastProviderStatus, [...PANEL_HOLD_PROVIDER_STATUSES]),
+      // Уже доведённые заказы в список не тянем: там холд разрешился.
+      inArray(orders.status, ['pending_payment', 'payment_review', 'failed']),
+      sql`${orders.createdAt} > now() - interval '${sql.raw(String(HOLD_DECLINED_WINDOW_DAYS))} days'`,
+    ),
+  );
+}
+
+/**
+ * Сколько заказов на экране проверки платежей — для счётчика в меню.
+ * Считает ЗАКАЗЫ (distinct), как и список после дедупа платежей, без потолка:
+ * бейдж обязан называть настоящее число, а не «100+».
+ */
+export async function countHoldsForPanel(db: DB): Promise<number> {
+  const rows = await db
+    .select({ cnt: countDistinct(orders.id) })
+    .from(orders)
+    .leftJoin(payments, eq(payments.orderId, orders.id))
+    .where(holdsCondition());
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+/**
  * Заказы, которые банк держит на проверке, и платежи с холдом или отказом.
  *
  * Сегодня об этом узнают только через семь дней и только владелец (сторож
@@ -718,18 +753,7 @@ export async function listHoldsForPanel(
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(payments, eq(payments.orderId, orders.id))
-    .where(
-      or(
-        // Заказ на проверке банка не протухает — показываем всегда.
-        eq(orders.status, 'payment_review'),
-        and(
-          inArray(payments.lastProviderStatus, [...PANEL_HOLD_PROVIDER_STATUSES]),
-          // Уже доведённые заказы в список не тянем: там холд разрешился.
-          inArray(orders.status, ['pending_payment', 'payment_review', 'failed']),
-          sql`${orders.createdAt} > now() - interval '${sql.raw(String(HOLD_DECLINED_WINDOW_DAYS))} days'`,
-        ),
-      ),
-    )
+    .where(holdsCondition())
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
     // ним и выбирается строка ниже.
     .orderBy(desc(orders.createdAt), desc(orders.id), desc(payments.createdAt))

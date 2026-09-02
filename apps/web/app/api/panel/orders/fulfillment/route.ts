@@ -23,6 +23,7 @@ import {
   type ManualFulfillmentAction,
 } from '@/lib/panel/fulfillment';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
+import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { orderShortIdSchema } from '@/lib/panel/order-filters';
 import { redactCardNumbers } from '@/lib/telegram/templates';
 
@@ -144,6 +145,11 @@ export async function POST(req: Request): Promise<Response> {
       action: body.action,
       transitioned: res.transitioned,
     });
+
+    // Заказ в `failed` с кодом холда живёт на экране проверки платежей; ручная
+    // выдача уводит его оттуда — счётчик в меню обязан увидеть это на ближайшем
+    // `router.refresh()`, а не через срок памятки (тикет 13 панели v2).
+    if (res.transitioned) invalidateMenuCounts('holds');
 
     return Response.json({ ok: true, status: res.order.status, transitioned: res.transitioned });
   } catch (err) {

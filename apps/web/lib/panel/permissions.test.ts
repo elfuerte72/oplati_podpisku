@@ -22,7 +22,7 @@ describe('canAccess', () => {
   });
 
   it('менеджер ведёт всю операционку', () => {
-    for (const cap of ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment'] as const) {
+    for (const cap of ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment', 'feedback'] as const) {
       expect(canAccess('operator', cap)).toBe(true);
     }
   });

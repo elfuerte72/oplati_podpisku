@@ -26,10 +26,13 @@
 import type {
   CardStatus,
   ConversationMode,
+  ExpiredSurveyAnswer,
   FREEKASSA_ORDER_STATUS,
+  FunnelKind,
   OrderStatus,
   PaymentStatus,
   PayoutStatus,
+  StartSurveyAnswer,
 } from '@oplati/types';
 
 import type { RemindBlockReason } from './remind';
@@ -41,6 +44,7 @@ export const SECTION_TITLES = {
   pending: 'Ждут оплаты',
   holds: 'Проверка платежей',
   support: 'Поддержка',
+  feedback: 'Обратная связь',
   analytics: 'Аналитика',
   ai: 'Аналитик',
   texts: 'Тексты воронки',
@@ -310,7 +314,50 @@ export const EMPTY_TEXT = {
   // Аналитика: пустой период — не поломка. У раздела нет действий, поэтому
   // текст только констатирует.
   analytics: 'За выбранный период данных нет.',
+  feedback: 'Ответов за период нет.',
 } as const;
+
+/**
+ * Раздел «Обратная связь» (панель v2, ветка D): лента ответов на опросы и
+ * оценок. Подписи видов и ответов — человекочитаемые для ключей из
+ * `@oplati/types`; `Record<…>` — новое значение enum'а обязано сломать сборку.
+ */
+export const FEEDBACK_TEXT = {
+  intro:
+    'Ответы клиентов на сообщения воронки: причины неоплаты, впечатление новичков, оценки после выдачи карты. Оценки 1–3 выделены — с таким клиентом стоит связаться.',
+  summary: 'Сводка за период',
+  sent: 'Отправлено',
+  answered: 'Ответов',
+  share: 'Доля ответов',
+  answer: 'Ответ',
+  when: 'Когда',
+  kind: 'Вид',
+  hasMore: 'Показаны не все — дальше по страницам.',
+} as const;
+
+export const FEEDBACK_KIND_LABELS: Record<FunnelKind, string> = {
+  expired_survey: 'Опрос: заказ не оплачен',
+  start_survey: 'Опрос: без заказа',
+  order_rating: 'Оценка',
+  referral_nudge: 'Реферальное касание',
+};
+
+/** Ответы опроса протухшего заказа — для персонала, без эмодзи кнопок. */
+export const EXPIRED_SURVEY_ANSWER_TITLES: Record<ExpiredSurveyAnswer, string> = {
+  price: 'Дорого',
+  howto: 'Непонятно, как оплатить',
+  changed: 'Уже неактуально',
+  noservice: 'Нет нужного сервиса',
+  other: 'Другое',
+};
+
+/** Ответы опроса «нашёл, что искал?». */
+export const START_SURVEY_ANSWER_TITLES: Record<StartSurveyAnswer, string> = {
+  thinking: 'Ещё думает',
+  noservice: 'Нет нужного сервиса',
+  unclear: 'Непонятно, как это работает',
+  other: 'Другое',
+};
 
 /**
  * Раздел «Аналитика» (панель v2, ветка A). Заголовки блоков и подписи периода;
