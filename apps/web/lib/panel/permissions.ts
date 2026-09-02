@@ -40,6 +40,11 @@ export const PANEL_CAPABILITIES = [
    * оборот компании ни к чему.
    */
   'analytics',
+  /**
+   * Раздел «Аналитик»: чат с AI, который пишет и выполняет SQL под read-only
+   * ролью (ветка B). Каждый вопрос стоит денег провайдеру — только владелец.
+   */
+  'ai',
 ] as const;
 
 export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
@@ -81,6 +86,7 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/holds', capability: 'holds' },
   { href: '/admin/support', capability: 'support' },
   { href: '/admin/analytics', capability: 'analytics' },
+  { href: '/admin/ai', capability: 'ai' },
   { href: '/admin/partners', capability: 'partners' },
   { href: '/admin/staff', capability: 'staff' },
 ];

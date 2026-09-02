@@ -32,12 +32,18 @@ describe('canAccess', () => {
     expect(canAccess('operator', 'staff')).toBe(false);
   });
 
-  it('аналитика — инструмент владельца (панель v2, ветка A)', () => {
-    expect(canAccess('admin', 'analytics')).toBe(true);
-    expect(canAccess('operator', 'analytics')).toBe(false);
-    // Раздел ВИДЕН менеджеру в меню, но помечен недоступным (спека §4.3).
-    const section = sectionsFor('operator').find((s) => s.href === '/admin/analytics');
-    expect(section).toMatchObject({ allowed: false, title: 'Аналитика' });
+  it('аналитика и AI-аналитик — инструменты владельца (панель v2, ветки A и B)', () => {
+    for (const cap of ['analytics', 'ai'] as const) {
+      expect(canAccess('admin', cap)).toBe(true);
+      expect(canAccess('operator', cap)).toBe(false);
+    }
+    // Разделы ВИДНЫ менеджеру в меню, но помечены недоступными (спека §4.3).
+    const sections = sectionsFor('operator');
+    expect(sections.find((s) => s.href === '/admin/analytics')).toMatchObject({
+      allowed: false,
+      title: 'Аналитика',
+    });
+    expect(sections.find((s) => s.href === '/admin/ai')).toMatchObject({ allowed: false, title: 'Аналитик' });
   });
 
   it('ручное исполнение остаётся менеджеру намеренно', () => {

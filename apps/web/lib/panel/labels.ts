@@ -42,6 +42,7 @@ export const SECTION_TITLES = {
   holds: 'Проверка платежей',
   support: 'Поддержка',
   analytics: 'Аналитика',
+  ai: 'Аналитик',
   partners: 'Партнёры',
   staff: 'Персонал',
 } as const;
@@ -426,6 +427,44 @@ export const SUPPORT_ERROR_TEXT: Record<string, string> = {
 
 export const SUPPORT_NOT_RECORDED_TEXT =
   'Клиенту отправлено, но в переписку не записалось — предупредите коллег.';
+
+/**
+ * Раздел «Аналитик» (панель v2, ветка B) — чат с AI, который сам пишет SQL к
+ * копии базы без контактов и переписки. Слово «Аналитик» — не «Оплатишка»:
+ * маскот говорит с клиентами, здесь служебный инструмент.
+ */
+export const ANALYST_TEXT = {
+  intro:
+    'Вопрос к данным обычным языком — аналитик сам напишет SQL, выполнит его под read-only ролью и ответит цифрами. Под ответом видны выполненные запросы и что вернула база. Контакты клиентов и переписка аналитику недоступны. История чата живёт до перезагрузки страницы.',
+  placeholder: 'Задайте вопрос к данным, например: «сколько заказов протухло за неделю и по каким сервисам?»',
+  ask: 'Спросить',
+  thinking: 'Аналитик считает…',
+  notConfigured: 'Аналитик не настроен: не задан ключ модели или подключение к базе. Это на нашей стороне.',
+  rateLimited: 'Лимит запросов исчерпан — подождите несколько минут и повторите.',
+  modelFailed: 'Модель не ответила. Повторите вопрос через минуту.',
+  maxIterations: 'Аналитик не уложился в лимит шагов. Сформулируйте вопрос уже — по одному показателю.',
+  invalidHistory: 'История чата повреждена — перезагрузите страницу и задайте вопрос заново.',
+  executedQuery: 'Выполненный запрос',
+  queries: 'Запросов к базе',
+  truncated: 'Строки усечены: показаны первые 200.',
+  queryFailed: 'Запрос не выполнился',
+  noRows: 'Пустой результат.',
+  incomplete: 'Ответ оборван — модель не довела его до конца.',
+  clear: 'Очистить чат',
+  you: 'Вопрос',
+  analyst: 'Аналитик',
+} as const;
+
+/** Ошибки операции аналитика — коды тела ответа `/api/panel/ai/ask`. */
+export const ANALYST_ERROR_TEXT: Record<string, string> = {
+  ...COMMON_ERROR_TEXT,
+  not_configured: ANALYST_TEXT.notConfigured,
+  rate_limited: ANALYST_TEXT.rateLimited,
+  model_failed: ANALYST_TEXT.modelFailed,
+  max_iterations: ANALYST_TEXT.maxIterations,
+  invalid_history: ANALYST_TEXT.invalidHistory,
+  invalid_body: 'Вопрос пустой или слишком длинный.',
+};
 
 /** Заглушка раздела, закрытого для роли. Один текст на страницу и на операцию. */
 export const FORBIDDEN_TEXT = {

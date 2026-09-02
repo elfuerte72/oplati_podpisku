@@ -392,6 +392,18 @@ export const supportRequestHumanInput = z.object({
 });
 export type SupportRequestHumanInput = z.infer<typeof supportRequestHumanInput>;
 
+/**
+ * Вход единственного инструмента AI-аналитика панели (`run_sql`, спека
+ * admin-panel-v2 ветка B): один SELECT под read-only ролью. Граница — та же,
+ * что у остальных tools: сырой `tool_use.input` модели проверяется ДО
+ * обработчика; смысловая валидация SQL (одно выражение, только чтение) — в
+ * самом инструменте.
+ */
+export const runSqlInput = z.object({
+  sql: z.string().min(1).max(8000),
+});
+export type RunSqlInput = z.infer<typeof runSqlInput>;
+
 export const handoffReason = z.enum([
   'user_requested',
   'ai_uncertain',

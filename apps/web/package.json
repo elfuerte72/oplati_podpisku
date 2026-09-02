@@ -10,7 +10,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval:panel-ai": "vitest run --config vitest.eval.config.ts"
   },
   "dependencies": {
     "@oplati/agent": "workspace:*",

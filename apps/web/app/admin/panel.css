@@ -628,3 +628,41 @@
     text-align: left;
   }
 }
+
+/* ── Аналитик: чат, выполненные запросы (панель v2, ветка B) ─────────────── */
+
+.panel-analyst__thread {
+  margin-bottom: 16px;
+}
+/* Ответ модели — plain text: переводы строк сохраняются, Markdown не парсится. */
+.panel-analyst__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.panel-analyst__calls {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.panel-analyst__call {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius-control);
+  padding: 6px 10px;
+}
+.panel-analyst__call summary {
+  cursor: pointer;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+.panel-analyst__sql {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--panel-radius-control);
+  background: var(--panel-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+}

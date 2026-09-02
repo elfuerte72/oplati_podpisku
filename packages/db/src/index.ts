@@ -34,3 +34,14 @@ export type DB = ReturnType<typeof getDb>;
  */
 export type DBTx = Parameters<Parameters<DB['transaction']>[0]>[0];
 export type DBLike = DB | DBTx;
+
+export { listSchemaTables } from './schema-meta.ts';
+
+export {
+  pgliteReadOnlyExecutor,
+  runReadOnlyQuery,
+  wrapReadOnlyQuery,
+  type ReadOnlyExecutor,
+  type ReadOnlyQueryOptions,
+  type ReadOnlyQueryResult,
+} from './readonly-query.ts';

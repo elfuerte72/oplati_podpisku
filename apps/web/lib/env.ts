@@ -496,6 +496,20 @@ const serverEnvSchema = z.object({
   // `deepseek-v4-pro` — запасной вариант, если flash «болтает».
   SUPPORT_AI_MODEL: optionalEnvString(),
 
+  // ─── AI-аналитик админ-панели (спека admin-panel-v2, ветка B) ───────────
+  //
+  // Подключение к БД под ОТДЕЛЬНОЙ read-only ролью `panel_ai_ro`
+  // (`packages/db/scripts/panel-ai-role.sql`): аналитик выполняет SQL модели, и
+  // защита держится грантами роли, а не промптом. Не задан → раздел «Аналитик»
+  // честно пишет «не настроено», операция отвечает 503. Читается там же, где
+  // открывается подключение (`packages/db/src/readonly-query.ts`), схема
+  // проверяет только форму заданного значения.
+  PANEL_AI_DATABASE_URL: optionalUrl(),
+  // Модель аналитика; не задана → `SUPPORT_AI_MODEL`/дефолт помощника
+  // (`supportModel()` в `@oplati/agent`). Ключ и endpoint — те же, что у
+  // помощника поддержки (`SUPPORT_AI_API_KEY`, `SUPPORT_AI_BASE_URL`).
+  PANEL_AI_MODEL: optionalEnvString(),
+
   // Fallback USDT→RUB курс, если публичный endpoint Rapira временно недоступен.
   // Значение — рубли за 1 USDT; живой `askPrice` Rapira имеет приоритет.
   // 81 — решение владельца 2026-07-19 (M-14: прежний дефолт 77 занижал цену

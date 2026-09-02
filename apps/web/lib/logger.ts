@@ -43,6 +43,9 @@ export const redactPaths: string[] = [
   'env.TELEGRAM_BOT_TOKEN',
   'env.SENTRY_AUTH_TOKEN',
   'env.UPSTASH_REDIS_REST_TOKEN',
+  // Строка подключения аналитика панели несёт пароль роли `panel_ai_ro`.
+  'env.PANEL_AI_DATABASE_URL',
+  'env.SUPPORT_AI_API_KEY',
   // PII denylist из docs/observability.md (на границах request body)
   '*.content',
   '*.text',
