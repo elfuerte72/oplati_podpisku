@@ -1006,3 +1006,44 @@ export const clientFeedback = pgTable(
     ),
   }),
 ).enableRLS();
+
+// ─── Тексты воронки: оверлей над дефолтами из кода ────────────────────────
+// Спека `.scratch/admin-panel-v2/`, ветка C. Дефолты формулировок живут в
+// `apps/web/lib/telegram/templates.ts`; здесь — ТОЛЬКО переопределения
+// (строка есть у изменённого ключа, нет строки → дефолт) и история правок.
+// Ключи — свободный `text` без CHECK по списку: реестр ключей живёт в коде
+// приложения, и `packages/db` о нём знать не должен (границы пакетов).
+// Числа, сроки и деньги в БД не живут — редактируются формулировки, а
+// подстановки `{service}`/`{link}` заполняет код.
+
+export const funnelTexts = pgTable('funnel_texts', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Кто сохранил. `SET NULL` при удалении сотрудника: текст переживает автора.
+  updatedBy: uuid('updated_by').references(() => staff.id, { onDelete: 'set null' }),
+}).enableRLS();
+
+/**
+ * История правок — append-only (триггер в миграции по образцу
+ * `order_events_append_only`): «кто, когда, что было» нельзя переписать.
+ * `new_value IS NULL` — возврат к дефолту из кода.
+ */
+export const funnelTextRevisions = pgTable(
+  'funnel_text_revisions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    key: text('key').notNull(),
+    oldValue: text('old_value'),
+    newValue: text('new_value'),
+    // Без FK на staff НАМЕРЕННО (как `order_events.actor_id`): таблица
+    // append-only триггером, а `ON DELETE SET NULL` — это UPDATE, который
+    // триггер отвергает, и удаление сотрудника падало бы на его истории.
+    // История переживает автора: id остаётся, имя резолвится LEFT JOIN'ом.
+    staffId: uuid('staff_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    keyTimeIdx: index('funnel_text_revisions_key_created_at_idx').on(t.key, t.createdAt),
+  }),
+).enableRLS();

@@ -323,6 +323,16 @@ export {
 } from './funnel.ts';
 
 export {
+  listFunnelTextOverrides,
+  listFunnelTextRevisions,
+  resetFunnelText,
+  saveFunnelText,
+  type FunnelTextOverride,
+  type FunnelTextRevision,
+  type SaveFunnelTextResult,
+} from './funnel-texts.ts';
+
+export {
   activeSubjectsByDay,
   catalogClicksByService,
   dayKeysInRange,

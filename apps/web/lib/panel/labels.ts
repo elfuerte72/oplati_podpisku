@@ -43,6 +43,7 @@ export const SECTION_TITLES = {
   support: 'Поддержка',
   analytics: 'Аналитика',
   ai: 'Аналитик',
+  texts: 'Тексты воронки',
   partners: 'Партнёры',
   staff: 'Персонал',
 } as const;
@@ -464,6 +465,69 @@ export const ANALYST_ERROR_TEXT: Record<string, string> = {
   max_iterations: ANALYST_TEXT.maxIterations,
   invalid_history: ANALYST_TEXT.invalidHistory,
   invalid_body: 'Вопрос пустой или слишком длинный.',
+};
+
+/**
+ * Раздел «Тексты воронки» (панель v2, ветка C). Названия и подсказки самих
+ * строк живут в реестре `lib/funnel/texts.ts` (они описывают продукт), здесь —
+ * экранные надписи и причины отказа сохранения.
+ */
+export const FUNNEL_TEXTS_TEXT = {
+  intro:
+    'Формулировки сообщений воронки обратной связи и подписи кнопок. Правка применяется без деплоя: крон и бот читают тексты из базы, а без переопределения действует текст из кода. Числа и сроки здесь не меняются — подстановки в фигурных скобках заполняет код.',
+  changed: 'Изменено',
+  byDefault: 'По умолчанию',
+  changedBy: 'изменил',
+  placeholdersRequired: 'Обязательные подстановки',
+  placeholdersOptional: 'Допустимые подстановки',
+  placeholdersNone: 'Подстановок нет',
+  maxLength: 'Не длиннее',
+  characters: 'символов',
+  history: 'История правок',
+  historyEmpty: 'Правок не было.',
+  historyReset: 'возврат по умолчанию',
+  was: 'Было',
+  became: 'Стало',
+  save: 'Сохранить',
+  saving: 'Сохраняем…',
+  saved: 'Сохранено',
+  reset: 'Вернуть по умолчанию',
+  resetDone: 'Возвращено',
+  testSend: 'Отправить мне',
+  testSending: 'Отправляем…',
+  testSent: 'Отправлено в Telegram',
+  testSendHint: 'Уходит с образцовыми подстановками, без кнопок, только на ваш Telegram.',
+  buttonPreviewPrefix: 'Кнопка:',
+  unchanged: 'Текст совпадает с сохранённым.',
+} as const;
+
+/** Названия групп текстов воронки — ключи `FunnelTextGroup` из реестра. */
+export const FUNNEL_TEXT_GROUP_TITLES = {
+  expired_survey: 'Опрос после протухшего заказа',
+  start_survey: 'Опрос «нашёл, что искал?»',
+  order_rating: 'Оценка после выдачи карты',
+  referral_nudge: 'Реферальное касание',
+  common: 'Общие строки',
+} as const;
+
+/**
+ * Отказы сохранения и тест-отправки текстов. Причины валидации совпадают с
+ * `FunnelTextValidation.reason`; деталь (имя подстановки, лимит) дописывает
+ * компонент.
+ */
+export const FUNNEL_TEXT_ERROR_TEXT: Record<string, string> = {
+  ...COMMON_ERROR_TEXT,
+  unknown_key: 'Такого текста в реестре нет — обновите страницу.',
+  empty: 'Текст пустой.',
+  missing_placeholder: 'Не хватает обязательной подстановки:',
+  unknown_placeholder: 'Неизвестная подстановка — проверьте написание:',
+  too_long: 'Текст длиннее лимита. Максимум символов:',
+  duplicate_label: 'Такая подпись уже есть у другой кнопки этого опроса.',
+  no_telegram: 'К учётной записи не привязан Telegram — отправить некуда. Привяжите его в разделе «Персонал».',
+  bot_blocked: 'Клиентский бот не может написать вам: запустите его в Telegram (нажмите Start) и повторите.',
+  send_failed: 'Telegram не принял сообщение. Повторите через минуту.',
+  rate_limited: 'Слишком много тестовых отправок — подождите минуту.',
+  invalid_body: 'Текст не разобран — обновите страницу и попробуйте снова.',
 };
 
 /** Заглушка раздела, закрытого для роли. Один текст на страницу и на операцию. */

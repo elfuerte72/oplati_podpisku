@@ -32,8 +32,8 @@ describe('canAccess', () => {
     expect(canAccess('operator', 'staff')).toBe(false);
   });
 
-  it('аналитика и AI-аналитик — инструменты владельца (панель v2, ветки A и B)', () => {
-    for (const cap of ['analytics', 'ai'] as const) {
+  it('аналитика, AI-аналитик и тексты воронки — инструменты владельца (панель v2, ветки A–C)', () => {
+    for (const cap of ['analytics', 'ai', 'texts'] as const) {
       expect(canAccess('admin', cap)).toBe(true);
       expect(canAccess('operator', cap)).toBe(false);
     }
@@ -44,6 +44,10 @@ describe('canAccess', () => {
       title: 'Аналитика',
     });
     expect(sections.find((s) => s.href === '/admin/ai')).toMatchObject({ allowed: false, title: 'Аналитик' });
+    expect(sections.find((s) => s.href === '/admin/texts')).toMatchObject({
+      allowed: false,
+      title: 'Тексты воронки',
+    });
   });
 
   it('ручное исполнение остаётся менеджеру намеренно', () => {

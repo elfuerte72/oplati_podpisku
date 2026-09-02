@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useState, type SubmitEvent } from 'react';
 
 import {
   applyAskResponse,
@@ -28,7 +28,7 @@ export function AnalystChat() {
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function ask(event: FormEvent<HTMLFormElement>) {
+  async function ask(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || question.trim().length === 0) return;
     setBusy(true);

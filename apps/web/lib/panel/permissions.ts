@@ -45,6 +45,11 @@ export const PANEL_CAPABILITIES = [
    * ролью (ветка B). Каждый вопрос стоит денег провайдеру — только владелец.
    */
   'ai',
+  /**
+   * Раздел «Тексты воронки»: формулировки сообщений маскота правятся без
+   * деплоя (ветка C). Голос продукта — решение владельца, не операционка.
+   */
+  'texts',
 ] as const;
 
 export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
@@ -87,6 +92,7 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/support', capability: 'support' },
   { href: '/admin/analytics', capability: 'analytics' },
   { href: '/admin/ai', capability: 'ai' },
+  { href: '/admin/texts', capability: 'texts' },
   { href: '/admin/partners', capability: 'partners' },
   { href: '/admin/staff', capability: 'staff' },
 ];

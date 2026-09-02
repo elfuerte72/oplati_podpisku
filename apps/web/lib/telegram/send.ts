@@ -17,7 +17,10 @@ import { getBot } from './bot';
 
 const log = childLogger('telegram-bot');
 
-export const TELEGRAM_MESSAGE_LIMIT = 4096;
+import { TELEGRAM_MESSAGE_LIMIT } from './limits';
+
+// Реэкспорт для прежних импортов; источник — `limits.ts`.
+export { TELEGRAM_MESSAGE_LIMIT };
 const TYPING_REFRESH_MS = 4000;
 
 /**

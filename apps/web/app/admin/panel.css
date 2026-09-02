@@ -666,3 +666,66 @@
   overflow-wrap: anywhere;
   overflow-x: auto;
 }
+
+/* ── Тексты воронки: строка реестра с редактором (панель v2, ветка C) ────── */
+
+.panel-text-row {
+  padding: 14px 0;
+  border-top: 1px solid var(--panel-border);
+}
+.panel-text-row:first-of-type {
+  border-top: none;
+  padding-top: 8px;
+}
+.panel-text-row__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.panel-text-row__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.panel-text-row__hint {
+  margin: 2px 0 0;
+  font-size: 13px;
+}
+.panel-text-row__meta {
+  margin: 8px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.panel-text-row__meta code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.panel-text-editor__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.panel-text-editor__count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: auto;
+}
+.panel-text-row__history {
+  margin-top: 10px;
+}
+.panel-text-row__history summary {
+  cursor: pointer;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+/* Тексты как есть: переводы строк сохраняются, Markdown не парсится. */
+.panel-text-row__value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.panel-text-row__diff {
+  margin-top: 2px;
+}
