@@ -27,13 +27,20 @@ import { askAnalyst, type AskAnalystResult } from '@/lib/panel/ai/ask';
  *
  * Запуск (в CI не гоняется — живой ключ, деньги, dev-БД):
  *   DATABASE_URL=<dev> PANEL_AI_DATABASE_URL=<dev, роль panel_ai_ro> \
- *   SUPPORT_AI_API_KEY=... pnpm --filter web eval:panel-ai
+ *   SUPPORT_AI_API_KEY=... APP_URL=http://localhost:3000 \
+ *   RATE_LIMIT_DISABLED=1 pnpm --filter web eval:panel-ai
+ *
+ * ⚠️ `APP_URL` нужен не скрипту, а `serverEnv`: `askAnalyst` зовёт лимитер, а
+ * тот читает конфиг целиком. Без него прогон падал «Invalid server env» из
+ * недр `lib/ratelimit.ts` — поэтому переменная в списке обязательных ниже.
+ * `RATE_LIMIT_DISABLED=1` — чтобы прогон не выел бакет `panel-ai` (30/10 мин),
+ * кейсов больше.
  *
  * Сев остаётся в dev-БД (order_events append-only, удалить нельзя) — заказы
  * помечены описанием `EVAL-PANEL-AI`, клиент — telegram_id `eval-panel-ai`.
  */
 
-const REQUIRED = ['DATABASE_URL', 'PANEL_AI_DATABASE_URL', 'SUPPORT_AI_API_KEY'] as const;
+const REQUIRED = ['DATABASE_URL', 'PANEL_AI_DATABASE_URL', 'SUPPORT_AI_API_KEY', 'APP_URL'] as const;
 for (const name of REQUIRED) {
   if (!process.env[name]) throw new Error(`${name} обязателен для eval:panel-ai`);
 }
@@ -195,6 +202,9 @@ describe('eval: аналитик панели', () => {
   });
 
   it('02 оплаченные заказы за месяц', async () => {
+    // Вопрос намеренно без уточнений: правило «покупка = paid/in_fulfillment/
+    // completed по paid_at» живёт в системном промпте, и кейс проверяет, что
+    // аналитик считает так же, как раздел «Аналитика» панели.
     const res = await ask('02', 'Сколько оплаченных заказов за последние 30 дней?');
     pass('02', res.ok && mentionsNumber(res.answer, truth.paidOrders30d));
   });
