@@ -16,17 +16,24 @@
 
 ## Покрытие и история регрессов
 
-**Состав.** Vitest в `apps/web` (loveandpay: client/sign/handlers; rapira: live-rate/fallback; pay-space: client/sign/format; ai: бюджет/роутер; chat: toolCards; ratelimit; security/timing-safe; jobs/issue-card + recycle-cards + referral-rollup + referral-accrual-recovery; cabinet/referral: снапшот/auth/payout; referral/payout-executor + accrue; orders/propose rate-limit; telegram/init-data: `start_param` из подписанного initData), `packages/types` (state machine, схемы L&P/Rapira, referral: ставки + прогрессия + выплаты) и `packages/db` (**интеграционные на PGlite** — реальный Postgres + реальные миграции: атомарный claim и его откат в транзакции, идемпотентность webhook, append-only-триггер, guard оплаченного заказа в expire, merge пользователей, идемпотентность+reversal ledger'а, машина статусов выплат, реферальный захват `getOrCreateUserByTelegramId` ставит `referred_by`+`referred_by_set_at`). Всего **web 2046, types 189, db 372, agent 69** (2026-09-02 — трек admin-panel-v2:
+**Состав.** Vitest в `apps/web` (loveandpay: client/sign/handlers; rapira: live-rate/fallback; pay-space: client/sign/format; ai: бюджет/роутер; chat: toolCards; ratelimit; security/timing-safe; jobs/issue-card + recycle-cards + referral-rollup + referral-accrual-recovery; cabinet/referral: снапшот/auth/payout; referral/payout-executor + accrue; orders/propose rate-limit; telegram/init-data: `start_param` из подписанного initData), `packages/types` (state machine, схемы L&P/Rapira, referral: ставки + прогрессия + выплаты) и `packages/db` (**интеграционные на PGlite** — реальный Postgres + реальные миграции: атомарный claim и его откат в транзакции, идемпотентность webhook, append-only-триггер, guard оплаченного заказа в expire, merge пользователей, идемпотентность+reversal ledger'а, машина статусов выплат, реферальный захват `getOrCreateUserByTelegramId` ставит `referred_by`+`referred_by_set_at`). Всего **web 2047, types 189, db 372, agent 69** (2026-09-02 — трек admin-panel-v2:
 выборки аналитики на PGlite (границы окна по UTC, пустой период, семь шагов воронки с
 нулями, топ с потолком, «вне каталога»), рендер SVG-графиков в строку (90 столбцов, нули без
 NaN, прочерк конверсии) и страница `/admin/analytics` с фикстурой репозитория; исполнитель
-read-only SQL на PGlite без роли (UPDATE и пишущий CTE — ошибка SQL по построению обёртки,
-READ ONLY транзакция отвергает запись даже без обёртки, потолки строк и байт, классификация
-ошибок, `not_configured`) и канарейка грант-файла роли `panel_ai_ro` (нет `messages`/
+read-only SQL на PGlite без роли (UPDATE и пишущий CTE — ошибка SQL, READ ONLY транзакция
+отвергает запись даже без обёртки, `;`-цепочка, обошедшая лексер, отвергается СЕРВЕРОМ на
+extended protocol, потолки строк и байт, классификация ошибок, `not_configured`) и канарейка грант-файла роли `panel_ai_ro` (нет `messages`/
 `attachments`/`link_tokens`/сырой `analytics_events`, у колоночных грантов нет контактов и
 секретов, каждая таблица гранта существует в схеме); `run_sql` (одно выражение, литералы и
-комментарии с `;`, запреты `INTO`/`FOR UPDATE`/`pg_sleep`, маска контактов с сохранением uuid
-и цифровых id, текст результата с пометкой усечения); `askAnalyst` через шов `AgentClient`
+комментарии с `;`, `$` внутри идентификатора и escape-строки, денилист изменяющих и служебных
+выражений — пишущий CTE не проходит, и обратная сторона: живые аналитические запросы проходят,
+запреты `INTO`/`FOR UPDATE`/`pg_sleep*`/`COPY`/large objects, маска контактов с сохранением uuid
+и цифровых id — и в ячейках, и в ТЕКСТЕ ОШИБКИ Postgres, текст результата с пометкой усечения);
+состояние чата аналитика (резка истории по ходам и по байтам, единственный тяжёлый ход
+обрезается, а не запирает чат); тексты воронки (проверка НА ЧТЕНИИ с откатом на дефолт и
+алёртом по ключу, длина по ОТРЕНДЕРЕННОМУ тексту, соседние подписи кнопок при сбросе, пропуск
+прогона крона без оверлея); история правок с потолком НА КЛЮЧ; `readHoldsCount` = списку без
+потолка; `askAnalyst` через шов `AgentClient`
 (SQL с ошибкой → `is_error` → исправленный SQL → ответ, кап итераций с usage, `not_configured`
 без обращения к клиенту, кап запросов, Zod на историю); словарь схемы ↔ грант-файл ↔
 `schema.ts` (три зеркала одним тестом) и тон промпта; роут `/api/panel/ai/ask` и состояние
@@ -42,8 +49,15 @@ READ ONLY транзакция отвергает запись даже без �
 (`scripts/eval-panel-ai.eval.ts`, свой `vitest.eval.config.ts`): сеет dev-БД через
 репозитории, считает эталоны под ролью `panel_ai_ro`, задаёт 10 вопросов владельца и сверяет
 числа; ловушка «покажи email клиента» обязана проходить всегда. В CI не гоняется — живой ключ и
-dev-БД; ⚠️ на момент мержа трека не запускался: роль и `PANEL_AI_DATABASE_URL` на dev — шаг
-владельца. Ранее: **web 1863, types 189, db 301, agent 69** (2026-08-28 — трек support-ai: машина
+dev-БД; ⚠️ прогонялся только против ЛОКАЛЬНОЙ копии контура (2026-09-02): 8–9 из 10, ловушка
+«покажи email клиента» проходит всегда, расхождения — на границе семидневного окна
+синтетических данных. Прогон против dev-БД остаётся в `docs/BACKLOG.md`. ⚠️ Команде запуска
+нужны ещё `APP_URL` и `RATE_LIMIT_DISABLED=1`, иначе прогон падает на конфиге и выедает бакет
+`panel-ai`. Ранее: **web 1912, types 189, db 327, agent 69** (2026-09-01 — трек
+retention-funnel: claim'ы и частичные UNIQUE `funnel_sends` на PGlite, окна выборок, CHECK
+оценки, RLS; привратник (флаг, отписка, режим оператора, тихое окно, бюджет, 403); джоба через
+реальный гейт; кнопки `fb:*` и вход в поддержку). Ранее: **web 1863, types 189, db 301,
+agent 69** (2026-08-28 — трек support-ai: машина
 состояний разговора на PGlite (каждый переход, повторный и чужой не проходит, backfill enum на
 базе, ОСТАНОВЛЕННОЙ перед миграцией и наполненной строками со старым дефолтом, выборки крона и
 капа, контекст помощника без служебных строк и команд, дедуп пингов персоналу), **настоящий

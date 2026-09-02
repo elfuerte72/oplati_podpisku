@@ -39,6 +39,8 @@
 | Документ | О чём |
 |---|---|
 | [`adr/0001-vcc-preflight-by-snapshot.md`](adr/0001-vcc-preflight-by-snapshot.md) | почему проверка карточного фонда судит по снимку в своей БД, а не спрашивает провайдера в момент оплаты |
+| [`adr/0002-ai-support-operator.md`](adr/0002-ai-support-operator.md) | почему поддержку ведут режимы разговора (`idle`/`ai`/`operator`) и панель, а не форум-топики Telegram |
+| [`adr/0003-panel-analyst-readonly-sql.md`](adr/0003-panel-analyst-readonly-sql.md) | почему аналитик панели пишет SQL сам, и почему его держат гранты отдельной роли, а не промпт |
 
 ## Рунбуки — операционные процедуры
 

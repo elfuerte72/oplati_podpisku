@@ -22,7 +22,7 @@
 │                          │   ToolHandlers ──→ Postgres  │
 │                          │                              │
 │  Freekassa/L&P ──→ /api/payments/* (webhook'и)           │
-│  systemd crontab ──→ /api/cron/* (8 джобов)              │
+│  systemd crontab ──→ /api/cron/* (9 джобов)              │
 └─────────────────────────────────────────────────────────┘
          │                    │                  │
    @oplati/agent         @oplati/db        @oplati/types
@@ -52,10 +52,10 @@
 
 Drizzle ORM поверх self-host Postgres 17 на том же VPS (переезд с Supabase 2026-07-24).
 
-- `src/schema.ts` — вся схема: 21 таблица + enum'ы. RLS включён на ВСЕХ таблицах (`enableRLS()`); публичный каталог `services` отличается не отсутствием RLS, а политикой public-read активных записей (остальные — deny-by-default, доступ только `service_role`/прямое подключение; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
+- `src/schema.ts` — вся схема: 25 таблиц + enum'ы. RLS включён на ВСЕХ таблицах (`enableRLS()`); публичный каталог `services` отличается не отсутствием RLS, а политикой public-read активных записей (остальные — deny-by-default, доступ только `service_role`/прямое подключение; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
 - `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert, атомарные `claimPaymentSucceeded`/`claimPaymentTerminal`), `cards`, `link-tokens` (привязка Telegram к веб-сессии), `staff` (персонал панели: TOTP-привязка, одноразовый claim окна кода), `panel` (все выборки админ-панели — своих SQL в панели нет; `countHoldsForPanel` и список холдов делят один `holdsCondition()`), `analytics-panel` (раздел «Аналитика»: деньги/воронка/продукт за период, ряды по дням с нулями, ISO-строки вместо `Date`), `funnel-texts` (оверлей текстов воронки + append-only история — сохранение и сброс пишут историю в той же транзакции), `vpn-subscriptions`, `vcc-balance` (снимки фонда и резервы под заказ), `ai-usage` (дневной токен-бюджет), `analytics`, `freekassa` (nonce), `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
 - `migrations/` — forward-only миграции Drizzle (`meta/_journal.json` запекается в образ и сверяется `/api/ready`); `scripts/seed-catalog.ts` — идемпотентный seed каталога, `scripts/manage-staff.ts` — заведение персонала панели (`db:staff`).
-- `src/readonly-query.ts` — исполнитель SQL AI-аналитика панели под ОТДЕЛЬНОЙ ролью `panel_ai_ro` (`scripts/panel-ai-role.sql`, ADR 0003): своё подключение по `PANEL_AI_DATABASE_URL`, транзакция `READ ONLY` + `statement_timeout`, запрос завёрнут в подзапрос с `LIMIT`; `getDb()` на другую роль не перенацеливается. `src/schema-meta.ts` — имена таблиц и колонок для канареек вне пакета.
+- `src/readonly-query.ts` — исполнитель SQL AI-аналитика панели под ОТДЕЛЬНОЙ ролью `panel_ai_ro` (`scripts/panel-ai-role.sql`, ADR 0003): своё подключение по `PANEL_AI_DATABASE_URL`, транзакция `READ ONLY` + `statement_timeout`, запрос уходит extended protocol (`simple: false`) — строку из нескольких команд отвергает сам Postgres — и завёрнут в подзапрос с `LIMIT` (потолок строк); `getDb()` на другую роль не перенацеливается. `src/schema-meta.ts` — имена таблиц и колонок для канареек вне пакета.
 - `repositories/logger.ts` — интерфейс `RepoLogger` (pino-shape), чтобы пакет не зависел от pino.
 
 ### `packages/agent` — AI
@@ -95,7 +95,8 @@ app/
                                   orders/ (fulfillment, remind), support/ (assign, reply),
                                   partners/payout, ai/ask (вопрос аналитику), texts/ (save,
                                   reset, test-send)
-    cron/                         9 эндпоинтов (CRON_SECRET); расписание — infra/crontab.example
+    cron/                         10 эндпоинтов (CRON_SECRET); в расписании 9 — keepalive остался
+                                  в коде без строки крона; расписание — infra/crontab.example
     alerts/sentry/                приём алёртов Sentry
     analytics/ catalog/ profile/  телеметрия, витрина каталога, профиль веб-сессии
     admin/telegram-webhook/       set/get/delete webhook бота без раскрытия токена
