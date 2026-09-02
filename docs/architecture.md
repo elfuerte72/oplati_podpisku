@@ -53,8 +53,9 @@
 Drizzle ORM поверх self-host Postgres 17 на том же VPS (переезд с Supabase 2026-07-24).
 
 - `src/schema.ts` — вся схема: 21 таблица + enum'ы. RLS включён на ВСЕХ таблицах (`enableRLS()`); публичный каталог `services` отличается не отсутствием RLS, а политикой public-read активных записей (остальные — deny-by-default, доступ только `service_role`/прямое подключение; помимо тарифов `pricing_policy` хранит пер-сервисные правила оплаты `payment_instructions` — VPN/локация/валюта/billing/ссылка, Zod `servicePaymentInstructions`).
-- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert, атомарные `claimPaymentSucceeded`/`claimPaymentTerminal`), `cards`, `link-tokens` (привязка Telegram к веб-сессии), `staff` (персонал панели: TOTP-привязка, одноразовый claim окна кода), `panel` (все выборки админ-панели — своих SQL в панели нет), `vpn-subscriptions`, `vcc-balance` (снимки фонда и резервы под заказ), `ai-usage` (дневной токен-бюджет), `analytics`, `freekassa` (nonce), `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
+- `src/repositories/` — единственный санкционированный способ работы с данными: `users` (upsert по telegram_id, захват реферера при INSERT + отложенный `setReferrerOnce` для Mini App/поздних заходов), `conversations`, `messages` (append-only), `services`, `orders` (**`transitionOrder()`** — единственная точка смены статуса заказа: валидирует переход по `allowedTransitions`, пишет `order_events` в той же транзакции), `payments` (идемпотентный insert, атомарные `claimPaymentSucceeded`/`claimPaymentTerminal`), `cards`, `link-tokens` (привязка Telegram к веб-сессии), `staff` (персонал панели: TOTP-привязка, одноразовый claim окна кода), `panel` (все выборки админ-панели — своих SQL в панели нет; `countHoldsForPanel` и список холдов делят один `holdsCondition()`), `analytics-panel` (раздел «Аналитика»: деньги/воронка/продукт за период, ряды по дням с нулями, ISO-строки вместо `Date`), `funnel-texts` (оверлей текстов воронки + append-only история — сохранение и сброс пишут историю в той же транзакции), `vpn-subscriptions`, `vcc-balance` (снимки фонда и резервы под заказ), `ai-usage` (дневной токен-бюджет), `analytics`, `freekassa` (nonce), `health` (`pingDb`). Реферальные: `referrals` (дерево `referred_by`, коды, `getReferralAncestors`), `referral-accruals` (ledger начислений + баланс), `referral-cabinet` (read-агрегаты кабинета), `referral-progression` (месячный rollup статусов).
 - `migrations/` — forward-only миграции Drizzle (`meta/_journal.json` запекается в образ и сверяется `/api/ready`); `scripts/seed-catalog.ts` — идемпотентный seed каталога, `scripts/manage-staff.ts` — заведение персонала панели (`db:staff`).
+- `src/readonly-query.ts` — исполнитель SQL AI-аналитика панели под ОТДЕЛЬНОЙ ролью `panel_ai_ro` (`scripts/panel-ai-role.sql`, ADR 0003): своё подключение по `PANEL_AI_DATABASE_URL`, транзакция `READ ONLY` + `statement_timeout`, запрос завёрнут в подзапрос с `LIMIT`; `getDb()` на другую роль не перенацеливается. `src/schema-meta.ts` — имена таблиц и колонок для канареек вне пакета.
 - `repositories/logger.ts` — интерфейс `RepoLogger` (pino-shape), чтобы пакет не зависел от pino.
 
 ### `packages/agent` — AI
@@ -77,7 +78,9 @@ app/
   partner/                        веб-страница партнёрского кабинета
   payment-success/                страница после оплаты
   admin/                          админ-панель: login/ (+ code/), orders/[shortId], clients/[id],
-                                  pending/, holds/, support/[conversationId], partners/ (+ [userId],
+                                  pending/, holds/, support/[conversationId], feedback/ (лента
+                                  ответов воронки), analytics/ (графики за период), ai/ (чат с
+                                  AI-аналитиком), texts/ (тексты воронки), partners/ (+ [userId],
                                   payouts/), staff/; свои стили panel.css, error.tsx, not-found.tsx
   api/
     bot/                          Telegram webhook клиентского бота
@@ -90,7 +93,8 @@ app/
     auth/telegram/                привязка Telegram к веб-сессии (link-токены)
     panel/                        операции панели: auth/ (telegram, totp, logout),
                                   orders/ (fulfillment, remind), support/ (assign, reply),
-                                  partners/payout
+                                  partners/payout, ai/ask (вопрос аналитику), texts/ (save,
+                                  reset, test-send)
     cron/                         9 эндпоинтов (CRON_SECRET); расписание — infra/crontab.example
     alerts/sentry/                приём алёртов Sentry
     analytics/ catalog/ profile/  телеметрия, витрина каталога, профиль веб-сессии
@@ -104,7 +108,9 @@ components/
   cabinet/ partner/ contacts/     Mini App-кабинет, партнёрский кабинет, плашка контактов
   panel/                          UI панели: PanelShell (меню со счётчиками), PanelPageHeader,
                                   кнопки операций (RemindPayment, ManualFulfillment, PayoutDecision,
-                                  SupportReply), LocalTime, LiveRefresh
+                                  SupportReply), AnalystChat (эфемерный чат), FunnelTextEditor,
+                                  LocalTime, LiveRefresh; charts/ — серверные SVG без клиентского
+                                  JS (BarsByDay, LineByDay, HBars, scale)
 lib/
   env.ts / env.server.ts          Zod-валидация env, lazy; server-only re-export
   logger.ts / sentry.ts           pino + redact PII; beforeSend-скраббер Sentry
@@ -114,11 +120,21 @@ lib/
   billing-address.ts / deployment-url.ts   адрес плательщика для шлюза; публичный URL стенда
   panel/                          админ-панель: labels (словарь всех текстов), permissions (роли),
                                   login/totp/telegram-login/token/session (вход и сессия), guard
-                                  (гейт операции и страницы, Origin), menu-counts (счётчики меню),
-                                  desk, remind, fulfillment, payouts, support, format, vcc-balance
+                                  (гейт операции и страницы, Origin), menu-counts (счётчики меню:
+                                  pending/holds/support/feedback), desk, remind, fulfillment,
+                                  payouts, support, format, vcc-balance, funnel-texts (валидация
+                                  для операций); analytics/period (период в адресе, окно по UTC);
+                                  ai/ — аналитик: run-sql (валидация, маска, формат), profile,
+                                  system-prompt + schema-dictionary (зеркало гранта роли, тест),
+                                  ask (ход, кап, учёт логом), chat-state (состояние чата без React)
+  funnel/                         воронка обратной связи: gate (привратник — единственная точка
+                                  отправки), texts (реестр 22 строк: дефолты из templates.ts,
+                                  оверлей из БД с памяткой, рендер и валидация подстановок)
   telegram/                       grammY bot singleton, handle-update (роутер) + флоу: start-menu,
                                   link-flow, support-flow, catalog-callbacks, agent-dialog,
-                                  vpn-flow; templates, amount; staff-bot-client (бот персонала)
+                                  vpn-flow, funnel-callbacks (кнопки fb:*, тексты из реестра);
+                                  templates (дефолты строк), limits (лимиты Bot API), amount;
+                                  staff-bot-client (бот персонала)
   tool-handlers/                  реализация ToolHandlers (мост agent → db)
   payments/                       gateway (выбор шлюза), capacity (текст отказа preflight), expiry
   freekassa/ + loveandpay/        клиенты, подписи, webhook-handlers обоих шлюзов

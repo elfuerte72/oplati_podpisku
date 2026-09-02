@@ -84,6 +84,23 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 После нового гранта — в Metabase «Admin → Databases → Sync database schema»,
 иначе таблица не появится.
 
+### Рядом живёт `panel_ai_ro` — роль AI-аналитика панели
+
+С 2026-09-02 у боевой БД вторая read-only роль — `panel_ai_ro` для AI-аналитика
+админ-панели (`/admin/ai`, ADR 0003). Канонический SQL —
+`packages/db/scripts/panel-ai-role.sql` (пароль — плейсхолдер, подставляет
+человек; файл идемпотентен). Набор грантов — тот же, что у `metabase_ro`, плюс
+`client_feedback`, `funnel_sends`, `analytics_event_types` и вьюхи аналитики;
+УЖЕ metabase_ro там, где читатель — внешний провайдер модели: `staff` без
+`totp_*`/`email`/`telegram_id`, `vpn_subscriptions` без `subscription_url`.
+`CONNECTION LIMIT 2`, `statement_timeout = 30s`, `BYPASSRLS` по той же причине.
+
+⚠️ **Новая таблица = грант ОБЕИМ ролям** (и Metabase, и аналитику), если она
+нужна в отчётах, — плюс описание в словаре схемы аналитика
+(`apps/web/lib/panel/ai/schema-dictionary.ts`): словарь и грант-файл — зеркало,
+которое сверяет тест. Таблицы с PII (`funnel_texts`, `funnel_text_revisions` —
+не PII, но и не аналитика) по умолчанию не выдаются ни одной роли.
+
 ## Грабли
 
 - **Шаблон Dokploy устарел и терял данные.** В блюпринте `metabase:v0.50.8`,
