@@ -107,6 +107,7 @@ import {
   getClientDetailForPanel,
   getOrderDetailForPanel,
   listHoldsForPanel,
+  countHoldsForPanel,
   listPendingOrdersForPanel,
   countPendingOrdersForPanel,
   listSupportRequestsForPanel,
@@ -4420,6 +4421,61 @@ describe('панель: антифрод-холды (тикет 05)', () => {
 
     expect(page.items).toHaveLength(1);
     expect(page.hasMore).toBe(true);
+  });
+
+  it('countHoldsForPanel считает ЗАКАЗЫ той же выборкой, что список, и без потолка (тикет 13 панели v2)', async () => {
+    // Список режется потолком, счётчик в меню — нет: «100+» на бейдже — не
+    // число. Заказ с несколькими платежами считается один раз, как и в списке
+    // после дедупа. Сравниваем дельту с полной выборкой.
+    const user = await makeUser({ telegramId: `tg-hold-count-${++seq}` });
+    const before = await countHoldsForPanel(db);
+    const fullBefore = await listHoldsForPanel(db, 100);
+    // База уже содержит холды из соседних тестов — сверяем дельту.
+    for (let i = 0; i < 3; i++) {
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+      // Второй платёж у того же заказа не должен удвоить счётчик. Первый
+      // гасим (частичный UNIQUE — один живой счёт на заказ), код холда у него
+      // остаётся.
+      await claimPaymentTerminal(db, payment.id);
+      const extra = await upsertPaymentByProviderRef(db, {
+        orderId: order.id,
+        provider: 'freekassa',
+        providerRef: `hold-count-${++seq}`,
+        amountRub: 50000,
+      });
+      await setPaymentProviderStatus(db, { paymentId: extra.payment.id, providerStatus: 7 });
+    }
+
+    const after = await countHoldsForPanel(db);
+    const fullAfter = await listHoldsForPanel(db, 100);
+
+    expect(after - before).toBe(3);
+    if (!fullAfter.hasMore) {
+      expect(after).toBe(fullAfter.items.length);
+      expect(fullAfter.items.length - fullBefore.items.length).toBe(3);
+    }
+  });
+
+  it('N > потолка списка: список — 100 + «есть ещё», счётчик — настоящее число', async () => {
+    const user = await makeUser({ telegramId: `tg-hold-cap-${++seq}` });
+    const before = await countHoldsForPanel(db);
+    // Добираем до заведомо больше сотни заказов на проверке банка.
+    const need = Math.max(0, 105 - before);
+    for (let i = 0; i < need; i++) {
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+    }
+
+    const page = await listHoldsForPanel(db, 100);
+    const count = await countHoldsForPanel(db);
+
+    expect(page.items).toHaveLength(100);
+    expect(page.hasMore).toBe(true);
+    expect(count).toBe(before + need);
+    expect(count).toBeGreaterThan(page.items.length);
   });
 });
 

@@ -54,7 +54,9 @@ export type RateLimitName =
   | 'alert-webhook-auth'
   | 'admin-auth'
   | 'admin-totp'
-  | 'staff-bot';
+  | 'staff-bot'
+  | 'panel-ai'
+  | 'panel-texts-test';
 
 type LimiterConfig = { limit: number; windowSeconds: number };
 
@@ -160,6 +162,16 @@ const CONFIGS: Record<RateLimitName, LimiterConfig> = {
   // чтения БД и исходящего вызова Telegram. Отдельный от `telegram` — служебный
   // бот не должен выедать лимит клиентского и наоборот.
   'staff-bot': { limit: 10, windowSeconds: 60 },
+  // AI-аналитик панели (спека admin-panel-v2, ветка B), по `staff.id`. Мягкий
+  // кап расходов на DeepSeek: 30 вопросов за 10 минут человеку хватает, а
+  // залипший клиентский цикл или сотрудник, гоняющий одно и то же, режется.
+  // Fail-open, как у клиентских бакетов: единственным барьером перебора здесь
+  // ничто не является — за сотрудником уже стоит вход с TOTP.
+  'panel-ai': { limit: 30, windowSeconds: 600 },
+  // Тест-отправка текста воронки сотруднику себе в Telegram (ветка C), по
+  // `staff.id`: каждая — исходящий вызов Bot API; 10 в минуту хватает править
+  // формулировку глазами клиента, флуд самому себе режется.
+  'panel-texts-test': { limit: 10, windowSeconds: 60 },
 };
 
 // Резолв клиентского IP вынесен в `client-ip.ts` (антифрод-трек, тикет 01):

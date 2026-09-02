@@ -8,6 +8,7 @@ import type { ReplyKeyboardRemove } from 'grammy/types';
 import { childLogger } from '@/lib/logger';
 
 import { getBot } from './bot';
+import { TELEGRAM_MESSAGE_LIMIT } from './limits';
 
 /**
  * Отправка сообщений в Telegram: безопасный send, edit-or-send, индикатор
@@ -17,7 +18,8 @@ import { getBot } from './bot';
 
 const log = childLogger('telegram-bot');
 
-export const TELEGRAM_MESSAGE_LIMIT = 4096;
+// Реэкспорт для прежних импортов; источник — `limits.ts`.
+export { TELEGRAM_MESSAGE_LIMIT };
 const TYPING_REFRESH_MS = 4000;
 
 /**

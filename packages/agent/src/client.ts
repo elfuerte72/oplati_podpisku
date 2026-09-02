@@ -61,6 +61,33 @@ export function getSupportClient(): Anthropic {
   return _supportClient;
 }
 
+let _panelAnalystClient: Anthropic | undefined;
+
+/**
+ * Клиент AI-аналитика панели — тот же провайдер и ключ, что у помощника, но
+ * СВОЙ экземпляр SDK с другими сроками.
+ *
+ * У помощника 20 с и два ретрая рассчитаны на короткую реплику клиенту в чате.
+ * Аналитик отдаёт до 2000 токенов НЕ потоком: заголовки ответа приходят только
+ * после генерации, поэтому здоровый ответ на 20-30 с помощниковый таймер
+ * обрывал бы и пересылал запрос дважды — сотрудник ждал бы минуту и получал
+ * «модель не ответила», а провайдер брал бы деньги за три входа
+ * (code-review 2026-09-02). Ретрай один: ход стоит денег, а сотрудник видит
+ * отказ и повторяет сам.
+ */
+export function getPanelAnalystClient(): Anthropic {
+  if (_panelAnalystClient) return _panelAnalystClient;
+  const apiKey = process.env.SUPPORT_AI_API_KEY;
+  if (!apiKey) throw new Error('SUPPORT_AI_API_KEY is not set');
+  _panelAnalystClient = new Anthropic({
+    apiKey,
+    baseURL: process.env.SUPPORT_AI_BASE_URL || SUPPORT_AI_DEFAULT_BASE_URL,
+    timeout: 90_000,
+    maxRetries: 1,
+  });
+  return _panelAnalystClient;
+}
+
 /**
  * Имя модели помощника.
  *

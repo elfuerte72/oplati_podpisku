@@ -34,16 +34,21 @@ const h = vi.hoisted(() => {
     ratedRows: [] as { userId: string }[],
     referralCodes: new Map<string, string>(),
     botUsernameError: false,
+    // Переопределения текстов воронки (панель v2): пусто — дефолты из кода;
+    // `textsFail` — БД при чтении оверлея недоступна.
+    textOverrides: [] as { key: string; value: string; updatedAt: Date; updatedBy: null; updatedByName: null }[],
+    textsFail: false,
   };
   return {
     state,
     sendMessageMock: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
+    captureException: vi.fn(),
     windows: {} as Record<string, { from: Date; to: Date }>,
   };
 });
 
 vi.mock('@/lib/env.server', () => ({ serverEnv: h.state.env }));
-vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('@sentry/nextjs', () => ({ captureException: h.captureException, captureMessage: vi.fn() }));
 vi.mock('@/lib/telegram/bot', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
   getBotUsername: vi.fn(async () => {
@@ -110,6 +115,10 @@ vi.mock('@oplati/db', () => ({
     if (!code) throw new Error('no code arranged');
     return code;
   }),
+  listFunnelTextOverrides: vi.fn(async () => {
+    if (h.state.textsFail) throw new Error('connection refused');
+    return h.state.textOverrides;
+  }),
   // Ниже — то, что тянут транзитивные импорты (funnel-callbacks → notify-staff).
   listStaffRecipients: vi.fn(async () => []),
   getOrderById: vi.fn(async () => null),
@@ -118,6 +127,7 @@ vi.mock('@oplati/db', () => ({
 }));
 
 import { runFunnelJob } from './funnel.ts';
+import { invalidateFunnelTexts } from '../funnel/texts.ts';
 import {
   EXPIRED_SURVEY_TEXT,
   START_SURVEY_TEXT,
@@ -156,6 +166,9 @@ beforeEach(() => {
   h.state.ratedRows = [];
   h.state.referralCodes.clear();
   h.state.botUsernameError = false;
+  h.state.textOverrides = [];
+  h.state.textsFail = false;
+  invalidateFunnelTexts();
   h.windows = {} as typeof h.windows;
 });
 
@@ -405,5 +418,54 @@ describe('деградация прогона (история 18)', () => {
 
     expect(res.expiredSurvey.errors).toBe(1);
     expect(res.startSurvey).toEqual({ sent: 1, skipped: 0, errors: 0 });
+  });
+});
+
+describe('тексты воронки из реестра (панель v2, тикет 10)', () => {
+  it('переопределение в БД → крон шлёт новый текст и новую подпись кнопки', async () => {
+    addTgUser('u1');
+    h.state.expiredRows = [{ orderId: 'o1', userId: 'u1' }];
+    h.state.textOverrides = [
+      { key: 'expired_survey.body', value: 'Что помешало оплатить заказ?', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+      { key: 'expired_survey.answer.price', value: 'Слишком дорого', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+
+    await runFunnelJob({ now: NOON });
+
+    const msg = sentMessages()[0];
+    expect(msg?.text).toBe('Что помешало оплатить заказ?');
+    const labels = msg?.markup?.inline_keyboard.flat().map((b) => b.text) ?? [];
+    expect(labels).toContain('Слишком дорого');
+    expect(labels).not.toContain('💸 Дорого');
+  });
+
+  it('подстановка {service} заполняется из заказа; для заказа вне каталога — текст без подстановки', async () => {
+    addTgUser('u1');
+    h.state.completedRows = [
+      { orderId: 'o1', userId: 'u1', serviceId: 'svc-spotify' },
+    ];
+    h.state.textOverrides = [
+      { key: 'order_rating.body', value: 'Как вам {service}? Оцените.', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+
+    await runFunnelJob({ now: NOON });
+
+    expect(sentMessages()[0]?.text).toBe('Как вам Spotify? Оцените.');
+  });
+
+  it('оверлей не прочитался → прогон пропускается целиком, claim не сгорает', async () => {
+    // Каждое сообщение здесь одноразовое, а claim занимается ДО отправки:
+    // разослав дефолт, мы лишили бы этих клиентов правки владельца навсегда.
+    // Следующий прогон через 15 минут, окна выборок шире шага — не теряется
+    // ничего, кроме одного цикла.
+    addTgUser('u1');
+    h.state.expiredRows = [{ orderId: 'o1', userId: 'u1' }];
+    h.state.textsFail = true;
+
+    const res = await runFunnelJob({ now: NOON });
+
+    expect(res.expiredSurvey).toEqual({ sent: 0, skipped: 0, errors: 0 });
+    expect(sentMessages()).toHaveLength(0);
+    expect(h.captureException).toHaveBeenCalled();
   });
 });

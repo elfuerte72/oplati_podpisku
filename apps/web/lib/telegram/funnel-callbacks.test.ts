@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
     order: { id: 'o1', userId: 'u1', shortId: 'ORD-1', status: 'completed' } as
       | { id: string; userId: string; shortId: string; status: string }
       | null,
+    // Переопределения текстов воронки (панель v2): по умолчанию пусто — дефолты.
+    textOverrides: [] as { key: string; value: string; updatedAt: Date; updatedBy: null; updatedByName: null }[],
   },
   sendMock: vi.fn(async (..._args: unknown[]) => true),
   recordMock: vi.fn(async (..._args: unknown[]) => h.state.recordResult),
@@ -39,7 +41,10 @@ vi.mock('@oplati/db', () => ({
   recordClientFeedback: h.recordMock,
   setFunnelOptOut: h.optOutMock,
   getOrderById: vi.fn(async () => h.state.order),
+  listFunnelTextOverrides: vi.fn(async () => h.state.textOverrides),
 }));
+
+import { invalidateFunnelTexts } from '@/lib/funnel/texts';
 
 import { handleFunnelCallback } from './funnel-callbacks.ts';
 import {
@@ -67,6 +72,8 @@ beforeEach(() => {
   h.state.ctx = { userId: 'u1', conversationId: 'c1' };
   h.state.recordResult = true;
   h.state.order = { id: OID, userId: 'u1', shortId: 'ORD-1', status: 'completed' };
+  h.state.textOverrides = [];
+  invalidateFunnelTexts();
 });
 
 describe('fb:optout', () => {
@@ -269,5 +276,28 @@ describe('деградация', () => {
     await callFb('fb:optout');
     expect(h.optOutMock).not.toHaveBeenCalled();
     expect(h.sendMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('тексты воронки из реестра (панель v2, тикет 10)', () => {
+  it('переопределение в БД меняет реплику — без деплоя', async () => {
+    h.state.textOverrides = [
+      { key: 'common.thanks', value: 'Благодарю за ответ!', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+
+    await callFb('fb:st:thinking');
+
+    expect(h.sendMock).toHaveBeenCalledWith(42, 'Благодарю за ответ!', 1001);
+  });
+
+  it('ответ на оценку 1–3 берётся из оверлея, кнопка «Поддержка» остаётся', async () => {
+    h.state.textOverrides = [
+      { key: 'rating.low', value: 'Жаль. Нажмите «Поддержка».', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+
+    await callFb(`fb:rate:2:${OID}`);
+
+    const [, text] = h.sendMock.mock.calls[0] ?? [];
+    expect(text).toBe('Жаль. Нажмите «Поддержка».');
   });
 });

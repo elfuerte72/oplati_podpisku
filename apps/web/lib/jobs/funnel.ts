@@ -16,6 +16,7 @@ import type { FunnelKind } from '@oplati/types';
 import { formatReferralTelegramLink } from '@/lib/cabinet/referral-read';
 import { serverEnv } from '@/lib/env.server';
 import { sendFunnelMessage, type FunnelMessageContent } from '@/lib/funnel/gate';
+import { getFunnelTextsDetailed, renderFunnelText, type FunnelTextValues } from '@/lib/funnel/texts';
 import { childLogger } from '@/lib/logger';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
@@ -25,12 +26,6 @@ import {
   buildReferralNudgeKeyboard,
   buildStartSurveyKeyboard,
 } from '@/lib/telegram/funnel-callbacks';
-import {
-  EXPIRED_SURVEY_TEXT,
-  START_SURVEY_TEXT,
-  buildOrderRatingText,
-  buildReferralNudgeText,
-} from '@/lib/telegram/templates';
 
 /**
  * Cron `funnel` — движок воронки обратной связи (спека
@@ -41,9 +36,19 @@ import {
  *
  * Вся отправка — ТОЛЬКО через `sendFunnelMessage` (тикет 01): здесь нет ни
  * одного прямого вызова Telegram и ни одного клиентского текста (тикет 07).
+ * Тексты — через реестр `lib/funnel/texts.ts` (панель v2, ветка C): дефолты из
+ * `templates.ts`, переопределения владельца из БД; читаются один раз на прогон,
+ * при недоступной БД реестр отдаёт дефолты — воронка не падает из-за редактора.
  */
 
 const log = childLogger('cron.funnel');
+
+/**
+ * Сколько крон ждёт оверлей текстов. Клиентский путь ждёт две секунды (там
+ * важнее ответить), кроновский — дольше: пропущенный прогон дешевле рассылки
+ * дефолтами под занятыми claim'ами.
+ */
+const TEXTS_DEADLINE_MS = 10_000;
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -90,21 +95,38 @@ export async function runFunnelJob(opts: { now?: Date } = {}): Promise<FunnelJob
 
   log.info({ event: 'cron.funnel.start' });
 
+  // Один поход за текстами на прогон: оверлей владельца поверх дефолтов.
+  //
+  // Не прочитался — прогон ПРОПУСКАЕТСЯ целиком. Каждое сообщение здесь
+  // одноразовое и занимает claim до отправки: разослав дефолтный текст под
+  // занятым claim'ом, мы лишили бы этих клиентов правки владельца навсегда, и
+  // видно это было бы только по одной строке warn. Следующий прогон через 15
+  // минут, окна выборок шире шага — ничего не теряется (code-review
+  // 2026-09-02). Дедлайн здесь свой: крону некуда спешить.
+  const { texts, fromOverlay } = await getFunnelTextsDetailed(Date.now(), TEXTS_DEADLINE_MS);
+  if (!fromOverlay) {
+    log.error({ event: 'cron.funnel.texts_unavailable' });
+    Sentry.captureException(new Error('funnel cron skipped: texts overlay unavailable'), {
+      tags: { source: 'cron.funnel' },
+    });
+    return result;
+  }
+
   // Фазы изолированы друг от друга (ось E full-review): устойчивый сбой
   // ВЫБОРКИ одной фазы (сломался запрос к одной таблице) не должен глушить
   // остальные три вида сообщений до починки. Claim'ы при этом не сгорают —
   // падение происходит до привратника.
   await runPhaseSafely('expired_survey', result.expiredSurvey, () =>
-    runExpiredSurveyPhase(now, result.expiredSurvey),
+    runExpiredSurveyPhase(now, result.expiredSurvey, texts),
   );
   await runPhaseSafely('start_survey', result.startSurvey, () =>
-    runStartSurveyPhase(now, result.startSurvey),
+    runStartSurveyPhase(now, result.startSurvey, texts),
   );
   await runPhaseSafely('order_rating', result.orderRating, () =>
-    runOrderRatingPhase(now, result.orderRating),
+    runOrderRatingPhase(now, result.orderRating, texts),
   );
   await runPhaseSafely('referral_nudge', result.referralNudge, () =>
-    runReferralNudgePhase(now, result.referralNudge),
+    runReferralNudgePhase(now, result.referralNudge, texts),
   );
 
   log.info({
@@ -174,7 +196,11 @@ async function trySend(
 }
 
 /** msg1: «что помешало оплатить?» через 3 часа после протухшего заказа. */
-async function runExpiredSurveyPhase(now: Date, phase: FunnelPhaseResult): Promise<void> {
+async function runExpiredSurveyPhase(
+  now: Date,
+  phase: FunnelPhaseResult,
+  texts: FunnelTextValues,
+): Promise<void> {
   const rows = await findExpiredOrdersForSurvey(
     getDb(),
     windowFor(now, EXPIRED_DELAY_H, EXPIRED_LOOKBACK_H),
@@ -190,13 +216,20 @@ async function runExpiredSurveyPhase(now: Date, phase: FunnelPhaseResult): Promi
       kind: 'expired_survey',
       orderId: row.orderId,
       now,
-      build: () => ({ text: EXPIRED_SURVEY_TEXT, keyboard: buildExpiredSurveyKeyboard(row.orderId) }),
+      build: () => ({
+        text: texts['expired_survey.body'],
+        keyboard: buildExpiredSurveyKeyboard(row.orderId, texts),
+      }),
     });
   }
 }
 
 /** msg2: «нашёл, что искал?» назавтра после первого визита без заказа. */
-async function runStartSurveyPhase(now: Date, phase: FunnelPhaseResult): Promise<void> {
+async function runStartSurveyPhase(
+  now: Date,
+  phase: FunnelPhaseResult,
+  texts: FunnelTextValues,
+): Promise<void> {
   const rows = await findFreshUsersWithoutOrders(
     getDb(),
     windowFor(now, START_DELAY_H, START_LOOKBACK_H),
@@ -206,13 +239,17 @@ async function runStartSurveyPhase(now: Date, phase: FunnelPhaseResult): Promise
       userId: row.userId,
       kind: 'start_survey',
       now,
-      build: () => ({ text: START_SURVEY_TEXT, keyboard: buildStartSurveyKeyboard() }),
+      build: () => ({ text: texts['start_survey.body'], keyboard: buildStartSurveyKeyboard(texts) }),
     });
   }
 }
 
 /** msg3: оценка 1–5 через час после выдачи карты. */
-async function runOrderRatingPhase(now: Date, phase: FunnelPhaseResult): Promise<void> {
+async function runOrderRatingPhase(
+  now: Date,
+  phase: FunnelPhaseResult,
+  texts: FunnelTextValues,
+): Promise<void> {
   const db = getDb();
   const rows = await findCompletedOrdersForRating(
     db,
@@ -226,7 +263,7 @@ async function runOrderRatingPhase(now: Date, phase: FunnelPhaseResult): Promise
       now,
       build: async () => {
         // Имя сервиса — лениво, после всех проверок привратника; для
-        // custom-заказов нейтральная форма (buildOrderRatingText). Сбой
+        // custom-заказов нейтральная форма (`order_rating.body_generic`). Сбой
         // чтения не роняет отправку (нейтральный текст), но и не глотается
         // молча: claim уже занят, и второй попытки у этого заказа не будет.
         let serviceLabel: string | null = null;
@@ -242,17 +279,33 @@ async function runOrderRatingPhase(now: Date, phase: FunnelPhaseResult): Promise
           });
           serviceLabel = service?.name ?? null;
         }
-        return {
-          text: buildOrderRatingText(serviceLabel),
-          keyboard: buildRatingKeyboard(row.orderId),
-        };
+        // Рендер под защитой: claim уже занят, и падение здесь означало бы
+        // заказ без просьбы об оценке навсегда. Негодный шаблон отсекается на
+        // чтении реестра, но нейтральная форма дешевле потерянного касания.
+        let text = texts['order_rating.body_generic'];
+        if (serviceLabel) {
+          try {
+            text = renderFunnelText(texts['order_rating.body'], { service: serviceLabel });
+          } catch (err) {
+            log.error({ event: 'cron.funnel.render_failed', orderId: row.orderId, err });
+            Sentry.captureException(err, {
+              tags: { source: 'cron.funnel' },
+              extra: { kind: 'order_rating', orderId: row.orderId },
+            });
+          }
+        }
+        return { text, keyboard: buildRatingKeyboard(row.orderId, texts) };
       },
     });
   }
 }
 
 /** msg4: персональная реферальная ссылка через 2 дня после оценки ≥4. */
-async function runReferralNudgePhase(now: Date, phase: FunnelPhaseResult): Promise<void> {
+async function runReferralNudgePhase(
+  now: Date,
+  phase: FunnelPhaseResult,
+  texts: FunnelTextValues,
+): Promise<void> {
   // Партнёрская программа выключена → ссылки не существует, касание не имеет
   // смысла: тишина, а не сообщение без ссылки (тикет 06).
   if (!serverEnv.REFERRAL_ENABLED) return;
@@ -280,10 +333,17 @@ async function runReferralNudgePhase(now: Date, phase: FunnelPhaseResult): Promi
     // formatReferralTelegramLink): расходиться им нельзя. Собирается ДО
     // привратника: сбой сборки ПОСЛЕ claim'а терял бы касание навсегда,
     // а лишний идемпотентный ensureReferralCode при отказе бюджета дёшев.
-    let link: string | null = null;
+    let content: FunnelMessageContent | null = null;
     try {
       const code = await ensureReferralCode(db, row.userId);
-      link = formatReferralTelegramLink(code, botUsername, referralMiniAppShortName());
+      const link = formatReferralTelegramLink(code, botUsername, referralMiniAppShortName());
+      // Рендер — в ТОМ ЖЕ try: текст берётся из БД (оверлей панели), и хотя
+      // негодную строку отсекает чтение реестра, брошенное здесь исключение
+      // унесло бы ВСЮ фазу вместе с остальными клиентами — один клиент не
+      // роняет прогон (code-review 2026-09-02).
+      content = link
+        ? { text: renderFunnelText(texts['referral_nudge.body'], { link }), keyboard: buildReferralNudgeKeyboard(texts) }
+        : null;
     } catch (err) {
       phase.errors++;
       log.error({ event: 'cron.funnel.referral_link_failed', userId: row.userId, err });
@@ -293,18 +353,18 @@ async function runReferralNudgePhase(now: Date, phase: FunnelPhaseResult): Promi
       });
       continue;
     }
-    if (!link) {
+    if (!content) {
       // formatReferralTelegramLink отдал null (нет кода) — кандидат
       // пропускается без claim'а, попробуем в следующем прогоне.
       phase.skipped++;
       continue;
     }
-    const content = { text: buildReferralNudgeText(link), keyboard: buildReferralNudgeKeyboard() };
+    const ready = content;
     await trySend(phase, {
       userId: row.userId,
       kind: 'referral_nudge',
       now,
-      build: () => content,
+      build: () => ready,
     });
   }
 }

@@ -25,6 +25,7 @@ const eslintConfig = defineConfig([
       "lib/panel/format.ts",
       "lib/panel/labels.ts",
       "lib/panel/support.ts",
+      "lib/panel/ai/chat-state.ts",
       "lib/retention-policy.ts",
     ],
     rules: {

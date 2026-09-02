@@ -15,25 +15,13 @@ import type { TelegramCallbackQuery } from '@oplati/types';
 import { notifyStaff } from '@/lib/alerts/notify-staff';
 import { miniAppUrl } from '@/lib/deployment-url';
 import { serverEnv } from '@/lib/env.server';
+import { getFunnelTexts, surveyAnswerKey, type FunnelTextValues } from '@/lib/funnel/texts';
 import { childLogger } from '@/lib/logger';
 
 import { sendSafely } from './send';
 import { openSupportEntry } from './support-entry';
 import { resolveCallbackContext } from './persist';
-import {
-  EXPIRED_SURVEY_ANSWER_LABELS,
-  FUNNEL_OPTOUT_BUTTON,
-  FUNNEL_OPTOUT_DONE_TEXT,
-  FUNNEL_PARTNER_BUTTON,
-  FUNNEL_THANKS_TEXT,
-  RATING_HIGH_TEXT,
-  RATING_HIGH_TEXT_NO_LINK,
-  RATING_LOW_TEXT,
-  RATING_REVIEWS_BUTTON,
-  START_SURVEY_ANSWER_LABELS,
-  START_SUPPORT_BUTTON,
-  buildLowRatingStaffAlert,
-} from './templates';
+import { START_SUPPORT_BUTTON, buildLowRatingStaffAlert } from './templates';
 
 /**
  * Кнопки воронки обратной связи — неймспейс `fb:*` в диспетчере апдейтов
@@ -47,6 +35,10 @@ import {
  * Ответы на нажатия — реакция на действие клиента: через привратник не ходят
  * и в бюджет воронки не входят. Rate-limit — общий бакет кнопок в диспетчере,
  * ДО этого модуля.
+ *
+ * Клиентские строки — через реестр `lib/funnel/texts.ts` (панель v2, ветка C):
+ * подписи кнопок и реакции владелец правит без деплоя, здесь констант из
+ * `templates.ts` нет (кроме кнопки «Поддержка» — она не строка воронки).
  */
 
 const log = childLogger('telegram-funnel');
@@ -58,17 +50,22 @@ const OPTOUT_CALLBACK = 'fb:optout';
 /**
  * Опрос: кнопка на каждый ответ (столбиком) + отписка последней строкой.
  * `suffix` — контекст в хвосте callback-data (`fb:<prefix>:<key>:<suffix>`).
+ * Порядок кнопок — порядок значений enum'а ответов (`@oplati/types`).
  */
 function buildSurveyKeyboard(
   prefix: 'exp' | 'st',
-  labels: Readonly<Record<string, string>>,
+  group: 'expired_survey' | 'start_survey',
+  texts: FunnelTextValues,
   suffix?: string,
 ): InlineKeyboard {
+  const answers = group === 'expired_survey' ? expiredSurveyAnswer.options : startSurveyAnswer.options;
   const keyboard = new InlineKeyboard();
-  for (const [key, label] of Object.entries(labels)) {
-    keyboard.text(label, `fb:${prefix}:${key}${suffix ? `:${suffix}` : ''}`).row();
+  for (const key of answers) {
+    keyboard
+      .text(texts[surveyAnswerKey(group, key)], `fb:${prefix}:${key}${suffix ? `:${suffix}` : ''}`)
+      .row();
   }
-  return keyboard.text(FUNNEL_OPTOUT_BUTTON, OPTOUT_CALLBACK);
+  return keyboard.text(texts['common.optout_button'], OPTOUT_CALLBACK);
 }
 
 /**
@@ -77,13 +74,13 @@ function buildSurveyKeyboard(
  * связку «причина ↔ заказ/сервис» навсегда (ось E full-review; спека держит
  * `client_feedback.order_id` именно для этого).
  */
-export function buildExpiredSurveyKeyboard(orderId: string): InlineKeyboard {
-  return buildSurveyKeyboard('exp', EXPIRED_SURVEY_ANSWER_LABELS, orderId);
+export function buildExpiredSurveyKeyboard(orderId: string, texts: FunnelTextValues): InlineKeyboard {
+  return buildSurveyKeyboard('exp', 'expired_survey', texts, orderId);
 }
 
 /** msg2: четыре ответа + отписка (заказа-триггера по построению нет). */
-export function buildStartSurveyKeyboard(): InlineKeyboard {
-  return buildSurveyKeyboard('st', START_SURVEY_ANSWER_LABELS);
+export function buildStartSurveyKeyboard(texts: FunnelTextValues): InlineKeyboard {
+  return buildSurveyKeyboard('st', 'start_survey', texts);
 }
 
 /**
@@ -91,20 +88,20 @@ export function buildStartSurveyKeyboard(): InlineKeyboard {
  * (`fb:rate:<score>:<uuid>` — 46 байт, лимит Telegram 64): оценка привязана к
  * заказу, а не к «последнему сообщению», и не ломается от двух опросов подряд.
  */
-export function buildRatingKeyboard(orderId: string): InlineKeyboard {
+export function buildRatingKeyboard(orderId: string, texts: FunnelTextValues): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   for (let score = 1; score <= 5; score++) {
     keyboard.text(`${score} ⭐`, `fb:rate:${score}:${orderId}`);
   }
-  return keyboard.row().text(FUNNEL_OPTOUT_BUTTON, OPTOUT_CALLBACK);
+  return keyboard.row().text(texts['common.optout_button'], OPTOUT_CALLBACK);
 }
 
 /** msg4: web_app-кнопка в Mini App (партнёрский раздел внутри) + отписка. */
-export function buildReferralNudgeKeyboard(): InlineKeyboard {
+export function buildReferralNudgeKeyboard(texts: FunnelTextValues): InlineKeyboard {
   return new InlineKeyboard()
-    .webApp(FUNNEL_PARTNER_BUTTON, miniAppUrl())
+    .webApp(texts['referral_nudge.partner_button'], miniAppUrl())
     .row()
-    .text(FUNNEL_OPTOUT_BUTTON, OPTOUT_CALLBACK);
+    .text(texts['common.optout_button'], OPTOUT_CALLBACK);
 }
 
 // ─── Обработчик нажатий ───────────────────────────────────────────────────
@@ -128,11 +125,14 @@ export async function handleFunnelCallback(
   const ctx = await resolveCallbackContext(cb, updateId);
   if (!ctx) return; // БД недоступна — callback подтверждён, деградируем молча.
   const db = getDb();
+  // Тексты реакций — из реестра (оверлей владельца поверх дефолтов); при
+  // недоступной БД реестр отдаёт дефолты, а не роняет нажатие.
+  const texts = await getFunnelTexts();
 
   switch (sub) {
     case 'optout': {
       await setFunnelOptOut(db, ctx.userId);
-      await sendSafely(chatId, FUNNEL_OPTOUT_DONE_TEXT, updateId);
+      await sendSafely(chatId, texts['common.optout_done'], updateId);
       return;
     }
     case 'exp':
@@ -166,7 +166,7 @@ export async function handleFunnelCallback(
         return;
       }
       if (inserted) {
-        await sendSafely(chatId, FUNNEL_THANKS_TEXT, updateId);
+        await sendSafely(chatId, texts['common.thanks'], updateId);
       }
       return;
     }
@@ -204,12 +204,12 @@ export async function handleFunnelCallback(
         if (reviewsUrl) {
           await sendSafely(
             chatId,
-            RATING_HIGH_TEXT,
+            texts['rating.high'],
             updateId,
-            new InlineKeyboard().url(RATING_REVIEWS_BUTTON, reviewsUrl),
+            new InlineKeyboard().url(texts['rating.reviews_button'], reviewsUrl),
           );
         } else {
-          await sendSafely(chatId, RATING_HIGH_TEXT_NO_LINK, updateId);
+          await sendSafely(chatId, texts['rating.high_no_link'], updateId);
         }
         return;
       }
@@ -218,7 +218,7 @@ export async function handleFunnelCallback(
       // (приоритет доставки клиенту — прецедент антифрод-трека).
       await sendSafely(
         chatId,
-        RATING_LOW_TEXT,
+        texts['rating.low'],
         updateId,
         new InlineKeyboard().text(START_SUPPORT_BUTTON, 'support'),
       );

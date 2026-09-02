@@ -167,3 +167,17 @@ export function providerStatusLabel(code: number | null): string {
   const label = lookupLabel(PROVIDER_STATUS_LABELS, String(code));
   return label ? `${label} (${code})` : String(code);
 }
+
+/** Целое число людей/заказов/кликов — «1 234». */
+export function formatCount(value: number): string {
+  return Math.trunc(value).toLocaleString('ru-RU');
+}
+
+/**
+ * Доля 0..1+ → «50 %»; `null` — прочерк: конверсию к нулевому предыдущему шагу
+ * считать нечем, и «0 %» там был бы ложью (нуля не было, было «не с чего»).
+ */
+export function formatShare(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  return `${Math.round(value * 100).toLocaleString('ru-RU')} %`;
+}

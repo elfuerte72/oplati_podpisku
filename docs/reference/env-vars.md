@@ -110,6 +110,23 @@ pnpm --filter @oplati/db db:staff disable <telegram_id>      # отзыв дос
 ⚠️ Каждый сотрудник обязан **один раз запустить бота входа** — Telegram не даёт
 писать тому, кто не запускал бота, и уведомления до него не дойдут.
 
+### AI-аналитик панели (`/admin/ai`, панель v2)
+
+Аналитик пишет SQL сам и выполняет его под **отдельной read-only ролью**
+`panel_ai_ro` (ADR 0003, `packages/db/scripts/panel-ai-role.sql`). Ключ и
+endpoint модели — те же, что у помощника поддержки (`SUPPORT_AI_API_KEY`,
+`SUPPORT_AI_BASE_URL`), флаг `SUPPORT_AI_ENABLED` на аналитика не влияет.
+
+| Переменная | Что это | Если не задать |
+|---|---|---|
+| `PANEL_AI_DATABASE_URL` | строка подключения под ролью `panel_ai_ro` (`postgres://panel_ai_ro:<pw>@<хост как в DATABASE_URL>:5432/oplatishka`) | раздел «Аналитик» пишет «не настроено», операция отвечает `503 not_configured` |
+| `PANEL_AI_MODEL` | модель аналитика | `SUPPORT_AI_MODEL`, иначе `deepseek-v4-flash` |
+
+⚠️ Подключить аналитика ролью приложения нельзя: защита от чтения контактов и
+переписки — гранты роли, а не промпт. Роль создаётся руками на dev и проде
+(скилл `deploy-and-migrations`, чек-лист в `.scratch/admin-panel-v2/issues/15`);
+после `CREATE ROLE` — редеплой, чтобы контейнер увидел переменную.
+
 ## Приём денег
 
 ### Переключатель

@@ -8,12 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const countPending = vi.fn<() => Promise<{ count: number; sumKopecks: number }>>();
 const countSupport = vi.fn<() => Promise<number>>();
+const countHolds = vi.fn<() => Promise<number>>();
+const countFeedback = vi.fn<(since: string) => Promise<number>>();
 const captureException = vi.fn();
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   countPendingOrdersForPanel: () => countPending(),
   countUnansweredSupportRequests: () => countSupport(),
+  countHoldsForPanel: () => countHolds(),
+  countRecentClientFeedbackForPanel: (_db: unknown, opts: { since: string }) => countFeedback(opts.since),
 }));
 vi.mock('@sentry/nextjs', () => ({ captureException: (...args: unknown[]) => captureException(...args) }));
 vi.mock('@/lib/logger', () => ({
@@ -22,8 +26,10 @@ vi.mock('@/lib/logger', () => ({
 
 import {
   invalidateMenuCounts,
+  readHoldsCount,
   readMenuCounts,
   readPendingTotals,
+  readRecentFeedbackCount,
   readUnansweredSupportCount,
 } from './menu-counts';
 
@@ -45,6 +51,8 @@ describe('memo счётчиков меню', () => {
     invalidateMenuCounts();
     countPending.mockReset();
     countSupport.mockReset();
+    countHolds.mockReset();
+    countFeedback.mockReset();
     captureException.mockReset();
   });
   afterEach(() => {
@@ -126,11 +134,45 @@ describe('memo счётчиков меню', () => {
   it('readMenuCounts спрашивает только разделы, открытые роли', async () => {
     countPending.mockResolvedValue({ count: 4, sumKopecks: 0 });
     countSupport.mockResolvedValue(2);
+    countHolds.mockResolvedValue(1);
+    countFeedback.mockResolvedValue(3);
 
-    expect(await readMenuCounts('operator')).toEqual({ pending: 4, support: 2 });
-    expect(await readMenuCounts('supervisor')).toEqual({ pending: null, support: null });
+    expect(await readMenuCounts('operator')).toEqual({ pending: 4, holds: 1, support: 2, feedback: 3 });
+    expect(await readMenuCounts('supervisor')).toEqual({
+      pending: null,
+      holds: null,
+      support: null,
+      feedback: null,
+    });
     // Для супервизора в базу не ходили: числа по закрытым разделам не считаются.
     expect(countPending).toHaveBeenCalledTimes(1);
     expect(countSupport).toHaveBeenCalledTimes(1);
+    expect(countHolds).toHaveBeenCalledTimes(1);
+    expect(countFeedback).toHaveBeenCalledTimes(1);
+  });
+
+  it('неудача чтения holds не роняет остальные секции (панель v2, тикет 13)', async () => {
+    countPending.mockResolvedValue({ count: 4, sumKopecks: 0 });
+    countSupport.mockResolvedValue(2);
+    countHolds.mockRejectedValue(new Error('ECONNREFUSED'));
+    countFeedback.mockResolvedValue(0);
+
+    expect(await readMenuCounts('admin')).toEqual({ pending: 4, holds: null, support: 2, feedback: 0 });
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('счётчик обратной связи считает за последние 24 часа от «сейчас», holds инвалидируется отдельно', async () => {
+    countFeedback.mockResolvedValue(5);
+    countHolds.mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+
+    expect(await readRecentFeedbackCount(T0)).toBe(5);
+    expect(countFeedback).toHaveBeenCalledWith(new Date(T0 - 24 * 60 * 60 * 1000).toISOString());
+
+    expect(await readHoldsCount(T0)).toBe(2);
+    invalidateMenuCounts('holds');
+    expect(await readHoldsCount(T0 + 1_000)).toBe(1);
+    // Сброс holds не тронул feedback — второй запрос не уходил.
+    expect(await readRecentFeedbackCount(T0 + 2_000)).toBe(5);
+    expect(countFeedback).toHaveBeenCalledTimes(1);
   });
 });

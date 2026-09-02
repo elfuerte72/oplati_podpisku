@@ -248,6 +248,21 @@ Loki продолжали течь только логи squid-прокси — 
 осознанно не тащили в Loki (решение 2026-07-23 в эпоху Vercel), больше не нужен.
 Vercel-дашборд как источник логов неактуален: контур там холодный резерв.
 
+#### Учёт AI-аналитика панели
+
+Расходы аналитика (`/admin/ai`, DeepSeek) в `ai_usage_daily` не пишутся — единственный
+источник учёта — строка лога `panel.ai.usage` с полями `staffHash`, `model`,
+`inputTokens`, `outputTokens`, `toolCalls`, `durationMs`, `outcome`
+(`ok` / `incomplete` / `max_iterations` / `api_error` / `error`). Loki-запрос:
+
+```logql
+{container_name=~"oplatishka-web.*"} | json | event = "panel.ai.usage"
+```
+
+Сумма токенов за день: `sum by (model) (sum_over_time({...} | json | event = "panel.ai.usage" | unwrap inputTokens [24h]))`
+(и то же для `outputTokens`). Каждый запрос к базе — отдельная строка `panel.ai.sql`
+(длительность, строки, усечение, ошибка); сам SQL — на уровне `debug`.
+
 ## Cron-джобы
 
 Расписание — `infra/crontab.example` → `/etc/cron.d/oplatishka` на VPS. Запуски и

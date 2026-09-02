@@ -22,7 +22,7 @@ describe('canAccess', () => {
   });
 
   it('менеджер ведёт всю операционку', () => {
-    for (const cap of ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment'] as const) {
+    for (const cap of ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment', 'feedback'] as const) {
       expect(canAccess('operator', cap)).toBe(true);
     }
   });
@@ -30,6 +30,24 @@ describe('canAccess', () => {
   it('партнёрские деньги и персонал — только владельцу', () => {
     expect(canAccess('operator', 'partners')).toBe(false);
     expect(canAccess('operator', 'staff')).toBe(false);
+  });
+
+  it('аналитика, AI-аналитик и тексты воронки — инструменты владельца (панель v2, ветки A–C)', () => {
+    for (const cap of ['analytics', 'ai', 'texts'] as const) {
+      expect(canAccess('admin', cap)).toBe(true);
+      expect(canAccess('operator', cap)).toBe(false);
+    }
+    // Разделы ВИДНЫ менеджеру в меню, но помечены недоступными (спека §4.3).
+    const sections = sectionsFor('operator');
+    expect(sections.find((s) => s.href === '/admin/analytics')).toMatchObject({
+      allowed: false,
+      title: 'Аналитика',
+    });
+    expect(sections.find((s) => s.href === '/admin/ai')).toMatchObject({ allowed: false, title: 'Аналитик' });
+    expect(sections.find((s) => s.href === '/admin/texts')).toMatchObject({
+      allowed: false,
+      title: 'Тексты воронки',
+    });
   });
 
   it('ручное исполнение остаётся менеджеру намеренно', () => {

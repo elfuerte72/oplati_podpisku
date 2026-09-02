@@ -48,10 +48,14 @@ function migrationFiles(): string[] {
 describe('журнал миграций под настоящим drizzle-мигратором', () => {
   it('инкрементальное обновление применяет хвост журнала одной транзакцией и не падает', async () => {
     const files = migrationFiles();
-    // Хвост в две миграции: одного файла мало, чтобы поймать «значение enum из
-    // соседнего файла той же транзакции».
-    const head = files.slice(0, -2);
-    expect(head.length).toBeGreaterThan(0);
+    // Хвост — от 0041 (пересоздание enum) до конца журнала: в него попадает и
+    // соседний файл той же транзакции (ловушка «значение enum из соседнего
+    // файла»), и каждая новая миграция — она обязана применяться поверх живой
+    // базы одной транзакцией с остальным хвостом, а не только с нуля.
+    const tailStart = files.findIndex((f) => f.startsWith('0041_'));
+    expect(tailStart).toBeGreaterThan(0);
+    const head = files.slice(0, tailStart);
+    expect(files.length - head.length).toBeGreaterThanOrEqual(2);
 
     const client = new PGlite();
     await client.exec(bootstrapRolesSql());

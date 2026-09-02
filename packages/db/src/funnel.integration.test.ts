@@ -12,6 +12,9 @@ import {
   findExpiredOrdersForSurvey,
   findFreshUsersWithoutOrders,
   findRatedUsersForReferralNudge,
+  listClientFeedbackForPanel,
+  feedbackSummaryForPanel,
+  countRecentClientFeedbackForPanel,
   getFunnelUserState,
   getLastFunnelSendAt,
   hasActiveOperatorConversation,
@@ -481,5 +484,98 @@ describe('RLS на новых таблицах', () => {
       expect(row.relrowsecurity).toBe(true);
       expect(Number(row.policies)).toBe(0);
     }
+  });
+});
+
+describe('read-side панели: лента «Обратная связь» (панель v2, тикет 14)', () => {
+  let userA: string;
+  let userB: string;
+  let ratedOrderId: string;
+  let ratedShortId: string;
+
+  /** Своё окно в далёком прошлом: записи соседних describe созданы «сейчас». */
+  const since = '2020-06-01T00:00:00.000Z';
+
+  beforeAll(async () => {
+    userA = (await createTgUser()).id;
+    userB = (await createTgUser()).id;
+    const rated = await createOrderInStatus(userA, 'completed', null);
+    ratedOrderId = rated.id;
+    ratedShortId = rated.shortId;
+
+    const at = (iso: string) => sql`${iso}::timestamptz`;
+    // Отправки: два опроса протухшего, одна оценка.
+    await db.execute(sql`INSERT INTO funnel_sends (user_id, kind, sent_at)
+      VALUES (${userA}, 'expired_survey', ${at('2020-06-02T10:00:00Z')}),
+             (${userB}, 'expired_survey', ${at('2020-06-03T10:00:00Z')})`);
+    await db.execute(sql`INSERT INTO funnel_sends (user_id, kind, order_id, sent_at)
+      VALUES (${userA}, 'order_rating', ${ratedOrderId}, ${at('2020-06-04T10:00:00Z')})`);
+    // Ответы: один на опрос протухшего (userA), оценка 2 по заказу (userA),
+    // ответ «вне окна» (userB, до since) — в сводку и ленту не попадает.
+    await db.execute(sql`INSERT INTO client_feedback (user_id, kind, answer, created_at)
+      VALUES (${userA}, 'expired_survey', 'price', ${at('2020-06-02T11:00:00Z')})`);
+    await db.execute(sql`INSERT INTO client_feedback (user_id, kind, order_id, score, created_at)
+      VALUES (${userA}, 'order_rating', ${ratedOrderId}, 2, ${at('2020-06-04T11:00:00Z')})`);
+    await db.execute(sql`INSERT INTO client_feedback (user_id, kind, answer, created_at)
+      VALUES (${userB}, 'start_survey', 'thinking', ${at('2020-05-01T11:00:00Z')})`);
+  });
+
+  it('лента за период — новые сверху, с клиентом и заказом; ответ опроса без заказа — без ссылки', async () => {
+    const until = '2020-07-01T00:00:00.000Z';
+    const { items } = await listClientFeedbackForPanel(db, { since });
+    const ours = items.filter((i) => i.createdAt.toISOString() < until);
+
+    expect(ours.map((i) => i.kind)).toEqual(['order_rating', 'expired_survey']);
+    expect(ours[0]).toMatchObject({
+      score: 2,
+      answer: null,
+      client: { id: userA },
+      order: { id: ratedOrderId, shortId: ratedShortId, serviceName: 'funnel-test order' },
+    });
+    expect(ours[1]).toMatchObject({ answer: 'price', order: null });
+    // Ответ старше окна не попал.
+    expect(items.some((i) => i.answer === 'thinking' && i.client.id === userB)).toBe(false);
+  });
+
+  it('лента режется потолком с «есть ещё», смещение листает', async () => {
+    const page = await listClientFeedbackForPanel(db, { since, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    const second = await listClientFeedbackForPanel(db, { since, limit: 1, offset: 1 });
+    expect(second.items[0]?.id).not.toBe(page.items[0]?.id);
+  });
+
+  it('сводка считает отправлено/ответов по видам за период; виды без событий — нулями', async () => {
+    const summary = await feedbackSummaryForPanel(db, { since });
+    const byKind = new Map(summary.map((r) => [r.kind, r]));
+    // Соседние describe тоже писали отправки/ответы (временем прогона, то есть
+    // ПОСЛЕ since) — сверяем нижнюю границу по нашей фикстуре и состав видов.
+    expect(byKind.get('expired_survey')?.sent).toBeGreaterThanOrEqual(2);
+    expect(byKind.get('expired_survey')?.answered).toBeGreaterThanOrEqual(1);
+    expect(byKind.get('order_rating')?.sent).toBeGreaterThanOrEqual(1);
+    expect(byKind.get('order_rating')?.answered).toBeGreaterThanOrEqual(1);
+    // Строка на каждый kind из @oplati/types — реферальное касание тоже.
+    expect(summary.map((r) => r.kind)).toEqual([
+      'expired_survey',
+      'start_survey',
+      'order_rating',
+      'referral_nudge',
+    ]);
+
+    const empty = await feedbackSummaryForPanel(db, { since: '2100-01-01T00:00:00.000Z' });
+    expect(empty).toEqual([
+      { kind: 'expired_survey', sent: 0, answered: 0 },
+      { kind: 'start_survey', sent: 0, answered: 0 },
+      { kind: 'order_rating', sent: 0, answered: 0 },
+      { kind: 'referral_nudge', sent: 0, answered: 0 },
+    ]);
+  });
+
+  it('countRecent не считает записи старше окна', async () => {
+    const all = await countRecentClientFeedbackForPanel(db, { since: '2020-01-01T00:00:00.000Z' });
+    const windowed = await countRecentClientFeedbackForPanel(db, { since });
+    const none = await countRecentClientFeedbackForPanel(db, { since: '2100-01-01T00:00:00.000Z' });
+    expect(all - windowed).toBe(1); // ответ userB от 2020-05-01 — за окном
+    expect(none).toBe(0);
   });
 });

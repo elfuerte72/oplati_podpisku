@@ -34,6 +34,27 @@ export const PANEL_CAPABILITIES = [
   'partners',
   /** Управление персоналом. */
   'staff',
+  /**
+   * Раздел «Аналитика»: графики по деньгам, воронке и продукту (спека
+   * `.scratch/admin-panel-v2/`, ветка A). Инструмент владельца — менеджеру
+   * оборот компании ни к чему.
+   */
+  'analytics',
+  /**
+   * Раздел «Аналитик»: чат с AI, который пишет и выполняет SQL под read-only
+   * ролью (ветка B). Каждый вопрос стоит денег провайдеру — только владелец.
+   */
+  'ai',
+  /**
+   * Раздел «Тексты воронки»: формулировки сообщений маскота правятся без
+   * деплоя (ветка C). Голос продукта — решение владельца, не операционка.
+   */
+  'texts',
+  /**
+   * Лента ответов на опросы и оценок (ветка D). Операционка: связаться с
+   * недовольным клиентом — работа менеджера, поэтому и ему.
+   */
+  'feedback',
 ] as const;
 
 export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
@@ -45,7 +66,7 @@ export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
  */
 const CAPABILITIES_BY_ROLE: Record<StaffRole, readonly PanelCapability[]> = {
   admin: PANEL_CAPABILITIES,
-  operator: ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment'],
+  operator: ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment', 'feedback'],
   // Роль не выдаётся (спека §2). Строка с ней в базе прав не получает — но и
   // доступ не «падает в менеджера» по невнимательности.
   supervisor: [],
@@ -74,6 +95,10 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/pending', capability: 'pending' },
   { href: '/admin/holds', capability: 'holds' },
   { href: '/admin/support', capability: 'support' },
+  { href: '/admin/feedback', capability: 'feedback' },
+  { href: '/admin/analytics', capability: 'analytics' },
+  { href: '/admin/ai', capability: 'ai' },
+  { href: '/admin/texts', capability: 'texts' },
   { href: '/admin/partners', capability: 'partners' },
   { href: '/admin/staff', capability: 'staff' },
 ];

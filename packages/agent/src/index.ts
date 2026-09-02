@@ -47,6 +47,7 @@ export {
   type SupportFacts,
 } from './support-prompt.ts';
 export {
+  getPanelAnalystClient,
   getSupportClient,
   isSupportAiConfigured,
   supportModel,
