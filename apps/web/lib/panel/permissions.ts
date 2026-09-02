@@ -34,6 +34,12 @@ export const PANEL_CAPABILITIES = [
   'partners',
   /** Управление персоналом. */
   'staff',
+  /**
+   * Раздел «Аналитика»: графики по деньгам, воронке и продукту (спека
+   * `.scratch/admin-panel-v2/`, ветка A). Инструмент владельца — менеджеру
+   * оборот компании ни к чему.
+   */
+  'analytics',
 ] as const;
 
 export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
@@ -74,6 +80,7 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/pending', capability: 'pending' },
   { href: '/admin/holds', capability: 'holds' },
   { href: '/admin/support', capability: 'support' },
+  { href: '/admin/analytics', capability: 'analytics' },
   { href: '/admin/partners', capability: 'partners' },
   { href: '/admin/staff', capability: 'staff' },
 ];

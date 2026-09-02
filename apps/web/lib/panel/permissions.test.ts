@@ -32,6 +32,14 @@ describe('canAccess', () => {
     expect(canAccess('operator', 'staff')).toBe(false);
   });
 
+  it('аналитика — инструмент владельца (панель v2, ветка A)', () => {
+    expect(canAccess('admin', 'analytics')).toBe(true);
+    expect(canAccess('operator', 'analytics')).toBe(false);
+    // Раздел ВИДЕН менеджеру в меню, но помечен недоступным (спека §4.3).
+    const section = sectionsFor('operator').find((s) => s.href === '/admin/analytics');
+    expect(section).toMatchObject({ allowed: false, title: 'Аналитика' });
+  });
+
   it('ручное исполнение остаётся менеджеру намеренно', () => {
     // Надзор работает лучше запрета: каждое действие пишется в order_events с
     // именем сотрудника, а журнал append-only на уровне триггера БД.

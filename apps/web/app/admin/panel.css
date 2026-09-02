@@ -480,3 +480,151 @@
 .panel-thread__item--assistant {
   border-left-color: #6c7280;
 }
+
+/* ── Графики раздела «Аналитика» (панель v2, ветка A) ───────────────────── */
+/* Серверный SVG без клиентского JS. Цвет данных — один (акцент панели): в
+   каждом графике одна серия, легенда не нужна. Текст носит текстовые цвета,
+   сетка — тихая тонкая линия (правила dataviz). */
+
+.panel-chart {
+  margin: 12px 0 0;
+}
+.panel-chart__svg {
+  display: block;
+  width: 100%;
+  height: 180px;
+  overflow: visible;
+}
+.panel-chart__grid {
+  stroke: var(--panel-border);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+.panel-chart__bar {
+  fill: var(--panel-accent);
+}
+.panel-chart__line {
+  fill: none;
+  stroke: var(--panel-accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.panel-chart__hit {
+  fill: transparent;
+}
+.panel-chart__dot {
+  fill: var(--panel-accent);
+}
+.panel-chart__dot-ring {
+  fill: var(--panel-surface);
+}
+.panel-chart__label,
+.panel-chart__value {
+  fill: var(--panel-muted);
+  font-size: 11px;
+  font-family: inherit;
+}
+.panel-chart__value {
+  fill: var(--panel-text);
+  font-variant-numeric: tabular-nums;
+}
+.panel-chart__caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+.panel-chart__caption-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Три цифры сверху блока «Деньги»: подпись — значение. */
+.panel-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 12px 0 4px;
+}
+.panel-stat__label {
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+.panel-stat__value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* Горизонтальные столбцы: подпись — полоса — значение. */
+.panel-hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.panel-hbars__row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) 2fr minmax(90px, auto);
+  gap: 10px;
+  align-items: center;
+}
+.panel-hbars__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.panel-hbars__track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--panel-surface-2);
+  overflow: hidden;
+}
+.panel-hbars__bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--panel-accent);
+}
+.panel-hbars__value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.panel-hbars__note {
+  display: inline-block;
+  min-width: 48px;
+  margin-left: 8px;
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+
+/* Переключатель периода — ссылки, текущий выделен как пункт меню. */
+.panel-period {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.panel-period a {
+  padding: 4px 10px;
+  border-radius: var(--panel-radius-control);
+  border: 1px solid var(--panel-border);
+  color: var(--panel-muted);
+}
+.panel-period a[aria-current="page"] {
+  background: var(--panel-surface-2);
+  border-color: var(--panel-border-strong);
+  color: var(--panel-text);
+}
+
+@media (max-width: 720px) {
+  .panel-hbars__row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .panel-hbars__value {
+    text-align: left;
+  }
+}

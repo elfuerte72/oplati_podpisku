@@ -321,3 +321,22 @@ export {
   type ExpiredOrderForSurvey,
   type CompletedOrderForRating,
 } from './funnel.ts';
+
+export {
+  activeSubjectsByDay,
+  catalogClicksByService,
+  dayKeysInRange,
+  funnelByPeriod,
+  revenueByDay,
+  revenueSummary,
+  stepConversions,
+  topServicesByPaidOrders,
+  type ActivityPoint,
+  type AnalyticsRange,
+  type CatalogClicksRow,
+  type FunnelStepRow,
+  type FunnelStepWithConversion,
+  type RevenuePoint,
+  type RevenueSummary,
+  type TopServiceRow,
+} from './analytics-panel.ts';
