@@ -122,7 +122,24 @@ describe('saveFunnelText / resetFunnelText', () => {
     for (let i = 1; i < all.length; i++) {
       expect(all[i - 1]!.createdAt.getTime()).toBeGreaterThanOrEqual(all[i]!.createdAt.getTime());
     }
-    expect(await listRecentFunnelTextRevisions(db, 3)).toHaveLength(3);
+    // Потолок — на ключ, а не на выборку: у ключа с пятью правками остаётся 3,
+    // а редкий ключ не вытесняется чужой историей.
+    const capped = await listRecentFunnelTextRevisions(db, 3);
+    const perKey = new Map<string, number>();
+    for (const rev of capped) perKey.set(rev.key, (perKey.get(rev.key) ?? 0) + 1);
+    expect(perKey.get('rating.low')).toBe(3);
+    expect(perKey.get('expired_survey.body')).toBeGreaterThan(0);
+    expect([...perKey.values()].every((n) => n <= 3)).toBe(true);
+  });
+
+  it('редко правимый ключ виден, даже если у соседа правок больше потолка выборки', async () => {
+    await saveFunnelText(db, { key: 'rare.key', value: 'единственная правка', staffId });
+    for (let i = 0; i < 40; i++) {
+      await saveFunnelText(db, { key: 'noisy.key', value: `v${i}`, staffId });
+    }
+    const all = await listRecentFunnelTextRevisions(db, 20);
+    expect(all.some((r) => r.key === 'rare.key')).toBe(true);
+    expect(all.filter((r) => r.key === 'noisy.key')).toHaveLength(20);
   });
 });
 

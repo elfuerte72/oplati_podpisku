@@ -65,6 +65,9 @@ describe('validateReadOnlySql', () => {
     expect(validateReadOnlySql('SELECT * FROM orders FOR SHARE').ok).toBe(false);
     expect(validateReadOnlySql('SELECT * INTO tmp FROM orders').ok).toBe(false);
     expect(validateReadOnlySql('SELECT pg_sleep(10)').ok).toBe(false);
+    expect(validateReadOnlySql("SELECT pg_sleep_for('1 hour')").ok).toBe(false);
+    expect(validateReadOnlySql("SELECT pg_sleep_until(now())").ok).toBe(false);
+    expect(validateReadOnlySql('SELECT lo_create(0)').ok).toBe(false);
     expect(validateReadOnlySql('COPY orders TO stdout').ok).toBe(false);
   });
 
@@ -73,10 +76,36 @@ describe('validateReadOnlySql', () => {
     expect(validateReadOnlySql('-- nothing').ok).toBe(false);
   });
 
-  it('stripSqlLiteralsAndComments вычищает литералы и комментарии, сохраняя код', () => {
-    expect(stripSqlLiteralsAndComments("SELECT 'x;y' -- c;\nFROM t /* ; */")).toBe(
-      "SELECT '' \nFROM t  ",
-    );
+  it('stripSqlLiteralsAndComments гасит литералы и комментарии пробелами, сохраняя длину и код', () => {
+    const src = "SELECT 'x;y' -- c;\nFROM t /* ; */";
+    const out = stripSqlLiteralsAndComments(src);
+    expect(out).toBe("SELECT '   '      \nFROM t        ");
+    expect(out).toHaveLength(src.length);
+  });
+
+  it('хвостовой комментарий после «;» не прячет точку с запятой и не попадает в обёртку', () => {
+    expect(validateReadOnlySql('SELECT count(*) FROM orders; -- total')).toEqual({
+      ok: true,
+      sql: 'SELECT count(*) FROM orders',
+    });
+    expect(validateReadOnlySql('SELECT 1 /* tail */')).toEqual({ ok: true, sql: 'SELECT 1' });
+  });
+
+  it('«$» внутри идентификатора — не долларовая строка: вторая команда за ним видна', () => {
+    const payload = 'SELECT 1 AS x$a$) AS q; SELECT 2; SELECT * FROM (SELECT 1 AS y$a$';
+    const res = validateReadOnlySql(payload);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/одно выражение/);
+    expect(validateReadOnlySql('SELECT x$a$ FROM t').ok).toBe(true);
+    expect(validateReadOnlySql("SELECT $tag$a;b$tag$ AS x").ok).toBe(true);
+  });
+
+  it("escape-строка E'\\'' закрывается там же, где у Postgres", () => {
+    const payload = "SELECT E'\\'' AS q; DROP TABLE orders";
+    expect(validateReadOnlySql(payload).ok).toBe(false);
+    expect(validateReadOnlySql("SELECT E'a\\'b' AS x").ok).toBe(true);
+    // Обычная строка: `\` — просто символ, `''` — кавычка.
+    expect(validateReadOnlySql("SELECT 'a\\' AS x; SELECT 2").ok).toBe(false);
   });
 });
 
@@ -175,6 +204,20 @@ describe('executeRunSql', () => {
       reason: 'sql_error',
     });
     expect(out.view.error).toContain('does not exist');
+  });
+
+  it('значение ячейки в тексте ошибки Postgres маскируется как строки результата', async () => {
+    const query = vi.fn(async (): Promise<ReadOnlyQueryResult> => ({
+      ok: false,
+      reason: 'sql_error',
+      message: 'invalid input syntax for type integer: "ivan.petrov@example.com +7 999 123-45-67"',
+    }));
+    const out = await executeRunSql({ sql: 'SELECT custom_service_description::int FROM orders' }, { query });
+    const text = JSON.stringify(out.execution.result);
+    expect(text).not.toContain('ivan.petrov');
+    expect(text).not.toContain('123-45-67');
+    expect(text).toContain('[email]');
+    expect(out.view.error).not.toContain('ivan.petrov');
   });
 
   it('недоступная база аналитика — connection: модель получает текст, Sentry — сигнал; sql_error Sentry не шумит', async () => {

@@ -61,8 +61,9 @@ export default async function PanelTextsPage() {
     listFunnelTextOverrides(db),
     // История — одним запросом по всем ключам и показывается у КАЖДОГО ключа,
     // где она есть: возврат к дефолту — тоже правка, и после него история не
-    // должна исчезать с экрана. Последние 20 на ключ.
-    listRecentFunnelTextRevisions(db),
+    // должна исчезать с экрана. Потолок — последние 20 НА КЛЮЧ (оконная
+    // функция в репозитории), поэтому редко правимый ключ не вытесняется.
+    listRecentFunnelTextRevisions(db, HISTORY_PER_KEY),
   ]);
   const overrides = new Map<string, FunnelTextOverride>(overrideRows.map((o) => [o.key, o]));
   const revisions = new Map<string, FunnelTextRevision[]>();
@@ -136,6 +137,12 @@ function TextRow({
       </p>
 
       <FunnelTextEditor
+        // Ключ включает версию значения: после сохранения или сброса сервер
+        // рендерит строку заново, и без смены ключа React сохранил бы
+        // содержимое поля — экран показывал бы «по умолчанию» рядом со старым
+        // переопределением, а «Сохранить» тихо вернул бы его (code-review
+        // 2026-09-02).
+        key={`${spec.key}:${override?.updatedAt.toISOString() ?? 'default'}`}
         textKey={spec.key}
         value={value}
         isOverridden={override !== null}

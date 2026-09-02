@@ -133,6 +133,14 @@ describe('validateFunnelText', () => {
     });
   });
 
+  it('длина считается по отрендеренному тексту: подстановка занимает место', () => {
+    // Шаблон влезает, а с названием сервиса — уже нет: без запаса такой текст
+    // сохранялся бы, а Telegram отвергал бы его при живой отправке.
+    const almost = `{service} ${'а'.repeat(4050)}`;
+    expect(almost.length).toBeLessThanOrEqual(4096);
+    expect(validateFunnelText(rating, almost)).toEqual({ ok: false, reason: 'too_long', max: 4096 });
+  });
+
   it('длина: тело — 4096, кнопка — 64', () => {
     expect(validateFunnelText(rating, `{service} ${'а'.repeat(4096)}`)).toEqual({
       ok: false,
@@ -176,6 +184,30 @@ describe('getFunnelTexts', () => {
     expect(texts['expired_survey.body']).toBe('Свой текст');
     expect(texts['start_survey.body']).toBe(templates.START_SURVEY_TEXT);
     expect(Object.keys(texts)).toEqual([...FUNNEL_TEXT_KEYS]);
+  });
+
+  it('негодная строка из БД откатывается на дефолт и алёртится — рендер не бросит на живом клиенте', async () => {
+    // Так выглядит правка через psql, восстановление из бэкапа или
+    // переименование подстановки в коде: сохранение такую строку не пропустило
+    // бы, а чтение обязано пережить.
+    h.overrides = [
+      { key: 'order_rating.body', value: 'Как вам {servise}?', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+      { key: 'referral_nudge.body', value: 'Без ссылки', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+      { key: 'common.thanks', value: '   ', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+      { key: 'start_survey.body', value: 'Живой оверлей', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+    const texts = await getFunnelTexts();
+    expect(texts['order_rating.body']).toBe(templates.ORDER_RATING_TEXT);
+    expect(texts['referral_nudge.body']).toBe(templates.REFERRAL_NUDGE_TEXT);
+    expect(texts['common.thanks']).toBe(templates.FUNNEL_THANKS_TEXT);
+    // Годный сосед не страдает.
+    expect(texts['start_survey.body']).toBe('Живой оверлей');
+    // Сигнал на КАЖДУЮ негодную строку: окна дедупа у них раздельные, и одна
+    // поломка не глушит ни другую, ни алёрт о недоступной базе.
+    expect(h.captureException).toHaveBeenCalledTimes(3);
+    // Рендер на возвращённых текстах не бросает — это и есть цель проверки.
+    expect(() => renderFunnelText(texts['order_rating.body'], { service: 'Netflix' })).not.toThrow();
+    expect(() => renderFunnelText(texts['referral_nudge.body'], { link: 'https://t.me/bot' })).not.toThrow();
   });
 
   it('ошибка БД — дефолты, лог+Sentry, воронка не падает; неудача не кэшируется', async () => {

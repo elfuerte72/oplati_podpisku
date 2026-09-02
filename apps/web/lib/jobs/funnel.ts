@@ -258,12 +258,22 @@ async function runOrderRatingPhase(
           });
           serviceLabel = service?.name ?? null;
         }
-        return {
-          text: serviceLabel
-            ? renderFunnelText(texts['order_rating.body'], { service: serviceLabel })
-            : texts['order_rating.body_generic'],
-          keyboard: buildRatingKeyboard(row.orderId, texts),
-        };
+        // Рендер под защитой: claim уже занят, и падение здесь означало бы
+        // заказ без просьбы об оценке навсегда. Негодный шаблон отсекается на
+        // чтении реестра, но нейтральная форма дешевле потерянного касания.
+        let text = texts['order_rating.body_generic'];
+        if (serviceLabel) {
+          try {
+            text = renderFunnelText(texts['order_rating.body'], { service: serviceLabel });
+          } catch (err) {
+            log.error({ event: 'cron.funnel.render_failed', orderId: row.orderId, err });
+            Sentry.captureException(err, {
+              tags: { source: 'cron.funnel' },
+              extra: { kind: 'order_rating', orderId: row.orderId },
+            });
+          }
+        }
+        return { text, keyboard: buildRatingKeyboard(row.orderId, texts) };
       },
     });
   }
@@ -302,10 +312,17 @@ async function runReferralNudgePhase(
     // formatReferralTelegramLink): расходиться им нельзя. Собирается ДО
     // привратника: сбой сборки ПОСЛЕ claim'а терял бы касание навсегда,
     // а лишний идемпотентный ensureReferralCode при отказе бюджета дёшев.
-    let link: string | null = null;
+    let content: FunnelMessageContent | null = null;
     try {
       const code = await ensureReferralCode(db, row.userId);
-      link = formatReferralTelegramLink(code, botUsername, referralMiniAppShortName());
+      const link = formatReferralTelegramLink(code, botUsername, referralMiniAppShortName());
+      // Рендер — в ТОМ ЖЕ try: текст берётся из БД (оверлей панели), и хотя
+      // негодную строку отсекает чтение реестра, брошенное здесь исключение
+      // унесло бы ВСЮ фазу вместе с остальными клиентами — один клиент не
+      // роняет прогон (code-review 2026-09-02).
+      content = link
+        ? { text: renderFunnelText(texts['referral_nudge.body'], { link }), keyboard: buildReferralNudgeKeyboard(texts) }
+        : null;
     } catch (err) {
       phase.errors++;
       log.error({ event: 'cron.funnel.referral_link_failed', userId: row.userId, err });
@@ -315,21 +332,18 @@ async function runReferralNudgePhase(
       });
       continue;
     }
-    if (!link) {
+    if (!content) {
       // formatReferralTelegramLink отдал null (нет кода) — кандидат
       // пропускается без claim'а, попробуем в следующем прогоне.
       phase.skipped++;
       continue;
     }
-    const content = {
-      text: renderFunnelText(texts['referral_nudge.body'], { link }),
-      keyboard: buildReferralNudgeKeyboard(texts),
-    };
+    const ready = content;
     await trySend(phase, {
       userId: row.userId,
       kind: 'referral_nudge',
       now,
-      build: () => content,
+      build: () => ready,
     });
   }
 }

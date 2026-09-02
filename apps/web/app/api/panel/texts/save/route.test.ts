@@ -36,6 +36,8 @@ vi.mock('@/lib/funnel/texts', async (importOriginal) => ({
 }));
 vi.mock('@sentry/nextjs', () => ({ captureException: h.captureException, captureMessage: vi.fn() }));
 
+import { funnelTextSpec } from '@/lib/funnel/texts';
+
 import { POST as save } from './route.ts';
 import { POST as reset } from '../reset/route.ts';
 
@@ -143,6 +145,30 @@ describe('POST /api/panel/texts/reset', () => {
   it('неизвестный ключ → 400', async () => {
     expect((await reset(request('reset', { key: 'nope' }))).status).toBe(400);
     expect(h.reset).not.toHaveBeenCalled();
+  });
+
+  it('дефолт, который занял сосед, не возвращается: 422 duplicate_label, оверлей на месте', async () => {
+    // Сосед переопределён ровно дефолтной подписью сбрасываемого ключа — вернув
+    // дефолт, панель дала бы две одинаковые кнопки с разными callback_data.
+    const spec = funnelTextSpec('expired_survey.answer.other')!;
+    h.overrides = [
+      { key: 'expired_survey.answer.price', value: spec.defaultValue, updatedAt: new Date(), updatedBy: null, updatedByName: null },
+      { key: 'expired_survey.answer.other', value: 'Иное', updatedAt: new Date(), updatedBy: null, updatedByName: null },
+    ];
+    const res = await reset(request('reset', { key: 'expired_survey.answer.other' }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: 'duplicate_label' });
+    expect(h.reset).not.toHaveBeenCalled();
+    expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('сбой БД в проверке соседей при сбросе → 503, а не 500', async () => {
+    const db = await import('@oplati/db');
+    vi.mocked(db.listFunnelTextOverrides).mockRejectedValueOnce(new Error('connection refused'));
+    const res = await reset(request('reset', { key: 'common.thanks' }));
+    expect(res.status).toBe(503);
+    expect(h.reset).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('сброс зовёт репозиторий с автором и инвалидирует памятку; отдаёт changed', async () => {

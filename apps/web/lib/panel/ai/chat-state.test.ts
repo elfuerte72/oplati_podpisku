@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyAskResponse, buildAskBody, EMPTY_CHAT, type ChatState } from './chat-state';
+import {
+  ANALYST_HISTORY_MAX_BYTES,
+  applyAskResponse,
+  buildAskBody,
+  EMPTY_CHAT,
+  type ChatState,
+} from './chat-state';
 
 /**
  * Состояние чата с аналитиком (тикет 07) — без DOM: что уходит в запрос и что
@@ -33,6 +39,26 @@ describe('buildAskBody', () => {
         { role: 'user', text: 'А за месяц?' },
       ],
     });
+  });
+
+  it('тяжёлая история режется с начала под потолок байт сервера, свежие ходы остаются', () => {
+    // Кириллица — два байта на символ: четыре ответа по 1500 символов уже не
+    // влезают в 8 КБ, а сервер такую историю отвергает целиком.
+    const turns = Array.from({ length: 8 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      text: `${i}`.repeat(1) + 'я'.repeat(1500),
+    }));
+    const body = buildAskBody({ ...EMPTY_CHAT, turns }, 'вопрос');
+    const bytes = body.history.reduce((sum, t) => sum + Buffer.byteLength(t.text, 'utf8'), 0);
+    expect(bytes).toBeLessThanOrEqual(ANALYST_HISTORY_MAX_BYTES);
+    expect(body.history.length).toBeGreaterThan(0);
+    // Уцелели именно последние ходы.
+    expect(body.history.at(-1)?.text).toBe(turns.at(-1)?.text);
+  });
+
+  it('единственный ход тяжелее потолка всё равно уезжает — отказ по нему честно даст сервер', () => {
+    const turns = [{ role: 'assistant' as const, text: 'я'.repeat(9000) }];
+    expect(buildAskBody({ ...EMPTY_CHAT, turns }, 'q').history).toHaveLength(1);
   });
 
   it('длинная история режется с начала до 20 ходов', () => {

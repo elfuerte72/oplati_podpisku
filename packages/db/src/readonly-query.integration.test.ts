@@ -70,6 +70,22 @@ describe('runReadOnlyQuery — страховки исполнителя', () =>
     expect(rows.rows[0]?.cnt).toBe(0);
   });
 
+  it('цепочка команд через «;», обошедшая лексер, отвергается сервером (extended protocol), ничего не исполнено', async () => {
+    // Третий эшелон держит сервер, а не наш разбор SQL: `x$a$` — идентификатор,
+    // который лексер run-sql принимал за долларовую строку и прятал всё после
+    // него; `COMMIT; BEGIN` внутри цепочки в simple protocol закрывал бы
+    // READ ONLY транзакцию. Исполнитель тестов — extended protocol, как и
+    // боевой (`simple: false`): одна строка = одна команда.
+    const payload =
+      "SELECT 1 AS x$a$) AS q; COMMIT; BEGIN; UPDATE orders SET status = 'cancelled'; SELECT * FROM (SELECT 1 AS y$a$";
+    const res = await runReadOnlyQuery(payload, OPTS, executor);
+    expect(res).toMatchObject({ ok: false, reason: 'sql_error' });
+    const rows = await pg.query<{ cnt: number }>(
+      "SELECT count(*)::int AS cnt FROM orders WHERE status = 'cancelled'",
+    );
+    expect(rows.rows[0]?.cnt).toBe(0);
+  });
+
   it('READ ONLY транзакция исполнителя отвергает запись даже без обёртки и без роли', async () => {
     // Второй эшелон, проверяется на самом исполнителе: сюда попадает запрос,
     // если обёртку когда-нибудь ослабят.

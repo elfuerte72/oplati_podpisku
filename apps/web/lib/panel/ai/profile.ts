@@ -3,7 +3,7 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 
 import {
-  getSupportClient,
+  getPanelAnalystClient,
   isSupportAiConfigured,
   supportModel,
   type AgentClient,
@@ -26,7 +26,10 @@ import { buildPanelAnalystSystemPrompt } from './system-prompt';
  *   - `maxTokens` 2000 — ответ с таблицей длиннее реплики поддержки;
  *   - `toolErrorsAsIsError: true` — ошибка SQL обязана вернуться модели как
  *     ошибка инструмента, а не прервать цикл; текст ошибки едет и в теле;
- *   - температура ниже: аналитик считает, а не сочиняет.
+ *   - температура ниже: аналитик считает, а не сочиняет;
+ *   - СВОЙ клиент SDK (`getPanelAnalystClient`): сроки помощника (20 с, два
+ *     ретрая) рассчитаны на короткую реплику, а ответ на 2000 токенов без
+ *     стриминга приходит позже — см. комментарий в `client.ts`.
  *
  * Расходы DeepSeek в клиентский дневной бюджет не входят (как у поддержки).
  */
@@ -72,7 +75,7 @@ export function buildPanelAnalystProfile(input: {
   now?: Date;
 }): AgentProfile {
   return {
-    client: input.client ?? getSupportClient(),
+    client: input.client ?? getPanelAnalystClient(),
     model: panelAnalystModel(),
     temperature: ANALYST_TEMPERATURE,
     maxTokens: ANALYST_MAX_TOKENS,

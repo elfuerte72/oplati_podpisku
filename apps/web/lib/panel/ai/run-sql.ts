@@ -18,8 +18,10 @@ import { maskForModel } from '@/lib/support/mask';
  * admin-panel-v2, ветка B, тикет 05).
  *
  * Страховки ПОВЕРХ роли `panel_ai_ro` и read-only транзакции исполнителя
- * (`runReadOnlyQuery`): ровно одно выражение, начинается с SELECT/WITH,
- * без `SELECT INTO`, блокировок строк и функций ожидания. Отказ уходит модели
+ * (`runReadOnlyQuery`): начинается с SELECT/WITH, без `SELECT INTO`,
+ * блокировок строк и функций ожидания; «ровно одно выражение» проверяется и
+ * здесь (понятный отказ модели), и сервером — extended protocol исполнителя
+ * отвергает `;`-цепочку сам, лексер ниже не эшелон защиты. Отказ уходит модели
  * как ошибка инструмента — она переформулирует, а не получает пустой ответ.
  *
  * Провайдер видит только то, что отдаёт роль (без email, телефонов, переписки),
@@ -58,31 +60,52 @@ export const runSqlTool: AgentProfile['tools'][number] = {
 export type SqlValidation = { ok: true; sql: string } | { ok: false; reason: string };
 
 /**
- * Снять комментарии и содержимое строковых литералов, чтобы искать служебные
- * слова только в коде запроса. Литералы заменяются на пустые `''`, чтобы
- * `'a;b'` внутри строки не считался разделителем выражений.
+ * Заменить комментарии и содержимое строковых литералов пробелами, СОХРАНЯЯ
+ * длину и позиции: служебные слова ищутся только в коде запроса, а индекс
+ * последнего значимого символа переносится на исходный текст — так хвостовые
+ * `;` снимаются вместе с комментарием ПОСЛЕ них (`SELECT 1; -- итого`).
+ * Литерал остаётся парой кавычек с пробелами внутри, чтобы `'a;b'` не считался
+ * разделителем выражений.
+ *
+ * Расхождения с лексером Postgres здесь не эшелон защиты — одно выражение
+ * форсит сам сервер (extended protocol в `runReadOnlyQuery`), — но два
+ * известных учтены (code-review 2026-09-02): `$` внутри идентификатора
+ * (`x$a$` — имя, не открывающий тег долларовой строки) и escape-строки
+ * `E'\''`, где `\` экранирует следующий символ.
  */
 export function stripSqlLiteralsAndComments(sql: string): string {
   let out = '';
   let i = 0;
+  const blank = (n: number) => ' '.repeat(Math.max(0, n));
+  const isIdent = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_$]/.test(c);
   while (i < sql.length) {
     const ch = sql[i]!;
     const next = sql[i + 1];
+    const prev = i > 0 ? sql[i - 1] : undefined;
     if (ch === '-' && next === '-') {
-      const end = sql.indexOf('\n', i);
-      i = end === -1 ? sql.length : end;
+      const nl = sql.indexOf('\n', i);
+      const end = nl === -1 ? sql.length : nl;
+      out += blank(end - i);
+      i = end;
       continue;
     }
     if (ch === '/' && next === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      i = end === -1 ? sql.length : end + 2;
-      out += ' ';
+      const close = sql.indexOf('*/', i + 2);
+      const end = close === -1 ? sql.length : close + 2;
+      out += blank(end - i);
+      i = end;
       continue;
     }
     if (ch === "'") {
-      // Стандартная строка; `''` внутри — экранированная кавычка.
+      // Стандартная строка: `''` внутри — экранированная кавычка. В E'…'
+      // (префикс не часть идентификатора) `\` экранирует следующий символ.
+      const escapes = (prev === 'E' || prev === 'e') && !isIdent(i > 1 ? sql[i - 2] : undefined);
       let j = i + 1;
       while (j < sql.length) {
+        if (escapes && sql[j] === '\\') {
+          j += 2;
+          continue;
+        }
         if (sql[j] === "'" && sql[j + 1] === "'") {
           j += 2;
           continue;
@@ -90,27 +113,30 @@ export function stripSqlLiteralsAndComments(sql: string): string {
         if (sql[j] === "'") break;
         j++;
       }
-      out += "''";
-      i = j + 1;
+      const end = Math.min(j + 1, sql.length);
+      const len = end - i;
+      out += len >= 2 ? `'${blank(len - 2)}'` : "'";
+      i = end;
       continue;
     }
-    if (ch === '$') {
-      // Долларовые строки `$$…$$` и `$tag$…$tag$`.
+    if (ch === '$' && !isIdent(prev)) {
+      // Долларовые строки `$$…$$` и `$tag$…$tag$` — только вне идентификатора.
       const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
       if (m) {
         const tag = m[0];
-        const end = sql.indexOf(tag, i + tag.length);
-        out += "''";
-        i = end === -1 ? sql.length : end + tag.length;
+        const close = sql.indexOf(tag, i + tag.length);
+        const end = close === -1 ? sql.length : close + tag.length;
+        out += `'${blank(end - i - 2)}'`;
+        i = end;
         continue;
       }
     }
     if (ch === '"') {
       // Идентификатор в кавычках — оставляем как есть, но не заглядываем внутрь.
-      const end = sql.indexOf('"', i + 1);
-      const stop = end === -1 ? sql.length : end + 1;
-      out += sql.slice(i, stop);
-      i = stop;
+      const close = sql.indexOf('"', i + 1);
+      const end = close === -1 ? sql.length : close + 1;
+      out += sql.slice(i, end);
+      i = end;
       continue;
     }
     out += ch;
@@ -123,18 +149,24 @@ const FORBIDDEN = [
   { re: /\bINTO\b/i, reason: 'SELECT INTO создаёт таблицу — используйте обычный SELECT' },
   { re: /\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/i, reason: 'блокировки строк (FOR UPDATE) запрещены' },
   { re: /\bFOR\s+(KEY\s+)?SHARE\b/i, reason: 'блокировки строк (FOR SHARE) запрещены' },
-  { re: /\bpg_sleep\b/i, reason: 'pg_sleep запрещён' },
+  { re: /\bpg_sleep(_for|_until)?\b/i, reason: 'функции ожидания (pg_sleep*) запрещены' },
   { re: /\bCOPY\b/i, reason: 'COPY запрещён' },
   { re: /\bLOCK\b/i, reason: 'LOCK запрещён' },
   { re: /\bpg_(read_|ls_|stat_file)/i, reason: 'доступ к файлам сервера запрещён' },
-  { re: /\blo_(import|export|get|put)\b/i, reason: 'large objects запрещены' },
+  { re: /\b(lo_[a-z]+|lowrite|loread)\b/i, reason: 'large objects запрещены' },
 ] as const;
 
-/** Проверка запроса ДО исполнения. Возвращает очищенный от завершающего `;` текст. */
+/**
+ * Проверка запроса ДО исполнения. Возвращает текст без хвостовых `;` и
+ * комментариев после них: позиция последнего значимого символа берётся по
+ * очищенному коду той же длины, поэтому `SELECT 1; -- итого` → `SELECT 1`, а не
+ * `SELECT 1; -- итого` с `;`, о который споткнётся обёртка-подзапрос.
+ */
 export function validateReadOnlySql(raw: string): SqlValidation {
-  const code = stripSqlLiteralsAndComments(raw).trim();
-  const sql = stripTrailingSemicolons(raw.trim());
-  const codeNoTail = stripTrailingSemicolons(code).trim();
+  const code = stripSqlLiteralsAndComments(raw);
+  const end = stripTrailingSemicolons(code).length;
+  const codeNoTail = code.slice(0, end).trim();
+  const sql = raw.slice(0, end).trim();
   if (codeNoTail.length === 0) return { ok: false, reason: 'пустой запрос' };
   if (codeNoTail.includes(';')) {
     return { ok: false, reason: 'разрешено ровно одно выражение: уберите «;» между запросами' };
@@ -290,7 +322,12 @@ export async function executeRunSql(rawInput: unknown, deps: RunSqlDeps = {}): P
         tags: { source: 'panel.ai.sql' },
       });
     }
-    const error = res.reason === 'sql_error' ? `ошибка SQL: ${res.message}` : MODEL_ERROR_TEXT[res.reason];
+    // Текст Postgres несёт значение ячейки, о которое споткнулся запрос
+    // (`invalid input syntax for type integer: "…"`), — свободный текст клиента
+    // уходит модели через ту же маску, что и строки результата (security-review
+    // 2026-09-02).
+    const error =
+      res.reason === 'sql_error' ? `ошибка SQL: ${maskCell(res.message)}` : MODEL_ERROR_TEXT[res.reason];
     return {
       execution: { result: { error, reason: res.reason }, isError: true },
       view: { sql: validation.sql, columns: [], rows: [], truncated: false, error, errorReason: res.reason },

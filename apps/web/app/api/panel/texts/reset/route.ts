@@ -5,12 +5,19 @@ import { getDb, resetFunnelText } from '@oplati/db';
 
 import { funnelTextSpec, invalidateFunnelTexts } from '@/lib/funnel/texts';
 import { childLogger } from '@/lib/logger';
+import { checkFunnelTextForKey, funnelTextErrorResponse } from '@/lib/panel/funnel-texts';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
 
 /**
  * POST /api/panel/texts/reset — вернуть тексту дефолт из кода (тикет 11).
  * Удаляет переопределение и пишет в историю `new_value NULL`; без
  * переопределения — идемпотентный no-op (`changed: false`).
+ *
+ * Возвращаемый дефолт проходит ТУ ЖЕ проверку, что и сохранение: он тоже
+ * становится живым текстом рядом с переопределёнными соседями, и без проверки
+ * сброс подписи ответа мог вернуть кнопку с подписью, которую сосед уже занял
+ * (два одинаковых «Другое» с разными `callback_data` — клик клиента
+ * записывался бы не в тот ответ, code-review 2026-09-02).
  */
 
 export const dynamic = 'force-dynamic';
@@ -44,9 +51,21 @@ export async function POST(req: Request): Promise<Response> {
   const spec = funnelTextSpec(body.key);
   if (!spec) return Response.json({ ok: false, error: 'unknown_key' }, { status: 400 });
 
+  const db = getDb();
+  let check: Awaited<ReturnType<typeof checkFunnelTextForKey>>;
+  try {
+    check = await checkFunnelTextForKey(db, spec.key, spec.defaultValue);
+  } catch (err) {
+    // Проверка читает соседей из БД: отказ базы — 503, а не 500.
+    log.error({ event: 'panel.texts.check_failed', staffId: guard.actor.id, key: spec.key, err });
+    Sentry.captureException(err, { tags: { source: 'panel.texts' } });
+    return Response.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
+  if (!check.ok) return funnelTextErrorResponse(check);
+
   let changed: boolean;
   try {
-    ({ changed } = await resetFunnelText(getDb(), { key: spec.key, staffId: guard.actor.id }));
+    ({ changed } = await resetFunnelText(db, { key: spec.key, staffId: guard.actor.id }));
   } catch (err) {
     log.error({ event: 'panel.texts.reset_failed', staffId: guard.actor.id, key: spec.key, err });
     Sentry.captureException(err, { tags: { source: 'panel.texts' } });

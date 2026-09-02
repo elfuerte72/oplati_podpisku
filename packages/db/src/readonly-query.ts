@@ -13,9 +13,15 @@ import postgres from 'postgres';
  *   2. транзакция `READ ONLY` + `SET LOCAL statement_timeout` здесь — страховка
  *      на случай лишнего гранта или подключения не той ролью (проверяется на
  *      PGlite без роли вовсе);
- *   3. запрос заворачивается в подзапрос с `LIMIT rowLimit + 1` — второе
- *      выражение через `;` становится синтаксической ошибкой по построению, а
- *      таблица целиком в процесс не тянется.
+ *   3. ОДНО выражение форсит сам сервер: запрос уходит extended protocol
+ *      (Parse/Bind/Execute), а в нём Postgres отвергает строку из нескольких
+ *      команд (`42601 cannot insert multiple commands into a prepared
+ *      statement`) — независимо от того, что сумел разобрать наш лексер в
+ *      `run-sql.ts`. Simple protocol (`unsafe()` без параметров по умолчанию)
+ *      исполнял бы `;`-цепочку целиком, включая `COMMIT; BEGIN READ WRITE`,
+ *      и эшелон 2 держался бы только на лексере (code-review 2026-09-02).
+ *      Обёртка `SELECT * FROM (…) LIMIT rowLimit + 1` — потолок строк, чтобы
+ *      таблица целиком в процесс не тянулась.
  *
  * Никогда не бросает: любой отказ — Result с причиной. Ошибка SQL уходит
  * наружу с текстом Postgres — модели он нужен, чтобы поправить запрос.
@@ -110,6 +116,14 @@ export function wrapReadOnlyQuery(sqlText: string, rowLimit: number): string {
 let _client: ReturnType<typeof postgres> | undefined;
 
 /**
+ * `unsafe()` без параметров по умолчанию идёт simple protocol и исполняет
+ * несколько команд через `;`. `simple: false` — extended protocol, где сервер
+ * сам отвергает вторую команду (эшелон 3 в шапке). В типах драйвера поля нет,
+ * в рантайме читается (`'simple' in options`).
+ */
+const EXTENDED_PROTOCOL: postgres.UnsafeQueryOptions & { simple: boolean } = { simple: false };
+
+/**
  * Боевой исполнитель: postgres-js по `PANEL_AI_DATABASE_URL`, ленивый
  * синглтон. `max: 2` совпадает с `CONNECTION LIMIT 2` роли; `prepare: false`
  * — запросы одноразовые; `connect_timeout: 5` — недоступная база должна
@@ -122,7 +136,7 @@ function postgresExecutor(url: string): ReadOnlyExecutor {
     async run(sqlText, timeoutMs) {
       return client.begin('read only', async (tx) => {
         await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
-        const result = await tx.unsafe(sqlText).values();
+        const result = await tx.unsafe(sqlText, [], EXTENDED_PROTOCOL).values();
         return {
           columns: result.columns.map((c) => c.name),
           rows: result as unknown as unknown[][],

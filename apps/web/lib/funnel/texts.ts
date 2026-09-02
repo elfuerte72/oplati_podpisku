@@ -337,6 +337,18 @@ export function renderFunnelText(template: string, params: Record<string, string
   });
 }
 
+/**
+ * Запас на подстановку в символах: длина проверяется по ОТРЕНДЕРЕННОМУ тексту,
+ * а он длиннее шаблона. Иначе шаблон на 4090 символов с `{service}` проходил бы
+ * сохранение и тест-отправку (там подставляется короткое «Netflix»), а живое
+ * касание получало бы 400 «message is too long» от Telegram — УЖЕ после
+ * занятого claim'а, то есть касание терялось бы навсегда (code-review
+ * 2026-09-02). Запас берётся по самому длинному правдоподобному значению:
+ * название сервиса каталога и deep-link с реферальным кодом.
+ */
+const PLACEHOLDER_RESERVE: Readonly<Record<string, number>> = { service: 96, link: 128 };
+const PLACEHOLDER_RESERVE_DEFAULT = 96;
+
 export type FunnelTextValidation =
   | { ok: true; value: string }
   | { ok: false; reason: 'empty' }
@@ -346,31 +358,50 @@ export type FunnelTextValidation =
   | { ok: false; reason: 'duplicate_label' };
 
 /**
- * Одна проверка на сохранение и на тест-отправку: непустой после trim; все
- * обязательные подстановки на месте; неизвестных `{…}` нет; длина в лимите
- * (тела — лимит сообщения Telegram, кнопки — 64); подписи ответов внутри
- * одного опроса уникальны — с учётом переопределений соседей (`siblings`:
- * ключ → текущее значение).
+ * Проверка САМОЙ строки, без оглядки на соседей: непустая после trim; все
+ * обязательные подстановки на месте; неизвестных `{…}` нет; длина в лимите с
+ * запасом на подстановки.
+ *
+ * Отделена от `validateFunnelText`, потому что её зовёт ещё и чтение оверлея
+ * из БД (`loadOverrides`): там нужно понять, годится ли строка к отправке, а
+ * не поссорить её с соседями.
+ */
+export function validateFunnelTextShape(spec: FunnelTextSpec, raw: string): FunnelTextValidation {
+  const value = raw.trim();
+  if (value.length === 0) return { ok: false, reason: 'empty' };
+
+  const allowed = new Set([...spec.placeholders.required, ...spec.placeholders.optional]);
+  const found = new Set<string>();
+  // Длина считается по отрендеренному тексту: сам `{name}` уходит, вместо него
+  // приходит значение — берём запас (см. PLACEHOLDER_RESERVE).
+  let rendered = value.length;
+  for (const m of value.matchAll(PLACEHOLDER_RE)) {
+    const name = m[1]!;
+    if (!allowed.has(name)) return { ok: false, reason: 'unknown_placeholder', placeholder: name };
+    found.add(name);
+    rendered += (PLACEHOLDER_RESERVE[name] ?? PLACEHOLDER_RESERVE_DEFAULT) - m[0]!.length;
+  }
+  if (rendered > spec.maxLength) return { ok: false, reason: 'too_long', max: spec.maxLength };
+  for (const required of spec.placeholders.required) {
+    if (!found.has(required)) return { ok: false, reason: 'missing_placeholder', placeholder: required };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * Одна проверка на сохранение и на тест-отправку: всё из
+ * `validateFunnelTextShape` плюс уникальность подписей ответов внутри одного
+ * опроса — с учётом переопределений соседей (`siblings`: ключ → текущее
+ * значение).
  */
 export function validateFunnelText(
   spec: FunnelTextSpec,
   raw: string,
   siblings: Readonly<Record<string, string>> = {},
 ): FunnelTextValidation {
-  const value = raw.trim();
-  if (value.length === 0) return { ok: false, reason: 'empty' };
-  if (value.length > spec.maxLength) return { ok: false, reason: 'too_long', max: spec.maxLength };
-
-  const allowed = new Set([...spec.placeholders.required, ...spec.placeholders.optional]);
-  const found = new Set<string>();
-  for (const m of value.matchAll(PLACEHOLDER_RE)) {
-    const name = m[1]!;
-    if (!allowed.has(name)) return { ok: false, reason: 'unknown_placeholder', placeholder: name };
-    found.add(name);
-  }
-  for (const required of spec.placeholders.required) {
-    if (!found.has(required)) return { ok: false, reason: 'missing_placeholder', placeholder: required };
-  }
+  const shape = validateFunnelTextShape(spec, raw);
+  if (!shape.ok) return shape;
+  const value = shape.value;
 
   if (spec.kind === 'answer') {
     const others = FUNNEL_TEXTS.filter((s) => s.group === spec.group && s.kind === 'answer' && s.key !== spec.key);
@@ -392,7 +423,15 @@ const SENTRY_WINDOW_MS = 10 * 60_000;
 type Slot = { work: Promise<Record<string, string> | null>; at: number; done: boolean };
 
 let slot: Slot | undefined;
+/** Окно Sentry для отказа ЗАГРУЗКИ оверлея. */
 let lastReportedAt = 0;
+/**
+ * Окна Sentry для негодных строк — СВОЁ на ключ, отдельно от окна отказа
+ * загрузки: одно общее означало бы, что одна испорченная строка десять минут
+ * глушит алёрт о недоступной базе (и наоборот), а испорченных строк может быть
+ * несколько сразу — сообщить надо о каждой.
+ */
+const invalidReportedAt = new Map<string, number>();
 
 function defaults(): Record<FunnelTextKey, string> {
   const out = {} as Record<FunnelTextKey, string>;
@@ -403,6 +442,9 @@ function defaults(): Record<FunnelTextKey, string> {
 /** Сброс памятки — после сохранения/сброса текста в том же процессе. */
 export function invalidateFunnelTexts(): void {
   slot = undefined;
+  // Строку только что правили: если она снова окажется негодной, об этом надо
+  // узнать сразу, а не через окно дедупа.
+  invalidReportedAt.clear();
 }
 
 async function loadOverrides(now: number): Promise<Record<string, string> | null> {
@@ -412,7 +454,29 @@ async function loadOverrides(now: number): Promise<Record<string, string> | null
     for (const row of rows) {
       // Ключ, которого в реестре нет (переименовали/удалили), — молча мимо:
       // ронять воронку из-за строки в БД нельзя.
-      if (isFunnelTextKey(row.key)) out[row.key] = row.value;
+      if (!isFunnelTextKey(row.key)) continue;
+      const spec = SPEC_BY_KEY.get(row.key);
+      if (!spec) continue;
+      // Строка из БД проверяется ЗДЕСЬ, на единственном чтении, а не только на
+      // сохранении: правка через psql, восстановление из бэкапа или
+      // переименование подстановки в коде оставляют в таблице текст, на
+      // котором `renderFunnelText` бросает — а бросает он уже ПОСЛЕ занятого
+      // claim'а (касание теряется навсегда) или посреди фазы крона (остальные
+      // клиенты пропускаются). Негодная строка откатывается на дефолт и
+      // проговаривается вслух (code-review 2026-09-02).
+      const checked = validateFunnelTextShape(spec, row.value);
+      if (!checked.ok) {
+        log.error({ event: 'funnel.texts.invalid_override', key: row.key, reason: checked.reason });
+        if (now - (invalidReportedAt.get(row.key) ?? 0) >= SENTRY_WINDOW_MS) {
+          invalidReportedAt.set(row.key, now);
+          Sentry.captureException(
+            new Error(`funnel text override is invalid: ${row.key} (${checked.reason})`),
+            { tags: { source: 'funnel.texts' } },
+          );
+        }
+        continue;
+      }
+      out[row.key] = checked.value;
     }
     return out;
   } catch (err) {

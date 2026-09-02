@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, lte, sql } from 'drizzle-orm';
 
 import { funnelTextRevisions, funnelTexts, staff } from '../schema.ts';
 import type { DB } from '../index.ts';
@@ -126,12 +126,18 @@ export type FunnelTextRevision = {
  * История правок по ВСЕМ ключам одним запросом, новые сверху — для экрана
  * текстов: история обязана быть видна и у ключа, возвращённого к дефолту
  * (сам возврат — тоже правка), а не только у живого оверлея.
+ *
+ * Потолок — НА КЛЮЧ (оконная функция), а не общий на выборку: таблица
+ * append-only, и общий «последние 200» после пары сотен правок вытеснял бы
+ * историю редко правимых ключей целиком — экран молча показывал бы «правок
+ * нет» там, где они есть (code-review 2026-09-02). Оконный запрос идёт по
+ * индексу `(key, created_at)`.
  */
 export async function listRecentFunnelTextRevisions(
   db: DB,
-  limit = 200,
+  perKeyLimit = 20,
 ): Promise<FunnelTextRevision[]> {
-  return db
+  const ranked = db
     .select({
       id: funnelTextRevisions.id,
       key: funnelTextRevisions.key,
@@ -140,11 +146,28 @@ export async function listRecentFunnelTextRevisions(
       staffId: funnelTextRevisions.staffId,
       staffName: staff.displayName,
       createdAt: funnelTextRevisions.createdAt,
+      rank: sql<number>`row_number() over (
+        partition by ${funnelTextRevisions.key}
+        order by ${funnelTextRevisions.createdAt} desc, ${funnelTextRevisions.id} desc
+      )`.as('rank'),
     })
     .from(funnelTextRevisions)
     .leftJoin(staff, eq(staff.id, funnelTextRevisions.staffId))
-    .orderBy(desc(funnelTextRevisions.createdAt), desc(funnelTextRevisions.id))
-    .limit(Math.min(Math.max(Math.trunc(limit), 1), 1000));
+    .as('ranked');
+
+  return db
+    .select({
+      id: ranked.id,
+      key: ranked.key,
+      oldValue: ranked.oldValue,
+      newValue: ranked.newValue,
+      staffId: ranked.staffId,
+      staffName: ranked.staffName,
+      createdAt: ranked.createdAt,
+    })
+    .from(ranked)
+    .where(lte(ranked.rank, Math.min(Math.max(Math.trunc(perKeyLimit), 1), 100)))
+    .orderBy(desc(ranked.createdAt), desc(ranked.id));
 }
 
 /** История правок ключа, новые сверху. */
