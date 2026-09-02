@@ -134,10 +134,15 @@ export function stripSqlLiteralsAndComments(sql: string): string {
       }
     }
     if (ch === '"') {
-      // Идентификатор в кавычках — оставляем как есть, но не заглядываем внутрь.
+      // Идентификатор в кавычках гасится так же, как литерал: содержимое —
+      // имя колонки, а не код, и `;` или `--` внутри него не разделяют
+      // выражения. Раньше содержимое копировалось как есть, и валидный
+      // `SELECT "a;b" FROM t` отвергался как «несколько выражений»
+      // (code-review 2026-09-02).
       const close = sql.indexOf('"', i + 1);
       const end = close === -1 ? sql.length : close + 1;
-      out += sql.slice(i, end);
+      const len = end - i;
+      out += len >= 2 ? `"${blank(len - 2)}"` : '"';
       i = end;
       continue;
     }
@@ -148,6 +153,16 @@ export function stripSqlLiteralsAndComments(sql: string): string {
 }
 
 const FORBIDDEN = [
+  // Пишущий CTE — единственный способ изменить данные выражением, которое
+  // НАЧИНАЕТСЯ с `WITH`: `WITH d AS (DELETE FROM orders RETURNING *) SELECT …`
+  // проходил проверку первого слова. Сегодня его останавливают гранты роли и
+  // READ ONLY транзакция, но `PANEL_AI_DATABASE_URL` задаётся руками на проде,
+  // и опечатка в строке подключения оставляла бы между моделью и `DELETE FROM
+  // orders` один барьер (code-review 2026-09-02).
+  {
+    re: /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|REFRESH|VACUUM|ANALYZE|REINDEX|CLUSTER|CALL|DO|SET|RESET|COMMIT|ROLLBACK|BEGIN|START|SAVEPOINT|PREPARE|EXECUTE|DEALLOCATE|LISTEN|NOTIFY|UNLISTEN|DISCARD|SECURITY\s+LABEL|COMMENT)\b/i,
+    reason: 'разрешено только чтение: SELECT или WITH … SELECT, без изменяющих данные выражений',
+  },
   { re: /\bINTO\b/i, reason: 'SELECT INTO создаёт таблицу — используйте обычный SELECT' },
   { re: /\bFOR\s+(NO\s+KEY\s+)?UPDATE\b/i, reason: 'блокировки строк (FOR UPDATE) запрещены' },
   { re: /\bFOR\s+(KEY\s+)?SHARE\b/i, reason: 'блокировки строк (FOR SHARE) запрещены' },

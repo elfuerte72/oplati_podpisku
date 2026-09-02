@@ -16,7 +16,7 @@ import type { FunnelKind } from '@oplati/types';
 import { formatReferralTelegramLink } from '@/lib/cabinet/referral-read';
 import { serverEnv } from '@/lib/env.server';
 import { sendFunnelMessage, type FunnelMessageContent } from '@/lib/funnel/gate';
-import { getFunnelTexts, renderFunnelText, type FunnelTextValues } from '@/lib/funnel/texts';
+import { getFunnelTextsDetailed, renderFunnelText, type FunnelTextValues } from '@/lib/funnel/texts';
 import { childLogger } from '@/lib/logger';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
@@ -42,6 +42,13 @@ import {
  */
 
 const log = childLogger('cron.funnel');
+
+/**
+ * Сколько крон ждёт оверлей текстов. Клиентский путь ждёт две секунды (там
+ * важнее ответить), кроновский — дольше: пропущенный прогон дешевле рассылки
+ * дефолтами под занятыми claim'ами.
+ */
+const TEXTS_DEADLINE_MS = 10_000;
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -89,7 +96,21 @@ export async function runFunnelJob(opts: { now?: Date } = {}): Promise<FunnelJob
   log.info({ event: 'cron.funnel.start' });
 
   // Один поход за текстами на прогон: оверлей владельца поверх дефолтов.
-  const texts = await getFunnelTexts();
+  //
+  // Не прочитался — прогон ПРОПУСКАЕТСЯ целиком. Каждое сообщение здесь
+  // одноразовое и занимает claim до отправки: разослав дефолтный текст под
+  // занятым claim'ом, мы лишили бы этих клиентов правки владельца навсегда, и
+  // видно это было бы только по одной строке warn. Следующий прогон через 15
+  // минут, окна выборок шире шага — ничего не теряется (code-review
+  // 2026-09-02). Дедлайн здесь свой: крону некуда спешить.
+  const { texts, fromOverlay } = await getFunnelTextsDetailed(Date.now(), TEXTS_DEADLINE_MS);
+  if (!fromOverlay) {
+    log.error({ event: 'cron.funnel.texts_unavailable' });
+    Sentry.captureException(new Error('funnel cron skipped: texts overlay unavailable'), {
+      tags: { source: 'cron.funnel' },
+    });
+    return result;
+  }
 
   // Фазы изолированы друг от друга (ось E full-review): устойчивый сбой
   // ВЫБОРКИ одной фазы (сломался запрос к одной таблице) не должен глушить

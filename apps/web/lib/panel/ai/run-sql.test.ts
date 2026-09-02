@@ -27,6 +27,22 @@ describe('validateReadOnlySql', () => {
     if (!res.ok) expect(res.reason).toMatch(/одно выражение/);
   });
 
+  it('живые аналитические запросы денилист не задевает', () => {
+    const queries = [
+      "SELECT count(*) FROM orders WHERE paid_at >= now() - interval '30 days'",
+      "WITH d AS (SELECT date_trunc('day', completed_at) AS day, sum(amount_rub) AS s FROM payments WHERE status = 'succeeded' GROUP BY 1) SELECT * FROM d ORDER BY day",
+      'SELECT s.name, count(*) FROM orders o LEFT JOIN services s ON s.id = o.service_id GROUP BY 1 ORDER BY 2 DESC LIMIT 3 OFFSET 0',
+      'SELECT o.id, o.status, o.updated_at, o.created_at FROM orders o',
+      "SELECT column_name FROM information_schema.columns WHERE table_name = 'orders'",
+      "SELECT count(*) FILTER (WHERE status = 'completed') AS done FROM orders",
+      'SELECT "a;b" FROM orders',
+    ];
+    for (const sql of queries) {
+      const res = validateReadOnlySql(sql);
+      expect(res.ok, `${sql} -> ${res.ok ? '' : res.reason}`).toBe(true);
+    }
+  });
+
   it('точка с запятой в комментарии — не разделитель; завершающая снимается', () => {
     const res = validateReadOnlySql('/* ; */ SELECT 1;');
     expect(res).toEqual({ ok: true, sql: '/* ; */ SELECT 1' });
@@ -65,6 +81,11 @@ describe('validateReadOnlySql', () => {
     expect(validateReadOnlySql('SELECT * FROM orders FOR SHARE').ok).toBe(false);
     expect(validateReadOnlySql('SELECT * INTO tmp FROM orders').ok).toBe(false);
     expect(validateReadOnlySql('SELECT pg_sleep(10)').ok).toBe(false);
+    // Пишущий CTE — выражение, которое НАЧИНАЕТСЯ с WITH, поэтому проверка
+    // первого слова его пропускала: барьером оставались только гранты роли.
+    expect(validateReadOnlySql('WITH d AS (DELETE FROM orders RETURNING *) SELECT count(*) FROM d').ok).toBe(false);
+    expect(validateReadOnlySql("WITH u AS (UPDATE orders SET status = 'paid' RETURNING id) SELECT * FROM u").ok).toBe(false);
+    expect(validateReadOnlySql('WITH i AS (INSERT INTO client_feedback (rating) VALUES (5) RETURNING id) SELECT * FROM i').ok).toBe(false);
     expect(validateReadOnlySql("SELECT pg_sleep_for('1 hour')").ok).toBe(false);
     expect(validateReadOnlySql("SELECT pg_sleep_until(now())").ok).toBe(false);
     expect(validateReadOnlySql('SELECT lo_create(0)').ok).toBe(false);

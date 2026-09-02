@@ -120,6 +120,7 @@ export default async function PanelFeedbackPage({
 
       <section className="panel-card" style={{ marginBottom: 16 }}>
         <h2 className="panel-title">{FEEDBACK_TEXT.summary}</h2>
+        <p className="panel-muted">{FEEDBACK_TEXT.shareHint}</p>
         <div className="panel-table-scroll">
           <table className="panel-table">
             <thead>
@@ -136,7 +137,7 @@ export default async function PanelFeedbackPage({
                   <td>{FEEDBACK_KIND_LABELS[row.kind]}</td>
                   <td className="panel-num">{formatCount(row.sent)}</td>
                   <td className="panel-num">{formatCount(row.answered)}</td>
-                  {/* Доля считается здесь: `null` при нуле отправок — делить нечем. */}
+                  {/* Доля считается здесь: `null` при нуле касаний — делить нечем. */}
                   <td className="panel-num">
                     {formatShare(row.sent > 0 ? row.answered / row.sent : null)}
                   </td>

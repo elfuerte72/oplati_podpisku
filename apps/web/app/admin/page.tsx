@@ -1,15 +1,15 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listHoldsForPanel, listPendingOrdersForPanel } from '@oplati/db';
+import { getDb, listPendingOrdersForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelShell } from '@/components/panel/PanelShell';
 import { isDeskQuiet } from '@/lib/panel/desk';
-import { formatKopecks, formatUsdCents } from '@/lib/panel/format';
+import { formatCount, formatKopecks, formatUsdCents } from '@/lib/panel/format';
 import { requirePanelActor } from '@/lib/panel/guard';
-import { readPendingTotals, readUnansweredSupportCount } from '@/lib/panel/menu-counts';
+import { readHoldsCount, readPendingTotals, readUnansweredSupportCount } from '@/lib/panel/menu-counts';
 import {
   ACTION_TITLES,
   CELL_TEXT,
@@ -52,7 +52,7 @@ export default async function PanelHomePage() {
   const canHolds = canAccess(actor.role, 'holds');
   const canSupport = canAccess(actor.role, 'support');
 
-  const [pending, pendingTotals, holds, balance, unansweredCount] = await Promise.all([
+  const [pending, pendingTotals, holdsCount, balance, unansweredCount] = await Promise.all([
     canPending ? listPendingOrdersForPanel(db, { limit: 5 }) : Promise.resolve(null),
     // Число и деньги — из БАЗЫ, а не по пяти видимым строкам: «5+ на 50 000 ₽»
     // при сорока заказах на 200 000 ₽ занижает ровно то, ради чего блок и
@@ -60,7 +60,10 @@ export default async function PanelHomePage() {
     // Читатель общий с меню (`menu-counts.ts`): иначе та же выборка шла бы
     // дважды на каждый рендер стола.
     canPending ? readPendingTotals() : Promise.resolve(null),
-    canHolds ? listHoldsForPanel(db, 5) : Promise.resolve(null),
+    // Число — из БАЗЫ тем же читателем, что и бейдж меню: список на пять строк
+    // давал «5+» рядом с точным «12» в соседнем меню на одном экране. Тот же
+    // запрет, что у блока «Ждут оплаты» строкой выше.
+    canHolds ? readHoldsCount() : Promise.resolve(null),
     canHolds ? readVccBalanceForPanel() : Promise.resolve(null),
     // Счётчик — из БАЗЫ: «новых» может не оказаться среди пяти свежих строк
     // (клиент написал вчера, ему не ответили, сегодня пришло пять отвеченных),
@@ -79,7 +82,7 @@ export default async function PanelHomePage() {
       : balance.low;
   const quiet = isDeskQuiet({
     pendingCount: pendingTotals?.count ?? null,
-    holdsCount: holds ? holds.items.length : null,
+    holdsCount: holdsCount,
     balanceLow,
     unansweredSupportCount: unansweredCount,
   });
@@ -129,11 +132,10 @@ export default async function PanelHomePage() {
         {canHolds ? (
           <section className="panel-card">
             <h2 className="panel-title">{SECTION_TITLES.holds}</h2>
-            {holds && holds.items.length > 0 ? (
+            {holdsCount !== null && holdsCount > 0 ? (
               <p>
                 <span className="panel-status panel-status--danger" style={{ fontSize: 16 }}>
-                  {holds.items.length}
-                  {holds.hasMore ? '+' : ''}
+                  {formatCount(holdsCount)}
                 </span>{' '}
                 <span className="panel-muted">платежей на проверке или с отказом</span>
               </p>

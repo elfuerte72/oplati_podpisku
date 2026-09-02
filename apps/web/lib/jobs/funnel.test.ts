@@ -42,12 +42,13 @@ const h = vi.hoisted(() => {
   return {
     state,
     sendMessageMock: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
+    captureException: vi.fn(),
     windows: {} as Record<string, { from: Date; to: Date }>,
   };
 });
 
 vi.mock('@/lib/env.server', () => ({ serverEnv: h.state.env }));
-vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('@sentry/nextjs', () => ({ captureException: h.captureException, captureMessage: vi.fn() }));
 vi.mock('@/lib/telegram/bot', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
   getBotUsername: vi.fn(async () => {
@@ -452,14 +453,19 @@ describe('тексты воронки из реестра (панель v2, ти
     expect(sentMessages()[0]?.text).toBe('Как вам Spotify? Оцените.');
   });
 
-  it('ошибка БД при чтении оверлея → крон шлёт дефолт и не падает', async () => {
+  it('оверлей не прочитался → прогон пропускается целиком, claim не сгорает', async () => {
+    // Каждое сообщение здесь одноразовое, а claim занимается ДО отправки:
+    // разослав дефолт, мы лишили бы этих клиентов правки владельца навсегда.
+    // Следующий прогон через 15 минут, окна выборок шире шага — не теряется
+    // ничего, кроме одного цикла.
     addTgUser('u1');
     h.state.expiredRows = [{ orderId: 'o1', userId: 'u1' }];
     h.state.textsFail = true;
 
     const res = await runFunnelJob({ now: NOON });
 
-    expect(res.expiredSurvey).toEqual({ sent: 1, skipped: 0, errors: 0 });
-    expect(sentMessages()[0]?.text).toBe(EXPIRED_SURVEY_TEXT);
+    expect(res.expiredSurvey).toEqual({ sent: 0, skipped: 0, errors: 0 });
+    expect(sentMessages()).toHaveLength(0);
+    expect(h.captureException).toHaveBeenCalled();
   });
 });

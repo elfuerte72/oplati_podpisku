@@ -492,8 +492,29 @@ async function loadOverrides(now: number): Promise<Record<string, string> | null
 /**
  * Все тексты воронки: оверлей из БД поверх дефолтов. Никогда не бросает и
  * никогда не ждёт дольше дедлайна — при отказе или таймауте отдаёт дефолты.
+ *
+ * `deadlineMs` — свой для вызывающего. Живому клиенту (колбэк кнопки) важнее
+ * ответить хоть чем-то, поэтому там дефолтные 2 секунды. Крону, наоборот,
+ * важнее дождаться: он занимает claim и шлёт одноразовое сообщение, и
+ * разосланный дефолт означает, что правка владельца до этих клиентов не
+ * доедет НИКОГДА (code-review 2026-09-02) — крон ждёт дольше и умеет узнать,
+ * что оверлея не было, через `getFunnelTextsDetailed`.
  */
-export async function getFunnelTexts(now: number = Date.now()): Promise<FunnelTextValues> {
+export async function getFunnelTexts(
+  now: number = Date.now(),
+  deadlineMs: number = TEXTS_DEADLINE_MS,
+): Promise<FunnelTextValues> {
+  return (await getFunnelTextsDetailed(now, deadlineMs)).texts;
+}
+
+/**
+ * То же чтение, но видно, читался ли оверлей: `fromOverlay: false` означает
+ * «в текстах гарантированно дефолты», и вызывающий вправе не рассылать.
+ */
+export async function getFunnelTextsDetailed(
+  now: number = Date.now(),
+  deadlineMs: number = TEXTS_DEADLINE_MS,
+): Promise<{ texts: FunnelTextValues; fromOverlay: boolean }> {
   // Незавершённый запрос переиспользуется независимо от срока (см. menu-counts).
   if (!slot || (slot.done && now - slot.at >= TEXTS_TTL_MS)) {
     const work = loadOverrides(now);
@@ -509,9 +530,9 @@ export async function getFunnelTexts(now: number = Date.now()): Promise<FunnelTe
 
   const overrides = await new Promise<Record<string, string> | null>((resolve) => {
     const timer = setTimeout(() => {
-      log.warn({ event: 'funnel.texts.slow', deadlineMs: TEXTS_DEADLINE_MS });
+      log.warn({ event: 'funnel.texts.slow', deadlineMs });
       resolve(null);
-    }, TEXTS_DEADLINE_MS);
+    }, deadlineMs);
     void current.work.then((value) => {
       clearTimeout(timer);
       resolve(value);
@@ -522,5 +543,5 @@ export async function getFunnelTexts(now: number = Date.now()): Promise<FunnelTe
   for (const [key, value] of Object.entries(overrides ?? {})) {
     if (isFunnelTextKey(key)) merged[key] = value;
   }
-  return merged;
+  return { texts: merged, fromOverlay: overrides !== null };
 }
