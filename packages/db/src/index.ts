@@ -39,6 +39,7 @@ export { listSchemaTables } from './schema-meta.ts';
 
 export {
   runReadOnlyQuery,
+  stripTrailingSemicolons,
   wrapReadOnlyQuery,
   type ReadOnlyExecutor,
   type ReadOnlyQueryOptions,

@@ -9,7 +9,7 @@ import type { DB } from './index.ts';
 import { createTestDb, pgliteReadOnlyExecutor } from './test-harness.ts';
 import { createDraftOrder } from './repositories/orders.ts';
 import * as schema from './schema.ts';
-import { runReadOnlyQuery, type ReadOnlyExecutor } from './readonly-query.ts';
+import { runReadOnlyQuery, stripTrailingSemicolons, type ReadOnlyExecutor } from './readonly-query.ts';
 
 /**
  * Исполнитель read-only запросов аналитика панели (спека admin-panel-v2,
@@ -163,6 +163,19 @@ describe('runReadOnlyQuery — страховки исполнителя', () =>
     };
     const res = await runReadOnlyQuery('SELECT 1', OPTS, broken);
     expect(res).toMatchObject({ ok: false, reason: 'connection' });
+  });
+});
+
+describe('stripTrailingSemicolons', () => {
+  it('снимает хвостовые «;» и пробелы линейно, не трогая середину', () => {
+    expect(stripTrailingSemicolons('SELECT 1;')).toBe('SELECT 1');
+    expect(stripTrailingSemicolons('SELECT 1 ; ;\n')).toBe('SELECT 1');
+    expect(stripTrailingSemicolons("SELECT 'a;b'")).toBe("SELECT 'a;b'");
+    // Длинная серия «;» — регэксп `/;+\s*$/` здесь был полиномиален (CodeQL).
+    const long = `SELECT 1${';'.repeat(100_000)} x`;
+    const started = Date.now();
+    expect(stripTrailingSemicolons(long)).toBe(long);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
 

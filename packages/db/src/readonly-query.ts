@@ -81,11 +81,27 @@ function normalizeCell(value: unknown): unknown {
 }
 
 /**
+ * Снять завершающие `;` и пробелы. Циклом, а не регэкспом `/;+\s*$/`: тот
+ * полиномиален на длинной серии `;` (CodeQL js/polynomial-redos), а текст
+ * приходит от модели.
+ */
+export function stripTrailingSemicolons(text: string): string {
+  let end = text.length;
+  while (end > 0) {
+    const ch = text.charCodeAt(end - 1);
+    // `;`, пробел, таб, перевод строки, возврат каретки.
+    if (ch === 0x3b || ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d) end -= 1;
+    else break;
+  }
+  return text.slice(0, end);
+}
+
+/**
  * Обёртка запроса: подзапрос + потолок строк. Завершающий `;` снимается —
  * внутри скобок он был бы синтаксической ошибкой, а модель его ставит часто.
  */
 export function wrapReadOnlyQuery(sqlText: string, rowLimit: number): string {
-  const body = sqlText.trim().replace(/;+\s*$/, '');
+  const body = stripTrailingSemicolons(sqlText.trim());
   return `SELECT * FROM (\n${body}\n) AS panel_ai_query LIMIT ${Math.max(1, Math.trunc(rowLimit)) + 1}`;
 }
 

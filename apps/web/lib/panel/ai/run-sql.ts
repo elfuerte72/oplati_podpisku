@@ -1,6 +1,11 @@
 import * as Sentry from '@sentry/nextjs';
 
-import { runReadOnlyQuery, type ReadOnlyExecutor, type ReadOnlyQueryResult } from '@oplati/db';
+import {
+  runReadOnlyQuery,
+  stripTrailingSemicolons,
+  type ReadOnlyExecutor,
+  type ReadOnlyQueryResult,
+} from '@oplati/db';
 import { runSqlInput } from '@oplati/types';
 
 import type { AgentProfile, ToolExecution } from '@oplati/agent';
@@ -128,8 +133,8 @@ const FORBIDDEN = [
 /** Проверка запроса ДО исполнения. Возвращает очищенный от завершающего `;` текст. */
 export function validateReadOnlySql(raw: string): SqlValidation {
   const code = stripSqlLiteralsAndComments(raw).trim();
-  const sql = raw.trim().replace(/;+\s*$/, '');
-  const codeNoTail = code.replace(/;+\s*$/, '').trim();
+  const sql = stripTrailingSemicolons(raw.trim());
+  const codeNoTail = stripTrailingSemicolons(code).trim();
   if (codeNoTail.length === 0) return { ok: false, reason: 'пустой запрос' };
   if (codeNoTail.includes(';')) {
     return { ok: false, reason: 'разрешено ровно одно выражение: уберите «;» между запросами' };
