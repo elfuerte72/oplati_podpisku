@@ -97,6 +97,8 @@ describe('validateReadOnlySql', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toMatch(/одно выражение/);
     expect(validateReadOnlySql('SELECT x$a$ FROM t').ok).toBe(true);
+    // Идентификатор может быть кириллическим — `$` в нём тоже не долларовая строка.
+    expect(validateReadOnlySql('SELECT 1 AS я$a$) AS q; SELECT 2').ok).toBe(false);
     expect(validateReadOnlySql("SELECT $tag$a;b$tag$ AS x").ok).toBe(true);
   });
 

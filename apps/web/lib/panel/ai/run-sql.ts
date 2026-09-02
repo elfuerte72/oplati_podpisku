@@ -77,7 +77,9 @@ export function stripSqlLiteralsAndComments(sql: string): string {
   let out = '';
   let i = 0;
   const blank = (n: number) => ' '.repeat(Math.max(0, n));
-  const isIdent = (c: string | undefined) => c !== undefined && /[A-Za-z0-9_$]/.test(c);
+  // Идентификатор Postgres может быть и не-ASCII (`я$a$` — имя, а не начало
+  // долларовой строки), поэтому буквы и цифры любых алфавитов.
+  const isIdent = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}_$]/u.test(c);
   while (i < sql.length) {
     const ch = sql[i]!;
     const next = sql[i + 1];

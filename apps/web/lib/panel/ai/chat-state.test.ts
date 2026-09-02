@@ -56,9 +56,21 @@ describe('buildAskBody', () => {
     expect(body.history.at(-1)?.text).toBe(turns.at(-1)?.text);
   });
 
-  it('единственный ход тяжелее потолка всё равно уезжает — отказ по нему честно даст сервер', () => {
-    const turns = [{ role: 'assistant' as const, text: 'я'.repeat(9000) }];
-    expect(buildAskBody({ ...EMPTY_CHAT, turns }, 'q').history).toHaveLength(1);
+  it('единственный ход тяжелее потолка уезжает обрезанным — чат не запирается отказом сервера', () => {
+    // Ответ аналитика на 2000 токенов кириллицей — это 10-14 КБ: целиком он
+    // получал бы 400 invalid_history на каждый следующий вопрос.
+    const turns = [{ role: 'assistant' as const, text: `${'я'.repeat(9000)}хвост` }];
+    const body = buildAskBody({ ...EMPTY_CHAT, turns }, 'q');
+    expect(body.history).toHaveLength(1);
+    const text = body.history[0]!.text;
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(ANALYST_HISTORY_MAX_BYTES);
+    expect(text.startsWith('яяя')).toBe(true);
+    expect(text.endsWith('хвост')).toBe(false);
+    // Суррогатные пары не рвутся: эмодзи либо целое, либо отброшено.
+    const emoji = [{ role: 'assistant' as const, text: '🙂'.repeat(3000) }];
+    const cut = buildAskBody({ ...EMPTY_CHAT, turns: emoji }, 'q').history[0]!.text;
+    expect(cut).not.toContain('\ufffd');
+    expect([...cut].every((ch) => ch === '🙂' || ' […]'.includes(ch))).toBe(true);
   });
 
   it('длинная история режется с начала до 20 ходов', () => {

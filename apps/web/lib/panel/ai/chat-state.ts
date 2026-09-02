@@ -52,8 +52,10 @@ export const ANALYST_QUESTION_MAX = 2000;
  * `invalid_history`), а не подрезает её, поэтому клиент, следящий только за
  * числом ходов, после нескольких длинных ответов упирался бы в отказ на каждый
  * следующий вопрос до перезагрузки страницы (code-review 2026-09-02). Старые
- * ходы менее ценны, чем свежие; последний ход остаётся всегда, даже если он
- * один переполняет потолок, — тогда сервер честно откажет по нему.
+ * ходы менее ценны, чем свежие. Последний ход остаётся всегда, но если он ОДИН
+ * не влезает — уезжает обрезанным по началу: ответ аналитика бывает в 2000
+ * токенов (10-14 КБ кириллицей), и целиком он запер бы чат в отказе ровно так
+ * же, как раньше запирала длинная история.
  */
 export function buildAskBody(
   state: ChatState,
@@ -68,11 +70,36 @@ export function buildAskBody(
     const turn = recent[i]!;
     // Тот же счёт, что у сервера (`ask.ts`): длина текста в байтах UTF-8.
     bytes += byteLength(turn.text);
-    if (bytes > ANALYST_HISTORY_MAX_BYTES && history.length > 0) break;
-    history.unshift(turn);
-    if (bytes > ANALYST_HISTORY_MAX_BYTES) break;
+    if (bytes <= ANALYST_HISTORY_MAX_BYTES) {
+      history.unshift(turn);
+      continue;
+    }
+    if (history.length === 0) {
+      history.unshift({ role: turn.role, text: truncateToBytes(turn.text, ANALYST_HISTORY_MAX_BYTES) });
+    }
+    break;
   }
   return { question: question.trim(), history };
+}
+
+/** Пометка обрезанного хода — модель должна понимать, что видит начало. */
+const TRUNCATION_MARK = ' […]';
+
+/**
+ * Обрезать текст до `maxBytes` в UTF-8, не разрывая символ (идём по кодовым
+ * точкам, поэтому суррогатные пары остаются целыми).
+ */
+function truncateToBytes(text: string, maxBytes: number): string {
+  const budget = maxBytes - byteLength(TRUNCATION_MARK);
+  let out = '';
+  let bytes = 0;
+  for (const ch of text) {
+    const size = byteLength(ch);
+    if (bytes + size > budget) break;
+    out += ch;
+    bytes += size;
+  }
+  return out + TRUNCATION_MARK;
 }
 
 /**
