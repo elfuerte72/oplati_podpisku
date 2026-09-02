@@ -11,7 +11,11 @@ import { applyAskResponse, buildAskBody, EMPTY_CHAT, type ChatState } from './ch
 const withTurns: ChatState = {
   turns: [
     { role: 'user', text: 'Сколько заказов?' },
-    { role: 'assistant', text: 'Семь.', toolCalls: [{ sql: 'SELECT 1', columns: ['n'], rows: [[7]], truncated: false, error: null }] },
+    {
+      role: 'assistant',
+      text: 'Семь.',
+      toolCalls: [{ sql: 'SELECT 1', columns: ['n'], rows: [[7]], truncated: false, error: null, errorReason: null }],
+    },
     { role: 'user', text: 'А за месяц?' },
   ],
   error: null,
@@ -92,7 +96,7 @@ describe('applyAskResponse', () => {
       data: { ok: true, answer: 'x', toolCalls: [null, 'str', { sql: 1, rows: 'no' }] },
     });
     expect(next.turns[1]?.toolCalls).toEqual([
-      { sql: '', columns: [], rows: [], truncated: false, error: null },
+      { sql: '', columns: [], rows: [], truncated: false, error: null, errorReason: null },
     ]);
   });
 });

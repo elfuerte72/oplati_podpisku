@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ReadOnlyQueryResult } from '@oplati/db';
 
+const h = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('@sentry/nextjs', () => ({ captureException: h.captureException, captureMessage: vi.fn() }));
+
 import {
   executeRunSql,
   formatResultForModel,
@@ -101,6 +104,11 @@ describe('maskResultRows', () => {
     expect(rows[0]?.[4]).toBe('7000000001');
     expect(rows[0]?.[5]).toBe('заказ 9b2e1c6a-0000-4000-8000-000000000001 клиента [телефон]');
   });
+
+  it('jsonb-ячейка сериализуется и маскируется как строка — контакт внутри параметров заказа не уезжает', () => {
+    const rows = maskResultRows([[{ accountEmail: 'a@b.ru', plan: 'premium' }]]);
+    expect(rows[0]?.[0]).toBe('{"accountEmail":"[email]","plan":"premium"}');
+  });
 });
 
 describe('formatResultForModel', () => {
@@ -167,6 +175,23 @@ describe('executeRunSql', () => {
       reason: 'sql_error',
     });
     expect(out.view.error).toContain('does not exist');
+  });
+
+  it('недоступная база аналитика — connection: модель получает текст, Sentry — сигнал; sql_error Sentry не шумит', async () => {
+    h.captureException.mockClear();
+    const down = vi.fn(async (): Promise<ReadOnlyQueryResult> => ({
+      ok: false,
+      reason: 'connection',
+      message: 'ECONNREFUSED',
+    }));
+    const out = await executeRunSql({ sql: 'SELECT 1' }, { query: down });
+    expect(out.execution.isError).toBe(true);
+    expect(out.view.errorReason).toBe('connection');
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+
+    const bad = vi.fn(async (): Promise<ReadOnlyQueryResult> => ({ ok: false, reason: 'sql_error', message: 'x' }));
+    await executeRunSql({ sql: 'SELECT 1' }, { query: bad });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('маска применяется к результату до отдачи модели и экрану', async () => {

@@ -38,7 +38,6 @@ export type DBLike = DB | DBTx;
 export { listSchemaTables } from './schema-meta.ts';
 
 export {
-  pgliteReadOnlyExecutor,
   runReadOnlyQuery,
   wrapReadOnlyQuery,
   type ReadOnlyExecutor,

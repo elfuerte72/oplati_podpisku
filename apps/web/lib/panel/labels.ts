@@ -332,6 +332,8 @@ export const FEEDBACK_TEXT = {
   answer: 'Ответ',
   when: 'Когда',
   kind: 'Вид',
+  // Оценка словами: «2 из 5».
+  scoreOf: 'из 5',
   hasMore: 'Показаны не все — дальше по страницам.',
 } as const;
 
@@ -376,17 +378,18 @@ export const ANALYTICS_TEXT = {
   revenueByDay: 'Выручка по дням',
   paidOrdersByDay: 'Оплаченные заказы по дням',
   funnelHint: 'Сколько человек дошло до шага и какая доля от предыдущего.',
-  conversion: 'К предыдущему',
-  subjects: 'Человек',
   topServices: 'Топ сервисов по оплаченным заказам',
   catalogClicks: 'Что смотрят в каталоге',
-  clicks: 'Кликов',
   activity: 'Активность по дням',
   activityHint: 'Уникальных посетителей и клиентов с событиями за день.',
   outsideCatalog: 'Вне каталога',
   archivedService: 'Сервис не в каталоге',
   period: 'Период',
-  total: 'Итого',
+  // Строка-итог под графиком: «Итого 1 500 ₽ · максимум за день 300 ₽».
+  captionTotal: 'Итого',
+  captionDayMax: 'максимум за день',
+  // Сокращение после числа людей в топе кликов: «7 · 3 чел.».
+  people: 'чел.',
 } as const;
 
 /** Подписи периода — ключи совпадают с допустимыми значениями `?period=`. */
@@ -503,6 +506,32 @@ export const ANALYST_TEXT = {
   analyst: 'Аналитик',
 } as const;
 
+/**
+ * Служебные тексты хода аналитика, которыми движок закрывает ход без
+ * нормального ответа (`AgentFallbackTexts`). Безличные, как всё в панели —
+ * они показываются в ленте чата.
+ */
+export const ANALYST_FALLBACK_TEXT = {
+  truncatedNote:
+    '\n\n(Ответ получился длинным и оборвался. Уточните вопрос — например, сузьте период или число строк.)',
+  truncatedEmpty:
+    'Ответ не поместился в лимит. Сформулируйте вопрос уже — по одному показателю или за меньший период.',
+  noAnswer: 'Модель не вернула ответ. Повторите вопрос или переформулируйте его.',
+} as const;
+
+/**
+ * Почему запрос аналитика к базе не выполнился — по классу ошибки исполнителя
+ * (`RunSqlView.errorReason`). Текст Postgres при `sql_error`/`validation`
+ * компонент дописывает рядом: он нужен, чтобы поправить вопрос.
+ */
+export const ANALYST_QUERY_ERROR_TEXT: Record<string, string> = {
+  validation: 'Запрос отклонён до выполнения',
+  sql_error: 'Ошибка SQL',
+  timeout: 'Запрос не уложился в лимит времени',
+  connection: 'База данных не ответила',
+  not_configured: ANALYST_TEXT.notConfigured,
+};
+
 /** Ошибки операции аналитика — коды тела ответа `/api/panel/ai/ask`. */
 export const ANALYST_ERROR_TEXT: Record<string, string> = {
   ...COMMON_ERROR_TEXT,
@@ -531,7 +560,6 @@ export const FUNNEL_TEXTS_TEXT = {
   maxLength: 'Не длиннее',
   characters: 'символов',
   history: 'История правок',
-  historyEmpty: 'Правок не было.',
   historyReset: 'возврат по умолчанию',
   was: 'Было',
   became: 'Стало',
@@ -571,6 +599,7 @@ export const FUNNEL_TEXT_ERROR_TEXT: Record<string, string> = {
   too_long: 'Текст длиннее лимита. Максимум символов:',
   duplicate_label: 'Такая подпись уже есть у другой кнопки этого опроса.',
   no_telegram: 'К учётной записи не привязан Telegram — отправить некуда. Привяжите его в разделе «Персонал».',
+  // Имя бота дописывает компонент из ответа операции (`bot`), словарь env не читает.
   bot_blocked: 'Клиентский бот не может написать вам: запустите его в Telegram (нажмите Start) и повторите.',
   send_failed: 'Telegram не принял сообщение. Повторите через минуту.',
   rate_limited: 'Слишком много тестовых отправок — подождите минуту.',

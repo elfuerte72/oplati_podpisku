@@ -81,10 +81,13 @@ describe('реестр', () => {
     }
   });
 
-  it('ответы опроса — по ключу на каждое значение enum, подписи из словаря шаблонов', () => {
+  it('ответы опроса — по ключу на каждое значение enum, подписи из словаря шаблонов, kind answer', () => {
     expect(funnelTextSpec('expired_survey.answer.price')?.defaultValue).toBe(
       templates.EXPIRED_SURVEY_ANSWER_LABELS.price,
     );
+    expect(funnelTextSpec('expired_survey.answer.price')?.kind).toBe('answer');
+    expect(funnelTextSpec('common.optout_button')?.kind).toBe('button');
+    expect(funnelTextSpec('common.thanks')?.kind).toBe('reply');
     expect(funnelTextSpec('start_survey.answer.other')?.defaultValue).toBe(
       templates.START_SURVEY_ANSWER_LABELS.other,
     );

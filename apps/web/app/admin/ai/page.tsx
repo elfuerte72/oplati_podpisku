@@ -1,13 +1,11 @@
 import type { Metadata } from 'next';
 
-import { isSupportAiConfigured } from '@oplati/agent';
-
 import { AnalystChat } from '@/components/panel/AnalystChat';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { isPanelAnalystConfigured } from '@/lib/panel/ai/profile';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { ANALYST_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
-import { serverEnv } from '@/lib/env.server';
 
 /**
  * `/admin/ai` — «Аналитик»: чат с AI, который сам пишет SQL к копии базы без
@@ -33,7 +31,8 @@ export default async function PanelAnalystPage() {
     );
   }
 
-  const configured = isSupportAiConfigured() && Boolean(serverEnv.PANEL_AI_DATABASE_URL);
+  // Та же проверка, что у операции: ключ модели И подключение роли.
+  const configured = isPanelAnalystConfigured();
 
   return (
     <PanelShell actor={access.actor} current="/admin/ai" live={false}>

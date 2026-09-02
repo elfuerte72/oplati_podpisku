@@ -3,6 +3,7 @@
 import { useState, type SubmitEvent } from 'react';
 
 import {
+  ANALYST_QUESTION_MAX,
   applyAskResponse,
   buildAskBody,
   EMPTY_CHAT,
@@ -10,7 +11,12 @@ import {
   type ChatState,
 } from '@/lib/panel/ai/chat-state';
 import { lookupLabel } from '@/lib/panel/format';
-import { ANALYST_ERROR_TEXT, ANALYST_TEXT, FALLBACK_ERROR_TEXT } from '@/lib/panel/labels';
+import {
+  ANALYST_ERROR_TEXT,
+  ANALYST_QUERY_ERROR_TEXT,
+  ANALYST_TEXT,
+  FALLBACK_ERROR_TEXT,
+} from '@/lib/panel/labels';
 
 import { markPanelBusy } from './LiveRefresh';
 
@@ -82,7 +88,7 @@ export function AnalystChat() {
           className="panel-input"
           style={{ display: 'block', width: '100%', minHeight: 80 }}
           value={question}
-          maxLength={2000}
+          maxLength={ANALYST_QUESTION_MAX}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder={ANALYST_TEXT.placeholder}
           disabled={busy}
@@ -127,7 +133,12 @@ function ToolCalls({ calls }: { calls: AnalystToolCall[] }) {
           </summary>
           <pre className="panel-analyst__sql">{call.sql}</pre>
           {call.error ? (
-            <div className="panel-error">{call.error}</div>
+            // Причина — по словарю; техническое сообщение Postgres — рядом,
+            // владельцу оно нужно, чтобы поправить вопрос.
+            <div className="panel-error">
+              {lookupLabel(ANALYST_QUERY_ERROR_TEXT, call.errorReason ?? undefined) ?? ANALYST_TEXT.queryFailed}
+              {call.errorReason === 'sql_error' || call.errorReason === 'validation' ? `: ${call.error}` : ''}
+            </div>
           ) : call.rows.length === 0 ? (
             <p className="panel-muted">{ANALYST_TEXT.noRows}</p>
           ) : (

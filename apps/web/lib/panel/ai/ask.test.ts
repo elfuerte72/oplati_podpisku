@@ -58,14 +58,14 @@ const sqlCall = (id: string, sql: string) => ({
 function okRun(sql: string, rows: unknown[][]): RunSqlOutcome {
   return {
     execution: { result: `n\n${rows.map((r) => r.join(' | ')).join('\n')}\nrows: ${rows.length}`, isError: false },
-    view: { sql, columns: ['n'], rows, truncated: false, error: null },
+    view: { sql, columns: ['n'], rows, truncated: false, error: null, errorReason: null },
   };
 }
 
 function errorRun(sql: string, message: string): RunSqlOutcome {
   return {
     execution: { result: { error: `ошибка SQL: ${message}`, reason: 'sql_error' }, isError: true },
-    view: { sql, columns: [], rows: [], truncated: false, error: message },
+    view: { sql, columns: [], rows: [], truncated: false, error: message, errorReason: 'sql_error' },
   };
 }
 

@@ -3,18 +3,18 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { z } from 'zod';
 
-import {
-  AgentLoopError,
-  isSupportAiConfigured,
-  runProfile,
-  type AgentClient,
-  type AgentMessage,
-} from '@oplati/agent';
+import { AgentLoopError, runProfile, type AgentClient, type AgentMessage } from '@oplati/agent';
 
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, type RateLimitResult } from '@/lib/ratelimit';
 
-import { buildPanelAnalystProfile, panelAnalystModel, panelStaffHash } from './profile';
+import { ANALYST_HISTORY_MAX_BYTES, ANALYST_QUESTION_MAX, CHAT_HISTORY_MAX_TURNS } from './chat-state';
+import {
+  buildPanelAnalystProfile,
+  isPanelAnalystConfigured,
+  panelAnalystModel,
+  panelStaffHash,
+} from './profile';
 import { executeRunSql, type RunSqlOutcome, type RunSqlView } from './run-sql';
 
 /**
@@ -32,10 +32,13 @@ import { executeRunSql, type RunSqlOutcome, type RunSqlView } from './run-sql';
 
 const log = childLogger('panel.ai');
 
-/** Потолки истории: 20 ходов и 8 КБ текста — больше в один запрос не нужно. */
-export const ANALYST_HISTORY_MAX_TURNS = 20;
-export const ANALYST_HISTORY_MAX_BYTES = 8 * 1024;
-export const ANALYST_QUESTION_MAX = 2000;
+/**
+ * Потолки истории и вопроса — ОДНИ константы с клиентским компонентом
+ * (`chat-state.ts`, модуль без zod/Next): клиент режет то же, что сервер
+ * отвергает, и зеркала между ними нет.
+ */
+export const ANALYST_HISTORY_MAX_TURNS = CHAT_HISTORY_MAX_TURNS;
+export { ANALYST_HISTORY_MAX_BYTES, ANALYST_QUESTION_MAX };
 
 export const analystTurnSchema = z.object({
   role: z.enum(['user', 'assistant']),
@@ -108,7 +111,7 @@ export async function askAnalyst(
   input: { staffId: string; question: string; history: unknown },
   deps: AskAnalystDeps = {},
 ): Promise<AskAnalystResult> {
-  const isConfigured = deps.isConfigured ?? isSupportAiConfigured;
+  const isConfigured = deps.isConfigured ?? isPanelAnalystConfigured;
   if (!isConfigured()) {
     return { ok: false, reason: 'not_configured', toolCalls: [], usage: null };
   }
@@ -148,7 +151,9 @@ export async function askAnalyst(
         durationMs: Date.now() - sqlStartedAt,
         rows: out.view.rows.length,
         truncated: out.view.truncated,
-        error: out.view.error !== null,
+        // Класс ошибки, а не флаг: `sql_error` — штатная правка запроса моделью,
+        // `connection`/`timeout` — сигнал про базу (Sentry шлёт `executeRunSql`).
+        errorReason: out.view.errorReason,
       });
       // Сам SQL — на уровне debug: PII в нём нет, но объём есть.
       log.debug({ event: 'panel.ai.sql_text', staffHash, sql: out.view.sql });

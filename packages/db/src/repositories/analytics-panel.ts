@@ -119,27 +119,41 @@ export async function revenueByDay(db: DB, range: AnalyticsRange): Promise<Reven
 }
 
 export type RevenueSummary = {
+  /** Деньги, реально полученные за период (успешные платежи), копейки. */
   amountKopecks: number;
+  /** Заказов, покупка по которым состоялась. */
   paidOrders: number;
-  /** Выручка на один оплаченный заказ, копейки; `0` при нуле заказов. */
+  /**
+   * Средний чек СОСТОЯВШЕЙСЯ покупки: сумма покупных заказов / их число,
+   * копейки; `0` при нуле заказов. Считается из одного множества — делить
+   * выручку платежей на число покупок значило бы завышать чек на каждом
+   * оплаченном, но провалившемся заказе.
+   */
   averageKopecks: number;
 };
 
 /** Итог за период — те же два источника, что у ряда по дням. */
 export async function revenueSummary(db: DB, range: AnalyticsRange): Promise<RevenueSummary> {
-  const rows = await db.execute<{ amount: string | number | null; orders: string | number | null }>(sql`
+  const rows = await db.execute<{
+    amount: string | number | null;
+    orders: string | number | null;
+    purchased: string | number | null;
+  }>(sql`
     SELECT
       (SELECT COALESCE(sum(amount_rub), 0) FROM payments
         WHERE status = 'succeeded' AND ${withinRange(sql.raw('completed_at'), range)}) AS amount,
       (SELECT count(*) FROM orders
-        WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS orders
+        WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS orders,
+      (SELECT COALESCE(sum(amount_rub), 0) FROM orders
+        WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS purchased
   `);
   const amountKopecks = toInt(rows[0]?.amount);
   const paidOrders = toInt(rows[0]?.orders);
+  const purchasedKopecks = toInt(rows[0]?.purchased);
   return {
     amountKopecks,
     paidOrders,
-    averageKopecks: paidOrders > 0 ? Math.round(amountKopecks / paidOrders) : 0,
+    averageKopecks: paidOrders > 0 ? Math.round(purchasedKopecks / paidOrders) : 0,
   };
 }
 

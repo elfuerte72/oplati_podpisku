@@ -387,7 +387,6 @@ export const SILENT_MEDIA_HINT =
 export const SUPPORT_UNAVAILABLE_TEXT =
   'Чтобы позвать оператора, отправьте одним сообщением: /support и описание проблемы. Например: /support не приходит ссылка на оплату.';
 
-/** Жёсткий лимит длины сообщения Telegram (символы). */
 
 /** Мягкий потолок пользовательского описания в сообщении оператору (символы). */
 export const SUPPORT_MESSAGE_MAX_LEN = 3500;

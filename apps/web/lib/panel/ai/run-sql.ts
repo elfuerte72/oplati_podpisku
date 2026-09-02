@@ -1,8 +1,11 @@
+import * as Sentry from '@sentry/nextjs';
+
 import { runReadOnlyQuery, type ReadOnlyExecutor, type ReadOnlyQueryResult } from '@oplati/db';
 import { runSqlInput } from '@oplati/types';
 
 import type { AgentProfile, ToolExecution } from '@oplati/agent';
 
+import { childLogger } from '@/lib/logger';
 import { maskForModel } from '@/lib/support/mask';
 
 /**
@@ -20,6 +23,8 @@ import { maskForModel } from '@/lib/support/mask';
  * который клиент вписал сам. Идентификаторы (`telegram_id`, `user_id`) не
  * маскируются — аналитик обязан уметь указать на конкретного клиента.
  */
+
+const log = childLogger('panel.ai.sql');
 
 export const RUN_SQL_ROW_LIMIT = 200;
 export const RUN_SQL_MAX_BYTES = 32_768;
@@ -162,9 +167,20 @@ export function maskCell(cell: string): string {
   return maskForModel(withoutIds).replace(/\u0000U(\d+)\u0000/g, (_, i: string) => ids[Number(i)] ?? '');
 }
 
-/** Строковые ячейки — через `maskCell`; числа, даты, null не трогаются. */
+/**
+ * Строковые ячейки — через `maskCell`; jsonb (`orders.parameters`,
+ * `order_events.payload`, `props` вьюх) — сериализуется и маскируется как
+ * строка: внутри свободный текст, и `accountEmail` в параметрах заказа
+ * существует по схеме типов. Числа, даты, null не трогаются.
+ */
 export function maskResultRows(rows: readonly unknown[][]): unknown[][] {
-  return rows.map((row) => row.map((cell) => (typeof cell === 'string' ? maskCell(cell) : cell)));
+  return rows.map((row) =>
+    row.map((cell) => {
+      if (typeof cell === 'string') return maskCell(cell);
+      if (typeof cell === 'object' && cell !== null) return maskCell(JSON.stringify(cell));
+      return cell;
+    }),
+  );
 }
 
 function cellText(cell: unknown): string {
@@ -188,14 +204,27 @@ export function formatResultForModel(input: {
 
 // ─── Исполнение ───────────────────────────────────────────────────────────
 
+/** Класс отказа вызова: чем он вызван, а не только текст. */
+export type RunSqlErrorReason = 'validation' | Extract<ReadOnlyQueryResult, { ok: false }>['reason'];
+
 /** Сырой результат вызова — для экрана (раскрывашка «SQL → таблица»). */
 export type RunSqlView = {
   sql: string;
   columns: string[];
   rows: unknown[][];
   truncated: boolean;
+  /** Сообщение для модели (и для раскрывашки): текст Postgres или причина отказа валидации. */
   error: string | null;
+  errorReason: RunSqlErrorReason | null;
 };
+
+/** Тексты для МОДЕЛИ (не панели): ей нужно понять, что делать дальше. */
+const MODEL_ERROR_TEXT = {
+  invalid_input: 'вход инструмента: ожидается { sql: string } до 8000 символов',
+  not_configured: 'подключение аналитика не настроено',
+  timeout: 'запрос превысил лимит времени — упростите его или сузьте период',
+  connection: 'база данных недоступна, попробуйте позже',
+} as const;
 
 export type RunSqlOutcome = { execution: ToolExecution; view: RunSqlView };
 
@@ -216,10 +245,10 @@ export type RunSqlDeps = {
 export async function executeRunSql(rawInput: unknown, deps: RunSqlDeps = {}): Promise<RunSqlOutcome> {
   const parsed = runSqlInput.safeParse(rawInput);
   if (!parsed.success) {
-    const reason = 'вход инструмента: ожидается { sql: string } до 8000 символов';
+    const reason = MODEL_ERROR_TEXT.invalid_input;
     return {
       execution: { result: { error: reason }, isError: true },
-      view: { sql: '', columns: [], rows: [], truncated: false, error: reason },
+      view: { sql: '', columns: [], rows: [], truncated: false, error: reason, errorReason: 'validation' },
     };
   }
 
@@ -227,7 +256,14 @@ export async function executeRunSql(rawInput: unknown, deps: RunSqlDeps = {}): P
   if (!validation.ok) {
     return {
       execution: { result: { error: validation.reason }, isError: true },
-      view: { sql: parsed.data.sql, columns: [], rows: [], truncated: false, error: validation.reason },
+      view: {
+        sql: parsed.data.sql,
+        columns: [],
+        rows: [],
+        truncated: false,
+        error: validation.reason,
+        errorReason: 'validation',
+      },
     };
   }
 
@@ -239,17 +275,20 @@ export async function executeRunSql(rawInput: unknown, deps: RunSqlDeps = {}): P
   );
 
   if (!res.ok) {
-    const error =
-      res.reason === 'not_configured'
-        ? 'подключение аналитика не настроено'
-        : res.reason === 'timeout'
-          ? 'запрос превысил лимит времени — упростите его или сузьте период'
-          : res.reason === 'connection'
-            ? 'база данных недоступна, попробуйте позже'
-            : `ошибка SQL: ${res.message}`;
+    // `sql_error` — штатная правка запроса моделью; `timeout` — тяжёлый вопрос;
+    // а вот `connection` — упавшая или неверно настроенная база аналитика, и
+    // это неожиданный отказ: исполнитель отдаёт Result (он не бросает), Sentry
+    // и лог с причиной — здесь, на границе с приложением.
+    if (res.reason === 'connection') {
+      log.error({ event: 'panel.ai.sql.connection_failed', message: res.message });
+      Sentry.captureException(new Error(`panel_ai_ro connection failed: ${res.message}`), {
+        tags: { source: 'panel.ai.sql' },
+      });
+    }
+    const error = res.reason === 'sql_error' ? `ошибка SQL: ${res.message}` : MODEL_ERROR_TEXT[res.reason];
     return {
       execution: { result: { error, reason: res.reason }, isError: true },
-      view: { sql: validation.sql, columns: [], rows: [], truncated: false, error },
+      view: { sql: validation.sql, columns: [], rows: [], truncated: false, error, errorReason: res.reason },
     };
   }
 
@@ -259,6 +298,13 @@ export async function executeRunSql(rawInput: unknown, deps: RunSqlDeps = {}): P
       result: formatResultForModel({ columns: res.columns, rows, truncated: res.truncated }),
       isError: false,
     },
-    view: { sql: validation.sql, columns: res.columns, rows, truncated: res.truncated, error: null },
+    view: {
+      sql: validation.sql,
+      columns: res.columns,
+      rows,
+      truncated: res.truncated,
+      error: null,
+      errorReason: null,
+    },
   };
 }

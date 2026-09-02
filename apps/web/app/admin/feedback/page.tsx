@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { z } from 'zod';
 
 import {
   PANEL_DEFAULT_ROWS,
@@ -51,9 +52,12 @@ export const metadata: Metadata = { title: SECTION_TITLES.feedback };
 
 const PATH = '/admin/feedback';
 
+// Страница — граница (инвариант 5): Zod с потолком, как у списка заказов.
+const pageSchema = z.coerce.number().int().min(1).max(1000);
+
 function parsePage(raw: string | string[] | undefined): number {
-  const value = Number(Array.isArray(raw) ? raw[0] : raw);
-  return Number.isInteger(value) && value >= 1 ? value : 1;
+  const parsed = pageSchema.safeParse(Array.isArray(raw) ? raw[0] : raw);
+  return parsed.success ? parsed.data : 1;
 }
 
 function href(period: AnalyticsPeriod, page: number): string {
@@ -62,7 +66,7 @@ function href(period: AnalyticsPeriod, page: number): string {
 
 /** Ответ строки словами: подпись кнопки для опросов, «N из 5» для оценки. */
 function answerText(row: PanelFeedbackRow): string {
-  if (row.kind === 'order_rating') return row.score === null ? '—' : `${row.score} из 5`;
+  if (row.kind === 'order_rating') return row.score === null ? '—' : `${row.score} ${FEEDBACK_TEXT.scoreOf}`;
   const dict = row.kind === 'expired_survey' ? EXPIRED_SURVEY_ANSWER_TITLES : START_SURVEY_ANSWER_TITLES;
   return lookupLabel(dict, row.answer ?? undefined) ?? row.answer ?? '—';
 }

@@ -45,7 +45,12 @@ import {
 const log = childLogger('funnel.texts');
 
 export type FunnelTextGroup = 'expired_survey' | 'start_survey' | 'order_rating' | 'referral_nudge' | 'common';
-export type FunnelTextKind = 'body' | 'button' | 'reply';
+/**
+ * `body` — тело сообщения, `button` — подпись кнопки, `answer` — подпись
+ * кнопки-ответа опроса (тоже кнопка, но с правилом уникальности внутри
+ * опроса), `reply` — реакция бота на нажатие.
+ */
+export type FunnelTextKind = 'body' | 'button' | 'answer' | 'reply';
 
 /**
  * Стабильные ключи — они же ключи строк в `funnel_texts`. Не переименовывать:
@@ -124,7 +129,7 @@ function answerSpecs(
   return Object.entries(labels).map(([answer, label]) => ({
     key: answerKey(group, answer),
     group,
-    kind: 'reply',
+    kind: 'answer',
     title: `Ответ «${answer}»`,
     hint,
     defaultValue: label,
@@ -367,8 +372,8 @@ export function validateFunnelText(
     if (!found.has(required)) return { ok: false, reason: 'missing_placeholder', placeholder: required };
   }
 
-  if (spec.kind === 'reply' && spec.key.includes('.answer.')) {
-    const others = FUNNEL_TEXTS.filter((s) => s.group === spec.group && s.key !== spec.key && s.key.includes('.answer.'));
+  if (spec.kind === 'answer') {
+    const others = FUNNEL_TEXTS.filter((s) => s.group === spec.group && s.kind === 'answer' && s.key !== spec.key);
     for (const other of others) {
       const current = siblings[other.key] ?? other.defaultValue;
       if (current.trim() === value) return { ok: false, reason: 'duplicate_label' };

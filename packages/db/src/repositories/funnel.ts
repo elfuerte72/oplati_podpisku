@@ -2,7 +2,7 @@ import { and, count, desc, eq, gte, isNull, lte, sql, type SQL } from 'drizzle-o
 
 import { clientFeedback, conversations, funnelSends, orders, users } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
-import type { FunnelKind } from '@oplati/types';
+import { funnelKind, type FunnelKind } from '@oplati/types';
 import { clampPanelLimit, clampPanelOffset } from './panel.ts';
 
 /**
@@ -390,24 +390,28 @@ export type PanelFeedbackSummaryRow = {
 
 /**
  * Сводка по видам за период: отправлено / ответов. Доля считается на стороне
- * витрины (`null` при `sent = 0`). Виды без событий возвращаются с нулями —
- * строка на каждый `funnelKind`, кроме реферального касания: на него не
- * отвечают кнопкой, и «доля ответов» у него не определена.
+ * витрины (`null` при `sent = 0`). Строка на КАЖДЫЙ `funnelKind` из
+ * `@oplati/types` (один источник списка), виды без событий — с нулями; у
+ * реферального касания ответов нет по построению — витрина покажет прочерк.
  */
 export async function feedbackSummaryForPanel(
   db: DB,
   opts: { since: string },
 ): Promise<PanelFeedbackSummaryRow[]> {
+  const kinds = funnelKind.options;
   const rows = await db.execute<{ kind: string; sent: string | number; answered: string | number }>(sql`
     SELECT k.kind,
            (SELECT count(*) FROM funnel_sends fs
              WHERE fs.kind = k.kind AND fs.sent_at >= ${opts.since}::timestamptz) AS sent,
            (SELECT count(*) FROM client_feedback cf
              WHERE cf.kind = k.kind AND cf.created_at >= ${opts.since}::timestamptz) AS answered
-    FROM (VALUES ('expired_survey'), ('start_survey'), ('order_rating')) AS k(kind)
+    FROM (VALUES ${sql.join(
+      kinds.map((k) => sql`(${k})`),
+      sql`, `,
+    )}) AS k(kind)
   `);
   const byKind = new Map(rows.map((r) => [r.kind, r]));
-  return (['expired_survey', 'start_survey', 'order_rating'] as const).map((kind) => ({
+  return kinds.map((kind) => ({
     kind,
     sent: Number(byKind.get(kind)?.sent ?? 0),
     answered: Number(byKind.get(kind)?.answered ?? 0),

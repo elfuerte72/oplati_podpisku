@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import {
   getDb,
   listFunnelTextOverrides,
-  listFunnelTextRevisions,
+  listRecentFunnelTextRevisions,
   type FunnelTextOverride,
   type FunnelTextRevision,
 } from '@oplati/db';
@@ -35,6 +35,9 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: SECTION_TITLES.texts };
 
+/** Сколько правок показывать под ключом. */
+const HISTORY_PER_KEY = 20;
+
 const GROUP_ORDER: readonly FunnelTextGroup[] = [
   'expired_survey',
   'start_survey',
@@ -54,17 +57,20 @@ export default async function PanelTextsPage() {
   }
 
   const db = getDb();
-  const overrides = new Map<string, FunnelTextOverride>(
-    (await listFunnelTextOverrides(db)).map((o) => [o.key, o]),
-  );
-  // История — только у изменённых ключей: у нетронутых её нет по построению,
-  // и двадцать пустых запросов ради этого не нужны.
+  const [overrideRows, revisionRows] = await Promise.all([
+    listFunnelTextOverrides(db),
+    // История — одним запросом по всем ключам и показывается у КАЖДОГО ключа,
+    // где она есть: возврат к дефолту — тоже правка, и после него история не
+    // должна исчезать с экрана. Последние 20 на ключ.
+    listRecentFunnelTextRevisions(db),
+  ]);
+  const overrides = new Map<string, FunnelTextOverride>(overrideRows.map((o) => [o.key, o]));
   const revisions = new Map<string, FunnelTextRevision[]>();
-  await Promise.all(
-    [...overrides.keys()].map(async (key) => {
-      revisions.set(key, await listFunnelTextRevisions(db, key));
-    }),
-  );
+  for (const rev of revisionRows) {
+    const list = revisions.get(rev.key) ?? [];
+    if (list.length < HISTORY_PER_KEY) list.push(rev);
+    revisions.set(rev.key, list);
+  }
 
   return (
     <PanelShell actor={access.actor} current="/admin/texts" live={false}>
@@ -134,34 +140,30 @@ function TextRow({
         value={value}
         isOverridden={override !== null}
         maxLength={spec.maxLength}
-        singleLine={spec.kind === 'button'}
+        singleLine={spec.kind === 'button' || spec.kind === 'answer'}
       />
 
-      {override ? (
+      {history.length > 0 ? (
         <details className="panel-text-row__history">
           <summary>{FUNNEL_TEXTS_TEXT.history}</summary>
-          {history.length === 0 ? (
-            <p className="panel-muted">{FUNNEL_TEXTS_TEXT.historyEmpty}</p>
-          ) : (
-            <ul className="panel-timeline">
-              {history.map((rev) => (
-                <li key={rev.id}>
-                  <div className="panel-muted">
-                    <LocalTime iso={rev.createdAt.toISOString()} /> · {rev.staffName ?? CELL_TEXT.noName}
-                    {rev.newValue === null ? ` · ${FUNNEL_TEXTS_TEXT.historyReset}` : ''}
-                  </div>
-                  <div className="panel-text-row__diff">
-                    <span className="panel-muted">{FUNNEL_TEXTS_TEXT.was}:</span>{' '}
-                    <span className="panel-text-row__value">{rev.oldValue ?? FUNNEL_TEXTS_TEXT.byDefault}</span>
-                  </div>
-                  <div className="panel-text-row__diff">
-                    <span className="panel-muted">{FUNNEL_TEXTS_TEXT.became}:</span>{' '}
-                    <span className="panel-text-row__value">{rev.newValue ?? FUNNEL_TEXTS_TEXT.byDefault}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ul className="panel-timeline">
+            {history.map((rev) => (
+              <li key={rev.id}>
+                <div className="panel-muted">
+                  <LocalTime iso={rev.createdAt.toISOString()} /> · {rev.staffName ?? CELL_TEXT.noName}
+                  {rev.newValue === null ? ` · ${FUNNEL_TEXTS_TEXT.historyReset}` : ''}
+                </div>
+                <div className="panel-text-row__diff">
+                  <span className="panel-muted">{FUNNEL_TEXTS_TEXT.was}:</span>{' '}
+                  <span className="panel-text-row__value">{rev.oldValue ?? FUNNEL_TEXTS_TEXT.byDefault}</span>
+                </div>
+                <div className="panel-text-row__diff">
+                  <span className="panel-muted">{FUNNEL_TEXTS_TEXT.became}:</span>{' '}
+                  <span className="panel-text-row__value">{rev.newValue ?? FUNNEL_TEXTS_TEXT.byDefault}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
         </details>
       ) : null}
     </article>

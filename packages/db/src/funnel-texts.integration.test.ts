@@ -7,6 +7,7 @@ import { createTestDb } from './test-harness.ts';
 import {
   listFunnelTextOverrides,
   listFunnelTextRevisions,
+  listRecentFunnelTextRevisions,
   resetFunnelText,
   saveFunnelText,
 } from './repositories/funnel-texts.ts';
@@ -110,6 +111,18 @@ describe('saveFunnelText / resetFunnelText', () => {
     }
     expect(await listFunnelTextRevisions(db, 'rating.low', 2)).toHaveLength(2);
     expect(await listFunnelTextRevisions(db, 'rating.low', 0)).toHaveLength(1);
+  });
+
+  it('история по всем ключам одним запросом: новые сверху, включая ключ без живого оверлея', async () => {
+    const all = await listRecentFunnelTextRevisions(db);
+    const keys = new Set(all.map((r) => r.key));
+    // `expired_survey.body` возвращён к дефолту выше — его история обязана остаться.
+    expect(keys.has('expired_survey.body')).toBe(true);
+    expect(keys.has('rating.low')).toBe(true);
+    for (let i = 1; i < all.length; i++) {
+      expect(all[i - 1]!.createdAt.getTime()).toBeGreaterThanOrEqual(all[i]!.createdAt.getTime());
+    }
+    expect(await listRecentFunnelTextRevisions(db, 3)).toHaveLength(3);
   });
 });
 

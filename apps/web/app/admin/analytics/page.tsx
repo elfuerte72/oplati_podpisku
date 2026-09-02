@@ -189,7 +189,7 @@ export default async function PanelAnalyticsPage({
                 // пометкой: история кликов старше каталога.
                 label: row.title ?? `${row.serviceSlug} · ${ANALYTICS_TEXT.archivedService}`,
                 value: row.clicks,
-                valueText: `${formatCount(row.clicks)} · ${formatCount(row.subjects)} чел.`,
+                valueText: `${formatCount(row.clicks)} · ${formatCount(row.subjects)} ${ANALYTICS_TEXT.people}`,
               }))}
             />
           ) : (

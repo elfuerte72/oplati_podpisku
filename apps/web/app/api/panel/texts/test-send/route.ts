@@ -75,24 +75,34 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: false, error: 'rate_limited' }, { status: 429 });
   }
 
-  const check = await checkFunnelTextForKey(getDb(), body.key, body.value);
+  let check: Awaited<ReturnType<typeof checkFunnelTextForKey>>;
+  try {
+    check = await checkFunnelTextForKey(getDb(), body.key, body.value);
+  } catch (err) {
+    // Проверка читает соседей из БД: отказ базы — 503, а не 500.
+    log.error({ event: 'panel.texts.check_failed', staffId: guard.actor.id, err });
+    Sentry.captureException(err, { tags: { source: 'panel.texts' } });
+    return Response.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
   if (!check.ok) return funnelTextErrorResponse(check);
 
   // Ссылка — тем же билдером, что в кабинете; без username бота ссылки нет,
-  // и подстановка честно показывает это словами, а не пустотой.
+  // и подстановка честно показывает это словами, а не пустотой. Username
+  // нужен и тексту отказа «запустите бота @…».
+  let botUsername: string | null = null;
   let link = `ref_${SAMPLE_REF_CODE}`;
   try {
-    link =
-      formatReferralTelegramLink(SAMPLE_REF_CODE, await getBotUsername(), referralMiniAppShortName()) ??
-      link;
+    botUsername = await getBotUsername();
+    link = formatReferralTelegramLink(SAMPLE_REF_CODE, botUsername, referralMiniAppShortName()) ?? link;
   } catch (err) {
     log.warn({ event: 'panel.texts.test_link_failed', staffId: guard.actor.id, err });
   }
 
   const rendered = renderFunnelText(check.value, { service: SAMPLE_SERVICE, link });
-  // Кнопку без сообщения показать нельзя — подпись уходит текстом с пометкой.
-  const text =
-    check.spec.kind === 'button' ? `${FUNNEL_TEXTS_TEXT.buttonPreviewPrefix} ${rendered}` : rendered;
+  // Кнопку без сообщения показать нельзя — подпись (и кнопки, и ответа
+  // опроса) уходит текстом с пометкой.
+  const isButton = check.spec.kind === 'button' || check.spec.kind === 'answer';
+  const text = isButton ? `${FUNNEL_TEXTS_TEXT.buttonPreviewPrefix} ${rendered}` : rendered;
 
   let bot: ReturnType<typeof getBot>;
   try {
@@ -109,7 +119,8 @@ export async function POST(req: Request): Promise<Response> {
   } catch (err) {
     if (err instanceof GrammyError && err.error_code === 403) {
       log.warn({ event: 'panel.texts.test_bot_blocked', staffId: guard.actor.id });
-      return Response.json({ ok: false, error: 'bot_blocked' }, { status: 409 });
+      // Имя бота — в теле: словарь панели env не читает, компонент дописывает «@…».
+      return Response.json({ ok: false, error: 'bot_blocked', bot: botUsername }, { status: 409 });
     }
     log.error({ event: 'panel.texts.test_send_failed', staffId: guard.actor.id, err });
     Sentry.captureException(err, { tags: { source: 'panel.texts' } });

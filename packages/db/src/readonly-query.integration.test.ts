@@ -6,14 +6,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 
 import type { DB } from './index.ts';
-import { createTestDb } from './test-harness.ts';
+import { createTestDb, pgliteReadOnlyExecutor } from './test-harness.ts';
 import { createDraftOrder } from './repositories/orders.ts';
 import * as schema from './schema.ts';
-import {
-  pgliteReadOnlyExecutor,
-  runReadOnlyQuery,
-  type ReadOnlyExecutor,
-} from './readonly-query.ts';
+import { runReadOnlyQuery, type ReadOnlyExecutor } from './readonly-query.ts';
 
 /**
  * Исполнитель read-only запросов аналитика панели (спека admin-panel-v2,

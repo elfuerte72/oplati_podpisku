@@ -30,11 +30,13 @@ type Props = {
 /** Текст отказа: причина по словарю + деталь (имя подстановки или лимит). */
 function errorText(data: unknown): string {
   if (typeof data !== 'object' || data === null) return FALLBACK_ERROR_TEXT;
-  const body = data as { error?: unknown; placeholder?: unknown; max?: unknown };
+  const body = data as { error?: unknown; placeholder?: unknown; max?: unknown; bot?: unknown };
   const code = typeof body.error === 'string' ? body.error : undefined;
   const base = lookupLabel(FUNNEL_TEXT_ERROR_TEXT, code) ?? FALLBACK_ERROR_TEXT;
   if (typeof body.placeholder === 'string') return `${base} {${body.placeholder}}`;
   if (typeof body.max === 'number') return `${base} ${body.max}`;
+  // Имя клиентского бота приезжает из операции: словарь панели env не читает.
+  if (typeof body.bot === 'string' && body.bot) return `${base} (@${body.bot})`;
   return base;
 }
 

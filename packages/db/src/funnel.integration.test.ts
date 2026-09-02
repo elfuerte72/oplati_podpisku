@@ -554,13 +554,20 @@ describe('read-side панели: лента «Обратная связь» (п
     expect(byKind.get('expired_survey')?.answered).toBeGreaterThanOrEqual(1);
     expect(byKind.get('order_rating')?.sent).toBeGreaterThanOrEqual(1);
     expect(byKind.get('order_rating')?.answered).toBeGreaterThanOrEqual(1);
-    expect(summary.map((r) => r.kind)).toEqual(['expired_survey', 'start_survey', 'order_rating']);
+    // Строка на каждый kind из @oplati/types — реферальное касание тоже.
+    expect(summary.map((r) => r.kind)).toEqual([
+      'expired_survey',
+      'start_survey',
+      'order_rating',
+      'referral_nudge',
+    ]);
 
     const empty = await feedbackSummaryForPanel(db, { since: '2100-01-01T00:00:00.000Z' });
     expect(empty).toEqual([
       { kind: 'expired_survey', sent: 0, answered: 0 },
       { kind: 'start_survey', sent: 0, answered: 0 },
       { kind: 'order_rating', sent: 0, answered: 0 },
+      { kind: 'referral_nudge', sent: 0, answered: 0 },
     ]);
   });
 

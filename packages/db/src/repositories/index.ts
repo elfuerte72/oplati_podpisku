@@ -331,6 +331,7 @@ export {
 export {
   listFunnelTextOverrides,
   listFunnelTextRevisions,
+  listRecentFunnelTextRevisions,
   resetFunnelText,
   saveFunnelText,
   type FunnelTextOverride,

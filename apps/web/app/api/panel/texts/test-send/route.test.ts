@@ -95,9 +95,11 @@ describe('POST /api/panel/texts/test-send', () => {
     expect(text).toContain('ref_TEST');
   });
 
-  it('подпись кнопки уходит текстом с пометкой «Кнопка:»', async () => {
+  it('подпись кнопки и ответа опроса уходит текстом с пометкой «Кнопка:»', async () => {
     await POST(request({ key: 'common.optout_button', value: 'Хватит' }));
     expect(h.sendMessage.mock.calls[0]?.[1]).toBe('Кнопка: Хватит');
+    await POST(request({ key: 'expired_survey.answer.price', value: 'Слишком дорого' }));
+    expect(h.sendMessage.mock.calls[1]?.[1]).toBe('Кнопка: Слишком дорого');
   });
 
   it('невалидный текст → 422, sendMessage не зван', async () => {
@@ -120,7 +122,8 @@ describe('POST /api/panel/texts/test-send', () => {
     });
     const res = await POST(request({ key: 'common.thanks', value: 'Спасибо' }));
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ error: 'bot_blocked' });
+    // Имя бота — в теле: словарь панели env не читает, компонент дописывает «@…».
+    expect(await res.json()).toMatchObject({ error: 'bot_blocked', bot: 'oplatishkaa_bot' });
     expect(h.captureException).not.toHaveBeenCalled();
   });
 

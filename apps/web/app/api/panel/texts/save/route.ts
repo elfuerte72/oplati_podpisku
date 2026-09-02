@@ -53,7 +53,15 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const db = getDb();
-  const check = await checkFunnelTextForKey(db, body.key, body.value);
+  let check: Awaited<ReturnType<typeof checkFunnelTextForKey>>;
+  try {
+    check = await checkFunnelTextForKey(db, body.key, body.value);
+  } catch (err) {
+    // Проверка читает соседей из БД: отказ базы — 503, а не 500.
+    log.error({ event: 'panel.texts.check_failed', staffId: guard.actor.id, err });
+    Sentry.captureException(err, { tags: { source: 'panel.texts' } });
+    return Response.json({ ok: false, error: 'unavailable' }, { status: 503 });
+  }
   if (!check.ok) return funnelTextErrorResponse(check);
 
   try {

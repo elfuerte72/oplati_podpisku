@@ -2,7 +2,15 @@ import 'server-only';
 
 import { createHash } from 'node:crypto';
 
-import { getSupportClient, supportModel, type AgentClient, type AgentProfile } from '@oplati/agent';
+import {
+  getSupportClient,
+  isSupportAiConfigured,
+  supportModel,
+  type AgentClient,
+  type AgentProfile,
+} from '@oplati/agent';
+
+import { ANALYST_FALLBACK_TEXT } from '@/lib/panel/labels';
 
 import { runSqlTool } from './run-sql';
 import { buildPanelAnalystSystemPrompt } from './system-prompt';
@@ -26,6 +34,16 @@ import { buildPanelAnalystSystemPrompt } from './system-prompt';
 const ANALYST_TEMPERATURE = 0.1;
 const ANALYST_MAX_TOKENS = 2000;
 export const ANALYST_MAX_ITERATIONS = 8;
+
+/**
+ * Настроен ли аналитик — ОДНА правда для страницы и операции: нужен и ключ
+ * модели, и подключение роли. Без URL роли ход модели заканчивался бы ответом
+ * «подключение не настроено» за деньги провайдера, а не честным 503.
+ * `Boolean()` — `KEY=` в env это «не задано».
+ */
+export function isPanelAnalystConfigured(): boolean {
+  return isSupportAiConfigured() && Boolean(process.env.PANEL_AI_DATABASE_URL);
+}
 
 /** Модель аналитика: `PANEL_AI_MODEL`, иначе модель помощника поддержки. */
 export function panelAnalystModel(): string {
@@ -67,15 +85,7 @@ export function buildPanelAnalystProfile(input: {
     maxWebSearchPerRun: 0,
     metadataUserId: panelStaffHash(input.staffId),
     dispatch: input.dispatch,
-    texts: ANALYST_FALLBACK_TEXTS,
+    // Служебные тексты хода — из словаря панели: они показываются в ленте.
+    texts: ANALYST_FALLBACK_TEXT,
   };
 }
-
-/** Служебные тексты хода — безличные, как всё в панели. */
-export const ANALYST_FALLBACK_TEXTS = {
-  truncatedNote:
-    '\n\n(Ответ получился длинным и оборвался. Уточните вопрос — например, сузьте период или число строк.)',
-  truncatedEmpty:
-    'Ответ не поместился в лимит. Сформулируйте вопрос уже — по одному показателю или за меньший период.',
-  noAnswer: 'Модель не вернула ответ. Повторите вопрос или переформулируйте его.',
-};

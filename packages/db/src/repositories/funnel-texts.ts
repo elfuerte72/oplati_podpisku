@@ -122,6 +122,31 @@ export type FunnelTextRevision = {
   createdAt: Date;
 };
 
+/**
+ * История правок по ВСЕМ ключам одним запросом, новые сверху — для экрана
+ * текстов: история обязана быть видна и у ключа, возвращённого к дефолту
+ * (сам возврат — тоже правка), а не только у живого оверлея.
+ */
+export async function listRecentFunnelTextRevisions(
+  db: DB,
+  limit = 200,
+): Promise<FunnelTextRevision[]> {
+  return db
+    .select({
+      id: funnelTextRevisions.id,
+      key: funnelTextRevisions.key,
+      oldValue: funnelTextRevisions.oldValue,
+      newValue: funnelTextRevisions.newValue,
+      staffId: funnelTextRevisions.staffId,
+      staffName: staff.displayName,
+      createdAt: funnelTextRevisions.createdAt,
+    })
+    .from(funnelTextRevisions)
+    .leftJoin(staff, eq(staff.id, funnelTextRevisions.staffId))
+    .orderBy(desc(funnelTextRevisions.createdAt), desc(funnelTextRevisions.id))
+    .limit(Math.min(Math.max(Math.trunc(limit), 1), 1000));
+}
+
 /** История правок ключа, новые сверху. */
 export async function listFunnelTextRevisions(
   db: DB,

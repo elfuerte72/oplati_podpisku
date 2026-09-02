@@ -18,7 +18,7 @@ vi.mock('@/lib/panel/guard', () => ({ panelPageAccess: h.access }));
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}),
   listFunnelTextOverrides: h.overrides,
-  listFunnelTextRevisions: h.revisions,
+  listRecentFunnelTextRevisions: h.revisions,
 }));
 vi.mock('@/components/panel/PanelShell', () => ({
   PanelShell: ({ children }: { children: ReactNode }) => createElement('div', { 'data-shell': '' }, children),
@@ -89,8 +89,39 @@ describe('/admin/texts', () => {
     expect(html).toContain('Свой текст опроса');
     expect(html.match(/Вернуть по умолчанию/g)?.length).toBe(1);
     expect(html).toContain('История правок');
+    // История по всем ключам — одним запросом, а не по запросу на ключ.
     expect(h.revisions).toHaveBeenCalledTimes(1);
-    expect(h.revisions).toHaveBeenCalledWith(expect.anything(), 'expired_survey.body');
+  });
+
+  it('после возврата к дефолту история не исчезает: ключ «по умолчанию», но с раскрывашкой правок', async () => {
+    h.overrides.mockResolvedValue([]);
+    h.revisions.mockResolvedValue([
+      {
+        id: 'r2',
+        key: 'common.thanks',
+        oldValue: 'Своё спасибо',
+        newValue: null,
+        staffId: 's1',
+        staffName: 'Владелец',
+        createdAt: new Date('2026-09-02T11:00:00Z'),
+      },
+      {
+        id: 'r1',
+        key: 'common.thanks',
+        oldValue: null,
+        newValue: 'Своё спасибо',
+        staffId: 's1',
+        staffName: 'Владелец',
+        createdAt: new Date('2026-09-02T10:00:00Z'),
+      },
+    ]);
+
+    const html = await render();
+
+    expect(html).not.toContain('Вернуть по умолчанию');
+    expect(html.match(/История правок/g)?.length).toBe(1);
+    expect(html).toContain('возврат по умолчанию');
+    expect(html).toContain('Своё спасибо');
   });
 
   it('обязательные подстановки и лимит показаны рядом со строкой', async () => {

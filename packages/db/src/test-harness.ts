@@ -7,6 +7,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { bootstrapRolesSql } from './bootstrap-roles.ts';
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
+import type { ReadOnlyExecutor } from './readonly-query.ts';
 
 /**
  * Обвязка интеграционных тестов: РЕАЛЬНЫЙ Postgres (PGlite, WASM) с РЕАЛЬНЫМИ
@@ -97,4 +98,23 @@ export async function createTestDb(
   // postgres-js — обоснованное сужение для тестовой обвязки.
   const db = normalizeExecute(raw) as unknown as DB;
   return { db, pg: client, applyRemainingMigrations };
+}
+
+/**
+ * Исполнитель read-only запросов аналитика для тестов на PGlite — те же
+ * страховки, что и у боевого (`postgresExecutor` в `readonly-query.ts`):
+ * транзакция READ ONLY и `statement_timeout`. Живёт в харнесе, а не в
+ * прод-модуле: боевому коду тестовый драйвер не нужен.
+ */
+export function pgliteReadOnlyExecutor(pg: PGlite): ReadOnlyExecutor {
+  return {
+    async run(sqlText, timeoutMs) {
+      return pg.transaction(async (tx) => {
+        await tx.exec('SET TRANSACTION READ ONLY');
+        await tx.exec(`SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
+        const res = await tx.query<unknown[]>(sqlText, [], { rowMode: 'array' });
+        return { columns: res.fields.map((f) => f.name), rows: res.rows };
+      });
+    },
+  };
 }

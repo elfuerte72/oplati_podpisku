@@ -178,10 +178,11 @@ describe('деньги: выручка по дням и сводка', () => {
     const summary = await revenueSummary(db, RANGE);
 
     expect(summary).toEqual({
+      // Выручка — все успешные платежи, включая провалившийся заказ на 50 ₽.
       amountKopecks: 400_00,
       paidOrders: 2,
-      // 40 000 / 2 — округление до целой копейки.
-      averageKopecks: 200_00,
+      // Средний чек — из ОДНОГО множества состоявшихся покупок: (100 + 250) / 2.
+      averageKopecks: 175_00,
     });
   });
 

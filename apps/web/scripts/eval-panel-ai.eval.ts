@@ -29,7 +29,7 @@ import { askAnalyst, type AskAnalystResult } from '@/lib/panel/ai/ask';
  *   DATABASE_URL=<dev> PANEL_AI_DATABASE_URL=<dev, роль panel_ai_ro> \
  *   SUPPORT_AI_API_KEY=... pnpm --filter web eval:panel-ai
  *
- * ⚠️ Сев остаётся в dev-БД (order_events append-only, удалить нельзя) — заказы
+ * Сев остаётся в dev-БД (order_events append-only, удалить нельзя) — заказы
  * помечены описанием `EVAL-PANEL-AI`, клиент — telegram_id `eval-panel-ai`.
  */
 

@@ -11,7 +11,7 @@ import { z } from 'zod';
  * выборки в `packages/db` (`to_char(… AT TIME ZONE 'UTC')`); на экране время
  * показывается по часовому поясу браузера, как везде в панели (`LocalTime`).
  *
- * ⚠️ Модуль читают серверные страницы и тесты: ни Next, ни env, ни БД.
+ * Модуль читают серверные страницы и тесты: ни Next, ни env, ни БД.
  */
 
 export const ANALYTICS_PERIODS = [7, 30, 90] as const;

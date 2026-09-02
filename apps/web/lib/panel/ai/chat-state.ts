@@ -5,7 +5,7 @@
  * запрос» и «что стало с лентой после ответа» живут здесь и проверяются тестом
  * без DOM. Чат эфемерный: всё состояние — в памяти вкладки.
  *
- * ⚠️ Модуль едет в клиентский бандл: ни Next, ни env, ни БД, ни zod.
+ * Модуль едет в клиентский бандл: ни Next, ни env, ни БД, ни zod.
  */
 
 export type AnalystToolCall = {
@@ -14,6 +14,7 @@ export type AnalystToolCall = {
   rows: unknown[][];
   truncated: boolean;
   error: string | null;
+  errorReason: string | null;
 };
 
 export type ChatTurn = {
@@ -33,8 +34,14 @@ export type ChatState = {
 
 export const EMPTY_CHAT: ChatState = { turns: [], error: null, failedToolCalls: [] };
 
-/** Сколько ходов истории уезжает в запрос — зеркало потолка Zod на сервере. */
+/**
+ * Потолки — ЕДИНСТВЕННЫЙ источник и для клиента (сколько истории уезжает,
+ * `maxLength` поля), и для Zod на сервере (`ask.ts` импортирует отсюда):
+ * зеркала между ними нет.
+ */
 export const CHAT_HISTORY_MAX_TURNS = 20;
+export const ANALYST_HISTORY_MAX_BYTES = 8 * 1024;
+export const ANALYST_QUESTION_MAX = 2000;
 
 /**
  * Тело запроса: история целиком (только роль и текст — без таблиц, они
@@ -63,6 +70,7 @@ function readToolCalls(data: unknown): AnalystToolCall[] {
       rows: Array.isArray(c.rows) ? c.rows.filter((r): r is unknown[] => Array.isArray(r)) : [],
       truncated: c.truncated === true,
       error: typeof c.error === 'string' ? c.error : null,
+      errorReason: typeof c.errorReason === 'string' ? c.errorReason : null,
     }));
 }
 

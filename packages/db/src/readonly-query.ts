@@ -1,7 +1,5 @@
 import postgres from 'postgres';
 
-import type { PGlite } from '@electric-sql/pglite';
-
 /**
  * Исполнитель read-only SQL для AI-аналитика админ-панели (спека
  * `.scratch/admin-panel-v2/`, ветка B, тикет 04).
@@ -113,20 +111,6 @@ function postgresExecutor(url: string): ReadOnlyExecutor {
           columns: result.columns.map((c) => c.name),
           rows: result as unknown as unknown[][],
         };
-      });
-    },
-  };
-}
-
-/** Исполнитель для тестов на PGlite — те же страховки, что и у боевого. */
-export function pgliteReadOnlyExecutor(pg: PGlite): ReadOnlyExecutor {
-  return {
-    async run(sqlText, timeoutMs) {
-      return pg.transaction(async (tx) => {
-        await tx.exec('SET TRANSACTION READ ONLY');
-        await tx.exec(`SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
-        const res = await tx.query<unknown[]>(sqlText, [], { rowMode: 'array' });
-        return { columns: res.fields.map((f) => f.name), rows: res.rows };
       });
     },
   };

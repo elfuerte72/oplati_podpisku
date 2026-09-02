@@ -1,3 +1,5 @@
+import { ANALYTICS_TEXT } from '@/lib/panel/labels';
+
 import { axisTicks, labelledIndexes, shortDay } from './scale';
 
 /**
@@ -110,7 +112,7 @@ export function BarsByDay({
       <figcaption className="panel-chart__caption">
         <span>{title}</span>
         <span className="panel-chart__caption-value">
-          Итого {format(total)} · максимум за день {format(max)}
+          {ANALYTICS_TEXT.captionTotal} {format(total)} · {ANALYTICS_TEXT.captionDayMax} {format(max)}
         </span>
       </figcaption>
     </figure>
