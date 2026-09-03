@@ -509,6 +509,38 @@
   padding-top: 2px;
 }
 
+/*
+ * Полоса фильтров ЭКРАНА (статус, сортировка, период на списке заказов).
+ *
+ * ⚠️ Класс общий с прежним горизонтальным меню, и панель v3 едва не оставила
+ * его без стилей: меню переехало в сайдбар со своими классами, а `.panel-nav`
+ * остался на трёх полосах экрана заказов — ссылки слиплись в сплошную строку
+ * «ВсеВ работеЖдут оплаты». Оформление то же, что у `.panel-period` в
+ * аналитике: одинаковые по смыслу элементы обязаны выглядеть одинаково.
+ */
+.panel-nav {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.panel .panel-nav a {
+  padding: 4px 10px;
+  border-radius: var(--panel-radius-control);
+  border: 1px solid var(--panel-border);
+  color: var(--panel-muted);
+}
+.panel .panel-nav a:hover {
+  background: var(--panel-surface-2);
+  color: var(--panel-text);
+  text-decoration: none;
+}
+.panel .panel-nav a[aria-current="page"] {
+  background: var(--panel-surface-2);
+  border-color: var(--panel-border-strong);
+  color: var(--panel-text);
+}
+
 /* Счётчик работы в меню. Ноль и «не получили» не рисуются вовсе. */
 .panel-nav-badge {
   display: inline-block;
