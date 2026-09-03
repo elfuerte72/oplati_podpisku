@@ -72,6 +72,29 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(out?.request?.query_string).toBe('q=[REDACTED]&s2=1');
   });
 
+  it('редактирует поиск панели и в ТЕЛЕ запроса, а не только в адресе', () => {
+    // Панель v3 перенесла поиск и выгрузку на POST — ровно чтобы контакт
+    // клиента не попадал в адрес. Тело разбирается в `request.data`, поэтому
+    // перенос без этого правила закрыл один канал и открыл соседний.
+    const out = beforeSend({
+      request: { data: { query: 'ivan@example.com', s: 'unpaid' } },
+    } as never);
+
+    const data = out?.request?.data as Record<string, unknown>;
+    expect(data.query).toBe('[REDACTED]');
+    expect(data.s).toBe('unpaid');
+  });
+
+  it('редактирует поле q формы выгрузки', () => {
+    const out = beforeSend({
+      request: { data: { q: '+79991234567', sort: 'oldest' } },
+    } as never);
+
+    const data = out?.request?.data as Record<string, unknown>;
+    expect(data.q).toBe('[REDACTED]');
+    expect(data.sort).toBe('oldest');
+  });
+
   it('чистит строку запроса и в request.url — она несёт те же параметры', () => {
     // Раньше денилист стоял только на `query_string`, а `url` уезжал целиком:
     // обход был бесплатным и незаметным.

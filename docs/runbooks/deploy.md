@@ -393,6 +393,21 @@ curl -s -o /dev/null -w '%{http_code}\n' https://admin.oplatishka.com/admin/logi
 curl -s -o /dev/null -w '%{http_code}\n' https://www.oplatishka.com/admin          # 404 — изоляция
 ```
 
+### Панели на dev-стенде НЕТ (и одной переменной мало)
+
+Проверено 2026-09-03: `/admin` и `/api/panel/*` на `dev.oplatishka.com` отдают
+**404**. Это не поломка — `PANEL_HOST` там не задан, а гейт домена fail-closed.
+
+Задать переменную мало: вход — виджет бота персонала, а домен у бота **один**
+(`/setdomain`), и сейчас это `admin.oplatishka.com`. Переставить его на dev
+значит сломать вход на проде, поэтому dev-панели нужен **отдельный бот
+персонала**: свой токен, свой `/setdomain`, свой вебхук на
+`https://dev.oplatishka.com/api/staff-bot` (плюс путь-исключение в Traefik —
+стенд под Basic Auth) и своя строка в `staff` dev-БД.
+
+Следствие: изменения панели проверяются на боевом домене после мержа. Пока у
+панели нет миграций, откат — revert PR и пересборка.
+
 ⚠️ `ERR_NAME_NOT_RESOLVED` сразу после заведения DNS — это отрицательный кэш на
 машине, а не проблема контура. Проверять `dig +short admin.oplatishka.com @8.8.8.8`
 и авторитетным сервером зоны, лечить

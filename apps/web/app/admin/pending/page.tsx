@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { getDb, listPendingOrdersForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { RemindPayment } from '@/components/panel/RemindPayment';
@@ -13,6 +14,7 @@ import {
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
+  HELP_TEXT,
   REMIND_BLOCK_TEXT,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
@@ -54,6 +56,12 @@ export default async function PanelPendingPage() {
           счёта — новый не создаётся и срок не продлевается. Не чаще раза в сутки на заказ.
         </p>
       </PanelPageHeader>
+
+      <PanelHelp
+        title={HELP_TEXT.pending.title}
+        hint={HELP_TEXT.pending.hint}
+        cards={HELP_TEXT.pending.cards}
+      />
 
       {items.length === 0 ? (
         <div className="panel-card">

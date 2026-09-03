@@ -5,11 +5,12 @@ import { getDb, listHoldsForPanel } from '@oplati/db';
 import { FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { formatKopecks, orderStatusLabel, providerStatusLabel } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
+import { CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT, HELP_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
 
 /**
@@ -56,6 +57,12 @@ export default async function PanelHoldsPage() {
           означает антифрод-проверку.
         </p>
       </PanelPageHeader>
+
+      <PanelHelp
+        title={HELP_TEXT.holds.title}
+        hint={HELP_TEXT.holds.hint}
+        cards={HELP_TEXT.holds.cards}
+      />
 
       {holds.length === 0 ? (
         <div className="panel-card">

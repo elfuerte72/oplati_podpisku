@@ -1,4 +1,4 @@
-import { and, asc, countDistinct, desc, eq, inArray, ilike, max, or, sql } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, gte, inArray, ilike, lt, max, or, sql } from 'drizzle-orm';
 
 import {
   DEFAULT_REFERRAL_RATE_L1_BPS,
@@ -97,6 +97,15 @@ export type PanelOrderListFilters = {
   offset?: number;
   /** Сортировка. По умолчанию — свежие первыми. */
   sort?: PanelOrderSort;
+  /**
+   * Окно по времени создания заказа: `[createdFrom, createdTo)`.
+   *
+   * Полуоткрытое намеренно, как у выборок аналитики: заказ, созданный ровно в
+   * полночь границы, обязан попасть РОВНО в одно окно, иначе соседние периоды
+   * дают в сумме больше, чем есть заказов.
+   */
+  createdFrom?: Date;
+  createdTo?: Date;
 };
 
 /** Порядок списка. Живёт в адресе экрана — ссылку можно переслать коллеге. */
@@ -148,6 +157,11 @@ export async function listOrdersForPanel(
   if (filters.statuses && filters.statuses.length > 0) {
     conditions.push(inArray(orders.status, [...filters.statuses]));
   }
+
+  // `Date` в обычных builder-условиях — норма: drizzle маппит его сам (запрет
+  // касается только raw-`sql`-фрагментов, где postgres-js падает на Date).
+  if (filters.createdFrom) conditions.push(gte(orders.createdAt, filters.createdFrom));
+  if (filters.createdTo) conditions.push(lt(orders.createdAt, filters.createdTo));
 
   const query = filters.query?.trim().slice(0, MAX_QUERY_LENGTH);
   if (query) {
@@ -504,6 +518,71 @@ export type PanelClientDetail = {
  * выставлении счёта, а на экране он лишь добавляет PII, которую менеджеру не с
  * чем сопоставить.
  */
+/**
+ * Клиент в быстром поиске: только то, по чему его узнают в списке.
+ *
+ * Ни сумм, ни числа заказов: поиск обязан отвечать за один ввод символа, а
+ * агрегат по заказам на каждого найденного — это подзапрос на строку. Итоги
+ * живут в карточке клиента, куда ведёт строка выдачи.
+ */
+export type PanelClientSearchItem = {
+  id: string;
+  displayName: string | null;
+  telegramId: string | null;
+  email: string | null;
+};
+
+/**
+ * Быстрый поиск клиента по имени, telegram, почте или телефону (панель v3).
+ *
+ * ⚠️ Отдельная выборка, а не «сгруппировать найденные заказы»: клиент без
+ * единого заказа — обычное дело (написал в поддержку, привязал Telegram), и
+ * поиск, который его не находит, заставляет искать человека по переписке.
+ *
+ * Телефон ищется по цифрам с обеих сторон: в базе он лежит как `+79991234567`,
+ * а спрашивают его то с восьмёркой, то со скобками, то кусками. Сравнение
+ * сырых строк не нашло бы ни один из этих вариантов.
+ */
+export async function searchClientsForPanel(
+  db: DB,
+  input: { query: string; limit?: number },
+): Promise<PanelClientSearchItem[]> {
+  const query = input.query.trim().slice(0, MAX_QUERY_LENGTH);
+  if (query.length < 2) return [];
+
+  const limit = clampPanelLimit(input.limit);
+  const like = `%${escapeLikePattern(query)}%`;
+  const digits = query.replace(/\D/g, '');
+
+  const conditions = [
+    ilike(users.displayName, like),
+    ilike(users.telegramId, like),
+    ilike(users.email, like),
+  ];
+  // Три цифры совпадут у половины базы — это не поиск, а перебор.
+  if (digits.length >= 4) {
+    conditions.push(sql`regexp_replace(${users.phone}, '\\D', '', 'g') LIKE ${`%${digits}%`}`);
+  }
+
+  const rows = await db
+    .select({
+      id: users.id,
+      displayName: users.displayName,
+      telegramId: users.telegramId,
+      email: users.email,
+      // ⚠️ Телефон ИЩЕТСЯ, но не возвращается: в выдаче он ничего не различает
+      // (клиента опознают по имени и telegram), а лишняя PII в процессе — это
+      // лишняя PII в логе, в ответе и в следующей правке.
+    })
+    .from(users)
+    .where(or(...conditions))
+    // Свежие первыми: ищут обычно того, кто написал только что.
+    .orderBy(desc(users.createdAt), asc(users.id))
+    .limit(limit);
+
+  return rows;
+}
+
 export async function getClientDetailForPanel(
   db: DB,
   userId: string,

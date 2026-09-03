@@ -260,6 +260,8 @@ export {
   listHoldsForPanel,
   countHoldsForPanel,
   listOrdersForPanel,
+  searchClientsForPanel,
+  type PanelClientSearchItem,
   listPendingOrdersForPanel,
   countPendingOrdersForPanel,
   listSupportRequestsForPanel,

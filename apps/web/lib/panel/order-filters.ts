@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { PANEL_PENDING_ORDER_STATUSES, type PanelOrderSort } from '@oplati/db';
 import { orderStatus, type OrderStatus } from '@oplati/types';
 
+import { ANALYTICS_PERIODS, type AnalyticsPeriod } from './analytics/period';
 import { PRESET_TITLES, SORT_TITLES } from './labels';
 
 /**
@@ -53,12 +54,32 @@ export const SORT_OPTIONS: ReadonlyArray<{ key: PanelOrderSort; title: string }>
 /** Потолок поиска — тот же, что в репозитории; длиннее вводить незачем. */
 const MAX_QUERY_LENGTH = 100;
 
+/**
+ * Разбор периода заказов. Свой, а не из аналитики: там период обязателен и
+ * откатывается к тридцати дням, здесь «всё время» — законное состояние.
+ *
+ * Без приведений: список допустимых значений один (`ANALYTICS_PERIODS`), а
+ * проверка вхождения сама сужает тип — так смена состава периодов не пройдёт
+ * мимо типов.
+ */
+function parsePeriodDays(raw: string | undefined): AnalyticsPeriod | null {
+  if (raw === undefined) return null;
+  const days = Number(raw);
+  return ANALYTICS_PERIODS.find((allowed) => allowed === days) ?? null;
+}
+
 export type PanelOrdersQuery = {
   query: string;
   preset: (typeof STATUS_PRESETS)[number];
   /** Точечный статус из адреса (ссылка из другого экрана панели). */
   status: OrderStatus | null;
   sort: PanelOrderSort;
+  /**
+   * Окно по дате создания в днях. `null` — «всё время», и это УМОЛЧАНИЕ:
+   * заказов у нас порядка полусотни в день, и экран, молча показывающий
+   * последний месяц, прятал бы от менеджера старый незакрытый заказ.
+   */
+  period: AnalyticsPeriod | null;
   page: number;
   /** Какие параметры адреса не разобрались — экран скажет об этом вслух. */
   ignored: string[];
@@ -88,6 +109,11 @@ export function parseOrdersQuery(
   const parsedSort = rawSort ? sortSchema.safeParse(rawSort) : null;
   if (rawSort && !parsedSort?.success) ignored.push('sort');
 
+  const rawPeriod = firstValue(params.period);
+  const period = parsePeriodDays(rawPeriod);
+  // Непонятый период не «молча показывает всё»: экран говорит об этом вслух.
+  if (rawPeriod && period === null) ignored.push('period');
+
   const rawPage = firstValue(params.page);
   const parsedPage = rawPage ? z.coerce.number().int().min(1).max(1000).safeParse(rawPage) : null;
   if (rawPage && !parsedPage?.success) ignored.push('page');
@@ -100,6 +126,7 @@ export function parseOrdersQuery(
     preset,
     status: parsedStatus?.success ? parsedStatus.data : null,
     sort: parsedSort?.success ? parsedSort.data : 'newest',
+    period,
     page: parsedPage?.success ? parsedPage.data : 1,
     ignored,
   };
@@ -117,7 +144,7 @@ export const orderShortIdSchema = z
 
 /** Собрать адрес экрана заказов из состояния фильтров. */
 export function ordersHref(
-  state: Partial<Pick<PanelOrdersQuery, 'query' | 'sort' | 'page'>> & {
+  state: Partial<Pick<PanelOrdersQuery, 'query' | 'sort' | 'page' | 'period'>> & {
     presetKey?: StatusPresetKey;
     status?: OrderStatus | null;
   },
@@ -127,6 +154,7 @@ export function ordersHref(
   if (state.status) query.status = state.status;
   if (state.query) query.q = state.query;
   if (state.sort && state.sort !== 'newest') query.sort = state.sort;
+  if (state.period) query.period = String(state.period);
   if (state.page && state.page > 1) query.page = String(state.page);
   return { pathname: '/admin/orders', query };
 }

@@ -118,6 +118,7 @@ import {
   getSupportThreadForPanel,
   claimSupportConversation,
   listOrdersForPanel,
+  searchClientsForPanel,
 } from './repositories/panel.ts';
 import {
   claimStaffTotpStep,
@@ -2968,6 +2969,127 @@ describe('панель: список заказов и карточка зака
     const times = rows.map((r) => r.createdAt.getTime());
 
     expect([...times].sort((x, y) => y - x)).toEqual(times);
+  });
+
+  /**
+   * Окно по времени создания (панель v3). Полуоткрытое `[from, to)`: заказ,
+   * созданный ровно на границе, обязан попасть РОВНО в одно окно — иначе
+   * соседние периоды в сумме дают больше заказов, чем их есть.
+   */
+  describe('фильтр по времени создания', () => {
+    it('окно отбирает только попавшие в него заказы', async () => {
+      const created = (
+        await db
+          .select({ createdAt: schema.orders.createdAt })
+          .from(schema.orders)
+          .where(eq(schema.orders.shortId, ordA1.shortId))
+      )[0]?.createdAt;
+      if (!created) throw new Error('order not found');
+
+      const inside = await listOrdersForPanel(db, {
+        createdFrom: new Date(created.getTime() - 1000),
+        createdTo: new Date(created.getTime() + 1000),
+      });
+      expect(inside.items.map((r) => r.shortId)).toContain(ordA1.shortId);
+
+      const after = await listOrdersForPanel(db, {
+        createdFrom: new Date(created.getTime() + 1000),
+      });
+      expect(after.items.map((r) => r.shortId)).not.toContain(ordA1.shortId);
+    });
+
+    it('правая граница исключена, левая включена', async () => {
+      const created = (
+        await db
+          .select({ createdAt: schema.orders.createdAt })
+          .from(schema.orders)
+          .where(eq(schema.orders.shortId, ordA1.shortId))
+      )[0]?.createdAt;
+      if (!created) throw new Error('order not found');
+
+      const onLeftEdge = await listOrdersForPanel(db, { createdFrom: created });
+      expect(onLeftEdge.items.map((r) => r.shortId)).toContain(ordA1.shortId);
+
+      const onRightEdge = await listOrdersForPanel(db, { createdTo: created });
+      expect(onRightEdge.items.map((r) => r.shortId)).not.toContain(ordA1.shortId);
+    });
+
+    it('окно сочетается с поиском и статусом, а не заменяет их', async () => {
+      const rows = await listOrdersForPanel(db, {
+        query: 'tg-panel-a',
+        statuses: ['completed'],
+        createdFrom: new Date('2000-01-01T00:00:00Z'),
+      });
+
+      expect(rows.items.map((r) => r.shortId)).toEqual([ordA2.shortId]);
+    });
+  });
+
+  /**
+   * Быстрый поиск клиента (панель v3). Отдельная выборка, а не группировка
+   * найденных заказов: клиент без единого заказа — обычное дело.
+   */
+  describe('поиск клиента', () => {
+    let phoneUser: string;
+    let orderlessUser: string;
+
+    beforeAll(async () => {
+      const withPhone = await makeUser({
+        telegramId: 'tg-panel-phone',
+        displayName: 'Клиент С телефоном',
+        phone: '+79991234567',
+      });
+      phoneUser = withPhone.id;
+
+      const orderless = await makeUser({
+        telegramId: 'tg-panel-orderless',
+        displayName: 'Написал в поддержку',
+      });
+      orderlessUser = orderless.id;
+    });
+
+    it('находит клиента без единого заказа', async () => {
+      const rows = await searchClientsForPanel(db, { query: 'Написал' });
+
+      expect(rows.map((r) => r.id)).toContain(orderlessUser);
+    });
+
+    it('телефон ищется по цифрам, как бы его ни записали', async () => {
+      // В базе `+79991234567`, а спрашивают то с восьмёркой, то кусками.
+      for (const query of ['9991234567', '999 123 45 67', '(999) 123-45-67']) {
+        const rows = await searchClientsForPanel(db, { query });
+        expect(rows.map((r) => r.id), query).toContain(phoneUser);
+      }
+    });
+
+    it('три цифры — не поиск, а перебор половины базы', async () => {
+      const rows = await searchClientsForPanel(db, { query: '999' });
+
+      expect(rows.map((r) => r.id)).not.toContain(phoneUser);
+    });
+
+    it('один символ в базу не ходит вовсе', async () => {
+      expect(await searchClientsForPanel(db, { query: 'К' })).toEqual([]);
+    });
+
+    it('находит по имени, telegram и почте', async () => {
+      expect((await searchClientsForPanel(db, { query: 'Клиент А' })).map((r) => r.id)).toContain(
+        panelUserA,
+      );
+      expect((await searchClientsForPanel(db, { query: 'tg-panel-a' })).map((r) => r.id)).toContain(
+        panelUserA,
+      );
+      expect(
+        (await searchClientsForPanel(db, { query: 'a@example.com' })).map((r) => r.id),
+      ).toContain(panelUserA);
+    });
+
+    it('процент и подчёркивание ищутся как символы, а не как шаблон', async () => {
+      // Иначе `%` находит всех, и оператор недоумевает, почему выдача не та.
+      const rows = await searchClientsForPanel(db, { query: '%%' });
+
+      expect(rows).toEqual([]);
+    });
   });
 
   it('размер страницы приводится к допустимому — проверяем САМ кламп', async () => {
