@@ -138,3 +138,35 @@ describe('ordersHref', () => {
     });
   });
 });
+
+/**
+ * Фильтр по времени (панель v3). «Всё время» — умолчание и законное
+ * состояние: список заказов обязан по умолчанию показывать и старое.
+ */
+describe('период в адресе заказов', () => {
+  it('без параметра — всё время', () => {
+    expect(parseOrdersQuery({}).period).toBe(null);
+  });
+
+  it('понимает 7, 30 и 90 дней', () => {
+    expect(parseOrdersQuery({ period: '7' }).period).toBe(7);
+    expect(parseOrdersQuery({ period: '30' }).period).toBe(30);
+    expect(parseOrdersQuery({ period: '90' }).period).toBe(90);
+  });
+
+  it('чужое значение не молчит, а попадает в «не разобрали»', () => {
+    const parsed = parseOrdersQuery({ period: '365' });
+
+    expect(parsed.period).toBe(null);
+    expect(parsed.ignored).toContain('period');
+  });
+
+  it('период переживает пересылку ссылки', () => {
+    expect(ordersHref({ presetKey: 'all', period: 30 })).toEqual({
+      pathname: '/admin/orders',
+      query: { period: '30' },
+    });
+    // «Всё время» не пишется в адрес: это состояние по умолчанию.
+    expect(ordersHref({ presetKey: 'all', period: null }).query).toEqual({});
+  });
+});

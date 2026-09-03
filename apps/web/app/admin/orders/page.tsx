@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { PANEL_DEFAULT_ROWS, getDb, listOrdersForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { formatKopecks, orderStatusLabel, orderStatusTone } from '@/lib/panel/format';
@@ -13,8 +14,12 @@ import {
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
+  HELP_TEXT,
+  ORDERS_PERIOD_TEXT,
+  PERIOD_TITLES,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
+import { ANALYTICS_PERIODS, periodBounds } from '@/lib/panel/analytics/period';
 import {
   SORT_OPTIONS,
   STATUS_PRESETS,
@@ -53,10 +58,16 @@ export default async function PanelOrdersPage({
   const statuses = filters.status ? [filters.status] : filters.preset.statuses;
   const offset = (filters.page - 1) * PANEL_DEFAULT_ROWS;
 
+  // «Всё время» — умолчание: заказ, который завис месяц назад, не должен
+  // исчезать с экрана оттого, что фильтр по умолчанию показывает свежее.
+  const window = filters.period ? periodBounds(filters.period, new Date()) : null;
+
   const { items: orders, hasMore } = await listOrdersForPanel(getDb(), {
     statuses: statuses.length > 0 ? statuses : undefined,
     query: filters.query || undefined,
     sort: filters.sort,
+    createdFrom: window?.since,
+    createdTo: window?.until,
     limit: PANEL_DEFAULT_ROWS,
     offset,
   });
@@ -66,11 +77,36 @@ export default async function PanelOrdersPage({
     status: filters.status,
     query: filters.query,
     sort: filters.sort,
+    period: filters.period,
   };
 
   return (
     <PanelShell actor={access.actor} current="/admin/orders">
-      <PanelPageHeader title={SECTION_TITLES.orders}>
+      <PanelPageHeader
+        title={SECTION_TITLES.orders}
+        aside={
+          /*
+           * Выгрузка отдаёт ТУ ЖЕ выборку, что на экране, — фильтры едут
+           * скрытыми полями. Форма, а не ссылка: в фильтре бывает почта и
+           * телефон клиента, а адрес попадает в историю браузера и в
+           * `Referer`.
+           */
+          <form method="post" action="/api/panel/export/orders">
+            {filters.query ? <input type="hidden" name="q" value={filters.query} /> : null}
+            {filters.preset.key === 'all' ? null : (
+              <input type="hidden" name="s" value={filters.preset.key} />
+            )}
+            {filters.status ? <input type="hidden" name="status" value={filters.status} /> : null}
+            {filters.sort === 'newest' ? null : (
+              <input type="hidden" name="sort" value={filters.sort} />
+            )}
+            {filters.period ? <input type="hidden" name="period" value={filters.period} /> : null}
+            <button type="submit" className="panel-button">
+              {ACTION_TITLES.exportCsv}
+            </button>
+          </form>
+        }
+      >
         <form method="get" style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
           <input
             type="search"
@@ -90,6 +126,7 @@ export default async function PanelOrdersPage({
           {filters.sort === 'newest' ? null : (
             <input type="hidden" name="sort" value={filters.sort} />
           )}
+          {filters.period ? <input type="hidden" name="period" value={filters.period} /> : null}
           <button type="submit" className="panel-button">
             {ACTION_TITLES.search}
           </button>
@@ -124,6 +161,27 @@ export default async function PanelOrdersPage({
           ))}
         </nav>
 
+        <nav className="panel-nav" style={{ marginTop: 4 }}>
+          <span className="panel-muted" style={{ padding: '4px 10px' }}>
+            {ORDERS_PERIOD_TEXT.label}:
+          </span>
+          <Link
+            href={ordersHref({ ...linkState, period: null })}
+            aria-current={filters.period === null ? 'page' : undefined}
+          >
+            {ORDERS_PERIOD_TEXT.allTime}
+          </Link>
+          {ANALYTICS_PERIODS.map((days) => (
+            <Link
+              key={days}
+              href={ordersHref({ ...linkState, period: days })}
+              aria-current={filters.period === days ? 'page' : undefined}
+            >
+              {PERIOD_TITLES[days]}
+            </Link>
+          ))}
+        </nav>
+
         {filters.status ? (
           <p className="panel-muted" style={{ marginTop: 8 }}>
             Фильтр по статусу: {orderStatusLabel(filters.status)}.{' '}
@@ -140,6 +198,12 @@ export default async function PanelOrdersPage({
           </p>
         ) : null}
       </PanelPageHeader>
+
+      <PanelHelp
+        title={HELP_TEXT.orders.title}
+        hint={HELP_TEXT.orders.hint}
+        cards={HELP_TEXT.orders.cards}
+      />
 
       {orders.length === 0 ? (
         <div className="panel-card">

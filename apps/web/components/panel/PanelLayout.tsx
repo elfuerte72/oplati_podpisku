@@ -5,6 +5,8 @@ import { useState } from 'react';
 import { ACTION_TITLES } from '@/lib/panel/labels';
 import { sidebarCookieString } from '@/lib/panel/sidebar';
 
+import { PanelSearch } from './PanelSearch';
+
 /**
  * Раскладка панели: боковое меню слева, экран справа (панель v3).
  *
@@ -67,6 +69,8 @@ export function PanelLayout({
             <span aria-hidden>{collapsed ? '»' : '«'}</span>
           </button>
         </div>
+
+        <PanelSearch />
 
         <nav className="panel-sidebar__nav" onClick={() => setDrawerOpen(false)}>
           {nav}
