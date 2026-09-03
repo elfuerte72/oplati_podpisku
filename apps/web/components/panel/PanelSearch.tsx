@@ -7,9 +7,12 @@ import { formatKopecks, orderStatusLabel } from '@/lib/panel/format';
 import { SEARCH_TEXT } from '@/lib/panel/labels';
 import {
   PANEL_SEARCH_DEBOUNCE_MS,
+  PANEL_SEARCH_TIMEOUT_MS,
+  answerMatchesQuery,
   clientHitHint,
   clientHitTitle,
   isSearchable,
+  parseSearchResults,
   type PanelSearchResults,
 } from '@/lib/panel/search';
 
@@ -43,6 +46,10 @@ export function PanelSearch() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setOpen(true);
+        // Диалог уже открыт, а фокус ушёл на ссылку выдачи: значение `open` не
+        // меняется, эффект фокуса не сработает, и сочетание выглядит сломанным.
+        inputRef.current?.focus();
+        inputRef.current?.select();
       }
       if (event.key === 'Escape') setOpen(false);
     }
@@ -58,6 +65,12 @@ export function PanelSearch() {
     if (!open || !isSearchable(query)) return;
 
     const id = ++requestId.current;
+    // Запрос обязан отменяться: без этого брошенный по новому вводу поиск
+    // продолжает гонять четыре `ILIKE '%…%'` в том же процессе, что принимает
+    // вебхуки, а зависший ответ навсегда оставляет на экране «Ищем…».
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), PANEL_SEARCH_TIMEOUT_MS);
+
     // Состояние трогаем ТОЛЬКО из таймера: синхронный setState в теле эффекта
     // вызывает каскад перерисовок, а «Ищем…» до истечения паузы показывать и
     // незачем — человек ещё печатает.
@@ -67,14 +80,22 @@ export function PanelSearch() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query }),
+        signal: abort.signal,
       })
         .then(async (res) => {
           if (!res.ok) throw new Error(`search failed: ${res.status}`);
-          return (await res.json()) as PanelSearchResults;
+          // Сужаем, а не приводим: ответ не той формы (200 от промежуточного
+          // прокси) иначе роняет рендер вместо честного «поиск не удался».
+          const payload: unknown = await res.json();
+          return parseSearchResults(payload);
         })
         .then((data) => {
           if (id !== requestId.current) return;
-          setAnswer({ query: query.trim(), orders: data.orders ?? [], clients: data.clients ?? [] });
+          if (!data) {
+            setStatus('failed');
+            return;
+          }
+          setAnswer({ query: query.trim(), ...data });
           setStatus('idle');
         })
         .catch(() => {
@@ -83,15 +104,20 @@ export function PanelSearch() {
           // текст и повторяет ввод, а вот текст запроса во внешний сервис
           // уезжать не должен (в нём почта и телефон клиента).
           setStatus('failed');
-        });
+        })
+        .finally(() => clearTimeout(deadline));
     }, PANEL_SEARCH_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(deadline);
+      abort.abort();
+    };
   }, [open, query]);
 
   // Показываем только ответ на ТЕКУЩИЙ ввод: выдача по прежнему запросу рядом
   // со свежим текстом читается как результат поиска и вводит в заблуждение.
-  const results = answer?.query === query.trim() ? answer : null;
+  const results = answerMatchesQuery(answer, query) ? answer : null;
   const nothingFound =
     results !== null && results.orders.length === 0 && results.clients.length === 0;
 
@@ -120,7 +146,12 @@ export function PanelSearch() {
               className="panel-input"
               placeholder={SEARCH_TEXT.placeholder}
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                // Прежний отказ относился к прежнему вводу: иначе на экране
+                // одновременно «введите два символа» и «поиск не удался».
+                setStatus('idle');
+              }}
             />
 
             <div className="panel-search__results">

@@ -17,10 +17,21 @@
 /** Символ, с которого таблица начинает видеть формулу. */
 const FORMULA_STARTERS = ['=', '+', '-', '@', '\t', '\r'];
 
+/**
+ * Целое или дробное число (в том числе с запятой и минусом). Такая ячейка НЕ
+ * обезвреживается: `'-500,00` в таблице становится текстом, и колонка сумм
+ * перестаёт складываться — ровно та беда, ради которой суммы пишутся рублями.
+ */
+const NUMERIC_RE = /^-?\d+(?:[.,]\d+)?$/;
+
 export const CSV_DELIMITER = ';';
 
-/** BOM: без него Excel открывает кириллицу кракозябрами. */
-export const CSV_BOM = '﻿';
+/**
+ * BOM: без него Excel открывает кириллицу кракозябрами. Задан кодом, а не
+ * невидимым символом в литерале: инструмент, чистящий BOM в исходниках, убрал
+ * бы его молча вместе с кириллицей в выгрузке.
+ */
+export const CSV_BOM = '\uFEFF';
 
 /**
  * Одна ячейка: обезвреженная и, если нужно, закавыченная.
@@ -32,7 +43,9 @@ export function csvCell(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return '';
 
   let text = String(value);
-  if (text.length > 0 && FORMULA_STARTERS.includes(text[0] ?? '')) {
+  // Минус — стартер формулы, но отрицательная сумма формулой не является:
+  // см. `NUMERIC_RE`.
+  if (!NUMERIC_RE.test(text) && text.length > 0 && FORMULA_STARTERS.includes(text[0] ?? '')) {
     text = `'${text}`;
   }
 

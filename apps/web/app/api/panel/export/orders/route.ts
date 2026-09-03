@@ -3,7 +3,7 @@ import { getDb, listOrdersForPanel } from '@oplati/db';
 import { periodBounds } from '@/lib/panel/analytics/period';
 import { buildCsv, csvFilename } from '@/lib/panel/csv';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
-import { EXPORT_COLUMNS } from '@/lib/panel/labels';
+import { EXPORT_COLUMNS, EXPORT_TEXT } from '@/lib/panel/labels';
 import { parseOrdersQuery } from '@/lib/panel/order-filters';
 import { EXPORT_MAX_ROWS, EXPORT_PAGE_SIZE, exportOrderRow } from '@/lib/panel/export';
 
@@ -46,10 +46,11 @@ export async function POST(req: Request): Promise<Response> {
   }
   const filters = parseOrdersQuery(params);
   const statuses = filters.status ? [filters.status] : filters.preset.statuses;
-  const window = filters.period ? periodBounds(filters.period, new Date()) : null;
+  const periodWindow = filters.period ? periodBounds(filters.period, new Date()) : null;
 
   const db = getDb();
   const rows: string[][] = [];
+  let truncated = false;
   // Страницами: потолок выборки стоит в репозитории (панель делит процесс с
   // вебхуками, принимающими деньги), поэтому «выгрузить всё» — это несколько
   // обычных страниц, а не один запрос без предела.
@@ -57,15 +58,29 @@ export async function POST(req: Request): Promise<Response> {
     const page = await listOrdersForPanel(db, {
       statuses,
       query: filters.query || undefined,
-      sort: filters.sort,
-      createdFrom: window?.since,
-      createdTo: window?.until,
+      // ⚠️ Порядок выгрузки — ВСЕГДА от старых к новым, независимо от
+      // сортировки экрана. Постраничное чтение идёт вне одной транзакции, и при
+      // «сначала новые» заказ, созданный между двумя страницами, сдвигает окно:
+      // последняя строка страницы повторяется первой строкой следующей. Заказы
+      // не удаляются, поэтому при возрастании новые строки уходят в хвост и
+      // сдвинуть уже прочитанное не могут. Состав файла от порядка не зависит —
+      // фильтры те же, а сортируют выгрузку всё равно в таблице.
+      sort: 'oldest',
+      createdFrom: periodWindow?.since,
+      createdTo: periodWindow?.until,
       limit: EXPORT_PAGE_SIZE,
       offset,
     });
     rows.push(...page.items.map(exportOrderRow));
     if (!page.hasMore) break;
+    // Следующий шаг вышел бы за потолок: строк больше, чем мы отдадим.
+    truncated = offset + EXPORT_PAGE_SIZE >= EXPORT_MAX_ROWS;
   }
+
+  // Усечение проговаривается ВСЛУХ — как «есть ещё» на экранах панели. Файл
+  // ровно на 5000 строк неотличим от полного, и человек, складывающий колонку
+  // сумм, об обрезке не узнает.
+  if (truncated) rows.push([EXPORT_TEXT.truncated(EXPORT_MAX_ROWS)]);
 
   const csv = buildCsv(EXPORT_COLUMNS.orders, rows);
 

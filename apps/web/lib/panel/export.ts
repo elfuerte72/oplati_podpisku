@@ -1,4 +1,4 @@
-import type { PanelOrderListItem } from '@oplati/db';
+import { PANEL_MAX_ROWS, type PanelOrderListItem } from '@oplati/db';
 
 import { orderStatusLabel } from './format';
 
@@ -10,8 +10,14 @@ import { orderStatusLabel } from './format';
  * файлом, и «что именно уехало» должно быть утверждением, а не намерением.
  */
 
-/** Размер страницы выборки. Тот же потолок, что у экрана. */
-export const EXPORT_PAGE_SIZE = 100;
+/**
+ * Размер страницы выборки — ПОТОЛОК репозитория, а не своё число рядом с ним.
+ *
+ * ⚠️ Зеркало здесь разъезжается молча: `clampPanelLimit` срежет запрошенный
+ * размер до `PANEL_MAX_ROWS`, а шаг `offset` останется прежним — выгрузка
+ * потеряет каждую вторую страницу, не уронив ни теста, ни запроса.
+ */
+export const EXPORT_PAGE_SIZE = PANEL_MAX_ROWS;
 
 /**
  * Потолок выгрузки. Пять тысяч строк — это годы работы на нынешнем объёме и

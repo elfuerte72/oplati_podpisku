@@ -530,7 +530,6 @@ export type PanelClientSearchItem = {
   displayName: string | null;
   telegramId: string | null;
   email: string | null;
-  phone: string | null;
 };
 
 /**
@@ -571,7 +570,9 @@ export async function searchClientsForPanel(
       displayName: users.displayName,
       telegramId: users.telegramId,
       email: users.email,
-      phone: users.phone,
+      // ⚠️ Телефон ИЩЕТСЯ, но не возвращается: в выдаче он ничего не различает
+      // (клиента опознают по имени и telegram), а лишняя PII в процессе — это
+      // лишняя PII в логе, в ответе и в следующей правке.
     })
     .from(users)
     .where(or(...conditions))

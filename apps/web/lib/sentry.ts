@@ -14,8 +14,13 @@ import type * as SentryTypes from '@sentry/nextjs';
 // аудит 2026-07-11 F-06: страховочный слой, код их в Sentry не отправляет.
 // `tel`/`last_seen_ip` — антифрод-трек (Р5): контакты и адрес клиента уходят
 // провайдеру, но не во внешние сервисы наблюдаемости.
+// ⚠️ `query`/`q` — поисковая строка панели (v3). Раньше она приезжала только в
+// адресе и её чистил `scrubQueryString`; быстрый поиск и выгрузка шлют её ТЕЛОМ
+// запроса, а тело разбирается в `request.data` — то есть перенос поиска на POST
+// закрыл один канал и открыл соседний. Плейсхолдер поля прямо предлагает искать
+// по почте и телефону, поэтому ключ несёт контакт клиента по построению.
 const PII_KEY_RE =
-  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip)$/i;
+  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q)$/i;
 
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
 function scrubPii(value: unknown, depth = 0): unknown {

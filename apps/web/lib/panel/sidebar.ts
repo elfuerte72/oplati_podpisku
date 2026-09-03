@@ -44,5 +44,9 @@ export function isSidebarCollapsed(cookieValue: string | undefined): boolean {
 export function sidebarCookieString(collapsed: boolean): string {
   const value = collapsed ? SIDEBAR_COLLAPSED_VALUE : '';
   const maxAge = collapsed ? SIDEBAR_COOKIE_MAX_AGE_SECONDS : 0;
-  return `${SIDEBAR_COOKIE}=${value}; Path=/; Max-Age=${maxAge}; SameSite=Lax`;
+  // `Secure` — для единообразия с cookie сессии: панель живёт только по HTTPS
+  // (localhost браузеры считают защищённым, поэтому разработка не страдает).
+  // На доступ эта cookie не влияет ни в одной проверке, но и исключением из
+  // общего правила быть не должна.
+  return `${SIDEBAR_COOKIE}=${value}; Path=/; Max-Age=${maxAge}; SameSite=Lax; Secure`;
 }

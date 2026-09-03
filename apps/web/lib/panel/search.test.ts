@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { PANEL_SEARCH_MIN_LENGTH, clientHitHint, clientHitTitle, isSearchable } from './search';
+import {
+  PANEL_SEARCH_MIN_LENGTH,
+  answerMatchesQuery,
+  clientHitHint,
+  clientHitTitle,
+  isSearchable,
+  parseSearchResults,
+} from './search';
 
 /**
  * Быстрый поиск (панель v3): решения «идти ли в базу» и «как назвать
@@ -64,5 +71,43 @@ describe('clientHitHint', () => {
 
   it('клиенту без контактов пишем, что их нет', () => {
     expect(clientHitHint(base)).toBe('без Telegram');
+  });
+});
+
+/**
+ * Разбор ответа. Ответ не той формы обязан читаться как отказ, а не ронять
+ * рендер: между панелью и базой стоит прокси, который на аварии отдаёт HTML с
+ * кодом 200.
+ */
+describe('parseSearchResults', () => {
+  it('принимает нормальный ответ', () => {
+    expect(parseSearchResults({ ok: true, orders: [], clients: [] })).toEqual({
+      orders: [],
+      clients: [],
+    });
+  });
+
+  it('чужая форма — это отказ, а не пустая выдача', () => {
+    expect(parseSearchResults('<html>502</html>')).toBe(null);
+    expect(parseSearchResults(null)).toBe(null);
+    expect(parseSearchResults({ ok: true })).toBe(null);
+    expect(parseSearchResults({ orders: {}, clients: [] })).toBe(null);
+  });
+});
+
+/**
+ * Единственная защита от застывшей выдачи: «ан» и «анн» уходят подряд, и ответ
+ * на прежний ввод, пришедший позже, рядом со свежим текстом читается как
+ * результат поиска.
+ */
+describe('answerMatchesQuery', () => {
+  it('ответ показывается только своему запросу', () => {
+    expect(answerMatchesQuery({ query: 'анн' }, 'анн')).toBe(true);
+    expect(answerMatchesQuery({ query: 'ан' }, 'анн')).toBe(false);
+    expect(answerMatchesQuery(null, 'анн')).toBe(false);
+  });
+
+  it('пробелы по краям ввода ответ не обесценивают', () => {
+    expect(answerMatchesQuery({ query: 'анн' }, '  анн ')).toBe(true);
   });
 });

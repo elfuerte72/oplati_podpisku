@@ -60,14 +60,14 @@ export default async function PanelOrdersPage({
 
   // «Всё время» — умолчание: заказ, который завис месяц назад, не должен
   // исчезать с экрана оттого, что фильтр по умолчанию показывает свежее.
-  const window = filters.period ? periodBounds(filters.period, new Date()) : null;
+  const periodWindow = filters.period ? periodBounds(filters.period, new Date()) : null;
 
   const { items: orders, hasMore } = await listOrdersForPanel(getDb(), {
     statuses: statuses.length > 0 ? statuses : undefined,
     query: filters.query || undefined,
     sort: filters.sort,
-    createdFrom: window?.since,
-    createdTo: window?.until,
+    createdFrom: periodWindow?.since,
+    createdTo: periodWindow?.until,
     limit: PANEL_DEFAULT_ROWS,
     offset,
   });

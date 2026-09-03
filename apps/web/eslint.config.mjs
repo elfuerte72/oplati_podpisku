@@ -26,6 +26,9 @@ const eslintConfig = defineConfig([
       "lib/panel/labels.ts",
       "lib/panel/support.ts",
       "lib/panel/ai/chat-state.ts",
+      // Панель v3: боковое меню и быстрый поиск живут под 'use client'.
+      "lib/panel/search.ts",
+      "lib/panel/sidebar.ts",
       "lib/retention-policy.ts",
     ],
     rules: {

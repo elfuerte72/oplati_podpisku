@@ -13,9 +13,19 @@ describe('csvCell', () => {
     expect(csvCell('=HYPERLINK("http://evil","клик")')).toBe(
       '"\'=HYPERLINK(""http://evil"",""клик"")"',
     );
-    for (const starter of ['=', '+', '-', '@']) {
-      expect(csvCell(`${starter}cmd`)).toBe(`'${starter}cmd`);
+    for (const starter of ['=', '+', '-', '@', '\t', '\r']) {
+      expect(csvCell(`${starter}cmd`), starter).toContain(`'${starter}cmd`);
     }
+  });
+
+  it('число не превращается в текст, даже отрицательное', () => {
+    // `'-500,00` в таблице становится текстом, и колонка сумм перестаёт
+    // складываться — ровно та беда, ради которой суммы пишутся рублями.
+    expect(csvCell('-500,00')).toBe('-500,00');
+    expect(csvCell(-42)).toBe('-42');
+    expect(csvCell('-1.5')).toBe('-1.5');
+    // А вот это уже не число, а выражение — обезвреживаем.
+    expect(csvCell('-1+2')).toBe("'-1+2");
   });
 
   it('кавычит то, что иначе разъедет таблицу', () => {

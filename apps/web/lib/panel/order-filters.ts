@@ -55,12 +55,18 @@ export const SORT_OPTIONS: ReadonlyArray<{ key: PanelOrderSort; title: string }>
 const MAX_QUERY_LENGTH = 100;
 
 /**
- * Схема периода заказов. Своя, а не из аналитики: там период обязателен и
+ * Разбор периода заказов. Свой, а не из аналитики: там период обязателен и
  * откатывается к тридцати дням, здесь «всё время» — законное состояние.
+ *
+ * Без приведений: список допустимых значений один (`ANALYTICS_PERIODS`), а
+ * проверка вхождения сама сужает тип — так смена состава периодов не пройдёт
+ * мимо типов.
  */
-const periodSchema = z.enum(
-  ANALYTICS_PERIODS.map((days) => String(days)) as [string, ...string[]],
-);
+function parsePeriodDays(raw: string | undefined): AnalyticsPeriod | null {
+  if (raw === undefined) return null;
+  const days = Number(raw);
+  return ANALYTICS_PERIODS.find((allowed) => allowed === days) ?? null;
+}
 
 export type PanelOrdersQuery = {
   query: string;
@@ -104,8 +110,9 @@ export function parseOrdersQuery(
   if (rawSort && !parsedSort?.success) ignored.push('sort');
 
   const rawPeriod = firstValue(params.period);
-  const parsedPeriod = rawPeriod ? periodSchema.safeParse(rawPeriod) : null;
-  if (rawPeriod && !parsedPeriod?.success) ignored.push('period');
+  const period = parsePeriodDays(rawPeriod);
+  // Непонятый период не «молча показывает всё»: экран говорит об этом вслух.
+  if (rawPeriod && period === null) ignored.push('period');
 
   const rawPage = firstValue(params.page);
   const parsedPage = rawPage ? z.coerce.number().int().min(1).max(1000).safeParse(rawPage) : null;
@@ -119,7 +126,7 @@ export function parseOrdersQuery(
     preset,
     status: parsedStatus?.success ? parsedStatus.data : null,
     sort: parsedSort?.success ? parsedSort.data : 'newest',
-    period: parsedPeriod?.success ? (Number(parsedPeriod.data) as AnalyticsPeriod) : null,
+    period,
     page: parsedPage?.success ? parsedPage.data : 1,
     ignored,
   };

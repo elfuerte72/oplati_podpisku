@@ -59,20 +59,25 @@ export async function POST(req: Request): Promise<Response> {
     searchClientsForPanel(db, { query, limit: PANEL_SEARCH_LIMIT }),
   ]);
 
-  return Response.json({
-    ok: true,
-    orders: ordersPage.items.map((order) => ({
-      shortId: order.shortId,
-      status: order.status,
-      amountRubKopecks: order.amountRubKopecks,
-      serviceName: order.serviceName,
-      clientName: order.client.displayName,
-    })),
-    clients: clients.map((client) => ({
-      id: client.id,
-      displayName: client.displayName,
-      telegramId: client.telegramId,
-      email: client.email,
-    })),
-  });
+  return Response.json(
+    {
+      ok: true,
+      orders: ordersPage.items.map((order) => ({
+        shortId: order.shortId,
+        status: order.status,
+        amountRubKopecks: order.amountRubKopecks,
+        serviceName: order.serviceName,
+        clientName: order.client.displayName,
+      })),
+      clients: clients.map((client) => ({
+        id: client.id,
+        displayName: client.displayName,
+        telegramId: client.telegramId,
+        email: client.email,
+      })),
+    },
+    // Ответ несёт контакты клиента — как и выгрузка рядом. Ни прокси, ни
+    // браузер его не хранят: утверждением, а не расчётом на умолчания POST.
+    { headers: { 'cache-control': 'no-store' } },
+  );
 }

@@ -23,6 +23,13 @@ export const PANEL_SEARCH_LIMIT = 5;
 /** Пауза после последнего нажатия клавиши. */
 export const PANEL_SEARCH_DEBOUNCE_MS = 250;
 
+/**
+ * Поводок запроса. Ищем в живой базе, делящей процесс с приёмом платежей:
+ * запрос, на который никто не ждёт ответа, обязан кончиться сам, а не висеть
+ * до закрытия вкладки.
+ */
+export const PANEL_SEARCH_TIMEOUT_MS = 10_000;
+
 export type PanelSearchOrderHit = {
   shortId: string;
   status: string;
@@ -46,6 +53,36 @@ export type PanelSearchResults = {
 /** Стоит ли идти в базу с этим вводом. */
 export function isSearchable(query: string): boolean {
   return query.trim().length >= PANEL_SEARCH_MIN_LENGTH;
+}
+
+/**
+ * Разбор ответа поиска. `null` — «ответ не той формы», и это ровно тот же
+ * исход, что сетевой отказ: экран говорит «поиск не удался».
+ *
+ * Приведением `as` не обошлись бы: `200` от промежуточного прокси с HTML-телом
+ * роняет рендер на `results.orders.map is not a function`, и человек видит
+ * пустой экран вместо объяснения. Zod здесь не берём — модуль читает
+ * клиентский компонент, и разбор границы запроса живёт в route-handler'е.
+ */
+export function parseSearchResults(payload: unknown): PanelSearchResults | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const { orders, clients } = payload as { orders?: unknown; clients?: unknown };
+  if (!Array.isArray(orders) || !Array.isArray(clients)) return null;
+  return { orders: orders as PanelSearchOrderHit[], clients: clients as PanelSearchClientHit[] };
+}
+
+/**
+ * Показывать ли уже полученный ответ рядом с текущим вводом.
+ *
+ * Вынесено из компонента, потому что это ЕДИНСТВЕННАЯ защита от застывшей
+ * выдачи: «ан» и «анн» уходят подряд, и ответ на прежний ввод, пришедший
+ * позже, рядом со свежим текстом читается как результат поиска.
+ */
+export function answerMatchesQuery(
+  answer: { query: string } | null,
+  query: string,
+): boolean {
+  return answer !== null && answer.query === query.trim();
 }
 
 /**
