@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { Suspense } from 'react';
 
@@ -5,13 +6,19 @@ import { isMenuBadgeSection, menuBadges, type MenuBadgeSection } from '@/lib/pan
 import { ACTION_TITLES, FORBIDDEN_TEXT, attentionLabel } from '@/lib/panel/labels';
 import type { PanelActor } from '@/lib/panel/login';
 import { readMenuCounts } from '@/lib/panel/menu-counts';
-import { sectionsFor } from '@/lib/panel/permissions';
+import { groupedSectionsFor } from '@/lib/panel/permissions';
 import { staffRoleLabel } from '@/lib/panel/roles';
+import { SIDEBAR_COOKIE, isSidebarCollapsed } from '@/lib/panel/sidebar';
 
 import { LiveRefresh } from './LiveRefresh';
+import { PanelLayout } from './PanelLayout';
 
 /**
- * Оболочка панели: меню со счётчиками работы, «кто вошёл», выход.
+ * Оболочка панели: боковое меню со счётчиками работы, «кто вошёл», выход.
+ *
+ * Меню вертикальное и сгруппированное (панель v3): десять пунктов в одну
+ * строку занимали всю ширину экрана, а каждый новый раздел эту строку ломал.
+ * Группа отвечает на вопрос «что это за пункты», а не просто режет список.
  *
  * ⚠️ Разделы владельца показываются менеджеру ТОЖЕ (спека §4.3) — с пометкой.
  * Скрывать пункт значило бы полагаться на то, что менеджер не наберёт адрес
@@ -23,7 +30,7 @@ import { LiveRefresh } from './LiveRefresh';
  * экрану ещё один поход в базу перед первым байтом. Теперь страница уходит
  * сразу, числа доезжают потоком; отказ базы гасит число, а не экран.
  */
-export function PanelShell({
+export async function PanelShell({
   actor,
   current,
   live = true,
@@ -36,54 +43,78 @@ export function PanelShell({
   live?: boolean;
   children: React.ReactNode;
 }) {
-  const sections = sectionsFor(actor.role);
+  const groups = groupedSectionsFor(actor.role);
+  const collapsed = isSidebarCollapsed((await cookies()).get(SIDEBAR_COOKIE)?.value);
+
+  const brand = (
+    <Link href="/admin" className="panel-brand">
+      Оплатишка
+    </Link>
+  );
 
   return (
-    <div className="panel-shell">
+    <>
       {live ? <LiveRefresh /> : null}
 
-      <header className="panel-header">
-        <Link href="/admin" className="panel-brand">
-          Оплатишка
-        </Link>
-
-        <nav className="panel-nav">
-          {sections.map((section) => (
-            <Link
-              key={section.href}
-              href={section.href}
-              aria-current={current === section.href ? 'page' : undefined}
-              // Пункт виден всем; недоступный помечен, чтобы менеджер не тратил
-              // время на клик и не думал, что раздел сломан.
-              title={section.allowed ? undefined : 'Раздел владельца'}
-            >
-              {section.title}
-              {section.allowed ? null : ' ·'}
-              {isMenuBadgeSection(section.capability) ? (
-                <Suspense fallback={null}>
-                  <NavBadge role={actor.role} section={section.capability} />
-                </Suspense>
-              ) : null}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="panel-actor">
-          <span>
-            {actor.displayName} · {staffRoleLabel(actor.role)}
-          </span>
-          <form method="post" action="/api/panel/auth/logout">
-            <button type="submit" className="panel-button">
-              {ACTION_TITLES.logout}
-            </button>
-          </form>
-        </div>
-      </header>
-
-      <main className="panel-main">
-        <div className="panel-content">{children}</div>
-      </main>
-    </div>
+      <PanelLayout
+        collapsedInitial={collapsed}
+        brand={brand}
+        nav={groups.map((group) => (
+          <div key={group.group} className="panel-sidebar__group">
+            <p className="panel-sidebar__group-title">{group.title}</p>
+            {group.sections.map((section) => (
+              <Link
+                key={section.href}
+                href={section.href}
+                className="panel-sidebar__link"
+                aria-current={current === section.href ? 'page' : undefined}
+                // ДВЕ буквы названия — то, что остаётся от пункта в свёрнутом
+                // меню. Иконок у панели нет, а одной буквы мало: на «П»
+                // начинаются четыре раздела (проверка платежей, поддержка,
+                // партнёры, персонал), и меню читалось бы ребусом.
+                data-initial={section.title.slice(0, 2)}
+                // Название есть у КАЖДОГО пункта: в свёрнутом меню наведение —
+                // единственный способ убедиться, что «Пр» это проверка
+                // платежей, а не персонал. Недоступный раздел помечен, чтобы
+                // менеджер не тратил время на клик и не думал, что раздел
+                // сломан.
+                title={section.allowed ? section.title : `${section.title} · ${FORBIDDEN_TEXT.menuHint}`}
+              >
+                <span className="panel-sidebar__label">
+                  {section.title}
+                  {section.allowed ? null : ' ·'}
+                </span>
+                {isMenuBadgeSection(section.capability) ? (
+                  <Suspense fallback={null}>
+                    <NavBadge role={actor.role} section={section.capability} />
+                  </Suspense>
+                ) : null}
+              </Link>
+            ))}
+          </div>
+        ))}
+        actor={
+          <div className="panel-actor">
+            <span className="panel-actor__name">
+              {actor.displayName} · {staffRoleLabel(actor.role)}
+            </span>
+            <form method="post" action="/api/panel/auth/logout">
+              <button type="submit" className="panel-button panel-button--squeezable">
+                {/* В свёрнутом меню от кнопки остаётся знак: слово «Выйти» в
+                    колонку 56px не помещается и уезжает под таблицу. Текст при
+                    этом никуда не девается — он читается голосом экрана. */}
+                <span className="panel-button__label">{ACTION_TITLES.logout}</span>
+                <span className="panel-button__sign" aria-hidden>
+                  ⎋
+                </span>
+              </button>
+            </form>
+          </div>
+        }
+      >
+        {children}
+      </PanelLayout>
+    </>
   );
 }
 

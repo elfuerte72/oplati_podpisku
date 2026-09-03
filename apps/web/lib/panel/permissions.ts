@@ -1,6 +1,6 @@
 import type { StaffRole } from '@oplati/db';
 
-import { SECTION_TITLES } from './labels';
+import { SECTION_GROUP_TITLES, SECTION_TITLES } from './labels';
 
 /**
  * Права в панели: две роли и таблица возможностей.
@@ -14,6 +14,13 @@ import { SECTION_TITLES } from './labels';
  */
 
 export const PANEL_CAPABILITIES = [
+  /**
+   * Рабочий стол. Права как такового не несёт — он есть у всех, кто вошёл, а
+   * показывает ровно то, на что у роли есть право (`desk.ts` различает ноль и
+   * «не смотрели»). Заведён капабилити ради единообразия меню: пункт без
+   * `capability` не собрался бы по типу и не получил бы названия из словаря.
+   */
+  'desk',
   /** Список заказов и карточка заказа. */
   'orders',
   /** Карточка клиента. */
@@ -66,7 +73,7 @@ export type PanelCapability = (typeof PANEL_CAPABILITIES)[number];
  */
 const CAPABILITIES_BY_ROLE: Record<StaffRole, readonly PanelCapability[]> = {
   admin: PANEL_CAPABILITIES,
-  operator: ['orders', 'clients', 'holds', 'pending', 'support', 'fulfillment', 'feedback'],
+  operator: ['desk', 'orders', 'clients', 'holds', 'pending', 'support', 'fulfillment', 'feedback'],
   // Роль не выдаётся (спека §2). Строка с ней в базе прав не получает — но и
   // доступ не «падает в менеджера» по невнимательности.
   supervisor: [],
@@ -76,6 +83,16 @@ export function canAccess(role: StaffRole, capability: PanelCapability): boolean
   return CAPABILITIES_BY_ROLE[role].includes(capability);
 }
 
+/**
+ * Группы меню (панель v3). Ключ — он же ключ заголовка в словаре.
+ *
+ * Порядок здесь — порядок групп на экране, и он же задаёт смысл: сверху то,
+ * чем занимаются каждый день, снизу то, куда заходят раз в месяц.
+ */
+export const PANEL_SECTION_GROUPS = ['work', 'analytics', 'manage'] as const;
+
+export type PanelSectionGroup = (typeof PANEL_SECTION_GROUPS)[number];
+
 export type PanelSection = {
   href: string;
   /**
@@ -84,23 +101,31 @@ export type PanelSection = {
    * ловится глазами.
    */
   capability: keyof typeof SECTION_TITLES;
+  /** Группа меню. Пункт без группы не собирается — «прочее» копило бы разделы. */
+  group: PanelSectionGroup;
 };
 
 /**
  * Меню панели. Порядок — по частоте использования: сначала то, что требует
- * действия сейчас, партнёры и персонал в конце.
+ * действия сейчас, настройки и персонал в конце.
+ *
+ * ⚠️ Плоский список остаётся ЕДИНСТВЕННЫМ источником: группировка считается
+ * из него (`groupedSectionsFor`), а не описывается вторым списком рядом —
+ * два списка разъезжаются молча, и раздел пропадает из меню, оставшись в
+ * правах (инвариант 10 — зеркало предпочтительно убрать, а не сверять).
  */
 export const PANEL_SECTIONS: readonly PanelSection[] = [
-  { href: '/admin/orders', capability: 'orders' },
-  { href: '/admin/pending', capability: 'pending' },
-  { href: '/admin/holds', capability: 'holds' },
-  { href: '/admin/support', capability: 'support' },
-  { href: '/admin/feedback', capability: 'feedback' },
-  { href: '/admin/analytics', capability: 'analytics' },
-  { href: '/admin/ai', capability: 'ai' },
-  { href: '/admin/texts', capability: 'texts' },
-  { href: '/admin/partners', capability: 'partners' },
-  { href: '/admin/staff', capability: 'staff' },
+  { href: '/admin', capability: 'desk', group: 'work' },
+  { href: '/admin/orders', capability: 'orders', group: 'work' },
+  { href: '/admin/pending', capability: 'pending', group: 'work' },
+  { href: '/admin/holds', capability: 'holds', group: 'work' },
+  { href: '/admin/support', capability: 'support', group: 'work' },
+  { href: '/admin/feedback', capability: 'feedback', group: 'work' },
+  { href: '/admin/analytics', capability: 'analytics', group: 'analytics' },
+  { href: '/admin/ai', capability: 'ai', group: 'analytics' },
+  { href: '/admin/partners', capability: 'partners', group: 'manage' },
+  { href: '/admin/texts', capability: 'texts', group: 'manage' },
+  { href: '/admin/staff', capability: 'staff', group: 'manage' },
 ];
 
 export type PanelSectionForRole = PanelSection & { title: string; allowed: boolean };
@@ -112,6 +137,28 @@ export function sectionsFor(role: StaffRole): PanelSectionForRole[] {
     title: SECTION_TITLES[section.capability],
     allowed: canAccess(role, section.capability),
   }));
+}
+
+export type PanelSectionGroupForRole = {
+  group: PanelSectionGroup;
+  title: string;
+  sections: PanelSectionForRole[];
+};
+
+/**
+ * То же меню, разложенное по группам — в порядке `PANEL_SECTION_GROUPS`.
+ *
+ * Пустая группа не возвращается: сегодня таких нет (недоступный раздел всё
+ * равно виден с пометкой), но группа-заголовок без единого пункта под ним
+ * читалась бы как поломка.
+ */
+export function groupedSectionsFor(role: StaffRole): PanelSectionGroupForRole[] {
+  const sections = sectionsFor(role);
+  return PANEL_SECTION_GROUPS.map((group) => ({
+    group,
+    title: SECTION_GROUP_TITLES[group],
+    sections: sections.filter((section) => section.group === group),
+  })).filter((entry) => entry.sections.length > 0);
 }
 
 /**

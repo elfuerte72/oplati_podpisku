@@ -40,6 +40,7 @@ import type { SupportReplyBlockReason } from './support';
 
 /** Названия разделов меню. Ключ — право (`PanelCapability`), у которого есть экран. */
 export const SECTION_TITLES = {
+  desk: 'Рабочий стол',
   orders: 'Заказы',
   pending: 'Ждут оплаты',
   holds: 'Проверка платежей',
@@ -50,6 +51,19 @@ export const SECTION_TITLES = {
   texts: 'Тексты воронки',
   partners: 'Партнёры',
   staff: 'Персонал',
+} as const;
+
+/**
+ * Заголовки групп меню (панель v3).
+ *
+ * Десять пунктов подряд читаются как список, а не как структура: человек
+ * ищет раздел перебором. Группа отвечает на вопрос «что это за пункты» —
+ * ежедневная работа, ответы на вопрос «как идут дела», редкие настройки.
+ */
+export const SECTION_GROUP_TITLES = {
+  work: 'Работа',
+  analytics: 'Аналитика',
+  manage: 'Управление',
 } as const;
 
 /**
@@ -230,6 +244,11 @@ export const ACTION_TITLES = {
   clearFilter: 'Снять',
   logout: 'Выйти',
   signIn: 'Войти',
+  // Меню панели: сворачивание на широком экране и выдвижение на телефоне.
+  collapseMenu: 'Свернуть меню',
+  expandMenu: 'Развернуть меню',
+  openMenu: 'Открыть меню',
+  closeMenu: 'Закрыть меню',
   refresh: 'Обновить',
   remind: 'Напомнить об оплате',
   sending: 'Отправляем…',
@@ -614,6 +633,8 @@ export const FUNNEL_TEXT_ERROR_TEXT: Record<string, string> = {
 export const FORBIDDEN_TEXT = {
   title: 'Раздел доступен только владельцу.',
   hint: 'Если он нужен по работе — попросите владельца открыть доступ.',
+  /** Подсказка на пункте меню: раздел виден, но откроет заглушку. */
+  menuHint: 'Раздел владельца',
 } as const;
 
 /**
