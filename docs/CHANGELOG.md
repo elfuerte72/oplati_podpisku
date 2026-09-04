@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-04 — Ops-группа на проде
+
+Тикет 08 трека ops-group выполнен агентом по слову владельца после мержа #190 и #191:
+env прода — `OPS_GROUP_CHAT_ID=-1004432342165` и thread id тем (Авария 3, Платежи 5,
+Поддержка 7, Ошибки 9, Деплой 11), удалены `ALERT_BOT_TOKEN`, `ALERT_TELEGRAM_CHAT_ID`,
+`SUPPORT_OPERATOR_CHAT_ID`; GitHub secrets `DEPLOY_ALERT_*` — бот входа, группа, thread 3;
+Grafana — contact points `ops-critical` (thread 3) и `ops-errors` (thread 9, тихий),
+policy по `severity`, прежний `telegram-oplatishka` удалён; Dokploy «Бэкапы БД» — бот
+входа, группа, thread 11 (тест прошёл). Живые проверки на проде: релей Sentry →
+«Ошибки», `/support` через клиентского бота → «Поддержка». За владельцем: выключить
+крон Гилфойла, снять его ключ из `authorized_keys` прода, удалить `@oplatishkaAlert_bot`
+у BotFather, поставить группу в mute с исключением для «Аварии».
+
+---
+
 ## 2026-09-04 — Ops-группа: структура сообщений и смоук на dev
 
 Дополнение к треку ops-group после мержа PR #190. По просьбе владельца сообщения
