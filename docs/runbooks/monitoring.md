@@ -105,6 +105,11 @@ Dokploy-контуром 2026-07-25, переведено на ops-группу 
 токеном бота входа — отправляет их в темы группы. Sentry-релей `/api/alerts/sentry` шлёт в «Ошибки» и
 Sentry не зовёт никогда (анти-петля).
 
+**На проде группа задана с 2026-09-04** (`-1004432342165`; темы: Авария 3, Платежи 5,
+Поддержка 7, Ошибки 9, Деплой 11, Отчёты 13 — не используется). Живая проверка при
+выкате: релей Sentry → «Ошибки», обращение через клиентского бота → «Поддержка»,
+сухие прогоны шага деплоя и Dokploy → «Авария» и «Деплой».
+
 **Режим без группы.** `OPS_GROUP_CHAT_ID` не задан → прежняя схема: `notifyOps` и
 релей — в личку `ALERT_TELEGRAM_CHAT_ID` через `ALERT_BOT_TOKEN` (без него — через
 клиентского бота), `notifyStaff` — личкой каждому сотруднику с правом на раздел,
@@ -173,9 +178,14 @@ Grafana Cloud (contact points), GitHub secrets (`DEPLOY_ALERT_BOT_TOKEN`), Dokpl
 
 ### Алёрты Grafana: правило → тема
 
-Два contact point на бота входа — «Авария» и «Ошибки» (chat id группы + thread id),
-маршрутизация в notification policy по метке `severity` (`critical` / `warning`),
-которая у правил уже стоит. Правила (папка «Оплатишка — алёрты»):
+Два contact point на бота входа (с 2026-09-04): `ops-critical` → тема «Авария»
+(thread 3) и `ops-errors` → тема «Ошибки» (thread 9, доставка тихая —
+`disable_notifications`, звук только у аварий). Notification policy: корневой
+receiver `ops-errors`, маршрут `team=oplatishka, severity=critical` → `ops-critical`,
+остальное `team=oplatishka` → `ops-errors`; метка `severity` у правил стоит. Прежний
+contact point `telegram-oplatishka` (бот Гилфойла, личка) удалён. Настраивается через
+provisioning API токеном `GRAFANA_SA_TOKEN` (`X-Disable-Provenance: true`, иначе
+объекты, созданные API, из UI не редактируются). Правила (папка «Оплатишка — алёрты»):
 
 | Алёрт | Когда срабатывает | Severity → тема |
 |---|---|---|
@@ -207,10 +217,11 @@ Grafana Cloud (contact points), GitHub secrets (`DEPLOY_ALERT_BOT_TOKEN`), Dokpl
 
 - **Провал деплоя** — шаг «Сообщить о провале в Telegram» в `deploy.yml`: секреты
   `DEPLOY_ALERT_BOT_TOKEN` (бот входа), `DEPLOY_ALERT_CHAT_ID` (группа),
-  `DEPLOY_ALERT_THREAD_ID` («Авария»; пустой — параметр не передаётся). Не заданы —
+  `DEPLOY_ALERT_THREAD_ID` («Авария», thread 3). Заданы 2026-09-04. Не заданы —
   шаг молчит с `::warning`.
-- **Бэкапы БД** — уведомление Dokploy на бота входа, группу и thread «Деплой»;
-  набор событий не расширяется (провал сборки уже ловит GitHub-шаг).
+- **Бэкапы БД** — уведомление Dokploy «Бэкапы БД» (`aMVaFYVqU_4iUsdGcc8uj`) на бота
+  входа, группу и thread «Деплой» (11); переставлено 2026-09-04, тест доставки из
+  Dokploy прошёл. Набор событий не расширяется (провал сборки уже ловит GitHub-шаг).
 
 ## Слой 1 — Uptime (жив ли сайт снаружи)
 
