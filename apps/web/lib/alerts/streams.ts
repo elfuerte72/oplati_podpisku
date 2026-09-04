@@ -32,9 +32,9 @@ import { sendStaffMessage, StaffBotNotConfiguredError } from '../telegram/staff-
  * её (`reportToSentry: false`).
  */
 
-export const ALERT_STREAMS = ['critical', 'payments', 'support', 'errors', 'deploy'] as const;
+import { type AlertStream } from './kinds.ts';
 
-export type AlertStream = (typeof ALERT_STREAMS)[number];
+export { ALERT_STREAMS, type AlertStream } from './kinds.ts';
 
 const log = childLogger('alerts.streams');
 

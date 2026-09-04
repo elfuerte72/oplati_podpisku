@@ -42,9 +42,10 @@ describe('alertOnStalePaymentReview', () => {
     await alertOnStalePaymentReview();
 
     expect(h.notifyOpsMock).toHaveBeenCalledTimes(1);
-    const text = String(h.notifyOpsMock.mock.calls[0]?.[0]);
-    expect(text).toContain('ORD-STALE');
-    expect(text).toContain('11680.00');
+    // Номер и сумма — строки фактов под заголовком, поэтому смотрим весь вызов.
+    const sent = JSON.stringify(h.notifyOpsMock.mock.calls[0]);
+    expect(sent).toContain('ORD-STALE');
+    expect(sent).toContain('11680.00');
     // Никакого автозакрытия: модуль не знает про transitionOrder вовсе.
     expect(Sentry.captureMessage).toHaveBeenCalled();
   });

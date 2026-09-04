@@ -159,14 +159,17 @@ export async function pollPayments(): Promise<{
             const after = await getOrderById(db, order.id);
             if (after && after.status !== 'completed' && after.status !== 'in_fulfillment') {
               await notifyStaff(
-                `Заказ ${after.shortId} застрял после оплаты: автоматический повтор выпуска ` +
-                  `карты не помог, статус «${after.status}».`,
+                `Автоматический повтор выпуска карты не помог.`,
                 // «Авария», а не «Платежи»: деньги приняты, карты нет, автомат сдался.
                 {
                   dedupKey: `stuck:${order.id}`,
                   capability: 'orders',
                   stream: 'critical',
                   title: 'Заказ застрял после оплаты',
+                  facts: [
+                    { label: 'Заказ', value: after.shortId },
+                    { label: 'Статус', value: after.status },
+                  ],
                   action: { text: 'проверить и выдать вручную', path: `/admin/orders/${after.shortId}` },
                 },
               );

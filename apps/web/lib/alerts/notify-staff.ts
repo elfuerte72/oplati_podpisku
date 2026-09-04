@@ -104,7 +104,10 @@ export async function notifyStaff(
   const stream = opts.stream ?? streamForCapability(opts.capability);
   // Собираем один раз: и пост в группу, и личка, и фолбэк владельцу получают
   // одну и ту же форму — заголовок, тело, «Что делать».
-  const text = formatOpsMessage({ title: opts.title, body, action: opts.action }, serverEnv.PANEL_HOST);
+  const text = formatOpsMessage(
+    { stream, title: opts.title, facts: opts.facts, body, action: opts.action, preformatted: opts.preformatted },
+    serverEnv.PANEL_HOST,
+  );
   const windowMs = opts.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS;
   // ⚠️ Окно ПРОВЕРЯЕМ, но не занимаем: занять до попытки значит получить час
   // (а то и сутки) молчания при живой аварии — база моргнула, бот не настроен,

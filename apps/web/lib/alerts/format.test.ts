@@ -4,28 +4,54 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { formatOpsMessage, panelUrl } from './format';
+import { formatOpsMessage, panelUrl, splitSentences } from './format';
 
 /**
  * Единый шаблон уведомления (трек ops-group, тикет 06): заголовок первой
  * строкой, тело, «Что делать» последней; без действия — без хвоста.
  */
 describe('formatOpsMessage', () => {
-  it('заголовок, тело, «Что делать» с абсолютной ссылкой на хост панели', () => {
+  it('маркер потока + заголовок, факты, тело, «Что делать» и ссылка своей строкой', () => {
     const text = formatOpsMessage(
       {
+        stream: 'critical',
         title: 'Оплаченный заказ не доставлен',
-        body: 'Заказ ORD-1: выпуск карты упал.',
+        facts: [
+          { label: 'Заказ', value: 'ORD-1' },
+          { label: 'Причина', value: 'paypace_error' },
+        ],
+        body: 'Выпуск карты упал. Нужен ручной разбор.',
         action: { text: 'разобрать вручную', path: '/admin/orders/ORD-1' },
       },
       'admin.oplatishka.com',
     );
 
-    expect(text.split('\n\n')).toEqual([
-      'Оплаченный заказ не доставлен',
-      'Заказ ORD-1: выпуск карты упал.',
-      'Что делать: разобрать вручную https://admin.oplatishka.com/admin/orders/ORD-1',
-    ]);
+    expect(text).toBe(
+      [
+        '🔴 Оплаченный заказ не доставлен',
+        'Заказ: ORD-1',
+        'Причина: paypace_error',
+        '',
+        'Выпуск карты упал.',
+        'Нужен ручной разбор.',
+        '',
+        'Что делать: разобрать вручную',
+        'https://admin.oplatishka.com/admin/orders/ORD-1',
+      ].join('\n'),
+    );
+  });
+
+  it('без потока маркера нет — заголовок как есть', () => {
+    const text = formatOpsMessage({ title: 'Заголовок', body: 'тело' }, null);
+
+    expect(text.startsWith('Заголовок\n')).toBe(true);
+  });
+
+  it('preformatted: тело не переразбивается (обращение клиента с полями)', () => {
+    const body = 'Пользователь: Иван. Петров\nСообщение:\nОплатил. Не работает. Помогите';
+    const text = formatOpsMessage({ body, preformatted: true }, null);
+
+    expect(text).toBe(body);
   });
 
   it('без действия хвоста нет', () => {
@@ -44,13 +70,25 @@ describe('formatOpsMessage', () => {
   it('незаданный хост панели → путь без хоста, не пустая ссылка', () => {
     const text = formatOpsMessage({ body: 'x', action: { text: 'открыть', path: '/admin/holds' } }, undefined);
 
-    expect(text.endsWith('Что делать: открыть /admin/holds')).toBe(true);
+    expect(text.endsWith('Что делать: открыть\n/admin/holds')).toBe(true);
   });
 
   it('действие без пути — только текст', () => {
     const text = formatOpsMessage({ body: 'x', action: { text: 'проверить шлюз' } }, 'admin.example.com');
 
     expect(text.endsWith('Что делать: проверить шлюз')).toBe(true);
+  });
+
+  it('splitSentences: предложение на строку, числа и сокращения не рвутся', () => {
+    expect(
+      splitSentences('Выставлено 3 250.00 ₽, оплачено 3 000.00 ₽ (операция 418). Заказ в failed. Пополнение T+1.'),
+    ).toBe('Выставлено 3 250.00 ₽, оплачено 3 000.00 ₽ (операция 418).\nЗаказ в failed.\nПополнение T+1.');
+    expect(splitSentences('Порядок в docs/incidents.md, инцидент 2026-08-15.')).toBe(
+      'Порядок в docs/incidents.md, инцидент 2026-08-15.',
+    );
+    expect(splitSentences('Клиент сказал «оплатил». Проверить операцию.')).toBe(
+      'Клиент сказал «оплатил».\nПроверить операцию.',
+    );
   });
 
   it('ссылка — голый URL, без разметки', () => {

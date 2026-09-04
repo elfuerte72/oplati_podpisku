@@ -227,6 +227,10 @@ export async function handleFunnelCallback(
         {
           capability: 'support',
           title: 'Низкая оценка заказа',
+          facts: [
+            { label: 'Оценка', value: `${score}/5` },
+            { label: 'Заказ', value: order.shortId },
+          ],
           action: { text: 'посмотреть заказ и при необходимости связаться с клиентом', path: `/admin/orders/${order.shortId}` },
           // DM и так уходит ровно один (гейт — факт вставки оценки); окно —
           // страховка от неожиданных повторов, не основной механизм.

@@ -112,7 +112,8 @@ describe('alertOnLowVccBalance', () => {
     await alertOnLowVccBalance(NOW);
 
     expect(h.notifyStaff).toHaveBeenCalledTimes(1);
-    expect(String(h.notifyStaff.mock.calls[0]?.[0])).toContain('89.50');
+    // Остаток — строка фактов под заголовком, поэтому смотрим весь вызов.
+    expect(JSON.stringify(h.notifyStaff.mock.calls[0])).toContain('89.50');
     expect(String(h.notifyStaff.mock.calls[0]?.[0])).toContain('Критически');
     // Окно — дефолтный час: авария повторяется, пока её не устранят.
     expect(h.notifyStaff.mock.calls[0]?.[1]).toMatchObject({
