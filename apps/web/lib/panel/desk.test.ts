@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { isDeskQuiet, menuBadges, type DeskSignals } from './desk';
+import { groupBadgeTotal, isDeskQuiet, menuBadges, type DeskSignals } from './desk';
+import { groupedSectionsFor } from './permissions';
 
 const CALM: DeskSignals = {
   pendingCount: 0,
@@ -85,6 +86,50 @@ describe('menuBadges', () => {
         holds: 2,
         feedback: 5,
       });
+    }
+  });
+});
+
+/**
+ * Число у свёрнутой группы меню (панель v3.1). Настройка «убрать редкое с
+ * глаз» не должна прятать работу, поэтому свёрнутая группа показывает сумму
+ * своих пунктов — и обязана считать её теми же правилами, что и пункты.
+ */
+describe('groupBadgeTotal', () => {
+  const counts = { pending: 4, holds: 1, support: 2, feedback: 3 } as const;
+
+  it('складывает числа пунктов группы и не трогает пункты без счётчика', () => {
+    const groups = groupedSectionsFor('admin');
+    const orders = groups.find((g) => g.group === 'orders')!;
+    const clients = groups.find((g) => g.group === 'clients')!;
+    const analytics = groups.find((g) => g.group === 'analytics')!;
+    const badges = menuBadges('admin', counts);
+
+    // «Все заказы» счётчика не имеет — в сумму входят только срезы.
+    expect(groupBadgeTotal(badges, orders.sections)).toBe(4 + 1);
+    expect(groupBadgeTotal(badges, clients.sections)).toBe(2 + 3);
+    // У «Аналитики» счётчиков нет вовсе — ноль, бейдж не рисуется.
+    expect(groupBadgeTotal(badges, analytics.sections)).toBe(0);
+  });
+
+  it('раздел, закрытый роли, в сумму группы не попадает', () => {
+    // Сумма считается ПОВЕРХ `menuBadges`, а не из сырых чисел: иначе группа
+    // показывала бы менеджеру работу по разделу, который он не откроет, и
+    // число группы расходилось бы с суммой видимых пунктов.
+    const orders = groupedSectionsFor('supervisor').find((g) => g.group === 'orders')!;
+    expect(groupBadgeTotal(menuBadges('supervisor', counts), orders.sections)).toBe(0);
+  });
+
+  it('число группы никогда не больше суммы видимых пунктов', () => {
+    for (const role of ['admin', 'operator'] as const) {
+      const badges = menuBadges(role, counts);
+      for (const group of groupedSectionsFor(role)) {
+        const visible = group.sections.reduce(
+          (sum, s) => sum + (badges[s.capability as keyof typeof badges] ?? 0),
+          0,
+        );
+        expect(groupBadgeTotal(badges, group.sections)).toBe(visible);
+      }
     }
   });
 });

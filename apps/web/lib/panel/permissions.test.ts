@@ -41,11 +41,13 @@ describe('canAccess', () => {
     }
     // Разделы ВИДНЫ менеджеру в меню, но помечены недоступными (спека §4.3).
     const sections = sectionsFor('operator');
+    // Названия разведены намеренно: «Аналитика» и «Аналитик» различались одной
+    // буквой и читались в меню опечаткой, а не двумя разными инструментами.
     expect(sections.find((s) => s.href === '/admin/analytics')).toMatchObject({
       allowed: false,
-      title: 'Аналитика',
+      title: 'Отчёты',
     });
-    expect(sections.find((s) => s.href === '/admin/ai')).toMatchObject({ allowed: false, title: 'Аналитик' });
+    expect(sections.find((s) => s.href === '/admin/ai')).toMatchObject({ allowed: false, title: 'AI-аналитик' });
     expect(sections.find((s) => s.href === '/admin/texts')).toMatchObject({
       allowed: false,
       title: 'Тексты воронки',
@@ -131,10 +133,34 @@ describe('groupedSectionsFor', () => {
     }
   });
 
-  it('у каждой группы есть название и хотя бы один пункт', () => {
+  it('у каждой группы есть хотя бы один пункт, а название — у всех, кроме первой', () => {
     for (const group of groupedSectionsFor('admin')) {
-      expect(group.title.length).toBeGreaterThan(0);
       expect(group.sections.length).toBeGreaterThan(0);
+      // Рабочий стол стоит первым пунктом БЕЗ заголовка: группа из одного
+      // пункта, подписанная «Обзор», добавляла бы строку ради строки.
+      if (group.group === 'overview') expect(group.title).toBeNull();
+      else expect(group.title?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it('срезы заказов лежат ВНУТРИ заказов, а не рядом с ними', () => {
+    // Прежняя группа «Работа» держала шесть пунктов из одиннадцати, то есть не
+    // отсекала ничего: «Ждут оплаты» и «Проверка платежей» стояли на одном
+    // уровне со списком заказов, хотя это его срезы.
+    const groups = groupedSectionsFor('admin');
+    const orders = groups.find((g) => g.group === 'orders');
+    expect(orders?.sections.map((s) => s.href)).toEqual(['/admin/orders', '/admin/pending', '/admin/holds']);
+
+    const clients = groups.find((g) => g.group === 'clients');
+    expect(clients?.sections.map((s) => s.href)).toEqual(['/admin/support', '/admin/feedback']);
+  });
+
+  it('каждая группа названа сущностью и не повторяет название своего пункта', () => {
+    // «Аналитика» внутри группы «Аналитика» читалась дублем; заголовок группы
+    // обязан отвечать на вопрос «что это за пункты», а не повторять один из них.
+    for (const group of groupedSectionsFor('admin')) {
+      if (group.title === null) continue;
+      expect(group.sections.map((s) => s.title)).not.toContain(group.title);
     }
   });
 });

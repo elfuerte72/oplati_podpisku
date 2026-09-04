@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { ACTION_TITLES } from '@/lib/panel/labels';
 import { sidebarCookieString } from '@/lib/panel/sidebar';
 
+import { PanelIcon } from './PanelIcon';
 import { PanelSearch } from './PanelSearch';
 
 /**
@@ -66,13 +67,24 @@ export function PanelLayout({
             <span className="panel-visually-hidden">
               {collapsed ? ACTION_TITLES.expandMenu : ACTION_TITLES.collapseMenu}
             </span>
-            <span aria-hidden>{collapsed ? '»' : '«'}</span>
+            <PanelIcon name={collapsed ? 'expand' : 'collapse'} />
           </button>
         </div>
 
         <PanelSearch />
 
-        <nav className="panel-sidebar__nav" onClick={() => setDrawerOpen(false)}>
+        {/*
+         * Меню на телефоне закрывается ПЕРЕХОДОМ, а не любым кликом внутри:
+         * заголовок группы — тоже кнопка, и его нажатие всплывает сюда же.
+         * Закрывай меню на нём — и чтобы увидеть свёрнутую группу, меню
+         * пришлось бы открывать заново.
+         */}
+        <nav
+          className="panel-sidebar__nav"
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('a')) setDrawerOpen(false);
+          }}
+        >
           {nav}
         </nav>
 
@@ -101,7 +113,7 @@ export function PanelLayout({
             aria-controls="panel-menu"
           >
             <span className="panel-visually-hidden">{ACTION_TITLES.openMenu}</span>
-            <span aria-hidden>☰</span>
+            <PanelIcon name="menu" />
           </button>
           {brand}
         </div>

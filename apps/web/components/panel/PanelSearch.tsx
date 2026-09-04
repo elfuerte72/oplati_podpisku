@@ -16,6 +16,8 @@ import {
   type PanelSearchResults,
 } from '@/lib/panel/search';
 
+import { PanelIcon } from './PanelIcon';
+
 /**
  * Быстрый поиск панели: ⌘K из любого экрана, заказы и клиенты в одной выдаче.
  *
@@ -124,7 +126,7 @@ export function PanelSearch() {
   return (
     <>
       <button type="button" className="panel-search__open" onClick={() => setOpen(true)}>
-        <span aria-hidden>⌕</span>
+        <PanelIcon name="search" />
         <span className="panel-search__open-label">{SEARCH_TEXT.open}</span>
         <kbd className="panel-search__hotkey" aria-hidden>
           ⌘K
