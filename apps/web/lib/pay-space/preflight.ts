@@ -666,12 +666,14 @@ export async function reportFundingCapacityBlocked(
 
   try {
     await notifyStaff(
-      `Клиент не смог оплатить ${order.shortId}${amountRubNote(order)}: ` +
-        `свободно ${usdCentsToDollarString(verdict.availableUsdCents)} USD${committedNote}, ` +
-        `на этот заказ нужно ${usdCentsToDollarString(verdict.neededUsdCents)} USD — ` +
-        `не хватает ${usdCentsToDollarString(shortfallUsdCents)} USD. ` +
+      `Свободно ${usdCentsToDollarString(verdict.availableUsdCents)} USD${committedNote}. ` +
         'Счёт клиенту не выставлен, заказ жив с зафиксированной ценой.',
       {
+        facts: [
+          { label: 'Заказ', value: `${order.shortId}${amountRubNote(order)}` },
+          { label: 'Нужно на заказ', value: `${usdCentsToDollarString(verdict.neededUsdCents)} USD` },
+          { label: 'Не хватает', value: `${usdCentsToDollarString(shortfallUsdCents)} USD` },
+        ],
         // ⚠️ Окно ЗАДАЁТСЯ явно: дефолт `notifyStaff` — ЧАС, и без этой строки
         // личка молчала бы вчетверо дольше Sentry, хотя тикет требует ровно
         // обратного — «Sentry под тем же окном».

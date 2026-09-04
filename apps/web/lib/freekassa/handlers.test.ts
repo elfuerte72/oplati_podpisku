@@ -439,9 +439,8 @@ describe('processFreekassaTerminal (добор: провайдер сказал 
     const clientText = String(botSendMock.mock.calls[0]?.[1]);
     expect(clientText).toContain('отклонил');
     expect(clientText).toContain('вернутся');
-    expect(vi.mocked(notifyOps).mock.calls.map((c) => String(c[0])).join(' ')).toContain(
-      'Холд разрешился',
-    );
+    // «Холд разрешился отказом» — заголовок (опции вызова), не тело.
+    expect(JSON.stringify(vi.mocked(notifyOps).mock.calls)).toContain('Холд разрешился');
   });
 
   it('обычный терминал (заказ не был на проверке) клиенту ничего не шлёт', async () => {

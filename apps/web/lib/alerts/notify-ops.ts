@@ -25,7 +25,14 @@ import { type AlertStream, notifyStream } from './streams.ts';
  */
 export async function notifyOps(text: string, opts: NotifyOpsOptions): Promise<boolean> {
   const composed = formatOpsMessage(
-    { title: opts.title, body: text, action: opts.action },
+    {
+      stream: opts.stream,
+      title: opts.title,
+      facts: opts.facts,
+      body: text,
+      action: opts.action,
+      preformatted: opts.preformatted,
+    },
     serverEnv.PANEL_HOST,
   );
   return notifyStream(opts.stream, composed);

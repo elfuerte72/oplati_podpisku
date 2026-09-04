@@ -400,13 +400,16 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
   // общей теме «Платежи» это был бы дубль об одном холде (ревью 2026-09-04).
   // Без группы фолбэк владельцу встроен в `notifyStaff` (пустой штат → `notifyOps`).
   await notifyStaff(
-    `Платёж на проверке банка (антифрод Freekassa, статус 7): операция ${providerOrderId} ` +
-      `на ${(payment.amountRub / 100).toFixed(2)} RUB. Деньги списаны, карта не выпущена — ` +
-      `исход решает провайдер. Обычно разрешается за часы.`,
+    `Антифрод Freekassa (статус 7). Деньги списаны, карта не выпущена — исход решает провайдер. ` +
+      `Обычно разрешается за часы.`,
     {
       dedupKey: `hold:${payment.id}`,
       capability: 'holds',
       title: 'Платёж на проверке банка',
+      facts: [
+        { label: 'Операция', value: providerOrderId },
+        { label: 'Сумма', value: `${(payment.amountRub / 100).toFixed(2)} ₽` },
+      ],
       action: { text: 'ждать исхода; дольше суток — написать в поддержку Freekassa', path: '/admin/holds' },
     },
   );
@@ -440,15 +443,22 @@ async function alertUnknownProviderStatus(
   // Прямой DM владельцу: Sentry-правила сюда не настроены, а на другом конце —
   // клиент со списанными деньгами и без подписки.
   await notifyOps(
-    `Платёж завис у провайдера: Freekassa вернула статус ${providerStatus}, ` +
-      // Список берём из контракта, а не из строки: захардкоженная копия
-      // разъедется с `FREEKASSA_ORDER_STATUS` при первом же добавлении кода —
-      // ровно то дублирование, которое эта ветка убирает в других местах.
-      `которого нет в её документации (известны ${knownFreekassaStatusList()}). Операция ` +
-      `${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
+    // Список берём из контракта, а не из строки: захардкоженная копия
+    // разъедется с `FREEKASSA_ORDER_STATUS` при первом же добавлении кода —
+    // ровно то дублирование, которое эта ветка убирает в других местах.
+    `Freekassa вернула статус, которого нет в её документации (известны ${knownFreekassaStatusList()}). ` +
       `Карта НЕ выпущена. Если клиент говорит, что оплатил, — деньги списаны, ` +
       `но провайдер платёж не подтвердил: нужен запрос в поддержку Freekassa.`,
-    { stream: 'payments', title: 'Платёж завис у провайдера', action: { text: 'написать в поддержку Freekassa', path: '/admin/holds' } },
+    {
+      stream: 'payments',
+      title: 'Платёж завис у провайдера',
+      facts: [
+        { label: 'Статус', value: String(providerStatus) },
+        { label: 'Операция', value: providerOrderId },
+        { label: 'Сумма', value: `${(payment.amountRub / 100).toFixed(2)} ₽` },
+      ],
+      action: { text: 'написать в поддержку Freekassa', path: '/admin/holds' },
+    },
   );
 }
 

@@ -409,8 +409,9 @@ describe('pollPayments — добор по провайдерам', () => {
     await pollPayments();
 
     expect(notifyOps).toHaveBeenCalledTimes(1);
-    const text = String(vi.mocked(notifyOps).mock.calls[0]?.[0]);
-    expect(text).toContain('13');
+    // Статус и операция — строки фактов под заголовком, поэтому смотрим весь вызов.
+    const text = JSON.stringify(vi.mocked(notifyOps).mock.calls[0]);
+    expect(text).toContain('"13"');
     expect(text).toContain('123');
     // Карту не выдаём: статус не «оплачен».
     expect(h.fkPaidMock).not.toHaveBeenCalled();
@@ -430,8 +431,8 @@ describe('pollPayments — добор по провайдерам', () => {
     // Отдельного `notifyOps` больше нет: в общей теме это был бы дубль.
     expect(notifyOps).not.toHaveBeenCalled();
     expect(h.notifyStaffMock).toHaveBeenCalledTimes(1);
-    const text = String(h.notifyStaffMock.mock.calls[0]?.[0]);
-    expect(text).toContain('антифрод');
+    const text = JSON.stringify(h.notifyStaffMock.mock.calls[0]);
+    expect(text).toContain('Антифрод');
     expect(text).not.toContain('нет в её документации');
     // Не терминален и не оплачен: заказ не трогаем.
     expect(h.fkPaidMock).not.toHaveBeenCalled();
@@ -647,10 +648,10 @@ describe('pollPayments — уведомления менеджеру (тикет
     await pollPayments();
 
     expect(h.notifyStaffMock).toHaveBeenCalledWith(
+      expect.any(String),
       // Формулировка панели (редизайн 2026-08-27): «холд» — сленг эквайринга,
-      // менеджеру говорим «платёж на проверке банка».
-      expect.stringContaining('Платёж на проверке банка'),
-      expect.objectContaining({ capability: 'holds' }),
+      // менеджеру говорим «платёж на проверке банка» — в заголовке сообщения.
+      expect.objectContaining({ capability: 'holds', title: 'Платёж на проверке банка' }),
     );
   });
 
@@ -668,8 +669,13 @@ describe('pollPayments — уведомления менеджеру (тикет
     await pollPayments();
 
     expect(h.notifyStaffMock).toHaveBeenCalledWith(
-      expect.stringContaining('ORD-STUCK'),
-      expect.objectContaining({ capability: 'orders', dedupKey: 'stuck:order-9' }),
+      expect.any(String),
+      expect.objectContaining({
+        capability: 'orders',
+        dedupKey: 'stuck:order-9',
+        // Номер заказа — строка фактов под заголовком.
+        facts: expect.arrayContaining([expect.objectContaining({ value: 'ORD-STUCK' })]),
+      }),
     );
   });
 

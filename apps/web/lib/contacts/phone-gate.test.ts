@@ -38,9 +38,10 @@ describe('phone-gate (тикет 05)', () => {
     await notifyPhoneGateBlocked(ORDER, 10_000);
 
     expect(h.notifyOpsMock).toHaveBeenCalledTimes(1);
-    const text = String(h.notifyOpsMock.mock.calls[0]?.[0]);
-    expect(text).toContain('ORD-PHONE');
-    expect(text).toContain('10000');
+    // Заказ и порог — строки фактов под заголовком, поэтому смотрим весь вызов.
+    const sent = JSON.stringify(h.notifyOpsMock.mock.calls[0]);
+    expect(sent).toContain('ORD-PHONE');
+    expect(sent).toContain('10000');
   });
 
   it('сбой доставки DM не бросает (ответ клиенту важнее)', async () => {

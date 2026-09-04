@@ -46,11 +46,18 @@ export async function notifyPhoneGateBlocked(
   if (!phoneGateDedup.shouldSend(order.id)) return;
   try {
     await notifyOps(
-      `Клиент упёрся в гейт телефона: заказ ${order.shortId} на ` +
-        `${((order.amountRub ?? 0) / 100).toFixed(2)} ₽ (порог ${thresholdRub} ₽), ` +
-        `номера в профиле нет — счёт не выставлен. Заказ живёт до протухания; ` +
+      `Номера в профиле нет — счёт не выставлен. Заказ живёт до протухания; ` +
         `если клиент выйдет на связь — телефон вводится в контактах заказа.`,
-      { stream: 'payments', title: 'Гейт телефона: счёт не выставлен', action: { text: 'дождаться клиента; телефон вводится в контактах заказа', path: '/admin/pending' } },
+      {
+        stream: 'payments',
+        title: 'Гейт телефона: счёт не выставлен',
+        facts: [
+          { label: 'Заказ', value: order.shortId },
+          { label: 'Сумма', value: `${((order.amountRub ?? 0) / 100).toFixed(2)} ₽` },
+          { label: 'Порог', value: `${thresholdRub} ₽` },
+        ],
+        action: { text: 'дождаться клиента; телефон вводится в контактах заказа', path: '/admin/pending' },
+      },
     );
   } catch (err) {
     log.error({ event: 'payments.create.phone_gate_notify_failed', orderId: order.id, err });

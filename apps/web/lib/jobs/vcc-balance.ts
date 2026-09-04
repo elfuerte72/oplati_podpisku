@@ -140,11 +140,9 @@ export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void
     const usd = (cents: number) => (cents / 100).toFixed(2);
     const res = await notifyStaff(
       isCritical
-        ? `Критически мало на карточном счёте PaySpace: ${usd(balanceUsdCents)} USD. ` +
-            `На типовой заказ нужно ${usd(critical)} USD — следующий оплаченный заказ ` +
+        ? `Критически мало на карточном счёте PaySpace: следующий оплаченный заказ ` +
             `упадёт при выпуске карты, а пополнение приходит только на следующий день.`
-        : `На карточном счёте PaySpace ${usd(balanceUsdCents)} USD: на типовой заказ хватает, ` +
-            `на самый дорогой (нужно ${usd(low)} USD) — нет. Пополнение приходит T+1.`,
+        : `На типовой заказ хватает, на самый дорогой — нет. Пополнение приходит T+1.`,
       // Критическое — раз в час, предупреждение — раз в сутки: вечно
       // повторяющееся сообщение перестают читать, и алёрт умирает второй раз.
       {
@@ -159,6 +157,10 @@ export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void
         // предупреждение — «Платежи».
         stream: isCritical ? 'critical' : 'payments',
         title: isCritical ? 'Критически мало на карточном счёте' : 'Карточный счёт ниже нормы',
+        facts: [
+          { label: 'Остаток', value: `${usd(balanceUsdCents)} USD` },
+          { label: isCritical ? 'Нужно на типовой заказ' : 'Нужно на самый дорогой', value: `${usd(isCritical ? critical : low)} USD` },
+        ],
         action: { text: 'пополнить карточный счёт PaySpace (зачисление T+1)', path: '/admin' },
       },
     );

@@ -43,6 +43,8 @@ export async function sendToSupportOperator(
     const res = await notifyStaff(stripHtmlTags(operatorMessage), {
       capability: 'support',
       fallbackToOps: false,
+      // Обращение уже свёрстано полями и переносами — шаблон его не переразбивает.
+      preformatted: true,
       action: { text: 'ответить клиенту', path: '/admin/support' },
     });
     if (res.delivered > 0) {

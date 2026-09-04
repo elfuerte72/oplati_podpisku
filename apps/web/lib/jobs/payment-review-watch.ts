@@ -56,10 +56,17 @@ export async function alertOnStalePaymentReview(): Promise<void> {
         extra: { orderId: order.id, shortId: order.shortId },
       });
       await notifyOps(
-        `Заказ ${order.shortId} висит «на проверке банка» дольше 7 дней ` +
-          `(сумма ${((order.amountRub ?? 0) / 100).toFixed(2)} ₽). Автозакрытия нет — ` +
+        `Заказ висит «на проверке банка» дольше 7 дней. Автозакрытия нет — ` +
           `нужен запрос в поддержку Freekassa: подтвердят оплату или вернут деньги отправителю.`,
-        { stream: 'payments', title: 'На проверке банка дольше 7 дней', action: { text: 'написать в поддержку Freekassa', path: '/admin/holds' } },
+        {
+          stream: 'payments',
+          title: 'На проверке банка дольше 7 дней',
+          facts: [
+            { label: 'Заказ', value: order.shortId },
+            { label: 'Сумма', value: `${((order.amountRub ?? 0) / 100).toFixed(2)} ₽` },
+          ],
+          action: { text: 'написать в поддержку Freekassa', path: '/admin/holds' },
+        },
       );
     }
   } catch (err) {

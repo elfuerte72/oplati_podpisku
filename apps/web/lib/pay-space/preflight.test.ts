@@ -263,7 +263,9 @@ describe('reportFundingCapacityBlocked', () => {
     // о низком балансе, и владельцу нужна цифра, а не «мало денег».
     await reportFundingCapacityBlocked(ORDER, BLOCKED);
 
-    const text = String(h.notifyStaff.mock.calls[0]?.[0]);
+    // Заказ, «нужно» и «не хватает» — строки фактов под заголовком, «свободно»
+    // остаётся в теле: смотрим весь вызов.
+    const text = JSON.stringify(h.notifyStaff.mock.calls[0]);
     expect(text).toContain('89.50');
     expect(text).toContain('124.00');
     expect(text).toContain('34.50');
