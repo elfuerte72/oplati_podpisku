@@ -16,7 +16,13 @@ const h = vi.hoisted(() => ({
   sendStaffMessage: vi.fn(async (..._args: unknown[]) => {}),
   captureMessage: vi.fn(),
   notifyOps: vi.fn(async (..._args: unknown[]) => true),
+  env: {} as Record<string, string | undefined>,
 }));
+
+// Env мокаем целиком: ops-группа читается из него, и без мока прогон зависел
+// бы от переменных окружения машины.
+vi.mock('@/lib/env.server', () => ({ serverEnv: h.env }));
+vi.mock('../env.server.ts', () => ({ serverEnv: h.env }));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
@@ -55,6 +61,7 @@ function member(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  for (const key of Object.keys(h.env)) delete h.env[key];
   h.listStaff.mockReset();
   h.sendStaffMessage.mockReset();
   h.captureMessage.mockClear();
@@ -220,5 +227,100 @@ describe('notifyStaff', () => {
 
     expect(second.deduped).toBe(true);
     expect(h.notifyOps).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Ops-группа задана (трек ops-group, тикет 03): всё, что видит оператор, —
+ * постом в тему по капабилити; разделы владельца — по-прежнему личкой админам,
+ * в группу не попадают никогда.
+ */
+describe('notifyStaff при заданной ops-группе', () => {
+  const GROUP = '-1001234567890';
+
+  beforeEach(() => {
+    h.env.OPS_GROUP_CHAT_ID = GROUP;
+    h.env.OPS_GROUP_THREAD_CRITICAL = '11';
+    h.env.OPS_GROUP_THREAD_PAYMENTS = '22';
+    h.env.OPS_GROUP_THREAD_SUPPORT = '33';
+    h.env.OPS_GROUP_THREAD_ERRORS = '44';
+    h.env.OPS_GROUP_THREAD_DEPLOY = '55';
+  });
+
+  it('support → пост в тему «Поддержка», delivered = 1, штат не читается', async () => {
+    const res = await notifyStaff('обращение', { capability: 'support' });
+
+    expect(res).toEqual({ delivered: 1, failed: 0, deduped: false });
+    expect(h.sendStaffMessage).toHaveBeenCalledTimes(1);
+    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'обращение', { messageThreadId: 33 });
+    expect(h.listStaff).not.toHaveBeenCalled();
+  });
+
+  it('holds → тема «Платежи»', async () => {
+    await notifyStaff('холд', { capability: 'holds' });
+
+    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'холд', { messageThreadId: 22 });
+  });
+
+  it('явный поток critical → тема «Авария» независимо от капабилити', async () => {
+    await notifyStaff('застрял', { capability: 'orders', stream: 'critical' });
+
+    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'застрял', { messageThreadId: 11 });
+  });
+
+  it('partners → личка каждому админу, в группу НИЧЕГО (правило — права оператора)', async () => {
+    h.listStaff.mockImplementation(async () => [
+      member({ id: 's1', telegramId: '111', role: 'operator' }),
+      member({ id: 's2', telegramId: '222', role: 'admin' }),
+    ]);
+
+    const res = await notifyStaff('выплата', { capability: 'partners' });
+
+    expect(res).toMatchObject({ delivered: 1 });
+    expect(h.sendStaffMessage).toHaveBeenCalledTimes(1);
+    expect(h.sendStaffMessage).toHaveBeenCalledWith('222', 'выплата');
+  });
+
+  it('раздел владельца при пустом штате → фолбэк владельцу НЕ зовётся', async () => {
+    // `notifyOps` при группе положил бы выплату в тему, которую видит оператор.
+    h.listStaff.mockImplementation(async () => []);
+
+    const res = await notifyStaff('выплата', { capability: 'partners' });
+
+    expect(res).toMatchObject({ delivered: 0 });
+    expect(h.notifyOps).not.toHaveBeenCalled();
+    expect(h.sendStaffMessage).not.toHaveBeenCalled();
+  });
+
+  it('пост не удался → failed = 1, фолбэк владельцу не зовётся даже при пустом штате', async () => {
+    h.listStaff.mockImplementation(async () => []);
+    h.sendStaffMessage.mockImplementation(async () => {
+      throw new Error('tg down');
+    });
+
+    const res = await notifyStaff('обращение', { capability: 'support' });
+
+    expect(res).toEqual({ delivered: 0, failed: 1, deduped: false });
+    expect(h.notifyOps).not.toHaveBeenCalled();
+  });
+
+  it('окно дедупа занимается по факту поста', async () => {
+    await notifyStaff('x', { capability: 'holds', dedupKey: 'k', now: T0 });
+    const second = await notifyStaff('x', { capability: 'holds', dedupKey: 'k', now: T0 + 60_000 });
+
+    expect(second.deduped).toBe(true);
+    expect(h.sendStaffMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('несостоявшийся пост окно не занимает', async () => {
+    h.sendStaffMessage.mockImplementationOnce(async () => {
+      throw new Error('tg down');
+    });
+
+    await notifyStaff('x', { capability: 'holds', dedupKey: 'k', now: T0 });
+    const second = await notifyStaff('x', { capability: 'holds', dedupKey: 'k', now: T0 + 60_000 });
+
+    expect(second.deduped).toBe(false);
+    expect(h.sendStaffMessage).toHaveBeenCalledTimes(2);
   });
 });

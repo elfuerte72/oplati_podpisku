@@ -162,7 +162,8 @@ export async function pollPayments(): Promise<{
                 `Заказ ${after.shortId} застрял после оплаты: автоматический повтор выпуска ` +
                   `карты не помог, статус «${after.status}». Нужна ручная проверка — ` +
                   `/admin/orders/${after.shortId}`,
-                { dedupKey: `stuck:${order.id}`, capability: 'orders' },
+                // «Авария», а не «Платежи»: деньги приняты, карты нет, автомат сдался.
+                { dedupKey: `stuck:${order.id}`, capability: 'orders', stream: 'critical' },
               );
             }
           } catch (err) {

@@ -561,6 +561,8 @@ async function reportFundingBusy(order: PreflightOrder, err: unknown): Promise<v
         dedupKey: 'preflight_busy_staff',
         dedupWindowMs: BUSY_ALERT_WINDOW_MS,
         capability: 'holds',
+        // Клиенту отказано — это «Авария», а не отчёт о фонде.
+        stream: 'critical',
       },
     );
   } catch (notifyErr) {
@@ -669,6 +671,8 @@ export async function reportFundingCapacityBlocked(
         dedupKey: 'preflight_blocked_staff',
         dedupWindowMs: BLOCKED_ALERT_WINDOW_MS,
         capability: 'holds',
+        // Клиент не смог оплатить — «Авария»: продажа сорвалась прямо сейчас.
+        stream: 'critical',
       },
     );
   } catch (err) {

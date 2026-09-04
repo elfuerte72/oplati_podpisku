@@ -160,15 +160,9 @@ const serverEnvSchema = z.object({
   // Telegram (Sprint 1.5)
   TELEGRAM_BOT_TOKEN: optionalEnvString(),
   TELEGRAM_WEBHOOK_SECRET: optionalEnvString(),
-  // Куда бот пересылает обращения из /support (interim-handoff, пока нет
-  // forum-topics). ЕДИНСТВЕННЫЙ источник получателя (M-15: дефолт из кода
-  // удалён 2026-07-19); не задан → обращения не доставляются + Sentry. Оператор
-  // ОБЯЗАН один раз запустить бота (/start), иначе Telegram не даст слать ему DM.
-  // Формат — числовой chat_id (может быть отрицательным для групп) или @username;
-  // мусорное значение fail-fast на старте, а не молчаливым сбоем sendMessage.
-  SUPPORT_OPERATOR_CHAT_ID: optionalEnvString(
-    z.string().regex(/^(-?\d+|@[A-Za-z0-9_]{4,})$/, 'must be a numeric chat id or @username'),
-  ),
+  // `SUPPORT_OPERATOR_CHAT_ID` удалена треком ops-group (2026-09-04): обращения
+  // доставляет бот входа через `notifyStaff` (ops-группа или личка персонала),
+  // клиентский бот операторам не пишет.
   // Short name зарегистрированного в BotFather Mini App (/newapp) — на проде
   // `oplatishkaMiniApp`. Задан → кнопка «Личный кабинет» на сайте ведёт прямой
   // ссылкой `telegram.me/<bot>/<shortname>` (кабинет открывается одним тапом). Не задан

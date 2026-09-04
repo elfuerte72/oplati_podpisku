@@ -45,9 +45,9 @@ export function extractSupportInline(text: string): string | null {
 }
 
 /**
- * Пересылает обращение оператору в личку (общий помощник `sendToSupportOperator`:
- * получатель из `SUPPORT_OPERATOR_CHAT_ID`, parse_mode HTML). Возвращает `false`
- * при сбое, чтобы caller честно сообщил пользователю о неудаче.
+ * Пересылает обращение персоналу (общий помощник `sendToSupportOperator`: бот
+ * входа, ops-группа или личка сотрудников). Возвращает `false` при сбое, чтобы
+ * caller честно сообщил пользователю о неудаче.
  */
 async function notifyOperator(operatorMessage: string, updateId: number): Promise<boolean> {
   return sendToSupportOperator(operatorMessage, { updateId });
@@ -80,9 +80,9 @@ async function submitSupportRequest(
   const delivered = await notifyOperator(operatorMessage, updateId);
 
   // Пишем ПОСЛЕ доставки и с честным исходом. Раньше событие ставилось до
-  // вызова, и при незаданном SUPPORT_OPERATOR_CHAT_ID или 403 от Telegram
-  // отчёт утверждал бы «обращение ушло оператору», хотя оно не ушло — а это
-  // единственный канал связи с клиентом.
+  // вызова, и при пустом штате или 403 от Telegram отчёт утверждал бы
+  // «обращение ушло оператору», хотя оно не ушло — а это единственный канал
+  // связи с клиентом.
   trackServer({
     name: 'support_requested',
     telegramId: String(from.id),

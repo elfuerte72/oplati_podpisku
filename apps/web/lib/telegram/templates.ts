@@ -317,8 +317,8 @@ export function catalogAmountInvalidText(maxUsd: number): string {
 
 // ─── Поддержка (/support) ─────────────────────────────────────────────────
 //
-// Interim-handoff: бот пересылает обращение оператору в личку (Telegram ID из
-// SUPPORT_OPERATOR_CHAT_ID). Целевая схема — forum-topics — ещё не реализована.
+// Обращение уходит персоналу ботом входа (`lib/telegram/support.ts`): в тему
+// «Поддержка» ops-группы или личкой сотрудникам, если группа не задана.
 
 /** Подпись inline-кнопки «Поддержка» (под приветствием /start). */
 export const SUPPORT_BUTTON = 'Написать в поддержку';
