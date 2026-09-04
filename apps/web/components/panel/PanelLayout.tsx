@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { ACTION_TITLES } from '@/lib/panel/labels';
 import { sidebarCookieString } from '@/lib/panel/sidebar';
 
+import { PanelIcon } from './PanelIcon';
 import { PanelSearch } from './PanelSearch';
 
 /**
@@ -66,7 +67,7 @@ export function PanelLayout({
             <span className="panel-visually-hidden">
               {collapsed ? ACTION_TITLES.expandMenu : ACTION_TITLES.collapseMenu}
             </span>
-            <span aria-hidden>{collapsed ? '»' : '«'}</span>
+            <PanelIcon name={collapsed ? 'expand' : 'collapse'} />
           </button>
         </div>
 
@@ -101,7 +102,7 @@ export function PanelLayout({
             aria-controls="panel-menu"
           >
             <span className="panel-visually-hidden">{ACTION_TITLES.openMenu}</span>
-            <span aria-hidden>☰</span>
+            <PanelIcon name="menu" />
           </button>
           {brand}
         </div>

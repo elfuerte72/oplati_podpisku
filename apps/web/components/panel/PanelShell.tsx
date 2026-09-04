@@ -6,29 +6,37 @@ import { isMenuBadgeSection, menuBadges, type MenuBadgeSection } from '@/lib/pan
 import { ACTION_TITLES, FORBIDDEN_TEXT, attentionLabel } from '@/lib/panel/labels';
 import type { PanelActor } from '@/lib/panel/login';
 import { readMenuCounts } from '@/lib/panel/menu-counts';
-import { groupedSectionsFor } from '@/lib/panel/permissions';
+import { groupedSectionsFor, type PanelSectionForRole } from '@/lib/panel/permissions';
+import { DENSITY_COOKIE, NAV_CLOSED_COOKIE, THEME_COOKIE, readClosedGroups, readDensity, readTheme } from '@/lib/panel/prefs';
 import { staffRoleLabel } from '@/lib/panel/roles';
 import { SIDEBAR_COOKIE, isSidebarCollapsed } from '@/lib/panel/sidebar';
 
 import { LiveRefresh } from './LiveRefresh';
+import { PanelIcon } from './PanelIcon';
 import { PanelLayout } from './PanelLayout';
+import { PanelNavGroup } from './PanelNavGroup';
+import { PanelViewToggles } from './PanelViewToggles';
 
 /**
  * Оболочка панели: боковое меню со счётчиками работы, «кто вошёл», выход.
  *
- * Меню вертикальное и сгруппированное (панель v3): десять пунктов в одну
- * строку занимали всю ширину экрана, а каждый новый раздел эту строку ломал.
- * Группа отвечает на вопрос «что это за пункты», а не просто режет список.
+ * Меню вертикальное и сгруппированное. Группы названы СУЩНОСТЬЮ («Заказы»,
+ * «Клиенты»), а не родом занятий: прежняя «Работа» держала шесть пунктов из
+ * одиннадцати, то есть не отсекала ничего — человек всё равно читал список
+ * целиком. Каждый пункт несёт значок (`PanelIcon`): одиннадцать одинаковых
+ * строк глаз не запоминает, а в свёрнутом меню значок заменил две первые буквы
+ * названия — «Пр» одинаково начинало проверку платежей, поддержку, партнёров
+ * и персонал.
  *
  * ⚠️ Разделы владельца показываются менеджеру ТОЖЕ (спека §4.3) — с пометкой.
  * Скрывать пункт значило бы полагаться на то, что менеджер не наберёт адрес
  * руками; настоящая защита живёт в операции (`guardPanelOperation`).
  *
- * Счётчики в меню (редизайн, тикет 02) считаются на сервере теми же
- * выборками, что питают рабочий стол, но В `<Suspense>`: оболочка рендерится
- * ПОСЛЕ данных страницы, и ожидание счётчиков здесь же добавляло бы к каждому
- * экрану ещё один поход в базу перед первым байтом. Теперь страница уходит
- * сразу, числа доезжают потоком; отказ базы гасит число, а не экран.
+ * Счётчики в меню считаются на сервере теми же выборками, что питают рабочий
+ * стол, но В `<Suspense>`: оболочка рендерится ПОСЛЕ данных страницы, и
+ * ожидание счётчиков здесь же добавляло бы к каждому экрану ещё один поход в
+ * базу перед первым байтом. Страница уходит сразу, числа доезжают потоком;
+ * отказ базы гасит число, а не экран.
  */
 export async function PanelShell({
   actor,
@@ -44,11 +52,18 @@ export async function PanelShell({
   children: React.ReactNode;
 }) {
   const groups = groupedSectionsFor(actor.role);
-  const collapsed = isSidebarCollapsed((await cookies()).get(SIDEBAR_COOKIE)?.value);
+  const jar = await cookies();
+  const collapsed = isSidebarCollapsed(jar.get(SIDEBAR_COOKIE)?.value);
+  const closedGroups = readClosedGroups(jar.get(NAV_CLOSED_COOKIE)?.value);
+  const theme = readTheme(jar.get(THEME_COOKIE)?.value);
+  const density = readDensity(jar.get(DENSITY_COOKIE)?.value);
 
   const brand = (
     <Link href="/admin" className="panel-brand">
-      Оплатишка
+      <span className="panel-brand__mark" aria-hidden>
+        О
+      </span>
+      <span className="panel-brand__word">Оплатишка</span>
     </Link>
   );
 
@@ -60,26 +75,30 @@ export async function PanelShell({
         collapsedInitial={collapsed}
         brand={brand}
         nav={groups.map((group) => (
-          <div key={group.group} className="panel-sidebar__group">
-            <p className="panel-sidebar__group-title">{group.title}</p>
+          <PanelNavGroup
+            key={group.group}
+            group={group.group}
+            title={group.title}
+            closedInitial={closedGroups.has(group.group)}
+            badge={
+              <Suspense fallback={null}>
+                <NavGroupBadge role={actor.role} sections={group.sections} />
+              </Suspense>
+            }
+          >
             {group.sections.map((section) => (
               <Link
                 key={section.href}
                 href={section.href}
                 className="panel-sidebar__link"
                 aria-current={current === section.href ? 'page' : undefined}
-                // ДВЕ буквы названия — то, что остаётся от пункта в свёрнутом
-                // меню. Иконок у панели нет, а одной буквы мало: на «П»
-                // начинаются четыре раздела (проверка платежей, поддержка,
-                // партнёры, персонал), и меню читалось бы ребусом.
-                data-initial={section.title.slice(0, 2)}
                 // Название есть у КАЖДОГО пункта: в свёрнутом меню наведение —
-                // единственный способ убедиться, что «Пр» это проверка
-                // платежей, а не персонал. Недоступный раздел помечен, чтобы
-                // менеджер не тратил время на клик и не думал, что раздел
-                // сломан.
+                // единственный способ убедиться, какой раздел под значком.
+                // Недоступный раздел помечен, чтобы менеджер не тратил время
+                // на клик и не думал, что раздел сломан.
                 title={section.allowed ? section.title : `${section.title} · ${FORBIDDEN_TEXT.menuHint}`}
               >
+                <PanelIcon name={section.capability} className="panel-sidebar__icon" />
                 <span className="panel-sidebar__label">
                   {section.title}
                   {section.allowed ? null : ' ·'}
@@ -91,24 +110,22 @@ export async function PanelShell({
                 ) : null}
               </Link>
             ))}
-          </div>
+          </PanelNavGroup>
         ))}
         actor={
           <div className="panel-actor">
-            <span className="panel-actor__name">
-              {actor.displayName} · {staffRoleLabel(actor.role)}
-            </span>
-            <form method="post" action="/api/panel/auth/logout">
-              <button type="submit" className="panel-button panel-button--squeezable">
-                {/* В свёрнутом меню от кнопки остаётся знак: слово «Выйти» в
-                    колонку 56px не помещается и уезжает под таблицу. Текст при
-                    этом никуда не девается — он читается голосом экрана. */}
-                <span className="panel-button__label">{ACTION_TITLES.logout}</span>
-                <span className="panel-button__sign" aria-hidden>
-                  ⎋
-                </span>
-              </button>
-            </form>
+            <PanelViewToggles themeInitial={theme} densityInitial={density} />
+            <div className="panel-actor__row">
+              <span className="panel-actor__name">
+                {actor.displayName} · {staffRoleLabel(actor.role)}
+              </span>
+              <form method="post" action="/api/panel/auth/logout">
+                <button type="submit" className="panel-icon-button" title={ACTION_TITLES.logout}>
+                  <span className="panel-visually-hidden">{ACTION_TITLES.logout}</span>
+                  <PanelIcon name="logout" />
+                </button>
+              </form>
+            </div>
           </div>
         }
       >
@@ -128,6 +145,37 @@ async function NavBadge({ role, section }: { role: PanelActor['role']; section: 
   return (
     <span className="panel-nav-badge" aria-label={attentionLabel(count)}>
       {count}
+    </span>
+  );
+}
+
+/**
+ * Счётчик всей группы — виден только у СВЁРНУТОЙ (правило в CSS: у раскрытой
+ * то же число стояло бы дважды).
+ *
+ * Свёрнутая группа обязана признаваться, что внутри есть работа: иначе
+ * настройка «убрать с глаз редкое» однажды спрячет три неотвеченных обращения.
+ * Считается тем же `readMenuCounts` и теми же правилами показа (`menuBadges`
+ * молчит про закрытый роли раздел), поэтому число группы не может оказаться
+ * больше суммы видимых пунктов.
+ */
+async function NavGroupBadge({
+  role,
+  sections,
+}: {
+  role: PanelActor['role'];
+  sections: readonly PanelSectionForRole[];
+}) {
+  const badges = menuBadges(role, await readMenuCounts(role));
+  let total = 0;
+  for (const section of sections) {
+    if (!isMenuBadgeSection(section.capability)) continue;
+    total += badges[section.capability] ?? 0;
+  }
+  if (total <= 0) return null;
+  return (
+    <span className="panel-nav-badge panel-nav-badge--group" aria-label={attentionLabel(total)}>
+      {total}
     </span>
   );
 }

@@ -84,12 +84,15 @@ export function canAccess(role: StaffRole, capability: PanelCapability): boolean
 }
 
 /**
- * Группы меню (панель v3). Ключ — он же ключ заголовка в словаре.
+ * Группы меню. Ключ — он же ключ заголовка в словаре, а тип берётся ИЗ
+ * словаря: группа без названия не собирается, и второго списка названий рядом
+ * не заводится (инвариант 10 — зеркало лучше убрать, чем сверять).
  *
  * Порядок здесь — порядок групп на экране, и он же задаёт смысл: сверху то,
  * чем занимаются каждый день, снизу то, куда заходят раз в месяц.
  */
-export const PANEL_SECTION_GROUPS = ['work', 'analytics', 'manage'] as const;
+export const PANEL_SECTION_GROUPS = ['overview', 'orders', 'clients', 'analytics', 'manage'] as const satisfies
+  readonly (keyof typeof SECTION_GROUP_TITLES)[];
 
 export type PanelSectionGroup = (typeof PANEL_SECTION_GROUPS)[number];
 
@@ -113,14 +116,19 @@ export type PanelSection = {
  * из него (`groupedSectionsFor`), а не описывается вторым списком рядом —
  * два списка разъезжаются молча, и раздел пропадает из меню, оставшись в
  * правах (инвариант 10 — зеркало предпочтительно убрать, а не сверять).
+ *
+ * Группы названы сущностью, а не родом занятий: «Ждут оплаты» и «Проверка
+ * платежей» — это срезы ЗАКАЗОВ, а не отдельные миры, и стоя рядом с общим
+ * списком заказов они читаются как его продолжение. Прежняя группа «Работа»
+ * держала шесть пунктов из одиннадцати и потому не отсекала ничего.
  */
 export const PANEL_SECTIONS: readonly PanelSection[] = [
-  { href: '/admin', capability: 'desk', group: 'work' },
-  { href: '/admin/orders', capability: 'orders', group: 'work' },
-  { href: '/admin/pending', capability: 'pending', group: 'work' },
-  { href: '/admin/holds', capability: 'holds', group: 'work' },
-  { href: '/admin/support', capability: 'support', group: 'work' },
-  { href: '/admin/feedback', capability: 'feedback', group: 'work' },
+  { href: '/admin', capability: 'desk', group: 'overview' },
+  { href: '/admin/orders', capability: 'orders', group: 'orders' },
+  { href: '/admin/pending', capability: 'pending', group: 'orders' },
+  { href: '/admin/holds', capability: 'holds', group: 'orders' },
+  { href: '/admin/support', capability: 'support', group: 'clients' },
+  { href: '/admin/feedback', capability: 'feedback', group: 'clients' },
   { href: '/admin/analytics', capability: 'analytics', group: 'analytics' },
   { href: '/admin/ai', capability: 'ai', group: 'analytics' },
   { href: '/admin/partners', capability: 'partners', group: 'manage' },
@@ -141,7 +149,8 @@ export function sectionsFor(role: StaffRole): PanelSectionForRole[] {
 
 export type PanelSectionGroupForRole = {
   group: PanelSectionGroup;
-  title: string;
+  /** `null` — группа без заголовка (рабочий стол стоит первым пунктом сам). */
+  title: string | null;
   sections: PanelSectionForRole[];
 };
 

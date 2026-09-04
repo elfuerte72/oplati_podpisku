@@ -112,7 +112,9 @@ describe('/admin/analytics — доступ', () => {
 
     const html = await render();
 
-    expect(html).toContain('data-forbidden="Аналитика"');
+    // Раздел называется «Отчёты»: «Аналитика» осталась названием ГРУППЫ меню,
+    // а пункт и его заглушка называют то, что внутри.
+    expect(html).toContain('data-forbidden="Отчёты"');
     expect(h.revenueSummary).not.toHaveBeenCalled();
   });
 });
