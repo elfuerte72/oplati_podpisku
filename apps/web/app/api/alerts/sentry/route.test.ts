@@ -1,19 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Обязательные ключи для lazy-валидации serverEnv + конфиг relay'а.
-process.env.APP_URL = 'https://example.com';
-process.env.SUPABASE_URL = 'https://example.supabase.co';
-process.env.SUPABASE_ANON_KEY = 'test-anon';
-process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service';
-process.env.SENTRY_ALERT_WEBHOOK_SECRET = 'top-secret';
-process.env.ALERT_TELEGRAM_CHAT_ID = '111222333';
-
 const h = vi.hoisted(() => ({
+  // Env мокаем объектом, а не `process.env`: `serverEnv` кэшируется при первом
+  // чтении, и переменные, выставленные внутри теста, он бы не увидел.
+  env: {
+    SENTRY_ALERT_WEBHOOK_SECRET: 'top-secret',
+    ALERT_TELEGRAM_CHAT_ID: '111222333',
+  } as Record<string, string | undefined>,
   sendMessageMock: vi.fn(),
+  // Бот входа — отправитель в ops-группу (трек ops-group).
+  staffSendMock: vi.fn(async (..._args: unknown[]) => {}),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
   // Лимитер мокаем явно: без Upstash он fail-open, и тесты «проверяли» бы
   // поведение, которого нет — упасть они не могли ни при какой поломке.
   checkRateLimitMock: vi.fn(async () => ({ allowed: true, configured: true, limit: 10, remaining: 9 })),
 }));
+
+vi.mock('@/lib/env.server', () => ({ serverEnv: h.env }));
 
 vi.mock('@/lib/ratelimit', () => ({
   checkRateLimit: (...args: unknown[]) => h.checkRateLimitMock(...(args as [])),
@@ -22,6 +26,16 @@ vi.mock('@/lib/ratelimit', () => ({
 
 vi.mock('@/lib/telegram/bot', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
+}));
+
+vi.mock('@/lib/telegram/staff-bot-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/telegram/staff-bot-client')>();
+  return { ...actual, sendStaffMessage: h.staffSendMock };
+});
+
+vi.mock('@sentry/nextjs', () => ({
+  captureException: h.captureException,
+  captureMessage: h.captureMessage,
 }));
 
 import { POST } from './route.ts';
@@ -44,6 +58,9 @@ function makeReq(query: string, body: unknown): Request {
 describe('POST /api/alerts/sentry', () => {
   beforeEach(() => {
     h.sendMessageMock.mockReset();
+    h.staffSendMock.mockClear();
+    h.captureException.mockClear();
+    h.captureMessage.mockClear();
     h.checkRateLimitMock.mockClear();
   });
 
@@ -114,11 +131,34 @@ describe('POST /api/alerts/sentry', () => {
     expect(h.sendMessageMock).not.toHaveBeenCalled();
   });
 
-  it('падение Telegram не валит endpoint (200) и не зовёт Sentry', async () => {
+  it('падение Telegram не валит endpoint (200 skipped) и не зовёт Sentry — анти-петля', async () => {
     h.sendMessageMock.mockRejectedValueOnce(new Error('tg down'));
     const res = await POST(makeReq('?s=top-secret', SAMPLE));
     expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ skipped: 'telegram_failed' });
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(h.captureException).not.toHaveBeenCalled();
+    expect(h.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('при заданной ops-группе уходит ботом входа в тему «Ошибки»', async () => {
+    h.env.OPS_GROUP_CHAT_ID = '-1001234567890';
+    h.env.OPS_GROUP_THREAD_ERRORS = '44';
+    try {
+      const res = await POST(makeReq('?s=top-secret', SAMPLE));
+
+      expect(res.status).toBe(200);
+      expect(h.staffSendMock).toHaveBeenCalledTimes(1);
+      const [chatId, text, opts] = h.staffSendMock.mock.calls[0] as [string, string, unknown];
+      expect(chatId).toBe('-1001234567890');
+      expect(text).toContain('PaySpaceApiError: insufficient funds');
+      expect(opts).toEqual({ messageThreadId: 44 });
+      // Прежняя личка через alert-бота в группе не участвует.
+      expect(h.sendMessageMock).not.toHaveBeenCalled();
+    } finally {
+      delete h.env.OPS_GROUP_CHAT_ID;
+      delete h.env.OPS_GROUP_THREAD_ERRORS;
+    }
   });
   it('успешные алёрты НЕ лимитируются — лимитер на этом пути не зовётся вовсе', async () => {
     // Молча отброшенное уведомление хуже отсутствующего: шторм алёртов
