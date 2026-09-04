@@ -76,7 +76,7 @@ export async function alertOnFreekassaNonceRejected(
     // потерять счётчик событий, по которому видно, идёт сбой или уже кончился.
     if (!dedup.shouldSend('freekassa_nonce')) return;
 
-    await notifyOps(DM_TEXT);
+    await notifyOps(DM_TEXT, { stream: 'payments' });
   } catch (alertErr) {
     // Без captureException — анти-петля, как в notify-ops.ts: провал алёрта
     // породил бы новый issue и новый алёрт.

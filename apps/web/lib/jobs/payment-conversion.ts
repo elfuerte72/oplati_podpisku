@@ -75,6 +75,7 @@ export async function alertOnZeroPaymentConversion(): Promise<void> {
     await notifyOps(
       `Похоже, оплаты не проходят: за последний час выставлено ${invoiced} счетов через ${gateway}, оплачено 0. ` +
         `Проверь шлюз и при необходимости переключи PAYMENT_PRIMARY_PROVIDER на резервный + redeploy.`,
+      { stream: 'critical' },
     );
   } catch (err) {
     // Мониторинг не должен ронять cron: логируем и уходим.

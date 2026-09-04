@@ -5,6 +5,7 @@ import { GrammyError } from 'grammy';
 
 import { serverEnv } from '../env.server.ts';
 import { childLogger } from '../logger.ts';
+import type { PanelCapability } from '../panel/permissions.ts';
 import { sendAlert } from '../telegram/alert-bot.ts';
 import { sendStaffMessage, StaffBotNotConfiguredError } from '../telegram/staff-bot-client.ts';
 
@@ -36,6 +37,21 @@ export const ALERT_STREAMS = ['critical', 'payments', 'support', 'errors', 'depl
 export type AlertStream = (typeof ALERT_STREAMS)[number];
 
 const log = childLogger('alerts.streams');
+
+/**
+ * Поток для уведомления персоналу по разделу панели: обращения — в
+ * «Поддержку», всё остальное, что видит оператор (холды, недожатые заказы,
+ * исполнение, заказы, клиенты), — в «Платежи». Вызывающий может переопределить
+ * поток явно (застрявший заказ и критический баланс идут в «Аварию»).
+ *
+ * ⚠️ Попадает ли раздел в группу вообще, решает НЕ эта таблица, а права роли
+ * `operator` (`canAccess`, `notify-staff.ts`): «в группу попадает только то,
+ * что видит оператор» — одно правило, выведенное из таблицы прав, а не второй
+ * список, который разъехался бы с ней.
+ */
+export function streamForCapability(capability: PanelCapability): AlertStream {
+  return capability === 'support' ? 'support' : 'payments';
+}
 
 export type OpsGroup = {
   chatId: string;

@@ -177,7 +177,8 @@ describe('notifyStaff', () => {
     const res = await notifyStaff('текст', { capability: 'support' });
 
     expect(res).toMatchObject({ delivered: 0, failed: 0, deduped: false });
-    expect(h.notifyOps).toHaveBeenCalledWith('текст');
+    // Поток фолбэка выводится из капабилити: обращения — «Поддержка».
+    expect(h.notifyOps).toHaveBeenCalledWith('текст', { stream: 'support' });
     expect(h.captureMessage).toHaveBeenCalled();
   });
 

@@ -50,6 +50,7 @@ export async function notifyPhoneGateBlocked(
         `${((order.amountRub ?? 0) / 100).toFixed(2)} ₽ (порог ${thresholdRub} ₽), ` +
         `номера в профиле нет — счёт не выставлен. Заказ живёт до протухания; ` +
         `если клиент выйдет на связь — телефон вводится в контактах заказа.`,
+      { stream: 'payments' },
     );
   } catch (err) {
     log.error({ event: 'payments.create.phone_gate_notify_failed', orderId: order.id, err });

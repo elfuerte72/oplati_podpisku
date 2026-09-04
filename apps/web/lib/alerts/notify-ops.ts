@@ -20,15 +20,16 @@ import { type AlertStream, notifyStream } from './streams.ts';
  * нужно не для обработки ошибки, а чтобы не выдавать несостоявшуюся отправку
  * за состоявшуюся (например, занимая ею окно дедупа на час вперёд).
  */
-export async function notifyOps(text: string, opts: NotifyOpsOptions = {}): Promise<boolean> {
-  return notifyStream(opts.stream ?? null, text);
+export async function notifyOps(text: string, opts: NotifyOpsOptions): Promise<boolean> {
+  return notifyStream(opts.stream, text);
 }
 
 export type NotifyOpsOptions = {
   /**
-   * Поток (тема группы). Пока НЕОБЯЗАТЕЛЕН — тикет 01 трека ops-group
-   * расширяет сигнатуру, тикет 02 размечает все точки вызова и делает поток
-   * обязательным. Без потока при заданной группе сообщение уходит в корень.
+   * Поток (тема группы) — ОБЯЗАТЕЛЕН: вызов без потока не компилируется, и
+   * «забыл разметить» ловит typecheck, а не владелец, разбирающий корень
+   * группы. Таблица «событие → поток» — спека трека ops-group и
+   * `docs/runbooks/monitoring.md`.
    */
-  stream?: AlertStream;
+  stream: AlertStream;
 };

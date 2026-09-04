@@ -10,7 +10,7 @@ import {
 import { serverEnv } from '../env.server.ts';
 import { after } from 'next/server';
 
-import { notifyOps } from '../alerts/notify-ops.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 import { childLogger } from '../logger.ts';
 
 const log = childLogger('referral-payout');
@@ -126,15 +126,20 @@ export async function requestReferralPayout(params: {
   // не узнавал никто. Решение владельца 2026-08-11: кнопку оставляем, но
   // заявка ЗОВЁТ человека. Реквизиты в текст не кладём (в них PAN) — только
   // сумма и идентификатор заявки.
-  // notifyOps сам не бросает и логирует свои сбои, но ЖДАТЬ его здесь нельзя:
+  // notifyStaff сам не бросает и логирует свои сбои, но ЖДАТЬ его здесь нельзя:
   // заявка уже зафиксирована в БД, и медленный Telegram задерживал бы ответ
   // партнёру (ревью 2026-08-11). Отправляем после ответа через `after()`.
+  //
+  // ⚠️ Капабилити `partners` — это ЕДИНСТВЕННЫЙ способ гарантировать «лично
+  // владельцу»: раздел закрыт оператору, поэтому уведомление не попадает в
+  // ops-группу и уходит личкой админам (трек ops-group, тикет 02).
   after(() =>
-    notifyOps(
+    notifyStaff(
       `Партнёрская выплата: новая заявка ${result.payoutId} на ${fmtUsd(netUsdCents)} ` +
         `(брутто ${fmtUsd(amountUsdCents)}, удержание ${fmtUsd(feeUsdCents)}). ` +
         `⚠️ Реквизиты форма не собирает — уточнить у партнёра в Telegram. ` +
         `Исполняется вручную, автовыплат пока нет.`,
+      { capability: 'partners' },
     ),
   );
 

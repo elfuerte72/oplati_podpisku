@@ -87,6 +87,7 @@ export async function alertOnLoveAndPayProxyDown(deps?: {
       try {
         await notifyOps(
           `КРИТИЧНО: прокси L&P (${proxyHost}) не отвечает — создание счетов на оплату падает у всех клиентов. Проверь VPS (squid) и при необходимости переключи LOVEANDPAY_PROXY_URL + redeploy.`,
+          { stream: 'critical' },
         );
       } catch (notifyErr) {
         log.error({ event: 'lnp_proxy.notify_failed', err: notifyErr });

@@ -413,6 +413,7 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
       `Операция ${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
       `Деньги у клиента списаны, карта НЕ выпущена — исход решает провайдер. ` +
       `Обычно разрешается за часы; если висит дольше — запрос в поддержку Freekassa.`,
+    { stream: 'payments' },
   );
 }
 
@@ -452,6 +453,7 @@ async function alertUnknownProviderStatus(
       `${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
       `Карта НЕ выпущена. Если клиент говорит, что оплатил, — деньги списаны, ` +
       `но провайдер платёж не подтвердил: нужен запрос в поддержку Freekassa.`,
+    { stream: 'payments' },
   );
 }
 

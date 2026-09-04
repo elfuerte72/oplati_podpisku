@@ -309,6 +309,7 @@ export async function processFreekassaPaid(
       // Вне транзакции: DM не должен держать соединение и откатываться с ней.
       await notifyOps(
         `Недоплата по заказу (Freekassa): выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (операция ${intid}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
+        { stream: 'payments' },
       );
     }
 
@@ -403,6 +404,7 @@ export async function processFreekassaPaid(
       });
       await notifyOps(
         `Оплата пришла по уже захороненному счёту (Freekassa, операция ${intid}): деньги приняты, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
+        { stream: 'critical' },
       );
       return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'paid_after_terminal' };
     }
@@ -428,6 +430,7 @@ export async function processFreekassaPaid(
     // уходило только в Sentry — то есть могло остаться незамеченным.
     await notifyOps(
       `Оплата принята (Freekassa, операция ${intid}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
+      { stream: 'critical' },
     );
   }
 
@@ -548,6 +551,7 @@ export async function processFreekassaTerminal(
           `оплачен (операция ${intid}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽). ` +
           `Деньги вернулись отправителю, а заказ мог быть исполнен — нужна ручная сверка ` +
           `заказа и запрос в поддержку Freekassa.`,
+        { stream: 'payments' },
       );
     }
     log.info({
@@ -580,6 +584,7 @@ export async function processFreekassaTerminal(
       `Холд разрешился ОТКАЗОМ: банк отклонил перевод по заказу (операция ${intid}, ` +
         `сумма ${(payment.amountRub / 100).toFixed(2)} ₽). Клиенту отправлено сообщение, ` +
         `деньги должны вернуться отправителю — стоит проследить.`,
+      { stream: 'payments' },
     );
   }
 

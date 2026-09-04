@@ -289,6 +289,7 @@ async function notifyFallbackUsed(primary: PaymentGateway, fallback: PaymentGate
   try {
     await notifyOps(
       `Основной шлюз (${primary}) не отвечает — счета выставляются через ${fallback}. Деньги принимаются, но причину надо разобрать: автофоллбэк ловит только транспорт, а не «шлюз отвечает, платежи не проходят».`,
+      { stream: 'payments' },
     );
   } catch (err) {
     // Сбой доставки DM не должен уронить создание счёта: Sentry-алёрт уже ушёл.

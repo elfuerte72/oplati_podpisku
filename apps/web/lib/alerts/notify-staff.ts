@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import { getDb, listStaffRecipients } from '@oplati/db';
 
 import { notifyOps } from './notify-ops';
+import { type AlertStream, streamForCapability } from './streams';
 
 import { childLogger } from '@/lib/logger';
 import { canAccess, type PanelCapability } from '@/lib/panel/permissions';
@@ -81,6 +82,12 @@ export async function notifyStaff(
      * было бы только из `log.warn`.
      */
     fallbackToOps?: boolean;
+    /**
+     * Поток (тема ops-группы). По умолчанию выводится из капабилити
+     * (`streamForCapability`); задаётся явно там, где событие важнее раздела —
+     * застрявший заказ и критический баланс идут в «Аварию».
+     */
+    stream?: AlertStream;
   },
 ): Promise<NotifyStaffResult> {
   const now = opts.now ?? Date.now();
@@ -164,7 +171,7 @@ export async function notifyStaff(
  */
 async function fallback(
   text: string,
-  opts: { capability: PanelCapability; fallbackToOps?: boolean },
+  opts: { capability: PanelCapability; fallbackToOps?: boolean; stream?: AlertStream },
 ): Promise<boolean> {
   if (opts.fallbackToOps === false) return false;
   log.warn({ event: 'alerts.staff.fallback_to_ops', capability: opts.capability });
@@ -173,5 +180,5 @@ async function fallback(
     tags: { source: 'alerts.staff' },
     extra: { capability: opts.capability },
   });
-  return notifyOps(text);
+  return notifyOps(text, { stream: opts.stream ?? streamForCapability(opts.capability) });
 }
