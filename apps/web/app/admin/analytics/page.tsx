@@ -15,6 +15,7 @@ import {
 import { BarsByDay } from '@/components/panel/charts/BarsByDay';
 import { HBars } from '@/components/panel/charts/HBars';
 import { LineByDay } from '@/components/panel/charts/LineByDay';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
@@ -30,6 +31,8 @@ import {
   ANALYTICS_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
+  HELP_TEXT,
+  PAGE_HINT,
   PERIOD_TITLES,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
@@ -91,8 +94,14 @@ export default async function PanelAnalyticsPage({
         title={SECTION_TITLES.analytics}
         aside={<PeriodSwitch current={period} />}
       >
-        <p className="panel-muted">{ANALYTICS_TEXT.intro}</p>
+        <p className="panel-muted">{PAGE_HINT.analytics}</p>
       </PanelPageHeader>
+
+      <PanelHelp
+        title={HELP_TEXT.analytics.title}
+        hint={HELP_TEXT.analytics.hint}
+        cards={HELP_TEXT.analytics.cards}
+      />
 
       <div className="panel-grid" style={{ gridTemplateColumns: '1fr' }}>
         {/* ── Деньги ── */}

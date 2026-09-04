@@ -297,3 +297,55 @@ export async function listStaff(db: DB): Promise<StaffMember[]> {
   const rows = await db.select().from(staff).orderBy(asc(staff.createdAt));
   return rows.map(mapRow);
 }
+
+/** Строка раздела «Персонал»: кто заведён, какая роль, есть ли доступ. */
+export type PanelStaffRow = {
+  id: string;
+  displayName: string;
+  role: StaffRole;
+  isActive: boolean;
+  /** Привязано ли приложение с кодами: без него вход не завершится. */
+  totpReady: boolean;
+  telegramLinked: boolean;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+};
+
+/**
+ * Персонал для экрана панели (вариант A дизайн-аудита, тикет 06).
+ *
+ * ⚠️ Отдельно от `listStaff`, который отдаёт строку ЦЕЛИКОМ — вместе с
+ * `totp_secret`. Наружу из ядра панели уходит форма без второго фактора; это
+ * инвариант панели, и здесь он держится колонками запроса, а не дисциплиной
+ * вызывающего. По той же причине наружу не идут `email` и `telegram_id`:
+ * экрану достаточно ФАКТА привязки, а лишняя PII в процессе, который держит
+ * вебхуки Freekassa и Telegram, ни к чему.
+ *
+ * Порядок — по заведению: список читают как «кого добавляли», а не как рейтинг.
+ */
+export async function listStaffForPanel(db: DB): Promise<PanelStaffRow[]> {
+  const rows = await db
+    .select({
+      id: staff.id,
+      displayName: staff.displayName,
+      role: staff.role,
+      isActive: staff.isActive,
+      totpConfirmedAt: staff.totpConfirmedAt,
+      telegramId: staff.telegramId,
+      lastLoginAt: staff.lastLoginAt,
+      createdAt: staff.createdAt,
+    })
+    .from(staff)
+    .orderBy(asc(staff.createdAt));
+
+  return rows.map((row) => ({
+    id: row.id,
+    displayName: row.displayName,
+    role: row.role,
+    isActive: row.isActive,
+    totpReady: row.totpConfirmedAt !== null,
+    telegramLinked: row.telegramId !== null,
+    lastLoginAt: row.lastLoginAt,
+    createdAt: row.createdAt,
+  }));
+}

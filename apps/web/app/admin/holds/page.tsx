@@ -1,16 +1,33 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listHoldsForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listHoldsForPanel } from '@oplati/db';
 import { FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
-import { formatKopecks, orderStatusLabel, providerStatusLabel } from '@/lib/panel/format';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
+import {
+  formatKopecks,
+  orderStatusLabel,
+  orderStatusTone,
+  providerStatusLabel,
+} from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT, HELP_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
+import { serverEnv } from '@/lib/env';
+import {
+  CELL_TEXT,
+  COLUMN_TITLES,
+  EMPTY_TEXT,
+  HELP_TEXT,
+  HOLDS_SUPPORT_TEMPLATE,
+  PAGE_HINT,
+  SECTION_TITLES,
+} from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
 
 /**
@@ -36,7 +53,11 @@ export const metadata: Metadata = { title: SECTION_TITLES.holds };
  */
 const ANTIFRAUD_HOLD = FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD;
 
-export default async function PanelHoldsPage() {
+export default async function PanelHoldsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const access = await panelPageAccess('holds');
   if (!access.allowed) {
     return (
@@ -46,16 +67,15 @@ export default async function PanelHoldsPage() {
     );
   }
 
-  const { items: holds, hasMore } = await listHoldsForPanel(getDb());
+  const page = parsePanelPage((await searchParams).page);
+  const { items: holds, hasMore } = await listHoldsForPanel(getDb(), {
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
 
   return (
     <PanelShell actor={access.actor} current="/admin/holds">
       <PanelPageHeader title={SECTION_TITLES.holds}>
-        <p className="panel-muted">
-          Заказ с платежом на проверке не истекает по сроку, и закрыть его с нашей стороны
-          нельзя — исход решает провайдер. Статус «{providerStatusLabel(ANTIFRAUD_HOLD)}»
-          означает антифрод-проверку.
-        </p>
+        <p className="panel-muted">{PAGE_HINT.holds}</p>
       </PanelPageHeader>
 
       <PanelHelp
@@ -65,17 +85,18 @@ export default async function PanelHoldsPage() {
       />
 
       {holds.length === 0 ? (
-        <div className="panel-card">
-          {/* Пусто — это норма: на 16 августа холдов было ноль. */}
-          <p className="panel-empty">{EMPTY_TEXT.holds}</p>
-        </div>
+        /* Пусто — это норма: на 16 августа холдов было ноль. */
+        <p className="panel-empty">{EMPTY_TEXT.holds}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">
             <thead>
               <tr>
                 <th>{COLUMN_TITLES.order}</th>
                 <th>{COLUMN_TITLES.client}</th>
+                {/* Сервис и пилюля статуса — как у соседних списков: проверка
+                    платежей была единственным экраном без них. */}
+                <th>{COLUMN_TITLES.service}</th>
                 <th className="panel-num">{COLUMN_TITLES.amount}</th>
                 <th>{COLUMN_TITLES.orderStatus}</th>
                 <th>{COLUMN_TITLES.providerStatus}</th>
@@ -97,10 +118,15 @@ export default async function PanelHoldsPage() {
                         {hold.client.displayName ?? hold.client.telegramId ?? CELL_TEXT.noName}
                       </Link>
                     </td>
+                    <td data-label={COLUMN_TITLES.service}>{hold.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(hold.amountRubKopecks)}
                     </td>
-                    <td data-label={COLUMN_TITLES.orderStatus}>{orderStatusLabel(hold.orderStatus)}</td>
+                    <td data-label={COLUMN_TITLES.orderStatus}>
+                      <span className={STATUS_TONE_CLASS[orderStatusTone(hold.orderStatus)]}>
+                        {orderStatusLabel(hold.orderStatus)}
+                      </span>
+                    </td>
                     <td data-label={COLUMN_TITLES.providerStatus}>{providerStatusLabel(hold.lastProviderStatus)}</td>
                     <td data-label={COLUMN_TITLES.providerStatusChangedAt} className="panel-muted">
                       {hold.lastProviderStatusAt ? (
@@ -149,25 +175,20 @@ export default async function PanelHoldsPage() {
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: платежей больше, чем помещается на экран.
-        </p>
-      ) : null}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) => panelPageHref('/admin/holds', {}, next)}
+      />
 
       <section className="panel-card" style={{ marginTop: 16 }}>
-        <h2 className="panel-title">Текст для поддержки Freekassa</h2>
-        <p className="panel-muted">
-          Скопируйте и подставьте номер заказа и сумму — провайдер отвечает быстрее, когда
-          вопрос сформулирован конкретно.
-        </p>
+        <h2 className="panel-title">{HOLDS_SUPPORT_TEMPLATE.title}</h2>
+        <p className="panel-muted">{HOLDS_SUPPORT_TEMPLATE.hint}</p>
+        {/* Номер кассы приходит ОТТУДА ЖЕ, откуда его берёт клиент шлюза:
+            в разметке он был второй копией и разъехался бы молча при смене
+            кассы. Не задан — шаблон честно просит подставить его руками. */}
         <code className="panel-secret" style={{ whiteSpace: 'pre-wrap' }}>
-          {[
-            'Здравствуйте! Касса 74953.',
-            'Платёж по заказу <номер> на сумму <сумма> ₽ находится в статусе 7 с <дата>.',
-            'Подскажите, пожалуйста: это проверка антифрода, какие данные нужны от нас',
-            'и в какой срок ожидать решения? Клиент ждёт.',
-          ].join('\n')}
+          {HOLDS_SUPPORT_TEMPLATE.body(serverEnv.FREEKASSA_SHOP_ID ?? null)}
         </code>
       </section>
     </PanelShell>

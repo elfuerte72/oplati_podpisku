@@ -1,11 +1,12 @@
 import type { Metadata } from 'next';
 
 import { AnalystChat } from '@/components/panel/AnalystChat';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { isPanelAnalystConfigured } from '@/lib/panel/ai/profile';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { ANALYST_TEXT, SECTION_TITLES } from '@/lib/panel/labels';
+import { ANALYST_TEXT, HELP_TEXT, PAGE_HINT, SECTION_TITLES } from '@/lib/panel/labels';
 
 /**
  * `/admin/ai` — «Аналитик»: чат с AI, который сам пишет SQL к копии базы без
@@ -37,12 +38,12 @@ export default async function PanelAnalystPage() {
   return (
     <PanelShell actor={access.actor} current="/admin/ai" live={false}>
       <PanelPageHeader title={SECTION_TITLES.ai}>
-        <p className="panel-muted">{ANALYST_TEXT.intro}</p>
+        <p className="panel-muted">{PAGE_HINT.ai}</p>
       </PanelPageHeader>
 
-      <section className="panel-card">
-        {configured ? <AnalystChat /> : <p className="panel-empty">{ANALYST_TEXT.notConfigured}</p>}
-      </section>
+      <PanelHelp title={HELP_TEXT.ai.title} hint={HELP_TEXT.ai.hint} cards={HELP_TEXT.ai.cards} />
+
+      {configured ? <AnalystChat /> : <p className="panel-empty">{ANALYST_TEXT.notConfigured}</p>}
     </PanelShell>
   );
 }

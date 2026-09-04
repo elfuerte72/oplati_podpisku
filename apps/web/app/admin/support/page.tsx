@@ -1,17 +1,23 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listSupportRequestsForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listSupportRequestsForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { supportModeClass } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
 import {
   ACTION_TITLES,
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
+  HELP_TEXT,
+  PAGE_HINT,
   SECTION_TITLES,
   SUPPORT_MODE_LABELS,
 } from '@/lib/panel/labels';
@@ -30,7 +36,11 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: SECTION_TITLES.support };
 
-export default async function PanelSupportPage() {
+export default async function PanelSupportPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const access = await panelPageAccess('support');
   if (!access.allowed) {
     return (
@@ -40,24 +50,28 @@ export default async function PanelSupportPage() {
     );
   }
 
-  const { items, hasMore } = await listSupportRequestsForPanel(getDb());
+  const page = parsePanelPage((await searchParams).page);
+  const { items, hasMore } = await listSupportRequestsForPanel(getDb(), {
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
 
   return (
     <PanelShell actor={access.actor} current="/admin/support">
       <PanelPageHeader title={SECTION_TITLES.support}>
-        <p className="panel-muted">
-          Клиент нажал «Поддержка» или написал <code>/support</code>. Ответ приходит ему от бота —
-          что за ботом человек, клиент не знает.
-        </p>
+        <p className="panel-muted">{PAGE_HINT.support}</p>
       </PanelPageHeader>
 
+      <PanelHelp
+        title={HELP_TEXT.support.title}
+        hint={HELP_TEXT.support.hint}
+        cards={HELP_TEXT.support.cards}
+      />
+
       {items.length === 0 ? (
-        <div className="panel-card">
-          {/* Четыре обращения за три месяца — пустой экран это норма. */}
-          <p className="panel-empty">{EMPTY_TEXT.support}</p>
-        </div>
+        /* Четыре обращения за три месяца — пустой экран это норма. */
+        <p className="panel-empty">{EMPTY_TEXT.support}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
@@ -83,7 +97,7 @@ export default async function PanelSupportPage() {
                     )}
                   </td>
                   <td>
-                    <LocalAge iso={item.lastRequestAt.toISOString()} /> назад
+                    <LocalAge iso={item.lastRequestAt.toISOString()} />
                   </td>
                   <td className={item.lastOperatorReplyAt ? 'panel-muted' : undefined}>
                     {item.lastOperatorReplyAt ? (
@@ -95,7 +109,7 @@ export default async function PanelSupportPage() {
                   <td>
                     {/* Режим — кто сейчас отвечает клиенту. Незнакомое значение
                         enum показываем как есть, а не прячем: это сигнал разъезда. */}
-                    <span className={`panel-status panel-status--mode-${item.handoffMode}`}>
+                    <span className={supportModeClass(item.handoffMode)}>
                       {lookupLabel(SUPPORT_MODE_LABELS, item.handoffMode) ?? item.handoffMode}
                     </span>
                   </td>
@@ -110,11 +124,11 @@ export default async function PanelSupportPage() {
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: обращений больше, чем помещается на экран.
-        </p>
-      ) : null}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) => panelPageHref('/admin/support', {}, next)}
+      />
     </PanelShell>
   );
 }

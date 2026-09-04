@@ -1,17 +1,22 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listReferralPartnersForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listReferralPartnersForPanel } from '@oplati/db';
 
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { formatUsdCents } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
 import {
   ACTION_TITLES,
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
+  HELP_TEXT,
+  PAGE_HINT,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
 
@@ -30,7 +35,11 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: SECTION_TITLES.partners };
 
-export default async function PanelPartnersPage() {
+export default async function PanelPartnersPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const access = await panelPageAccess('partners');
   if (!access.allowed) {
     return (
@@ -40,7 +49,10 @@ export default async function PanelPartnersPage() {
     );
   }
 
-  const { items, hasMore } = await listReferralPartnersForPanel(getDb());
+  const page = parsePanelPage((await searchParams).page);
+  const { items, hasMore } = await listReferralPartnersForPanel(getDb(), {
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
 
   return (
     <PanelShell actor={access.actor} current="/admin/partners">
@@ -48,19 +60,20 @@ export default async function PanelPartnersPage() {
         title={SECTION_TITLES.partners}
         aside={<Link href="/admin/partners/payouts">{ACTION_TITLES.payoutRequests}</Link>}
       >
-        <p className="panel-muted">
-          Баланс — это начислено минус отменённое минус заявки на выплату. Суммы начислений
-          вручную не правятся: журнал только дописывается.
-        </p>
+        <p className="panel-muted">{PAGE_HINT.partners}</p>
       </PanelPageHeader>
 
+      <PanelHelp
+        title={HELP_TEXT.partners.title}
+        hint={HELP_TEXT.partners.hint}
+        cards={HELP_TEXT.partners.cards}
+      />
+
       {items.length === 0 ? (
-        <div className="panel-card">
-          {/* Программа на soft-start: пустой список — норма. */}
-          <p className="panel-empty">{EMPTY_TEXT.partners}</p>
-        </div>
+        /* Программа на soft-start: пустой список — норма. */
+        <p className="panel-empty">{EMPTY_TEXT.partners}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
@@ -102,11 +115,11 @@ export default async function PanelPartnersPage() {
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: партнёров больше, чем помещается на экран.
-        </p>
-      ) : null}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) => panelPageHref('/admin/partners', {}, next)}
+      />
     </PanelShell>
   );
 }

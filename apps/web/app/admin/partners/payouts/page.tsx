@@ -1,14 +1,16 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listReferralPayoutsForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listReferralPayoutsForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { PayoutDecision } from '@/components/panel/PayoutDecision';
 import { formatUsdCents } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
 import { ACTION_TITLES, CELL_TEXT, COLUMN_TITLES, EMPTY_TEXT } from '@/lib/panel/labels';
 import { isPayoutDecidable, payoutStatusLabel } from '@/lib/panel/payouts';
 
@@ -46,8 +48,13 @@ export default async function PanelPayoutsPage({
     );
   }
 
-  const showAll = (await searchParams).all === '1';
-  const { items, hasMore } = await listReferralPayoutsForPanel(getDb(), { onlyOpen: !showAll });
+  const query = await searchParams;
+  const showAll = query.all === '1';
+  const page = parsePanelPage(query.page);
+  const { items, hasMore } = await listReferralPayoutsForPanel(getDb(), {
+    onlyOpen: !showAll,
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
 
   return (
     <PanelShell actor={access.actor} current="/admin/partners">
@@ -69,12 +76,10 @@ export default async function PanelPayoutsPage({
       </PanelPageHeader>
 
       {items.length === 0 ? (
-        <div className="panel-card">
-          {/* На 16 августа заявок было ноль — пустой экран это норма. */}
-          <p className="panel-empty">{showAll ? EMPTY_TEXT.payouts : EMPTY_TEXT.payoutsOpen}</p>
-        </div>
+        /* На 16 августа заявок было ноль — пустой экран это норма. */
+        <p className="panel-empty">{showAll ? EMPTY_TEXT.payouts : EMPTY_TEXT.payoutsOpen}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
@@ -132,11 +137,15 @@ export default async function PanelPayoutsPage({
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: заявок больше, чем помещается на экран.
-        </p>
-      ) : null}
+      {/* Ключ `all=1` едет вместе со страницей: иначе «Дальше» из полного
+          списка возвращало бы на срез открытых заявок. */}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) =>
+          panelPageHref('/admin/partners/payouts', { all: showAll ? '1' : undefined }, next)
+        }
+      />
     </PanelShell>
   );
 }

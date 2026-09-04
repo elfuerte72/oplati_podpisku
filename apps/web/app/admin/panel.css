@@ -1,94 +1,174 @@
 /*
- * Оформление админ-панели — бренд «Оплатишки», изолированный по разделу.
+ * Оформление админ-панели — одна визуальная система, изолированная по разделу.
  *
  * ⚠️ `app/globals.css` (комикс-UI сайта) НЕ трогается: панель и сайт живут в
  * одном приложении, и подмена глобальных токенов сломала бы витрину. Всё здесь
  * висит под `.panel`, поэтому за пределы `/admin` не протекает.
  *
- * Бренд взят ДОЗИРОВАННО. Панель отвечает на вопрос «что мне сделать сейчас»,
- * и комикс в ней — палитра, шрифты и жёсткая тень на том, что нажимают:
- * halftone, облака и маскот остаются на витрине. Ставить их в таблицу на
- * четыреста строк значило бы менять читаемость на узнаваемость там, где
- * человек проводит рабочий день (правило дизайн-системы «сигнатура стиля»
- * распространяется на интерактив и карточки, а не на каждую ячейку).
+ * Панель — ИНСТРУМЕНТ, а не витрина: её открывают на восемь часов, а не на две
+ * минуты. Поэтому комикс-шрифт, чернильный контур и жёсткая тень без размытия
+ * из неё ушли (решение владельца 04.09, вариант A дизайн-аудита). На витрине
+ * это бренд; в таблице на четыреста строк — шум, который съедает ту разницу,
+ * которой должна отличаться единственная важная кнопка экрана. Бренд остался в
+ * двух местах: teal как цвет акцента и знак «О» в меню.
+ *
+ * Три правила, из которых собрано всё ниже:
+ *   1. Заметная кнопка одна на экран; стили отличаются СТИЛЕМ, а не размером
+ *      (HIG Buttons, «use style — not size»).
+ *   2. Структуру задают разделители и отступы, а не рамки: карточка остаётся
+ *      там, где содержимое действительно отдельное (HIG Layout).
+ *   3. Глубина — поверхностью, а не тенью: в тёмной теме поверхность СВЕТЛЕЕ
+ *      фона, а тень осталась только у слоёв ПОВЕРХ содержимого.
+ *
+ * ⚠️ Цвет здесь задаётся ТОЛЬКО переменной темы. Зашитое значение не падает и
+ * не видно в тестах поведения — оно просто не меняется при смене темы, поэтому
+ * его ловит канарейка `panel-css.test.ts`.
  */
 
 .panel {
   /*
-   * Палитра снята с ассетов бренда (скилл `oplatishka-design`): noir как фон,
-   * paper как текст, teal как акцент. Тёмная тема — умолчание бренда.
+   * ── Палитра ───────────────────────────────────────────────────────────
+   *
+   * Нейтральные тона и один акцент. Успех, внимание и отказ взяты системными
+   * цветами HIG: свой оттенок тревоги ничем не лучше, а узнаваемость теряется.
+   *
+   * Базовый набор — СВЕТЛАЯ тема; тёмная переопределяет те же имена ниже.
+   * Набор имён в обоих наборах обязан совпадать (канарейка): забытый токен не
+   * падает, а тихо оставляет светлое значение внутри тёмной темы.
+   *
+   * Контраст посчитан по WCAG (относительная яркость sRGB) и записан рядом со
+   * значением: на глаз его при правке не пересчитать.
    */
-  --panel-bg: #0f0d11;
-  --panel-surface: #17161c;
-  --panel-surface-2: #201f27;
-  --panel-border: #2c2a33;
-  --panel-text: #fbfcf7;
-  --panel-muted: #a9a7ae;
-  /*
-   * Акцент — teal-light, а не teal-primary: #268b89 на noir даёт 3.4:1 и для
-   * ССЫЛКИ мал (нужно 4.5:1), а ссылками в панели набрана половина таблицы.
-   * #5b9c99 на #0f0d11 — 6.1:1.
-   */
-  --panel-accent: #5b9c99;
-  /* Текст ПОВЕРХ акцентной заливки: на teal белый даёт 2.9:1, ink — 5.9:1. */
-  --panel-accent-ink: #0f0d11;
-  --panel-danger: #e2685f;
-  --panel-warn: #d8a44f;
-  --panel-ok: #2fa39e;
-  /* Текст статуса: цвет линии на тёмной подложке в 14% сам по себе не читается. */
-  --panel-danger-text: #ffd9d3;
-  --panel-warn-text: #ffe6bd;
-  --panel-ok-text: #cdf3dd;
+  --panel-bg: #f5f5f7;
+  --panel-surface: #ffffff;
+  --panel-surface-2: #ececef;
+  /* Текст: на фоне окна 15.5:1, на поверхности 16.9:1. */
+  --panel-text: #1d1d1f;
+  /* Вторичный текст: на фоне окна 4.66:1, на поверхности 5.07:1 — обе выше 4.5. */
+  --panel-muted: #6e6e73;
 
   /*
-   * Граница ИНТЕРАКТИВНЫХ элементов (поля, кнопки). WCAG 2.2, 1.4.11 требует
-   * ≥3:1 к подложке; прежний --panel-border даёт около 1.3:1 — на телефоне при
-   * солнце поля не видно. Расчёт (относительная яркость, sRGB): #66708a на
-   * #0f0d11 = 3.94:1, на #17161c = 3.64:1, на #201f27 = 3.30:1. Структурные
-   * разделители остаются тихими: у них требования нет.
+   * Структурный разделитель. Прозрачность, а не свой серый: линия ложится и на
+   * фон окна, и на поверхность, и на выделенную строку — сплошной цвет в одном
+   * из трёх мест окажется либо невидимым, либо чёрным. Требования по контрасту
+   * у него нет: это не элемент управления.
    */
-  --panel-border-strong: #66708a;
+  --panel-border: rgba(0, 0, 0, 0.09);
+  /*
+   * Граница ИНТЕРАКТИВНЫХ элементов (поля, обычные кнопки). WCAG 2.2, 1.4.11
+   * требует ≥3:1 к подложке. #86868b: к поверхности 3.62:1, к фону окна
+   * 3.33:1, ко второй поверхности 3.07:1 — держит все три.
+   */
+  --panel-border-strong: #86868b;
 
   /*
-   * Жёсткая тень — сигнатура бренда (`4px 4px 0`), сокращённая до 3px: в
-   * панели её носят кнопки и бейджи размером в строку, а не карточки сайта.
-   * Тень чернильная, без размытия: мягкая тень — не наш язык.
+   * Акцент. Тёмный teal, а не teal витрины: ссылками набрана половина таблицы,
+   * а им нужно 4.5:1 — причём и на подсвеченной строке тоже. #1c7370: на
+   * поверхности 5.62:1, на фоне окна 5.16:1, на второй поверхности (наведение
+   * на строку) 4.77:1 — держит все три.
    */
-  --panel-ink: #050406;
-  --panel-shadow-hard: 3px 3px 0 var(--panel-ink);
-  --panel-shadow-hard-sm: 2px 2px 0 var(--panel-ink);
+  --panel-accent: #1c7370;
+  /* Текст ПОВЕРХ акцентной заливки: белый на #1c7370 — 5.62:1. */
+  --panel-accent-ink: #ffffff;
+  /*
+   * Акцент КАК ТЕКСТ на своей же заливке в 14% (пилюля режима «помощник»):
+   * сам акцент даёт там 4.25:1 и не проходит, затемнённый — 7.20:1.
+   */
+  --panel-accent-text: #14544f;
+
+  /* Системные цвета HIG (светлая). Носят их линия и заливка, не текст. */
+  --panel-ok: #34c759;
+  --panel-warn: #ff8d28;
+  --panel-danger: #ff383c;
+  /*
+   * Текстовый тон статуса. Считается против ЗАЛИВКИ пилюли — 14% цвета над
+   * белым, самый светлый случай: успех 5.86:1, внимание 6.05:1, отказ 6.52:1.
+   */
+  --panel-ok-text: #1c6b33;
+  --panel-warn-text: #8a4b06;
+  --panel-danger-text: #a01a1e;
 
   /*
-   * Радиусы. Строго концентричный внешний = 6 + 16 (отступ карточки) = 22px
-   * читался бы пузырём на плотной таблице; 12/6 даёт видимую вложенность без
-   * этого. Пилюли статусов (999) из правила исключены.
+   * Счётчик работы в меню: заливка — «внимание», текст к ней 6.6:1 в обеих
+   * темах (в тёмной янтарный другой, отношение то же). Белый дал бы 2:1.
    */
-  --panel-radius-card: 12px;
-  --panel-radius-control: 6px;
+  --panel-badge-ink: #3a1f00;
+
+  /*
+   * Роли в ленте переписки. Прежде эти три цвета были зашиты в правилах и в
+   * светлой теме оставались тёмными — теперь пересчитываются вместе с темой.
+   * Это ЛИНИЯ слева от реплики, а не текст: требования 4.5:1 нет.
+   */
+  --panel-role-client: #0071e3;
+  --panel-role-operator: #248a3d;
+  --panel-role-assistant: #86868b;
+
+  /*
+   * Слой ПОВЕРХ содержимого — единственное, что осталось с тенью (правило 3).
+   * Носит её только окно быстрого поиска; у кнопок и знака бренда тени нет.
+   */
+  --panel-scrim: rgba(0, 0, 0, 0.28);
+  --panel-shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.16);
 
   /* Кольцо фокуса: зазор цветом фона, чтобы читалось и на кнопке, и на поле. */
   --panel-focus-ring: 0 0 0 2px var(--panel-bg), 0 0 0 4px var(--panel-accent);
 
   /*
-   * Плотность строк — настройка сотрудника (`lib/panel/prefs.ts`). Числа живут
-   * ОДНИМ набором переменных: таблица, меню и карточки обязаны сжиматься
-   * вместе, иначе «плотно» превращается в мешанину из двух ритмов.
+   * ── Радиусы ───────────────────────────────────────────────────────────
+   *
+   * Концентричны: вложенное скругление равно родительскому минус отступ, по
+   * которому оно вложено. Отступ вложения в панели — 4px, отсюда 12 → 8 → 4:
+   * карточка, элемент управления внутри неё и вложенное в элемент управления
+   * (запрос внутри раскрывашки аналитика, подсказка клавиши внутри кнопки
+   * поиска). Пилюли статусов (999) из правила исключены.
    */
-  --panel-row-y: 7px;
-  --panel-row-x: 10px;
-  --panel-nav-y: 7px;
+  --panel-radius-card: 12px;
+  --panel-radius-control: 8px;
+  --panel-radius-inner: 4px;
+
+  /*
+   * ── Плотность ─────────────────────────────────────────────────────────
+   *
+   * Настройка сотрудника (`lib/panel/prefs.ts`). Числа живут ОДНИМ набором:
+   * таблица, меню, карточки и поля экрана обязаны сжиматься вместе, иначе
+   * «плотно» превращается в мешанину из двух ритмов. Меняются только отступы
+   * и кегль — ни одна колонка не скрывается.
+   *
+   * Высота строки таблицы = 2 × row-y + кегль × 1.45: 2×12 + 14×1.45 ≈ 44px,
+   * как просят рекомендации по спискам. Пункт меню = 2 × nav-y + то же тело:
+   * 2×4 + 20.3 ≈ 28px — рекомендация по боковым панелям macOS.
+   */
+  --panel-row-y: 12px;
+  --panel-row-x: 12px;
+  --panel-nav-y: 4px;
   --panel-card-pad: 16px;
+  --panel-gap: 16px;
+  --panel-main-pad: 24px;
   --panel-font: 14px;
 
   /*
-   * Шрифты бренда. Переменные объявлены в корневом layout сайта (next/font,
-   * кириллица обязательна), поэтому панели достаточно на них сослаться —
-   * второй загрузки не происходит. Системный стек в конце: шрифт не доехал —
-   * панель обязана остаться читаемой.
+   * ── Шрифт ─────────────────────────────────────────────────────────────
+   *
+   * Системный стек, одно семейство на всю панель: иерархию держит ВЕС, а не
+   * второе начертание (HIG Typography, «minimize the number of typefaces»).
+   * Шрифты витрины остаются в корневом layout и грузятся в том числе здесь —
+   * панель просто перестала их применять.
+   *
+   * Шкала: 11 · 12 · 13/14 (по плотности) · 15 · 17 · 22. Веса: 400 текст,
+   * 500 кнопки и активный пункт меню, 600 заголовки. 700 не используется —
+   * это проверяет канарейка.
    */
-  --panel-font-body: var(--font-body-src), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --panel-font-display: var(--font-display-src), var(--panel-font-body);
+  --panel-font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --panel-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --panel-font-xs: 11px;
+  --panel-font-sm: 12px;
+  --panel-font-md: 15px;
+  --panel-font-lg: 17px;
+  --panel-font-xl: 22px;
 
+  /* Базовый набор — светлый; тёмные блоки ниже переставляют и это. */
+  color-scheme: light;
   min-height: 100%;
   background: var(--panel-bg);
   color: var(--panel-text);
@@ -98,47 +178,99 @@
 }
 
 /*
- * Плотный режим. Меняются ТОЛЬКО отступы и кегль — ни одна колонка не
- * скрывается: «плотнее» не должно означать «меньше правды на экране».
+ * Плотный режим. Сжимается ВЕСЬ экран, а не одна таблица: поля страницы,
+ * карточки и меню тоже приходят отсюда. Высота строки: 2×9 + 13×1.45 ≈ 37px
+ * против 44px в просторном.
  */
 .panel[data-density="compact"] {
-  --panel-row-y: 4px;
-  --panel-row-x: 8px;
-  --panel-nav-y: 4px;
+  --panel-row-y: 9px;
+  --panel-row-x: 10px;
+  --panel-nav-y: 3px;
   --panel-card-pad: 12px;
+  --panel-gap: 12px;
+  --panel-main-pad: 16px;
   --panel-font: 13px;
 }
 
 /*
- * Светлая тема. Те же роли, другие значения — ни один цвет не задаётся мимо
+ * Тёмная тема. Те же роли, другие значения — ни один цвет не задаётся мимо
  * переменной, иначе тема чинилась бы по одному экрану.
+ *
+ * Поверхность СВЕТЛЕЕ фона (правило 3): в тёмной теме глубину даёт цвет
+ * подложки, а не тень — тени на тёмном не видно вовсе.
  *
  * Атрибут свой (`data-panel-theme`), а не `data-theme` витрины: тот селектор в
  * `globals.css` не отскоплен и подхватил бы панель, перекрасив токены сайта
  * внутри `/admin` по вкусу тумблера панели.
+ *
+ * ⚠️ ДВА входа в один набор значений: явный выбор сотрудника и состояние «как
+ * в системе» (умолчание) при тёмной теме операционной системы. Селектором это
+ * одним блоком не выразить — медиазапрос в списке селекторов не живёт, — так
+ * что набор дублируется, а совпадение ИМЁН токенов держит канарейка
+ * `panel-css.test.ts`: забытый в одной из тем токен не падает, а тихо
+ * оставляет светлое значение внутри тёмной панели.
  */
-.panel[data-panel-theme="light"] {
-  --panel-bg: #fbfcf7;
-  --panel-surface: #ffffff;
-  --panel-surface-2: #f1f2ec;
-  --panel-border: #e0e0d8;
-  --panel-text: #16151a;
-  --panel-muted: #5b5a60;
-  /* teal-deep: на бумаге 6.0:1, тогда как teal-light дал бы 2.3:1. */
-  --panel-accent: #306874;
-  --panel-accent-ink: #fbfcf7;
-  --panel-danger: #c2362f;
-  /* Тот же янтарный, что в тёмной: этим цветом ЗАЛИТ счётчик работы в меню, и
-     тёмный текст на нём обязан держать 8:1 (на охристом #8a6510 было бы 3.5:1).
-     Как линия статуса на белом он декоративен — контраст к тексту не нужен. */
-  --panel-warn: #d8a44f;
-  --panel-ok: #1f7a76;
-  --panel-danger-text: #7d1e19;
-  --panel-warn-text: #5c4207;
-  --panel-ok-text: #10504d;
-  --panel-border-strong: #7a7982;
-  /* Контур комикса на светлом — чернильный, как в витрине. */
-  --panel-ink: #16151a;
+@media (prefers-color-scheme: dark) {
+  .panel[data-panel-theme="system"] {
+    /* Родные полосы прокрутки и элементы форм — тоже тёмные. */
+    color-scheme: dark;
+    --panel-bg: #1c1c1e;
+    --panel-surface: #2a2a2d;
+    --panel-surface-2: #222225;
+    --panel-text: #f5f5f7;
+    --panel-muted: #a0a0a6;
+    --panel-border: rgba(255, 255, 255, 0.11);
+    --panel-border-strong: #8e8e93;
+    --panel-accent: #5fbab4;
+    --panel-accent-ink: #1c1c1e;
+    --panel-accent-text: #5fbab4;
+    --panel-ok: #30d158;
+    --panel-warn: #ff9230;
+    --panel-danger: #ff4245;
+    --panel-ok-text: #7ee2a0;
+    --panel-warn-text: #ffc98a;
+    --panel-danger-text: #ffb3b0;
+    --panel-badge-ink: #3a1f00;
+    --panel-role-client: #0a84ff;
+    --panel-role-operator: #30d158;
+    --panel-role-assistant: #6e6e73;
+    --panel-scrim: rgba(0, 0, 0, 0.6);
+    --panel-shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.6);
+  }
+}
+
+.panel[data-panel-theme="dark"] {
+  color-scheme: dark;
+  --panel-bg: #1c1c1e;
+  --panel-surface: #2a2a2d;
+  --panel-surface-2: #222225;
+  /* Текст: на фоне окна 15.6:1, на поверхности 12.4:1. */
+  --panel-text: #f5f5f7;
+  /* Вторичный: на фоне окна 6.54:1, на поверхности 5.50:1. */
+  --panel-muted: #a0a0a6;
+  --panel-border: rgba(255, 255, 255, 0.11);
+  /* #8e8e93: к фону окна 5.22:1, к поверхности 4.39:1 — обе выше 3:1. */
+  --panel-border-strong: #8e8e93;
+  /* Светлый teal: на фоне окна 7.43:1, на поверхности 6.25:1, на второй 6.93:1. */
+  --panel-accent: #5fbab4;
+  /* Текст поверх акцентной заливки: тёмный на #5fbab4 — 7.43:1, белый дал бы 2.1:1. */
+  --panel-accent-ink: #1c1c1e;
+  /* На своей заливке в 14% светлый teal даёт 4.83:1 — затемнять нечего. */
+  --panel-accent-text: #5fbab4;
+  /* Системные цвета HIG (тёмная). */
+  --panel-ok: #30d158;
+  --panel-warn: #ff9230;
+  --panel-danger: #ff4245;
+  /* К заливке пилюли (14% над поверхностью): 6.93:1, 7.40:1, 7.26:1. */
+  --panel-ok-text: #7ee2a0;
+  --panel-warn-text: #ffc98a;
+  --panel-danger-text: #ffb3b0;
+  --panel-badge-ink: #3a1f00;
+  --panel-role-client: #0a84ff;
+  --panel-role-operator: #30d158;
+  --panel-role-assistant: #6e6e73;
+  --panel-scrim: rgba(0, 0, 0, 0.6);
+  --panel-shadow-overlay: 0 16px 40px rgba(0, 0, 0, 0.6);
 }
 
 .panel a {
@@ -197,9 +329,10 @@
 }
 
 /*
- * Логотип. Марка — квадрат с буквой в контуре и жёсткой тенью: единственное
- * место, где панель говорит брендом в полный голос, и оно же остаётся видимым,
- * когда меню свёрнуто до значков.
+ * Логотип. Марка — квадрат с буквой: одно из двух мест, где от бренда в панели
+ * что-то осталось (второе — акцентный цвет). Чернильного контура и жёсткой
+ * тени у него больше нет: сигнатура витрины на каждом нажимаемом элементе
+ * съедала разницу между обычной кнопкой и заметной.
  */
 .panel .panel-brand {
   display: flex;
@@ -207,8 +340,7 @@
   gap: 8px;
   min-width: 0;
   color: var(--panel-text);
-  font-family: var(--panel-font-display);
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.01em;
 }
 .panel .panel-brand:hover {
@@ -220,12 +352,11 @@
   place-items: center;
   width: 26px;
   height: 26px;
-  border: 2px solid var(--panel-ink);
-  border-radius: 8px;
+  border-radius: var(--panel-radius-control);
   background: var(--panel-accent);
-  box-shadow: var(--panel-shadow-hard-sm);
   color: var(--panel-accent-ink);
-  font-size: 15px;
+  font-size: var(--panel-font-md);
+  font-weight: 600;
   line-height: 1;
 }
 .panel-brand__word {
@@ -272,9 +403,8 @@
   border-radius: var(--panel-radius-control);
   background: transparent;
   color: var(--panel-muted);
-  font-family: var(--panel-font-display);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--panel-font-xs);
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   cursor: pointer;
@@ -294,7 +424,7 @@
 /* Стрелка показывает состояние, а не направление нажатия: вниз — раскрыто. */
 .panel-sidebar__group-chevron {
   flex: 0 0 auto;
-  font-size: 13px;
+  font-size: var(--panel-font-sm);
   transition: rotate 140ms ease-out;
 }
 .panel-sidebar__group[data-closed] .panel-sidebar__group-chevron {
@@ -345,7 +475,7 @@
 
 .panel-sidebar__icon {
   flex: 0 0 auto;
-  font-size: 17px;
+  font-size: var(--panel-font-lg);
 }
 
 .panel-sidebar__label {
@@ -376,7 +506,7 @@
 }
 .panel-actor__name {
   padding: 0 2px;
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -392,9 +522,49 @@
 .panel-view-toggles__title {
   flex: 1;
   padding: 0 2px;
-  font-size: 11px;
+  font-size: var(--panel-font-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+/*
+ * Тумблер темы: значок и слово. У темы ТРИ состояния, и третье — «как в
+ * системе» — значком от двух других не отличить, поэтому текущее состояние
+ * подписано словом. В свёрнутом меню слово прячется вместе с прочими
+ * подписями, а значок и подсказка остаются.
+ */
+.panel-view-toggles__theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--panel-radius-control);
+  background: transparent;
+  color: var(--panel-muted);
+  font-family: inherit;
+  font-size: var(--panel-font-xs);
+  cursor: pointer;
+}
+.panel-view-toggles__theme .panel-icon {
+  font-size: var(--panel-font-lg);
+}
+.panel-view-toggles__theme:hover {
+  background: var(--panel-surface-2);
+  color: var(--panel-text);
+}
+.panel-view-toggles__theme:focus-visible {
+  outline: none;
+  box-shadow: var(--panel-focus-ring);
+}
+.panel-shell[data-collapsed] .panel-view-toggles__state {
+  display: none;
+}
+.panel-shell[data-collapsed] .panel-view-toggles__theme {
+  justify-content: center;
+  padding: 0;
+  width: 28px;
 }
 
 /*
@@ -443,8 +613,8 @@
   margin-left: 0;
   min-width: 16px;
   padding: 0 3px;
-  font-size: 10px;
-  line-height: 14px;
+  font-size: var(--panel-font-xs);
+  line-height: 15px;
   /* Кольцо цветом меню отделяет счётчик от значка, если они всё же сойдутся
      на трёхзначном числе. */
   box-shadow: 0 0 0 2px var(--panel-surface);
@@ -476,9 +646,10 @@
   z-index: 3;
 }
 
+/* Поля экрана приходят из токенов плотности: «плотно» сжимает и их. */
 .panel-main {
   flex: 1;
-  padding: 20px 20px 48px;
+  padding: var(--panel-main-pad) var(--panel-main-pad) 48px;
   min-width: 0;
 }
 
@@ -502,7 +673,7 @@
   font-family: inherit;
   /* Кегль задаёт РАЗМЕР ЗНАЧКА (`width: 1em` в `PanelIcon`): один набор
      иконок обслуживает и меню, и шапку, и тумблеры вида. */
-  font-size: 17px;
+  font-size: var(--panel-font-lg);
   cursor: pointer;
 }
 .panel-icon-button:hover {
@@ -523,9 +694,15 @@
 
 /* ── Справка экрана (панель v3) ─────────────────────────────────────────── */
 
+/*
+ * Справка экрана. Не карточка: она стоит между шапкой и таблицей, и рамка
+ * вокруг неё была третьей коробкой подряд. Абзацы, которые раньше жили прямо
+ * в шапке, переехали сюда — в шапке осталась одна строка сути.
+ */
 .panel-help {
-  margin-bottom: 16px;
-  padding: 12px 16px;
+  margin: calc(-1 * var(--panel-gap)) 0 var(--panel-gap);
+  padding: var(--panel-gap) 0;
+  border-bottom: 1px solid var(--panel-border);
 }
 .panel-help__summary {
   cursor: pointer;
@@ -551,7 +728,7 @@
   border-radius: 999px;
   background: var(--panel-surface-2);
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 .panel-help__summary:focus-visible {
   outline: none;
@@ -569,7 +746,7 @@
 }
 .panel-help__card-title {
   margin: 0 0 4px;
-  font-size: 13px;
+  font-size: var(--panel-font);
   font-weight: 600;
 }
 
@@ -592,7 +769,7 @@
   cursor: pointer;
 }
 .panel-search__open .panel-icon {
-  font-size: 16px;
+  font-size: var(--panel-font-lg);
 }
 .panel-search__open:hover {
   color: var(--panel-text);
@@ -607,11 +784,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Вложена в кнопку поиска: радиус на шаг меньше её (правило концентричности). */
 .panel-search__hotkey {
   padding: 0 4px;
   border: 1px solid var(--panel-border);
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: var(--panel-radius-inner);
+  font-size: var(--panel-font-xs);
   font-family: inherit;
 }
 /* В свёрнутом меню от кнопки остаётся значок. */
@@ -637,7 +815,7 @@
   inset: 0;
   border: 0;
   padding: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--panel-scrim);
   cursor: default;
 }
 .panel-search__dialog {
@@ -646,10 +824,11 @@
   max-height: 70vh;
   overflow-y: auto;
   padding: 12px;
-  border: 1px solid var(--panel-border-strong);
+  border: 1px solid var(--panel-border);
   border-radius: var(--panel-radius-card);
   background: var(--panel-surface);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  /* Единственный слой ПОВЕРХ содержимого — единственная тень в панели. */
+  box-shadow: var(--panel-shadow-overlay);
 }
 /* Поле занимает всю ширину окна поиска: `.panel-input` рассчитан на строку
    формы, а здесь оно — единственный элемент управления. */
@@ -665,7 +844,7 @@
 }
 .panel-search__group {
   margin: 0 0 4px;
-  font-size: 11px;
+  font-size: var(--panel-font-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -689,7 +868,7 @@
 .panel-search__hit-hint {
   grid-column: 1;
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -729,13 +908,21 @@
   padding: var(--panel-card-pad);
 }
 
-/* Шапка экрана: заголовок + пояснение слева, действия справа. */
+/*
+ * Шапка экрана: заголовок и одна строка сути слева, действия справа.
+ *
+ * Ни рамки, ни фона — только разделитель снизу: рамка вокруг шапки, рамка
+ * вокруг справки, рамка вокруг таблицы и рамка вокруг пагинации складывались в
+ * четыре коробки на экран. Подробности переехали в раскрывашку справки.
+ */
 .panel-page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: var(--panel-gap);
+  margin-bottom: var(--panel-gap);
+  padding-bottom: var(--panel-gap);
+  border-bottom: 1px solid var(--panel-border);
 }
 .panel-page-header__main {
   flex: 1;
@@ -778,6 +965,19 @@
   color: var(--panel-text);
 }
 
+/*
+ * Листание списка. Не карточка: это строка под таблицей, а не отдельный блок
+ * содержимого — рамка вокруг неё была четвёртой коробкой на экране.
+ */
+.panel-pager {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: var(--panel-gap);
+  padding-top: var(--panel-gap);
+  border-top: 1px solid var(--panel-border);
+}
+
 /* Счётчик работы в меню. Ноль и «не получили» не рисуются вовсе. */
 .panel-nav-badge {
   display: inline-block;
@@ -785,25 +985,23 @@
   margin-left: 6px;
   padding: 0 6px;
   border-radius: 999px;
-  border: 1px solid var(--panel-ink);
   background: var(--panel-warn);
-  /* Тёмный текст на янтарном — 8:1 в обеих темах (светлая держит тот же
-     янтарный ради этой строки); белый дал бы 2:1. */
-  color: #1a1408;
-  font-size: 11px;
+  /* Тёмный текст на янтарном — 6.6:1 в обеих темах; белый дал бы 2:1. */
+  color: var(--panel-badge-ink);
+  font-size: var(--panel-font-xs);
   font-weight: 600;
   line-height: 18px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
+/* Заголовок экрана. Один кегль на всю панель, иерархия — весом, не начертанием. */
 .panel-title {
-  font-family: var(--panel-font-display);
-  font-size: 19px;
-  /* У Balsamiq Sans нет веса 800 — жирнее 700 просить нечего (правило бренда). */
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  margin: 0 0 4px;
+  font-size: var(--panel-font-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin: 0 0 2px;
 }
 
 .panel-muted {
@@ -827,9 +1025,27 @@
 }
 
 /*
- * Кнопка. Здесь бренд говорит в полный голос: чернильный контур и жёсткая тень
- * без размытия — сигнатура комикса, и нажимаемое в панели обязано её носить.
- * Тень 2px, а не 4px как на витрине: кнопка панели ростом со строку таблицы.
+ * ── Кнопки: четыре стиля, различимые СТИЛЕМ, а не размером ──────────────
+ *
+ * HIG Buttons: «keep the number of prominent buttons to one or two per view»,
+ * «use style — not size». Отсюда правило панели: заметная кнопка ОДНА на
+ * экран, и она всегда действие формы или шапки, никогда не строки таблицы —
+ * иначе на списке из двадцати строк двадцать акцентов.
+ *
+ *   .panel-button                — обычная: поверхность и рамка. Умолчание,
+ *                                  в том числе для действий в строке.
+ *   .panel-button--primary       — заметная: заливка акцентом.
+ *   .panel-button--secondary     — вторичная: только текст акцентом. Имя
+ *                                  класса прежнее: он полтора месяца стоял в
+ *                                  разметке пяти кнопок и НЕ БЫЛ ОПИСАН —
+ *                                  «Закрыть» и «Очистить чат» выглядели ровно
+ *                                  как «Отправить». Незнакомый класс для
+ *                                  браузера не ошибка, а тишина; теперь
+ *                                  такую тишину роняет канарейка.
+ *   .panel-button--danger        — опасная: красный текст. «Отклонить» рядом
+ *                                  с «Выплачено» обязана отличаться до чтения.
+ *
+ * Жёсткой тени и чернильного контура здесь больше нет (см. шапку файла).
  */
 .panel-button {
   display: inline-flex;
@@ -837,31 +1053,28 @@
   gap: 6px;
   padding: 7px 14px;
   border-radius: var(--panel-radius-control);
-  border: 1.5px solid var(--panel-ink);
-  background: var(--panel-surface-2);
-  box-shadow: var(--panel-shadow-hard-sm);
+  border: 1px solid var(--panel-border-strong);
+  background: var(--panel-surface);
   color: var(--panel-text);
-  font-family: var(--panel-font-display);
+  font-family: inherit;
   font-size: inherit;
-  font-weight: 700;
+  font-weight: 500;
+  line-height: 1.3;
   cursor: pointer;
   /* Перечисляем свойства явно: `transition: all` тянет за собой всё подряд. */
-  transition-property: translate, box-shadow, border-color, background-color;
+  transition-property: background-color, border-color, color, opacity;
   transition-duration: 120ms;
   transition-timing-function: ease-out;
 }
-.panel-button:hover {
-  background: var(--panel-surface);
-  border-color: var(--panel-accent);
+.panel-button:hover:not([disabled]) {
+  background: var(--panel-surface-2);
 }
 /*
- * Нажатие вдавливает кнопку В тень, а не уменьшает её: при жёсткой тени
- * масштаб оставляет тень на месте и кнопка «отклеивается». Смещение равно
- * тени, поэтому нижний край остаётся на месте.
+ * Нажатие гасит кнопку, а не двигает её: смещение было приёмом жёсткой тени —
+ * без тени оно читается как дрожание.
  */
 .panel-button:active:not([disabled]) {
-  translate: 2px 2px;
-  box-shadow: none;
+  opacity: 0.7;
 }
 .panel-button:focus-visible {
   outline: none;
@@ -872,11 +1085,48 @@
   cursor: default;
 }
 
+/* Заметная. Одна на экран — это правило разметки, стилями его не выразить. */
+.panel-button--primary {
+  border-color: transparent;
+  background: var(--panel-accent);
+  color: var(--panel-accent-ink);
+}
+.panel-button--primary:hover:not([disabled]) {
+  background: color-mix(in srgb, var(--panel-accent) 88%, var(--panel-text));
+}
+
+/*
+ * Вторичная: ни рамки, ни заливки — только текст акцентом. Наведение красит
+ * НЕЙТРАЛЬНОЙ второй поверхностью, а не подмесом акцента: на своей же заливке
+ * акцент даёт 4.4:1 и перестаёт держать порог ровно в момент наведения.
+ */
+.panel-button--secondary {
+  border-color: transparent;
+  background: transparent;
+  color: var(--panel-accent);
+}
+.panel-button--secondary:hover:not([disabled]) {
+  background: var(--panel-surface-2);
+}
+
+/*
+ * Опасная. Красный ТЕКСТ, а не красная заливка: заливкой она стала бы вторым
+ * заметным действием на экране и перетянула бы внимание с основного.
+ */
+.panel-button--danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--panel-danger-text);
+}
+.panel-button--danger:hover:not([disabled]) {
+  background: var(--panel-surface-2);
+}
+
 .panel-input {
   padding: 8px 12px;
   border-radius: var(--panel-radius-control);
   border: 1px solid var(--panel-border-strong);
-  background: var(--panel-bg);
+  background: var(--panel-surface);
   color: var(--panel-text);
   font: inherit;
 }
@@ -888,16 +1138,26 @@
 
 .panel a:focus-visible {
   outline: none;
-  border-radius: 3px;
+  border-radius: var(--panel-radius-inner);
+  box-shadow: var(--panel-focus-ring);
+}
+
+/*
+ * Раскрывашки — справка экрана, история правок текста, выполненные запросы
+ * аналитика. Все три открываются с клавиатуры, и все три обязаны показывать,
+ * что сейчас в фокусе: `<summary>` по умолчанию рисует системный контур,
+ * который на тёмной подложке почти не виден.
+ */
+.panel-text-row__history > summary:focus-visible,
+.panel-analyst__call > summary:focus-visible {
+  outline: none;
+  border-radius: var(--panel-radius-control);
   box-shadow: var(--panel-focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .panel-button {
     transition: none;
-  }
-  .panel-button:active:not([disabled]) {
-    translate: none;
   }
   .panel-sidebar__group-chevron {
     transition: none;
@@ -912,7 +1172,7 @@
 }
 
 .panel-code-input {
-  font-size: 24px;
+  font-size: var(--panel-font-xl);
   letter-spacing: 0.4em;
   text-align: center;
   width: 100%;
@@ -925,8 +1185,8 @@
   border-radius: var(--panel-radius-control);
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 15px;
+  font-family: var(--panel-font-mono);
+  font-size: var(--panel-font-md);
   letter-spacing: 0.08em;
   word-break: break-all;
 }
@@ -965,11 +1225,20 @@
   white-space: nowrap;
 }
 
-/* Обычный регистр: кириллица капсом читается медленнее и занимает шире. */
+/*
+ * Обычный регистр: кириллица капсом читается медленнее и занимает шире.
+ *
+ * Шапка ЛИПКАЯ (NN/g Data Tables): на сотой строке колонку иначе приходится
+ * угадывать. Фон обязателен — прозрачная шапка накладывалась бы на строки.
+ */
 .panel-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-bg);
   color: var(--panel-muted);
   font-weight: 500;
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 
 /* Количественное — вправо, вместе с заголовком: колонку сумм сканируют по
@@ -989,10 +1258,29 @@
   background: var(--panel-surface-2);
 }
 
-/* Горизонтальная прокрутка вместо перелома вёрстки — для таблиц, у которых
-   нет карточной раскладки. */
+/*
+ * Горизонтальная прокрутка вместо перелома вёрстки — для таблиц, у которых
+ * нет карточной раскладки.
+ *
+ * ⚠️ На широком экране обёртка перестаёт прокручиваться, и это НЕ украшение:
+ * `overflow-x: auto` по спецификации превращает `overflow-y: visible` в `auto`,
+ * то есть делает обёртку областью прокрутки по обеим осям. Липкая шапка внутри
+ * такой обёртки прилипает к её верху — а он и так не двигается, потому что
+ * вертикально прокручивается ЭКРАН. Порог 1024 — тот же, на котором панель уже
+ * меняет раскладку: ниже него меню выезжает поверх, а три самые широкие
+ * таблицы раскладываются карточками.
+ *
+ * Если какая-то таблица всё же не помещается на широком экране, лечение —
+ * карточная раскладка для неё (`panel-table--cards`), а не возврат обёртки:
+ * иначе липкая шапка молча перестаёт работать на всём экране.
+ */
 .panel-table-scroll {
   overflow-x: auto;
+}
+@media (min-width: 1025px) {
+  .panel-table-scroll {
+    overflow-x: visible;
+  }
 }
 
 /*
@@ -1062,6 +1350,16 @@
     flex-direction: row;
     justify-content: space-between;
   }
+  /* На телефоне меню полноразмерное: подпись темы возвращается вместе с
+     остальными, иначе третье состояние тумблера опознать нечем. */
+  .panel-shell[data-collapsed] .panel-view-toggles__state {
+    display: revert;
+  }
+  .panel-shell[data-collapsed] .panel-view-toggles__theme {
+    justify-content: flex-start;
+    padding: 0 8px;
+    width: auto;
+  }
   /* Кнопка сворачивания — приём широкого экрана; на телефоне меню закрывают
      касанием мимо него. */
   .panel-sidebar__collapse {
@@ -1077,7 +1375,7 @@
     position: fixed;
     inset: 0;
     z-index: 4;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--panel-scrim);
   }
   /* Класс сильнее умолчания браузера для `hidden`: без этой строки затемнение
      осталось бы поверх экрана при закрытом меню и съело бы все касания. */
@@ -1138,7 +1436,7 @@
     content: attr(data-label);
     flex: 0 0 auto;
     color: var(--panel-muted);
-    font-size: 12px;
+    font-size: var(--panel-font-sm);
     text-align: left;
   }
   .panel-table--cards td:empty {
@@ -1148,31 +1446,59 @@
 
 /* ── Статусы, списки определений, хронология ─────────────────────────── */
 
+/*
+ * Пилюля статуса — заливка тоном и затемнённый текст, БЕЗ обводки: контур
+ * вокруг каждой пилюли в таблице на четыреста строк даёт четыреста рамок.
+ * Контраст текста к заливке посчитан у токенов `--panel-*-text`.
+ */
 .panel-status {
   display: inline-block;
-  padding: 1px 8px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid var(--panel-border);
+  font-size: var(--panel-font-sm);
+  font-weight: 500;
   white-space: nowrap;
+  background: var(--panel-surface-2);
+  color: var(--panel-muted);
 }
 .panel-status--danger {
   color: var(--panel-danger-text);
-  border-color: var(--panel-danger);
   background: color-mix(in srgb, var(--panel-danger) 14%, transparent);
 }
 .panel-status--warn {
   color: var(--panel-warn-text);
-  border-color: var(--panel-warn);
   background: color-mix(in srgb, var(--panel-warn) 14%, transparent);
 }
 .panel-status--ok {
   color: var(--panel-ok-text);
-  border-color: var(--panel-ok);
   background: color-mix(in srgb, var(--panel-ok) 14%, transparent);
 }
 .panel-status--muted {
   color: var(--panel-muted);
+  background: var(--panel-surface-2);
+}
+/* Число на рабочем столе: та же пилюля, но читается как показатель блока. */
+.panel-status--lg {
+  font-size: var(--panel-font-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Режим разговора поддержки — кто сейчас отвечает клиенту. Три режима прежде
+ * рисовались ОДНОЙ нейтральной пилюлей: «закрыт», «помощник» и «оператор»
+ * выглядели одинаково, хотя это три разных состояния работы.
+ */
+.panel-status--mode-idle {
+  color: var(--panel-muted);
+  background: var(--panel-surface-2);
+}
+.panel-status--mode-ai {
+  color: var(--panel-accent-text);
+  background: color-mix(in srgb, var(--panel-accent) 14%, transparent);
+}
+.panel-status--mode-operator {
+  color: var(--panel-warn-text);
+  background: color-mix(in srgb, var(--panel-warn) 14%, transparent);
 }
 
 /* Сетка карточек: на телефоне одна колонка (панель читают и с телефона). */
@@ -1223,20 +1549,32 @@
 }
 
 .panel-thread__item {
-  border-left: 3px solid var(--panel-border, #2a2f3a);
+  border-left: 3px solid var(--panel-border);
   padding-left: 10px;
 }
 
 .panel-thread__item--user {
-  border-left-color: #4c8bf5;
+  border-left-color: var(--panel-role-client);
 }
 
 .panel-thread__item--operator {
-  border-left-color: #2ecc71;
+  border-left-color: var(--panel-role-operator);
 }
 
 .panel-thread__item--assistant {
-  border-left-color: #6c7280;
+  border-left-color: var(--panel-role-assistant);
+}
+
+/*
+ * Служебная строка — смена режима разговора. Это не реплика: её видит панель,
+ * но не клиент, и помощник не получает её в историю. Пунктир вместо сплошной
+ * линии отличает её от трёх ролей ещё до чтения текста; класс полтора месяца
+ * стоял в разметке без описания и рисовался как чужая реплика.
+ */
+.panel-thread__item--system {
+  border-left-style: dashed;
+  border-left-color: var(--panel-border-strong);
+  font-size: var(--panel-font-sm);
 }
 
 /* ── Графики раздела «Аналитика» (панель v2, ветка A) ───────────────────── */
@@ -1281,7 +1619,7 @@
 .panel-chart__label,
 .panel-chart__value {
   fill: var(--panel-muted);
-  font-size: 11px;
+  font-size: var(--panel-font-xs);
   font-family: inherit;
 }
 .panel-chart__value {
@@ -1295,7 +1633,7 @@
   flex-wrap: wrap;
   margin-top: 6px;
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 .panel-chart__caption-value {
   font-variant-numeric: tabular-nums;
@@ -1310,12 +1648,13 @@
 }
 .panel-stat__label {
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 .panel-stat__value {
-  font-size: 22px;
+  font-size: var(--panel-font-xl);
   font-weight: 600;
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Горизонтальные столбцы: подпись — полоса — значение. */
@@ -1356,7 +1695,7 @@
   min-width: 48px;
   margin-left: 8px;
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 
 /* Переключатель периода — ссылки, текущий выделен как пункт меню. */
@@ -1389,8 +1728,23 @@
 
 /* ── Аналитик: чат, выполненные запросы (панель v2, ветка B) ─────────────── */
 
+/*
+ * Класс корня и класс формы полтора месяца стояли в разметке без описания —
+ * ровно тот случай, ради которого заведена канарейка. Форма получает ритм
+ * плотности; корень — ограничитель ширины: ответ модели читается абзацем, и
+ * на широком мониторе строка в 200 символов не читается вовсе.
+ */
+.panel-analyst {
+  max-width: 78ch;
+}
+.panel-analyst__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: var(--panel-gap);
+}
 .panel-analyst__thread {
-  margin-bottom: 16px;
+  margin-bottom: var(--panel-gap);
 }
 /* Ответ модели — plain text: переводы строк сохраняются, Markdown не парсится. */
 .panel-analyst__text {
@@ -1411,15 +1765,16 @@
 .panel-analyst__call summary {
   cursor: pointer;
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
+/* Вложен в раскрывашку запроса: радиус на шаг меньше её. */
 .panel-analyst__sql {
   margin: 8px 0;
   padding: 8px 10px;
-  border-radius: var(--panel-radius-control);
+  border-radius: var(--panel-radius-inner);
   background: var(--panel-bg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--panel-font-mono);
+  font-size: var(--panel-font-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow-x: auto;
@@ -1444,20 +1799,20 @@
 }
 .panel-text-row__title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--panel-font-md);
   font-weight: 600;
 }
 .panel-text-row__hint {
   margin: 2px 0 0;
-  font-size: 13px;
+  font-size: var(--panel-font);
 }
 .panel-text-row__meta {
   margin: 8px 0;
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
   overflow-wrap: anywhere;
 }
 .panel-text-row__meta code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--panel-font-mono);
 }
 .panel-text-editor__bar {
   display: flex;
@@ -1467,7 +1822,7 @@
   margin-top: 8px;
 }
 .panel-text-editor__count {
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
   font-variant-numeric: tabular-nums;
   margin-right: auto;
 }
@@ -1477,7 +1832,7 @@
 .panel-text-row__history summary {
   cursor: pointer;
   color: var(--panel-muted);
-  font-size: 12px;
+  font-size: var(--panel-font-sm);
 }
 /* Тексты как есть: переводы строк сохраняются, Markdown не парсится. */
 .panel-text-row__value {

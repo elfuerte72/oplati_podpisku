@@ -8,17 +8,27 @@ import { cardStatus, orderStatus, paymentStatus } from '@oplati/types';
 
 import * as labels from './labels';
 import * as roles from './roles';
+import { orderActorLabel, orderEventLabel, paymentProviderLabel } from './format';
 import {
   ACTION_TITLES,
   attentionLabel,
   CARD_STATUS_LABELS,
   COLUMN_TITLES,
+  HOLDS_SUPPORT_TEMPLATE,
   ORDER_STATUS_LABELS,
   PAYMENT_STATUS_LABELS,
   PRESET_TITLES,
   SECTION_TITLES,
   SORT_TITLES,
 } from './labels';
+
+/** Обход дерева файлов — общий для канареек, читающих исходники. */
+function walkFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    return statSync(path).isDirectory() ? walkFiles(path) : [path];
+  });
+}
 
 /**
  * Словарь панели (редизайн, тикет 01). Термин живёт в ОДНОМ месте: «Недожатые»
@@ -95,6 +105,77 @@ describe('фильтры, сортировка, колонки, действия
     expect(ACTION_TITLES.fulfillmentStart).toBe('Взять в работу');
     expect(ACTION_TITLES.fulfillmentComplete).toBe('Отметить выданным');
     expect(ACTION_TITLES.payoutPaidConfirm).toBe('Подтвердить выплату');
+  });
+});
+
+/**
+ * История заказа словами (вариант A дизайн-аудита, тикет 06). До него строка
+ * печатала идентификатор из кода: `fulfillment_failed`, `payment_amount_mismatch`.
+ */
+describe('подписи истории заказа', () => {
+  it('событие и автор называются по-русски', () => {
+    expect(orderEventLabel('payment_invoice_created')).toBe('Счёт выставлен');
+    expect(orderEventLabel('payment_succeeded')).toBe('Оплата получена');
+    expect(orderEventLabel('issue_card_failed')).toBe('Выпуск карты не удался');
+    expect(orderActorLabel('system')).toBe('автомат');
+    expect(orderActorLabel('payment_provider')).toBe('платёжный шлюз');
+  });
+
+  it('неизвестное значение показывается как есть, а не прочерком', () => {
+    // Событие может появиться в коде раньше строки в словаре. Прочерк скрыл бы
+    // от менеджера, что с заказом вообще что-то происходило.
+    expect(orderEventLabel('brand_new_event')).toBe('brand_new_event');
+    expect(orderActorLabel('unknown_actor')).toBe('unknown_actor');
+  });
+
+  it('подписи событий и авторов не повторяются', () => {
+    // Две одинаковые подписи у разных событий делают историю нечитаемой ровно
+    // там, где её читают, — при разборе «что пошло не так».
+    const events = Object.values(labels.ORDER_EVENT_LABELS);
+    expect(new Set(events).size).toBe(events.length);
+    const actors = Object.values(labels.ORDER_ACTOR_LABELS);
+    expect(new Set(actors).size).toBe(actors.length);
+  });
+
+  it('у КАЖДОГО события, которое пишет код, есть подпись', () => {
+    // Полноту типом не удержать: события рождаются строками в разных местах
+    // кода, общего enum'а у них нет. Поэтому список берётся из исходников —
+    // добавили событие, забыли строку, и канарейка падает.
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    const root = join(here, '..', '..', '..', '..');
+    const sources = [
+      ...walkFiles(join(root, 'apps', 'web', 'lib')),
+      ...walkFiles(join(root, 'packages', 'db', 'src')),
+    ].filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+
+    const seen = new Set<string>();
+    for (const file of sources) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/eventType: '([a-z_]+)'/g)) {
+        if (match[1]) seen.add(match[1]);
+      }
+    }
+    expect(seen.size).toBeGreaterThan(10);
+
+    const missing = [...seen].filter((e) => !Object.hasOwn(labels.ORDER_EVENT_LABELS, e));
+    expect(missing).toEqual([]);
+  });
+});
+
+describe('платёжные шлюзы человеческими именами', () => {
+  it('в списке платежей не остаётся сырых значений', () => {
+    expect(paymentProviderLabel('loveandpay')).toBe('Love&Pay');
+    expect(paymentProviderLabel('freekassa')).toBe('Freekassa');
+    // Значение из базы, которого в словаре нет, показывается как есть.
+    expect(paymentProviderLabel('brandnew')).toBe('brandnew');
+  });
+});
+
+describe('шаблон обращения в поддержку шлюза', () => {
+  it('номер кассы приходит параметром, а не записан в тексте', () => {
+    // Записанный числом, он был второй копией значения из env и разъехался бы
+    // молча при смене кассы.
+    expect(HOLDS_SUPPORT_TEMPLATE.body(74953)).toContain('Касса 74953.');
+    expect(HOLDS_SUPPORT_TEMPLATE.body(null)).toContain('<номер кассы>');
   });
 });
 

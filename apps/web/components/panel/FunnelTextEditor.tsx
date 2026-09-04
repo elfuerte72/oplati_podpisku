@@ -132,7 +132,9 @@ export function FunnelTextEditor({ textKey, value, isOverridden, maxLength, sing
         <span className="panel-muted panel-text-editor__count">
           {draft.length} / {maxLength}
         </span>
-        <button type="submit" className="panel-button" disabled={busy !== null}>
+        {/* Заметная кнопка строки реестра: «Вернуть по умолчанию» и
+            «Отправить мне» — вторичные. */}
+        <button type="submit" className="panel-button panel-button--primary" disabled={busy !== null}>
           {busy === 'save' ? FUNNEL_TEXTS_TEXT.saving : FUNNEL_TEXTS_TEXT.save}
         </button>
         <button

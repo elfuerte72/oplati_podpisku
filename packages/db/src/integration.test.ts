@@ -4467,7 +4467,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
       .where(eq(schema.payments.id, payment.id));
     await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
 
-    const { items } = await listHoldsForPanel(db, 100);
+    const { items } = await listHoldsForPanel(db, { limit: 100 });
     const row = items.find((r) => r.orderId === order.id);
 
     expect(row?.lastProviderStatus).toBe(7);
@@ -4485,7 +4485,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
     // best-effort, и «бот заблокирован пользователем» гасится log.warn.
     // Лимит задан явно: в файле общая база, и на дефолтной странице свой заказ
     // однажды перестанет помещаться — тест упадёт с непонятным `undefined`.
-    const before = await listHoldsForPanel(db, 100);
+    const before = await listHoldsForPanel(db, { limit: 100 });
     expect(before.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeNull();
     // Заодно: страница, вместившая всё, не должна кричать «показаны не все».
     expect(before.hasMore).toBe(false);
@@ -4496,7 +4496,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
       actorType: 'system',
     });
 
-    const after = await listHoldsForPanel(db, 100);
+    const after = await listHoldsForPanel(db, { limit: 100 });
     expect(after.items.find((r) => r.orderId === order.id)?.clientNotifiedAt).toBeInstanceOf(Date);
   });
 
@@ -4522,7 +4522,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
     }
     await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
 
-    const page = await listHoldsForPanel(db, 1);
+    const page = await listHoldsForPanel(db, { limit: 1 });
 
     expect(page.hasMore).toBe(true);
   });
@@ -4539,7 +4539,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
       await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
     }
 
-    const page = await listHoldsForPanel(db, 1);
+    const page = await listHoldsForPanel(db, { limit: 1 });
 
     expect(page.items).toHaveLength(1);
     expect(page.hasMore).toBe(true);
@@ -4551,7 +4551,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
     // после дедупа. Сравниваем дельту с полной выборкой.
     const user = await makeUser({ telegramId: `tg-hold-count-${++seq}` });
     const before = await countHoldsForPanel(db);
-    const fullBefore = await listHoldsForPanel(db, 100);
+    const fullBefore = await listHoldsForPanel(db, { limit: 100 });
     // База уже содержит холды из соседних тестов — сверяем дельту.
     for (let i = 0; i < 3; i++) {
       const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
@@ -4571,7 +4571,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
     }
 
     const after = await countHoldsForPanel(db);
-    const fullAfter = await listHoldsForPanel(db, 100);
+    const fullAfter = await listHoldsForPanel(db, { limit: 100 });
 
     expect(after - before).toBe(3);
     if (!fullAfter.hasMore) {
@@ -4591,7 +4591,7 @@ describe('панель: антифрод-холды (тикет 05)', () => {
       await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
     }
 
-    const page = await listHoldsForPanel(db, 100);
+    const page = await listHoldsForPanel(db, { limit: 100 });
     const count = await countHoldsForPanel(db);
 
     expect(page.items).toHaveLength(100);
@@ -4966,5 +4966,159 @@ describe('резервы карточного фонда (трек vcc-preflight
 
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(await sumLiveCardFundReservations(db, NOW)).toBe(before + 12_400);
+  });
+});
+
+/**
+ * Страницы списков панели (вариант A дизайн-аудита, тикет 04).
+ *
+ * До него шесть экранов писали «показаны не все» и не давали никакого способа
+ * увидеть остальное. Проверяется ровно то, что ломается молча: вторая страница
+ * не повторяет первую и не теряет строк между ними. Так и выглядит ошибка
+ * смещения — экран работает, ссылки нажимаются, а часть записей просто не
+ * показывается никогда.
+ */
+describe('панель: страницы списков (вариант A, тикет 04)', () => {
+  /**
+   * Первая и вторая страницы по одной строке дают ровно первые две строки
+   * полной выборки, в том же порядке.
+   *
+   * Сверяемся с ПОЛНОЙ выборкой, а не с ожидаемыми идентификаторами: база
+   * общая на весь файл, и в списке лежат записи соседних блоков. Утверждение
+   * при этом остаётся сильным — оно ловит и повтор, и пропуск.
+   */
+  async function expectPagesMatchFullList<T>(
+    read: (opts: { limit: number; offset: number }) => Promise<{ items: T[]; hasMore: boolean }>,
+    idOf: (row: T) => string,
+  ) {
+    const full = await read({ limit: 100, offset: 0 });
+    expect(full.items.length).toBeGreaterThanOrEqual(2);
+
+    const first = await read({ limit: 1, offset: 0 });
+    const second = await read({ limit: 1, offset: 1 });
+
+    expect(first.items.map(idOf)).toEqual([idOf(full.items[0] as T)]);
+    expect(second.items.map(idOf)).toEqual([idOf(full.items[1] as T)]);
+    // Первая страница обязана знать, что продолжение есть: без этого кнопки
+    // «Дальше» не будет и до второй страницы никто не дойдёт.
+    expect(first.hasMore).toBe(true);
+  }
+
+  /** Партнёр с одним начислением заданного размера — порядок по «начислено». */
+  async function makePartnerForPaging(amountUsdCents: number) {
+    const partner = await makeUser({ telegramId: `tg-partner-paging-${++seq}` });
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents }],
+    });
+    return partner;
+  }
+
+  it('проверка платежей листается по заказам, а не по строкам платежей', async () => {
+    // У заказа бывает несколько платежей, и смещение по СОЕДИНЁННЫМ строкам
+    // пропускало бы произвольное число заказов — тем большее, чем чаще счёт
+    // перевыставляли.
+    for (let i = 0; i < 2; i += 1) {
+      const user = await makeUser({ telegramId: `tg-hold-page-${++seq}` });
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: user.id });
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'payment_review' });
+      // Перевыставленный счёт: прежний закрывается (частичный UNIQUE держит
+      // не больше одного живого платежа на заказ), новый встаёт на его место.
+      await claimPaymentTerminal(db, payment.id);
+      const { payment: extra } = await upsertPaymentByProviderRef(db, {
+        orderId: order.id,
+        provider: 'freekassa',
+        providerRef: `hold-page-${++seq}`,
+        amountRub: 50_000,
+      });
+      await setPaymentProviderStatus(db, { paymentId: extra.id, providerStatus: 7 });
+    }
+
+    await expectPagesMatchFullList(
+      (opts) => listHoldsForPanel(db, opts),
+      (row) => row.orderId,
+    );
+  });
+
+  it('ждут оплаты: вторая страница не повторяет первую', async () => {
+    const user = await makeUser({ telegramId: `tg-pending-page-${++seq}` });
+    await makeOrderWithPendingPayment({ userId: user.id });
+    await makeOrderWithPendingPayment({ userId: user.id });
+
+    await expectPagesMatchFullList(
+      (opts) => listPendingOrdersForPanel(db, { ...opts, userId: user.id }),
+      (row) => row.orderId,
+    );
+  });
+
+  it('поддержка: вторая страница не повторяет первую', async () => {
+    async function makeRequest() {
+      const user = await makeUser({ telegramId: `tg-support-page-${++seq}` });
+      const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+      await appendMessage(db, {
+        conversationId: conversation.id,
+        role: 'user',
+        content: 'нужна помощь',
+      });
+      await appendMessage(db, {
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: 'Передали в поддержку',
+        meta: { source: 'support', support_request: true, support_delivered: true },
+      });
+      return conversation;
+    }
+    await makeRequest();
+    await makeRequest();
+
+    await expectPagesMatchFullList(
+      (opts) => listSupportRequestsForPanel(db, opts),
+      (row) => row.conversationId,
+    );
+  });
+
+  it('партнёры: вторая страница не повторяет первую', async () => {
+    await makePartnerForPaging(700);
+    await makePartnerForPaging(300);
+
+    await expectPagesMatchFullList(
+      (opts) => listReferralPartnersForPanel(db, opts),
+      (row) => row.userId,
+    );
+  });
+
+  it('приглашённые и заявки на выплату листаются', async () => {
+    // Начисление партнёру нужно ДО заявок: без баланса заявка не создаётся
+    // вовсе, и список остался бы пустым — тест проверял бы ничего.
+    const partner = await makePartnerForPaging(100_000);
+    // Второй приглашённый с другой суммой: порядок приглашённых — по
+    // оплаченному, и на равных суммах он определялся бы датой создания с
+    // точностью до микросекунды.
+    const second = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({
+      userId: second.id,
+      amountRub: 90_000,
+    });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await transitionOrderDetailed(db, { orderId: order.id, toStatus: 'paid' });
+
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 150 });
+
+    await expectPagesMatchFullList(
+      (opts) => listPartnerReferralsForPanel(db, partner.id, opts),
+      (row) => row.userId,
+    );
+    await expectPagesMatchFullList(
+      (opts) => listReferralPayoutsForPanel(db, opts),
+      (row) => row.payoutId,
+    );
   });
 });

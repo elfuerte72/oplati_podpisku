@@ -6,7 +6,9 @@ import { PANEL_DEFAULT_ROWS, getDb, listOrdersForPanel } from '@oplati/db';
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { formatKopecks, orderStatusLabel, orderStatusTone } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
@@ -206,17 +208,15 @@ export default async function PanelOrdersPage({
       />
 
       {orders.length === 0 ? (
-        <div className="panel-card">
-          {/* Пустой список — норма: на проде живых заказов бывает ноль. */}
-          <p className="panel-empty">
-            {filters.query || statuses.length > 0 || filters.page > 1
-              ? EMPTY_TEXT.ordersFiltered
-              : EMPTY_TEXT.orders}
-          </p>
-        </div>
+        /* Пустой список — норма: на проде живых заказов бывает ноль. */
+        <p className="panel-empty">
+          {filters.query || statuses.length > 0 || filters.page > 1
+            ? EMPTY_TEXT.ordersFiltered
+            : EMPTY_TEXT.orders}
+        </p>
       ) : (
         <>
-          <div className="panel-card panel-table-scroll">
+          <div className="panel-table-scroll">
             <table className="panel-table panel-table--cards">
               <thead>
                 <tr>
@@ -251,7 +251,7 @@ export default async function PanelOrdersPage({
                     </td>
                     <td data-label={COLUMN_TITLES.status}>
                       <span
-                        className={`panel-status panel-status--${orderStatusTone(order.status)}`}
+                        className={STATUS_TONE_CLASS[orderStatusTone(order.status)]}
                       >
                         {orderStatusLabel(order.status)}
                       </span>
@@ -272,27 +272,11 @@ export default async function PanelOrdersPage({
             </table>
           </div>
 
-          {/* Усечение выборки проговаривается вслух: страница без продолжения
-              читалась бы как «это все заказы». */}
-          <div
-            className="panel-card"
-            style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center' }}
-          >
-            <span className="panel-muted">
-              Страница {filters.page}
-              {hasMore ? ', есть ещё' : ''}
-            </span>
-            {filters.page > 1 ? (
-              <Link href={ordersHref({ ...linkState, page: filters.page - 1 })}>
-                {ACTION_TITLES.prevPage}
-              </Link>
-            ) : null}
-            {hasMore ? (
-              <Link href={ordersHref({ ...linkState, page: filters.page + 1 })}>
-                {ACTION_TITLES.nextPage}
-              </Link>
-            ) : null}
-          </div>
+          <PanelPager
+            page={filters.page}
+            hasMore={hasMore}
+            hrefFor={(next) => ordersHref({ ...linkState, page: next })}
+          />
         </>
       )}
     </PanelShell>

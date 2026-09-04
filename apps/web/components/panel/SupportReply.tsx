@@ -156,7 +156,14 @@ export function SupportReply({
             placeholder="Ответ уйдёт клиенту от имени бота"
             required
           />
-          <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
+          {/* Заметная кнопка экрана обращения — она здесь одна: «Подключиться»
+              это захват диалога, а не ответ клиенту. */}
+          <button
+            type="submit"
+            className="panel-button panel-button--primary"
+            style={{ marginTop: 8 }}
+            disabled={busy}
+          >
             {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
           </button>
         </form>

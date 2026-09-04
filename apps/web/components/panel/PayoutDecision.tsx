@@ -84,9 +84,11 @@ export function PayoutDecision({
             {confirming === 'paid' ? ACTION_TITLES.payoutPaidConfirm : ACTION_TITLES.payoutPaid}
           </button>
         )}
+        {/* Опасная, а не обычная: «Отклонить» и «Выплачено» стояли рядом
+            неотличимыми, и усталым вечером это ошибка ценой в выплату. */}
         <button
           type="button"
-          className="panel-button"
+          className="panel-button panel-button--danger"
           onClick={() => decide('reject')}
           disabled={busy}
         >

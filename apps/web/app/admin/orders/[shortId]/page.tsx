@@ -8,13 +8,17 @@ import { LocalTime } from '@/components/panel/LocalTime';
 import { ManualFulfillment } from '@/components/panel/ManualFulfillment';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import {
   cardStatusLabel,
   formatKopecks,
   formatOriginalAmount,
   formatUsdCents,
+  orderActorLabel,
+  orderEventLabel,
   orderStatusLabel,
   orderStatusTone,
+  paymentProviderLabel,
   paymentStatusLabel,
   priceBreakdown,
   providerStatusLabel,
@@ -85,7 +89,7 @@ export default async function PanelOrderPage({
         title={
           <>
             {order.shortId}{' '}
-            <span className={`panel-status panel-status--${orderStatusTone(order.status)}`}>
+            <span className={STATUS_TONE_CLASS[orderStatusTone(order.status)]}>
               {orderStatusLabel(order.status)}
             </span>
           </>
@@ -237,7 +241,7 @@ export default async function PanelOrderPage({
               <tbody>
                 {detail.payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td>{payment.provider}</td>
+                    <td>{paymentProviderLabel(payment.provider)}</td>
                     <td className="panel-muted">
                       {payment.providerInvoiceNumber ?? payment.providerRef}
                     </td>
@@ -281,7 +285,7 @@ export default async function PanelOrderPage({
                 <span className="panel-muted">
                   <LocalTime iso={event.createdAt.toISOString()} />
                 </span>{' '}
-                <strong>{event.eventType}</strong>
+                <strong>{orderEventLabel(event.eventType)}</strong>
                 {event.fromStatus || event.toStatus ? (
                   <span>
                     {' '}
@@ -290,7 +294,7 @@ export default async function PanelOrderPage({
                   </span>
                 ) : null}
                 {event.actorType ? (
-                  <span className="panel-muted"> · {event.actorType}</span>
+                  <span className="panel-muted"> · {orderActorLabel(event.actorType)}</span>
                 ) : null}
               </li>
             ))}

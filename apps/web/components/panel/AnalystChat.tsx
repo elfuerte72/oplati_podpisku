@@ -10,6 +10,7 @@ import {
   type AnalystToolCall,
   type ChatState,
 } from '@/lib/panel/ai/chat-state';
+import { threadItemClass } from '@/lib/panel/class-names';
 import { lookupLabel } from '@/lib/panel/format';
 import {
   ANALYST_ERROR_TEXT,
@@ -68,7 +69,7 @@ export function AnalystChat() {
           {chat.turns.map((turn, i) => (
             <li
               key={i}
-              className={`panel-thread__item panel-thread__item--${turn.role === 'user' ? 'user' : 'assistant'}`}
+              className={threadItemClass(turn.role === 'user' ? 'user' : 'assistant')}
             >
               <div className="panel-muted" style={{ fontSize: 12 }}>
                 {turn.role === 'user' ? ANALYST_TEXT.you : ANALYST_TEXT.analyst}
@@ -95,7 +96,8 @@ export function AnalystChat() {
           required
         />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
-          <button type="submit" className="panel-button" disabled={busy}>
+          {/* Заметная кнопка экрана «AI-аналитик» — она здесь одна. */}
+          <button type="submit" className="panel-button panel-button--primary" disabled={busy}>
             {busy ? ANALYST_TEXT.thinking : ANALYST_TEXT.ask}
           </button>
           {chat.turns.length > 0 ? (

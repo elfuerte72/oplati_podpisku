@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { z } from 'zod';
 
 import {
   PANEL_DEFAULT_ROWS,
@@ -11,6 +10,7 @@ import {
 } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import {
@@ -22,8 +22,8 @@ import {
 } from '@/lib/panel/analytics/period';
 import { formatCount, formatShare, lookupLabel } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { parsePanelPage } from '@/lib/panel/paging';
 import {
-  ACTION_TITLES,
   ANALYTICS_TEXT,
   CELL_TEXT,
   COLUMN_TITLES,
@@ -31,6 +31,7 @@ import {
   EXPIRED_SURVEY_ANSWER_TITLES,
   FEEDBACK_KIND_LABELS,
   FEEDBACK_TEXT,
+  PAGE_HINT,
   PERIOD_TITLES,
   SECTION_TITLES,
   START_SURVEY_ANSWER_TITLES,
@@ -51,14 +52,6 @@ export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: SECTION_TITLES.feedback };
 
 const PATH = '/admin/feedback';
-
-// Страница — граница (инвариант 5): Zod с потолком, как у списка заказов.
-const pageSchema = z.coerce.number().int().min(1).max(1000);
-
-function parsePage(raw: string | string[] | undefined): number {
-  const parsed = pageSchema.safeParse(Array.isArray(raw) ? raw[0] : raw);
-  return parsed.success ? parsed.data : 1;
-}
 
 function href(period: AnalyticsPeriod, page: number): string {
   return page > 1 ? `${periodHref(PATH, period)}&page=${page}` : periodHref(PATH, period);
@@ -87,7 +80,7 @@ export default async function PanelFeedbackPage({
 
   const params = await searchParams;
   const period = parsePeriod(params);
-  const page = parsePage(params.page);
+  const page = parsePanelPage(params.page);
   const bounds = periodBounds(period, new Date());
   const since = bounds.since.toISOString();
   const db = getDb();
@@ -115,7 +108,7 @@ export default async function PanelFeedbackPage({
           </nav>
         }
       >
-        <p className="panel-muted">{FEEDBACK_TEXT.intro}</p>
+        <p className="panel-muted">{PAGE_HINT.feedback}</p>
       </PanelPageHeader>
 
       <section className="panel-card" style={{ marginBottom: 16 }}>
@@ -149,11 +142,9 @@ export default async function PanelFeedbackPage({
       </section>
 
       {feed.items.length === 0 ? (
-        <div className="panel-card">
-          <p className="panel-empty">{EMPTY_TEXT.feedback}</p>
-        </div>
+        <p className="panel-empty">{EMPTY_TEXT.feedback}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">
             <thead>
               <tr>
@@ -203,14 +194,9 @@ export default async function PanelFeedbackPage({
         </div>
       )}
 
-      {page > 1 || feed.hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          {feed.hasMore ? `${FEEDBACK_TEXT.hasMore} ` : ''}
-          {page > 1 ? <Link href={href(period, page - 1)}>{ACTION_TITLES.prevPage}</Link> : null}
-          {page > 1 && feed.hasMore ? ' · ' : null}
-          {feed.hasMore ? <Link href={href(period, page + 1)}>{ACTION_TITLES.nextPage}</Link> : null}
-        </p>
-      ) : null}
+      {/* Та же разметка, что у остальных списков: третьего вида листания в
+          панели не осталось. */}
+      <PanelPager page={page} hasMore={feed.hasMore} hrefFor={(next) => href(period, next)} />
     </PanelShell>
   );
 }

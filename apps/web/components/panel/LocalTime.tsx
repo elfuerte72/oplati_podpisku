@@ -37,12 +37,21 @@ function subscribeMinute(onChange: () => void): () => void {
   return () => clearInterval(timer);
 }
 
-function useMinuteTick(): number | null {
-  return useSyncExternalStore(
-    subscribeMinute,
-    () => Math.floor(Date.now() / 60_000),
-    () => null,
-  );
+/**
+ * ⚠️ Серверный снимок — НЕ `null`, а та же текущая минута.
+ *
+ * Возраст не зависит от часового пояса: это разность двух моментов, и сервер
+ * считает её ровно так же, как браузер (страницы панели рендерятся на каждый
+ * запрос, кэша тут нет). Прежний `null` рисовал до гидратации прочерк — и на
+ * экране обращений это читалось как «— назад», а свежее обращение после
+ * гидратации превращалось в «только что назад».
+ *
+ * Расхождение в минуту между серверным рендером и гидратацией снимает
+ * `suppressHydrationWarning` на самом элементе.
+ */
+function useMinuteTick(): number {
+  const nowMinute = () => Math.floor(Date.now() / 60_000);
+  return useSyncExternalStore(subscribeMinute, nowMinute, nowMinute);
 }
 
 export function LocalTime({ iso }: { iso: string }) {
@@ -70,15 +79,18 @@ export function LocalTime({ iso }: { iso: string }) {
 
 /**
  * Возраст записи. Считается от часов ЧИТАТЕЛЯ и обновляется раз в минуту:
- * серверная строка устаревала бы к моменту показа, а «5 мин» не должно висеть
- * полчаса на живом экране.
+ * «5 мин» не должно висеть полчаса на живом экране.
+ *
+ * ⚠️ Слово «назад» здесь НЕ дописывается, и экраны его тоже не дописывают:
+ * «5 мин» рядом со временем создания читается однозначно, а «только что назад»
+ * (единственный экран, который дописывал) читалось как опечатка.
  */
 export function LocalAge({ iso }: { iso: string }) {
   const minute = useMinuteTick();
 
   return (
     <span title={iso} suppressHydrationWarning>
-      {minute === null ? '—' : formatAge(new Date(iso), new Date(minute * 60_000))}
+      {formatAge(new Date(iso), new Date(minute * 60_000))}
     </span>
   );
 }

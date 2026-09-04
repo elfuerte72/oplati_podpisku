@@ -10,6 +10,7 @@ import {
 
 import { FunnelTextEditor } from '@/components/panel/FunnelTextEditor';
 import { LocalTime } from '@/components/panel/LocalTime';
+import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { FUNNEL_TEXTS, type FunnelTextGroup, type FunnelTextSpec } from '@/lib/funnel/texts';
@@ -18,6 +19,8 @@ import {
   CELL_TEXT,
   FUNNEL_TEXTS_TEXT,
   FUNNEL_TEXT_GROUP_TITLES,
+  HELP_TEXT,
+  PAGE_HINT,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
 
@@ -76,8 +79,14 @@ export default async function PanelTextsPage() {
   return (
     <PanelShell actor={access.actor} current="/admin/texts" live={false}>
       <PanelPageHeader title={SECTION_TITLES.texts}>
-        <p className="panel-muted">{FUNNEL_TEXTS_TEXT.intro}</p>
+        <p className="panel-muted">{PAGE_HINT.texts}</p>
       </PanelPageHeader>
+
+      <PanelHelp
+        title={HELP_TEXT.texts.title}
+        hint={HELP_TEXT.texts.hint}
+        cards={HELP_TEXT.texts.cards}
+      />
 
       <div className="panel-grid" style={{ gridTemplateColumns: '1fr' }}>
         {GROUP_ORDER.map((group) => (
