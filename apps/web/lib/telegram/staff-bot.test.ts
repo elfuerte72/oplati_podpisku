@@ -38,17 +38,19 @@ import {
   staffBotOutsiderText,
 } from './templates';
 
-function update(text: string, fromId = 379336096) {
+function update(text: string, fromId = 379336096, chat: { id: number; type: string } = { id: fromId, type: 'private' }) {
   return {
     update_id: 1,
     message: {
       message_id: 1,
-      chat: { id: fromId, type: 'private' as const },
+      chat,
       from: { id: fromId, is_bot: false, first_name: 'Кто-то' },
       text,
     },
   };
 }
+
+const OPS_GROUP = { id: -1001234567890, type: 'supergroup' };
 
 /**
  * Бот персонала (`@oplatishkaasupport_bot`): первый фактор входа и доставка
@@ -151,5 +153,53 @@ describe('handleStaffBotUpdate', () => {
     // Молчание лучше, чем ответ постороннему от имени служебного бота при
     // неизвестном статусе отправителя.
     expect(h.sendMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Ops-группа (трек ops-group, тикет 05): бот в ней — отправитель
+   * уведомлений. При создании группы он ответил в General на первое же
+   * сообщение человека — в рабочей группе это шум под каждой репликой.
+   */
+  describe('в группах молчит', () => {
+    it('сообщение сотрудника в супергруппе — ни ответа, ни лимита, ни БД', async () => {
+      h.findStaffMock.mockImplementation(async () => ({ id: 's1', isActive: true }));
+
+      await handleStaffBotUpdate(update('всем привет', 379336096, OPS_GROUP));
+
+      expect(h.sendMock).not.toHaveBeenCalled();
+      expect(h.rateLimitMock).not.toHaveBeenCalled();
+      expect(h.findStaffMock).not.toHaveBeenCalled();
+    });
+
+    it('обычная группа — тоже молчит', async () => {
+      await handleStaffBotUpdate(update('/start', 379336096, { id: -123, type: 'group' }));
+
+      expect(h.sendMock).not.toHaveBeenCalled();
+      expect(h.rateLimitMock).not.toHaveBeenCalled();
+    });
+
+    it('служебное сообщение темы (без текста) в группе не вызывает ответа', async () => {
+      await handleStaffBotUpdate({
+        update_id: 3,
+        message: {
+          message_id: 7,
+          chat: OPS_GROUP,
+          from: { id: 379336096, is_bot: false, first_name: 'Владелец' },
+        },
+      });
+
+      expect(h.sendMock).not.toHaveBeenCalled();
+      expect(h.findStaffMock).not.toHaveBeenCalled();
+    });
+
+    it('личка после группы работает как прежде', async () => {
+      h.findStaffMock.mockImplementation(async () => ({ id: 's1', isActive: true }));
+
+      await handleStaffBotUpdate(update('всем привет', 379336096, OPS_GROUP));
+      await handleStaffBotUpdate(update('/start'));
+
+      expect(h.sendMock).toHaveBeenCalledTimes(1);
+      expect(h.sendMock).toHaveBeenCalledWith(379336096, STAFF_BOT_START_TEXT);
+    });
   });
 });
