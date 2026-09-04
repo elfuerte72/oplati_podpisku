@@ -414,6 +414,11 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.DEPLOY_ALERT_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.DEPLOY_ALERT_CHAT_ID }}
+          # Тема «Авария» ops-группы (трек ops-group). Пустой — параметр не
+          # передаётся: личка и корень группы работают без него. Зеркало
+          # (инвариант 10) с `OPS_GROUP_THREAD_CRITICAL` в env прода и contact
+          # point Grafana — одна тема в трёх местах, автосверки нет.
+          THREAD_ID: ${{ secrets.DEPLOY_ALERT_THREAD_ID }}
           # Всё, что приходит из контекста github.*, — через env: имя ветки
           # подконтрольно тому, кто её создаёт, и в теле скрипта стало бы кодом.
           APP: ${{ steps.target.outputs.app }}
@@ -431,8 +436,13 @@ jobs:
           # Bot API (протух токен, бот заблокирован), то есть молчащий алёрт
           # выглядел бы как отправленный — ровно та слепота, от которой этот шаг
           # и заведён. Находка CodeRabbit на PR #115.
+          thread_arg=()
+          if [ -n "${THREAD_ID:-}" ]; then
+            thread_arg=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          fi
           curl -sS --fail-with-body --connect-timeout 10 --max-time 30 \
             -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${CHAT_ID}" \
+            "${thread_arg[@]}" \
             --data-urlencode "text=${text}" \
             -o /dev/null -w 'Telegram HTTP %{http_code}\n' || echo "::warning::Алёрт отправить не удалось."

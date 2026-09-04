@@ -37,8 +37,23 @@ function getAlertBot(): Bot | null {
   return _alertBot;
 }
 
-/** Отправить алёрт в чат `chatId` через alert-бот (fallback — прод-бот). */
-export async function sendAlert(chatId: string, text: string): Promise<void> {
+/**
+ * Отправить алёрт в чат `chatId` через alert-бот (fallback — прод-бот).
+ *
+ * Это ПРЕЖНЯЯ схема доставки — личка `ALERT_TELEGRAM_CHAT_ID`; при заданной
+ * ops-группе алёрты уходят ботом входа (`lib/alerts/streams.ts`), и этот
+ * отправитель не участвует. `messageThreadId` — тема супергруппы, если чат
+ * алёртов когда-нибудь окажется группой с темами; в личке не передавать.
+ */
+export async function sendAlert(
+  chatId: string,
+  text: string,
+  opts: { messageThreadId?: number } = {},
+): Promise<void> {
   const bot = getAlertBot() ?? getBot();
-  await bot.api.sendMessage(chatId, text);
+  if (opts.messageThreadId === undefined) {
+    await bot.api.sendMessage(chatId, text);
+    return;
+  }
+  await bot.api.sendMessage(chatId, text, { message_thread_id: opts.messageThreadId });
 }

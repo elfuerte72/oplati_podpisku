@@ -525,11 +525,13 @@ async function reportFundingSchemaMissing(order: PreflightOrder, err: unknown): 
       'Проверка карточного фонда ОТКЛЮЧИЛАСЬ: в базе нет её таблиц — похоже, ' +
         'миграции трека vcc-preflight (0039/0040) не применены на этой базе. ' +
         'Оплаты идут как раньше, БЕЗ проверки: заказ снова может упасть после ' +
-        'приёма денег. Примени миграции и проверь GET /api/ready.',
+        'приёма денег.',
       {
         dedupKey: 'preflight_schema_missing_staff',
         dedupWindowMs: SCHEMA_ALERT_WINDOW_MS,
         capability: 'holds',
+        title: 'Проверка карточного фонда отключилась',
+        action: { text: 'применить миграции и проверить GET /api/ready' },
       },
     );
   } catch (notifyErr) {
@@ -555,12 +557,18 @@ async function reportFundingBusy(order: PreflightOrder, err: unknown): Promise<v
     await notifyStaff(
       `Не удалось занять карточный фонд под заказ ${order.shortId}: расчёт не дождался ` +
         'своей очереди. Клиенту отказано вежливым текстом, заказ жив. Обычно это всплеск ' +
-        'одновременных оплат; если повторяется на спокойном трафике — смотри длинные ' +
-        'транзакции по заказам в базе.',
+        'одновременных оплат.',
       {
         dedupKey: 'preflight_busy_staff',
         dedupWindowMs: BUSY_ALERT_WINDOW_MS,
         capability: 'holds',
+        // Клиенту отказано — это «Авария», а не отчёт о фонде.
+        stream: 'critical',
+        title: 'Клиенту отказано: карточный фонд занят',
+        action: {
+          text: 'при повторах на спокойном трафике — посмотреть длинные транзакции по заказам в базе',
+          path: '/admin/pending',
+        },
       },
     );
   } catch (notifyErr) {
@@ -587,8 +595,10 @@ async function reportFundingUnknown(order: PreflightOrder, err: unknown): Promis
     await notifyStaff(
       'Не удалось прочитать карточный счёт PaySpace перед выставлением счёта ' +
         `(заказ ${order.shortId}). Оплату пропустили — если денег на счёте нет, ` +
-        'заказ упадёт уже после приёма рублей. Проверь баланс и доступность провайдера.',
+        'заказ упадёт уже после приёма рублей.',
       {
+        title: 'Карточный счёт не прочитан',
+        action: { text: 'проверить баланс и доступность PaySpace', path: '/admin' },
         dedupKey: 'preflight_unknown_staff',
         // ⚠️ Окно ЗАДАЁТСЯ явно. У `notifyStaff` своё, дефолтом час: молчи мы
         // о нём, внешнее окно и внутреннее разошлись бы, и Sentry писал бы
@@ -660,8 +670,7 @@ export async function reportFundingCapacityBlocked(
         `свободно ${usdCentsToDollarString(verdict.availableUsdCents)} USD${committedNote}, ` +
         `на этот заказ нужно ${usdCentsToDollarString(verdict.neededUsdCents)} USD — ` +
         `не хватает ${usdCentsToDollarString(shortfallUsdCents)} USD. ` +
-        'Счёт клиенту не выставлен, заказ жив с зафиксированной ценой. ' +
-        'Пополни карточный счёт — пополнение идёт T+1.',
+        'Счёт клиенту не выставлен, заказ жив с зафиксированной ценой.',
       {
         // ⚠️ Окно ЗАДАЁТСЯ явно: дефолт `notifyStaff` — ЧАС, и без этой строки
         // личка молчала бы вчетверо дольше Sentry, хотя тикет требует ровно
@@ -669,6 +678,10 @@ export async function reportFundingCapacityBlocked(
         dedupKey: 'preflight_blocked_staff',
         dedupWindowMs: BLOCKED_ALERT_WINDOW_MS,
         capability: 'holds',
+        // Клиент не смог оплатить — «Авария»: продажа сорвалась прямо сейчас.
+        stream: 'critical',
+        title: 'Клиент не смог оплатить: не хватает карточного фонда',
+        action: { text: 'пополнить карточный счёт PaySpace (зачисление T+1)', path: '/admin' },
       },
     );
   } catch (err) {

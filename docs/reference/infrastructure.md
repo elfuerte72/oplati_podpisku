@@ -112,7 +112,7 @@ json-file растёт неограниченно.
 **Деплой — ТОЛЬКО через `.github/workflows/deploy.yml`** (push в `main`/`dev` → gate
 typecheck+тесты+lint+build → `POST /api/deploy/<refreshToken>` → **проверка, что прод реально
 обновился**: `/api/health` отдаёт `startedAt` позже момента триггера, иначе workflow красный;
-провал любого шага → сообщение в Telegram, если заданы `DEPLOY_ALERT_BOT_TOKEN`/`DEPLOY_ALERT_CHAT_ID`).
+провал любого шага → сообщение в тему «Авария» ops-группы, если заданы `DEPLOY_ALERT_BOT_TOKEN`/`DEPLOY_ALERT_CHAT_ID`; `DEPLOY_ALERT_THREAD_ID` — тема, пустой → корень группы).
 Принятый триггер не равен выкаченному релизу — до 2026-07-25 пайплайн заканчивался на «сборка
 запущена», и упавшая сборка давала зелёный workflow при старом коде на проде. **`curl exit 28`
 в деплое — это внешние эпизоды сетевой недоступности VPS с раннеров GitHub, а НЕ нагрузка от

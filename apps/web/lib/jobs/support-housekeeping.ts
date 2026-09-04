@@ -121,6 +121,8 @@ async function alertUnanswered(now: Date): Promise<number> {
       capability: 'support',
       dedupKey: `support-unanswered-${row.conversationId}`,
       dedupWindowMs: UNANSWERED_ALERT_DEDUP_MS,
+      title: 'Обращение без ответа',
+      action: { text: 'ответить клиенту', path: '/admin/support' },
     });
     if (res.deduped) continue;
     alerted += 1;

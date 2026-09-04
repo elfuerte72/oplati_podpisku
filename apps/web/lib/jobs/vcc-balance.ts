@@ -155,6 +155,11 @@ export async function alertOnLowVccBalance(now: Date = new Date()): Promise<void
         // и длительном состоянии.
         dedupWindowMs: isCritical ? undefined : 24 * 60 * 60 * 1000,
         capability: 'holds',
+        // Критический уровень — «Авария» (следующий заказ упадёт), суточное
+        // предупреждение — «Платежи».
+        stream: isCritical ? 'critical' : 'payments',
+        title: isCritical ? 'Критически мало на карточном счёте' : 'Карточный счёт ниже нормы',
+        action: { text: 'пополнить карточный счёт PaySpace (зачисление T+1)', path: '/admin' },
       },
     );
 

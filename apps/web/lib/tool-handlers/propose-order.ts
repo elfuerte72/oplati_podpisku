@@ -129,7 +129,8 @@ export async function notifyRefundHistoryIfAny(userId: string): Promise<void> {
     await notifyOps(
       `К сведению: клиент с историей возвратов оформляет новый заказ — ` +
         `${count} возврат(ов)/недоплат за последние ${REFUND_HISTORY_WINDOW_DAYS} дней. ` +
-        `Блокировок нет (правил пока не строим) — просто держи в поле зрения.`,
+        `Блокировок нет (правил пока не строим) — просто держать в поле зрения.`,
+      { stream: 'payments', title: 'Клиент с историей возвратов' },
     );
   } catch (err) {
     log.error({ event: 'tool.propose_order.refund_history_failed', userId, err });

@@ -205,9 +205,6 @@ describe('fb:rate — оценка и каскад', () => {
   });
 
   it('1–3 → клиенту дверь в поддержку ПЕРВОЙ, потом ровно один DM персоналу', async () => {
-    // Абсолютная ссылка с хоста ПАНЕЛИ (Telegram не кликает голый путь, а
-    // публичный домен на /admin отдаёт 404 — ревью CodeRabbit PR #182).
-    h.env.PANEL_HOST = 'admin.example.com';
 
     await callFb(`fb:rate:2:${OID}`);
 
@@ -218,10 +215,13 @@ describe('fb:rate — оценка и каскад', () => {
     expect(h.notifyStaffMock).toHaveBeenCalledTimes(1);
     const [alertText, opts] = h.notifyStaffMock.mock.calls[0]! as [
       string,
-      { capability: string; dedupKey: string },
+      { capability: string; dedupKey: string; action?: { path?: string } },
     ];
     expect(alertText).toContain('2/5');
-    expect(alertText).toContain('https://admin.example.com/admin/orders/ORD-1');
+    // Ссылка на заказ — в хвосте «Что делать» единого шаблона: абсолютной её
+    // делает `notifyStaff` по `PANEL_HOST` (Telegram не кликает голый путь, а
+    // публичный домен на /admin отдаёт 404 — ревью CodeRabbit PR #182).
+    expect(opts.action?.path).toBe('/admin/orders/ORD-1');
     expect(opts.capability).toBe('support');
 
     // Клиенту — первым (приоритет доставки клиенту).

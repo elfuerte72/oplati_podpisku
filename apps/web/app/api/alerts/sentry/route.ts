@@ -1,27 +1,30 @@
 import { NextResponse } from 'next/server';
 
 import { formatSentryAlertMessage, sentryAlertPayloadSchema } from '@/lib/alerts/sentry';
+import { isOpsDeliveryConfigured, notifyStream } from '@/lib/alerts/streams';
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
-import { sendAlert } from '@/lib/telegram/alert-bot';
 
 /**
  * POST /api/alerts/sentry — relay алёртов Sentry в Telegram.
  *
  * Sentry alert rule (экшен «Send a notification via a webhook») бьёт сюда с
  * секретом в query (`?s=<SENTRY_ALERT_WEBHOOK_SECRET>`); endpoint форматирует
- * issue и шлёт владельцу в Telegram (`ALERT_TELEGRAM_CHAT_ID`) через отдельный
- * alert-бот (`sendAlert`; fallback — прод-бот, если `ALERT_BOT_TOKEN` не задан).
+ * issue и шлёт в поток `errors` (`notifyStream`): при заданной ops-группе —
+ * тема «Ошибки» ботом входа, без группы — прежняя личка `ALERT_TELEGRAM_CHAT_ID`
+ * через alert-бота.
  *
  * Гейт — секрет в query или заголовке `X-Alert-Token` (timing-safe). Не
- * сконфигурирован (нет секрета/chat id) → no-op 200, чтобы Sentry не пометил
- * webhook сломанным.
+ * сконфигурирован (нет секрета или некуда слать) → no-op 200, чтобы Sentry не
+ * пометил webhook сломанным.
  *
  * ВАЖНО (анти-петля): при ошибке доставки в Telegram НЕ зовём
  * `Sentry.captureException` — это создало бы новый issue → новый alert → снова
- * этот webhook → бесконечный цикл. Только локальный `log.error`.
+ * этот webhook → бесконечный цикл. Только локальный `log.error`; модулю потоков
+ * это передаётся флагом `reportToSentry: false` (иначе он сообщил бы о
+ * протухшей теме).
  */
 
 export const dynamic = 'force-dynamic';
@@ -33,13 +36,13 @@ const log = childLogger('alerts.sentry');
 
 export async function POST(req: Request): Promise<NextResponse> {
   const secret = serverEnv.SENTRY_ALERT_WEBHOOK_SECRET;
-  const chatId = serverEnv.ALERT_TELEGRAM_CHAT_ID;
+  const hasTarget = isOpsDeliveryConfigured();
 
-  if (!secret || !chatId) {
+  if (!secret || !hasTarget) {
     log.warn({
       event: 'alerts.sentry.disabled',
       hasSecret: Boolean(secret),
-      hasChatId: Boolean(chatId),
+      hasTarget,
     });
     return NextResponse.json({ ok: true, skipped: 'not_configured' }, { status: 200 });
   }
@@ -87,14 +90,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     log.warn({ event: 'alerts.sentry.degraded', keys: Object.keys(parsed.data).sort() });
   }
 
-  try {
-    await sendAlert(chatId, text);
-    log.info({ event: 'alerts.sentry.forwarded' });
-  } catch (err) {
-    // НЕ captureException — иначе alert→webhook→fail→alert петля. Только лог.
-    log.error({ event: 'alerts.sentry.telegram_failed', err });
+  // `notifyStream` не бросает и Sentry не зовёт (анти-петля) — ошибку доставки
+  // он логирует сам; здесь остаётся только честный ответ Sentry.
+  const delivered = await notifyStream('errors', text, { reportToSentry: false });
+  if (!delivered) {
+    log.error({ event: 'alerts.sentry.telegram_failed' });
     return NextResponse.json({ ok: false, skipped: 'telegram_failed' }, { status: 200 });
   }
+  log.info({ event: 'alerts.sentry.forwarded' });
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }

@@ -317,8 +317,8 @@ export function catalogAmountInvalidText(maxUsd: number): string {
 
 // ─── Поддержка (/support) ─────────────────────────────────────────────────
 //
-// Interim-handoff: бот пересылает обращение оператору в личку (Telegram ID из
-// SUPPORT_OPERATOR_CHAT_ID). Целевая схема — forum-topics — ещё не реализована.
+// Обращение уходит персоналу ботом входа (`lib/telegram/support.ts`): в тему
+// «Поддержка» ops-группы или личкой сотрудникам, если группа не задана.
 
 /** Подпись inline-кнопки «Поддержка» (под приветствием /start). */
 export const SUPPORT_BUTTON = 'Написать в поддержку';
@@ -766,25 +766,17 @@ export const RATING_LOW_TEXT =
   'Спасибо за честность. Расскажи, что пошло не так, — нажми «Поддержка», я передам твой вопрос человеку.';
 
 /**
- * DM персоналу при оценке 1–3 (уходит через notifyStaff, фолбэк — владельцу).
+ * DM персоналу при оценке 1–3 (уходит через notifyStaff).
  *
- * Ссылка — раздел заказа в панели. При заданном `PANEL_HOST` — абсолютная
- * (Telegram не делает кликабельным голый путь; ревью CodeRabbit PR #182),
- * и именно с хоста ПАНЕЛИ: публичный домен на /admin отдаёт 404 (host-гейт
- * `lib/panel/host.ts`), так что `deploymentBaseUrl()` здесь дал бы мёртвую
- * ссылку. Без `PANEL_HOST` — прежний относительный путь, как у алёрта
- * застрявшего заказа (poll-payment).
+ * Тело без ссылки: ссылку на заказ в панели добавляет хвост «Что делать»
+ * единого шаблона уведомлений (`lib/alerts/format.ts`) — абсолютную, с хоста
+ * ПАНЕЛИ (Telegram не делает кликабельным голый путь; ревью CodeRabbit
+ * PR #182, публичный домен на /admin отдаёт 404).
  */
-export function buildLowRatingStaffAlert(input: {
-  score: number;
-  shortId: string;
-  panelHost?: string | null;
-}): string {
-  const orderPath = `/admin/orders/${input.shortId}`;
-  const link = input.panelHost ? `https://${input.panelHost}${orderPath}` : orderPath;
+export function buildLowRatingStaffAlert(input: { score: number; shortId: string }): string {
   return (
-    `Клиент поставил ${input.score}/5 заказу ${input.shortId} — нужен взгляд человека: ` +
-    `${link}. Если напишет в поддержку — обращение придёт как обычно.`
+    `Клиент поставил ${input.score}/5 заказу ${input.shortId} — нужен взгляд человека. ` +
+    `Если напишет в поддержку — обращение придёт как обычно.`
   );
 }
 

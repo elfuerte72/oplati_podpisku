@@ -30,7 +30,6 @@ import {
   processInvoiceTerminal,
 } from '../loveandpay/handlers.ts';
 import { notifyStaff } from '../alerts/notify-staff.ts';
-import { SECTION_TITLES } from '../panel/labels.ts';
 
 /**
  * Опрос ОДНОГО pending-платежа у его шлюза — общий примитив двух cron'ов.
@@ -395,24 +394,21 @@ async function alertAntifraudHold(payment: PaymentRow, providerOrderId: string):
   pruneUnknownStatusDedup(now);
   unknownStatusAlertedAt.set(dedupKey, now);
 
-  // Менеджеру — СРАЗУ (тикет 11): раньше про холд узнавали через семь дней и
-  // только владелец, через сторож `payment-review-watch`. Дедуп у обоих каналов
-  // свой, но ключ один и тот же платёж.
+  // Персоналу — СРАЗУ (тикет 11): раньше про холд узнавали через семь дней и
+  // только владелец, через сторож `payment-review-watch`. Сообщение ОДНО: до
+  // трека ops-group здесь шли два — персоналу и владельцу отдельным ботом, — а в
+  // общей теме «Платежи» это был бы дубль об одном холде (ревью 2026-09-04).
+  // Без группы фолбэк владельцу встроен в `notifyStaff` (пустой штат → `notifyOps`).
   await notifyStaff(
-    `Платёж на проверке банка: операция ${providerOrderId} на ${(payment.amountRub / 100).toFixed(2)} RUB. ` +
-      `Деньги списаны, карта не выпущена — исход решает провайдер. ` +
-      `Заказ виден в панели, раздел «${SECTION_TITLES.holds}»: /admin/holds`,
-    // ⚠️ Без фолбэка владельцу: он идёт следующей строкой и текстом подробнее.
-    // С фолбэком на пустом `staff` (а он пуст до заведения персонала) один холд
-    // давал бы владельцу два DM подряд.
-    { dedupKey: `hold:${payment.id}`, capability: 'holds', fallbackToOps: false },
-  );
-
-  await notifyOps(
-    `Антифрод-холд Freekassa (статус 7): банк поставил перевод на проверку. ` +
-      `Операция ${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
-      `Деньги у клиента списаны, карта НЕ выпущена — исход решает провайдер. ` +
-      `Обычно разрешается за часы; если висит дольше — запрос в поддержку Freekassa.`,
+    `Платёж на проверке банка (антифрод Freekassa, статус 7): операция ${providerOrderId} ` +
+      `на ${(payment.amountRub / 100).toFixed(2)} RUB. Деньги списаны, карта не выпущена — ` +
+      `исход решает провайдер. Обычно разрешается за часы.`,
+    {
+      dedupKey: `hold:${payment.id}`,
+      capability: 'holds',
+      title: 'Платёж на проверке банка',
+      action: { text: 'ждать исхода; дольше суток — написать в поддержку Freekassa', path: '/admin/holds' },
+    },
   );
 }
 
@@ -452,6 +448,7 @@ async function alertUnknownProviderStatus(
       `${providerOrderId}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽. ` +
       `Карта НЕ выпущена. Если клиент говорит, что оплатил, — деньги списаны, ` +
       `но провайдер платёж не подтвердил: нужен запрос в поддержку Freekassa.`,
+    { stream: 'payments', title: 'Платёж завис у провайдера', action: { text: 'написать в поддержку Freekassa', path: '/admin/holds' } },
   );
 }
 

@@ -11,8 +11,13 @@ vi.mock('../logger.ts', () => ({
 }));
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn() }));
 
-const notifyOps = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
-vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps }));
+// Заявка партнёра — раздел владельца: уходит через `notifyStaff` с капабилити
+// `partners` (личкой админам), а не общим ops-алёртом, который при заданной
+// группе лёг бы в тему, видимую оператору (трек ops-group).
+const notifyStaff = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({ delivered: 1, failed: 0, deduped: false })),
+);
+vi.mock('../alerts/notify-staff.ts', () => ({ notifyStaff }));
 // `after()` в тестах выполняем сразу — иначе алёрт не успевал бы отработать.
 vi.mock('next/server', () => ({ after: (fn: () => unknown) => void fn() }));
 
@@ -217,10 +222,10 @@ describe('requestReferralPayout — реквизиты и комиссия вы�
 describe('requestReferralPayout — заявка зовёт человека', () => {
   beforeEach(() => {
     hoisted.env.REFERRAL_ENABLED = true;
-    notifyOps.mockClear();
+    notifyStaff.mockClear();
   });
 
-  it('успешная заявка уведомляет владельца', async () => {
+  it('успешная заявка уведомляет владельца — лично, через капабилити partners', async () => {
     const res = await requestReferralPayout({
       userId: 'u1',
       telegramLinked: true,
@@ -228,9 +233,10 @@ describe('requestReferralPayout — заявка зовёт человека', (
     });
 
     expect(res).toMatchObject({ ok: true });
-    expect(notifyOps).toHaveBeenCalledOnce();
-    const text = String(notifyOps.mock.calls[0]?.[0] ?? '');
+    expect(notifyStaff).toHaveBeenCalledOnce();
+    const text = String(notifyStaff.mock.calls[0]?.[0] ?? '');
     expect(text).toContain('вручную');
+    expect(notifyStaff.mock.calls[0]?.[1]).toMatchObject({ capability: 'partners' });
   });
 
   it('в текст алёрта не попадают реквизиты', async () => {
@@ -245,8 +251,8 @@ describe('requestReferralPayout — заявка зовёт человека', (
       destination: { method: 'card_rub', pan: '4242 4242 4242 4242', holderName: 'IVAN IVANOV' },
     });
 
-    expect(notifyOps).toHaveBeenCalledOnce();
-    const text = String(notifyOps.mock.calls[0]?.[0] ?? '');
+    expect(notifyStaff).toHaveBeenCalledOnce();
+    const text = String(notifyStaff.mock.calls[0]?.[0] ?? '');
     expect(text).not.toContain('4242');
     expect(text).not.toContain('IVAN');
     // Оператор обязан знать, что реквизитов у него нет.
@@ -260,6 +266,6 @@ describe('requestReferralPayout — заявка зовёт человека', (
       amountUsdCents: 5000,
     });
     expect(res).toMatchObject({ ok: false });
-    expect(notifyOps).not.toHaveBeenCalled();
+    expect(notifyStaff).not.toHaveBeenCalled();
   });
 });

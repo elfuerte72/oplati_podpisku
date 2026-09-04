@@ -60,11 +60,30 @@ export class StaffBotNotConfiguredError extends Error {
  * «передали в поддержку», в панели горело «доставлено», а сообщение не уходило
  * никуда. Это единственный канал связи с клиентом — молчать здесь нельзя.
  */
-export async function sendStaffMessage(chatId: number | string, text: string): Promise<void> {
+export async function sendStaffMessage(
+  chatId: number | string,
+  text: string,
+  opts: SendStaffMessageOptions = {},
+): Promise<void> {
   const bot = getStaffBot();
   if (!bot) {
     log.error({ event: 'telegram.staff_bot.not_configured' });
     throw new StaffBotNotConfiguredError();
   }
-  await bot.api.sendMessage(chatId, text);
+  // Третий аргумент добавляем ТОЛЬКО при заданной теме: существующие вызовы
+  // и их тесты сверяют ровно два аргумента, а `{ message_thread_id: undefined }`
+  // в личке — лишний ключ в теле запроса к Bot API.
+  if (opts.messageThreadId === undefined) {
+    await bot.api.sendMessage(chatId, text);
+    return;
+  }
+  await bot.api.sendMessage(chatId, text, { message_thread_id: opts.messageThreadId });
 }
+
+export type SendStaffMessageOptions = {
+  /**
+   * Тема супергруппы (ops-группа с темами). В личке не используется:
+   * `message_thread_id` там означает другое (ответ в треде) и ломает отправку.
+   */
+  messageThreadId?: number;
+};

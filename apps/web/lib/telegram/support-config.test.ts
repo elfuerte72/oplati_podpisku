@@ -1,12 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * Доставка обращений персоналу (`sendToSupportOperator`).
+ *
+ * Что здесь держится (трек ops-group, тикет 03):
+ *   - канал ОДИН — `notifyStaff` с капабилити `support` (бот входа);
+ *   - клиентский бот операторам не пишет ни в одной ветке — резервный путь
+ *     через `SUPPORT_OPERATOR_CHAT_ID` удалён вместе с переменной;
+ *   - «не доставлено» возвращается честно: это единственный канал связи с
+ *     клиентом, и «передали» при недоставленном обращении было бы ложью.
+ */
+
 const h = vi.hoisted(() => ({
-  env: { SUPPORT_OPERATOR_CHAT_ID: undefined as string | undefined },
-  sendMessageMock: vi.fn(async () => ({})),
-  // ⚠️ Доставку персоналу мокаем ЯВНО. Без мока вызов уходил в базу, падал на
-  // незаданном DATABASE_URL, и тесты про legacy-канал были зелёными по
-  // случайности: достаточно задать переменную окружения — и они меняют смысл,
-  // ничего не сообщая (находка ревью).
+  clientBotSend: vi.fn(async () => ({})),
+  // ⚠️ Доставку персоналу мокаем ЯВНО: без мока вызов уходил бы в базу и падал
+  // на незаданном DATABASE_URL, а тест был бы зелёным по случайности.
   notifyStaffMock: vi.fn(async (..._args: unknown[]) => ({
     delivered: 0,
     failed: 0,
@@ -14,60 +22,21 @@ const h = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock('@/lib/env.server', () => ({ serverEnv: h.env }));
-vi.mock('./bot', () => ({ getBot: () => ({ api: { sendMessage: h.sendMessageMock } }) }));
+vi.mock('./bot', () => ({ getBot: () => ({ api: { sendMessage: h.clientBotSend } }) }));
 vi.mock('@/lib/alerts/notify-staff', () => ({ notifyStaff: h.notifyStaffMock }));
 
 const sentry = vi.hoisted(() => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('@sentry/nextjs', () => sentry);
 
-import { sendToSupportOperator, supportOperatorChatId } from './support.ts';
+import { sendToSupportOperator } from './support.ts';
 
-describe('supportOperatorChatId (M-15: только env, без дефолта в коде)', () => {
+describe('sendToSupportOperator — обращение уходит ПЕРСОНАЛУ ботом входа', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.env.SUPPORT_OPERATOR_CHAT_ID = undefined;
-    h.notifyStaffMock.mockResolvedValue({ delivered: 0, failed: 0, deduped: false });
-  });
-
-  it('env не задан → null (захардкоженного ID владельца больше нет)', () => {
-    expect(supportOperatorChatId()).toBeNull();
-  });
-
-  it('env задан → используется он', () => {
-    h.env.SUPPORT_OPERATOR_CHAT_ID = '111222333';
-    expect(supportOperatorChatId()).toBe('111222333');
-  });
-
-  it('отправка без настроенного оператора → false + Sentry-алёрт, DM не шлётся', async () => {
-    const ok = await sendToSupportOperator('<b>обращение</b>');
-
-    expect(ok).toBe(false);
-    expect(h.sendMessageMock).not.toHaveBeenCalled();
-    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
-    expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('SUPPORT_OPERATOR_CHAT_ID');
-  });
-
-  it('с настроенным оператором сообщение уходит ему', async () => {
-    h.env.SUPPORT_OPERATOR_CHAT_ID = '111222333';
-
-    const ok = await sendToSupportOperator('текст');
-
-    expect(ok).toBe(true);
-    expect(h.sendMessageMock).toHaveBeenCalledWith('111222333', 'текст', { parse_mode: 'HTML' });
-  });
-});
-
-describe('обращение уходит ПЕРСОНАЛУ (тикет 11)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    h.env.SUPPORT_OPERATOR_CHAT_ID = '111222333';
     h.notifyStaffMock.mockResolvedValue({ delivered: 1, failed: 0, deduped: false });
   });
 
-  it('доставлено персоналу — legacy-канал НЕ дублирует', async () => {
-    // Владелец заведён и в `staff`, и в переменной: без этой ветки он получал
-    // бы каждое обращение дважды.
+  it('доставлено персоналу → true, капабилити support', async () => {
     const ok = await sendToSupportOperator('<b>обращение</b>');
 
     expect(ok).toBe(true);
@@ -75,27 +44,30 @@ describe('обращение уходит ПЕРСОНАЛУ (тикет 11)', (
       expect.stringContaining('обращение'),
       expect.objectContaining({ capability: 'support' }),
     );
-    expect(h.sendMessageMock).not.toHaveBeenCalled();
   });
 
-  it('персоналу не ушло — работает второй эшелон', async () => {
+  it('клиентский бот не вызывается ни при успехе, ни при провале', async () => {
+    await sendToSupportOperator('<b>обращение</b>');
+    h.notifyStaffMock.mockResolvedValue({ delivered: 0, failed: 1, deduped: false });
+    await sendToSupportOperator('<b>обращение</b>');
+
+    expect(h.clientBotSend).not.toHaveBeenCalled();
+  });
+
+  it('персоналу не ушло — false + Sentry, без второго эшелона', async () => {
     h.notifyStaffMock.mockResolvedValue({ delivered: 0, failed: 1, deduped: false });
 
     const ok = await sendToSupportOperator('<b>обращение</b>');
 
-    expect(ok).toBe(true);
-    expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(ok).toBe(false);
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('не доставлено');
   });
 
-  it('персонал есть, а переменной нет — обращение всё равно доставлено', async () => {
-    h.env.SUPPORT_OPERATOR_CHAT_ID = undefined;
-    h.notifyStaffMock.mockResolvedValue({ delivered: 2, failed: 0, deduped: false });
+  it('фолбэк владельцу через notifyOps выключен: «доставлено» там равно нулю', async () => {
+    await sendToSupportOperator('текст');
 
-    const ok = await sendToSupportOperator('<b>обращение</b>');
-
-    expect(ok).toBe(true);
-    // И никакой ложной тревоги про незаданный env: доставлять было кому.
-    expect(sentry.captureMessage).not.toHaveBeenCalled();
+    expect(h.notifyStaffMock.mock.calls[0]?.[1]).toMatchObject({ fallbackToOps: false });
   });
 
   it('в текст персоналу уходит СНЯТАЯ разметка, а не сырой HTML', async () => {
@@ -104,5 +76,12 @@ describe('обращение уходит ПЕРСОНАЛУ (тикет 11)', (
     const text = String(h.notifyStaffMock.mock.calls[0]?.[0]);
     expect(text).not.toContain('<b>');
     expect(text).toContain('Клиент: не проходит оплата');
+  });
+
+  it('notifyStaff бросил — false, вызывающий не падает', async () => {
+    h.notifyStaffMock.mockRejectedValueOnce(new Error('unexpected'));
+
+    await expect(sendToSupportOperator('текст')).resolves.toBe(false);
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
   });
 });

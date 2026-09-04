@@ -152,6 +152,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       // Вне транзакции: DM не должен держать соединение/откатываться вместе с ней.
       await notifyOps(
         `Недоплата по заказу: выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (инвойс ${data.invoiceNumber ?? data.id}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
+        { stream: 'payments', title: 'Недоплата (Love&Pay)', action: { text: 'вернуть деньги клиенту вручную', path: '/admin/orders?s=failed' } },
       );
     }
 
@@ -244,6 +245,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
       // денежный, атомарного состояния для дедупа здесь уже нет (платёж failed).
       await notifyOps(
         `Оплата пришла по уже захороненному счёту (инвойс ${data.invoiceNumber ?? data.id}): деньги приняты L&P, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
+        { stream: 'critical', title: 'Оплата по захороненному счёту (Love&Pay)', action: { text: 'вернуть деньги клиенту вручную', path: '/admin/orders?s=failed' } },
       );
       return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'paid_after_terminal' };
     }
@@ -281,6 +283,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     // ветке, `paid_after_terminal`).
     await notifyOps(
       `Оплата принята (Love&Pay, инвойс ${data.invoiceNumber ?? data.id}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
+      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Love&Pay)', action: { text: 'разобрать заказ вручную', path: '/admin/pending' } },
     );
   }
 

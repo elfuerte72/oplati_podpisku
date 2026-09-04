@@ -18,7 +18,7 @@
 | Ручные конфиги Traefik | руками из [`infra/traefik/`](../../infra/traefik/) | не переносит ничего, см. [`deploy.md`](deploy.md) |
 | Системный crontab | руками из [`infra/crontab.example`](../../infra/crontab.example) | адрес переписать, см. §4 |
 | Сертификат www/apex + lego | `tar` каталога `/opt/lego-oplatishka` + `certs/` | вместе с ACME-аккаунтом, иначе обновление перестанет работать |
-| **Агенты наблюдаемости** | руками: Alloy (`/opt/alloy`) + скрипт сводки Hermes | см. §8 — забыть легко, заметить трудно |
+| **Агенты наблюдаемости** | руками: Alloy (`/opt/alloy`) + скрипт сводки `oplatishka-status.sh` | см. §8 — забыть легко, заметить трудно |
 | **Домен админ-панели** | A-запись `admin.*` + файл `oplatishka-admin.yml` в `dynamic/` | у панели НЕТ своего приложения — она часть `oplatishka-web`, поэтому дамп панели Dokploy её маршрут не несёт |
 | **Привязка домена у @BotFather** | вручную, `/setdomain` боту персонала | при смене домена панели кнопка входа молча исчезает: `oauth.telegram.org` отвечает `Bot domain invalid`, а логи и консоль чисты |
 
@@ -155,7 +155,7 @@ gh variable set DOKPLOY_PANEL_URL --body "https://dokploypanel.oplatishka.com"
 
 ### 8. Мониторинг молча остаётся на старом сервере
 
-Agent Alloy и скрипт сводки Hermes живут вне Dokploy, поэтому не переезжают ни с
+Agent Alloy и скрипт сводки `oplatishka-status.sh` (лежит в каталоге бывшего профиля Hermes; сам агент из мониторинга выведен треком ops-group) живут вне Dokploy, поэтому не переезжают ни с
 чем. Коварство в том, что снаружи это незаметно: дашборд продолжает показывать
 данные (старые, от контейнеров прежнего узла) и выглядит живым, а логов прода в
 нём нет вовсе. Алёрт на ошибки при этом тоже мёртв — его запрос возвращает
@@ -171,7 +171,7 @@ docker run -d --name grafana-alloy --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   grafana/alloy:latest run --storage.path=/tmp/alloy /etc/alloy/config.alloy
 
-# сводка агента (ей нужен свой .env с read-токенами Loki и Sentry)
+# скрипт сводки (ему нужен свой .env с read-токенами Loki и Sentry)
 scp -r /root/.hermes/profiles/oplatishka NEW:/root/.hermes/profiles/
 ```
 

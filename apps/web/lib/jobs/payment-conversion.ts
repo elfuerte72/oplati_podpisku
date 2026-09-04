@@ -73,8 +73,8 @@ export async function alertOnZeroPaymentConversion(): Promise<void> {
     if (now - lastOpsDmAt < OPS_DM_DEDUP_MS) return;
     lastOpsDmAt = now;
     await notifyOps(
-      `Похоже, оплаты не проходят: за последний час выставлено ${invoiced} счетов через ${gateway}, оплачено 0. ` +
-        `Проверь шлюз и при необходимости переключи PAYMENT_PRIMARY_PROVIDER на резервный + redeploy.`,
+      `Похоже, оплаты не проходят: за последний час выставлено ${invoiced} счетов через ${gateway}, оплачено 0.`,
+      { stream: 'critical', title: 'За час ни одной оплаты', action: { text: 'проверить шлюз; при необходимости переключить PAYMENT_PRIMARY_PROVIDER на резервный и сделать redeploy' } },
     );
   } catch (err) {
     // Мониторинг не должен ронять cron: логируем и уходим.
