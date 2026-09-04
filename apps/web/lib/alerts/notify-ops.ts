@@ -1,38 +1,34 @@
 import 'server-only';
 
-import { serverEnv } from '../env.server.ts';
-import { childLogger } from '../logger.ts';
-import { sendAlert } from '../telegram/alert-bot.ts';
-
-const log = childLogger('alerts.ops');
+import { type AlertStream, notifyStream } from './streams.ts';
 
 /**
- * Прямой ops-алерт владельцу в Telegram (`ALERT_TELEGRAM_CHAT_ID`) для критичных
- * сбоев, которые НЕЛЬЗЯ пропустить (оплаченный заказ не доехал до клиента).
+ * Прямой ops-алерт в Telegram для сбоев, которые НЕЛЬЗЯ пропустить
+ * (оплаченный заказ не доехал до клиента, деньги приняты без заказа).
+ *
+ * Тонкая обёртка над `notifyStream` (`streams.ts`): вызывающий называет ПОТОК —
+ * тему ops-группы, куда ляжет сообщение. При заданной группе шлёт бот входа в
+ * тему потока; при незаданной — прежняя личка `ALERT_TELEGRAM_CHAT_ID` через
+ * alert-бота (режим dev и страховка отката).
  *
  * НЕ зависит от Sentry alert rules / вебхуков — отдельный, прямой канал: даже
  * если Sentry-маршрутизация не настроена, владелец узнает о провале сразу.
- *
- * `ALERT_TELEGRAM_CHAT_ID` не задан → no-op. Анти-петля: ошибку доставки только
- * логируем (НЕ `Sentry.captureException`), иначе провал алерта породил бы новый
- * Sentry-issue → снова алерт.
+ * Анти-петля: ошибку доставки только логируем (НЕ `Sentry.captureException`),
+ * иначе провал алерта породил бы новый Sentry-issue → снова алерт.
  *
  * Возвращает, СОСТОЯЛАСЬ ли доставка. Никогда не бросает — вызывающему это
  * нужно не для обработки ошибки, а чтобы не выдавать несостоявшуюся отправку
  * за состоявшуюся (например, занимая ею окно дедупа на час вперёд).
  */
-export async function notifyOps(text: string): Promise<boolean> {
-  const chatId = serverEnv.ALERT_TELEGRAM_CHAT_ID;
-  if (!chatId) {
-    log.warn({ event: 'alerts.ops.disabled', reason: 'no_chat_id' });
-    return false;
-  }
-  try {
-    await sendAlert(chatId, text);
-    log.info({ event: 'alerts.ops.sent' });
-    return true;
-  } catch (err) {
-    log.error({ event: 'alerts.ops.failed', err });
-    return false;
-  }
+export async function notifyOps(text: string, opts: NotifyOpsOptions = {}): Promise<boolean> {
+  return notifyStream(opts.stream ?? null, text);
 }
+
+export type NotifyOpsOptions = {
+  /**
+   * Поток (тема группы). Пока НЕОБЯЗАТЕЛЕН — тикет 01 трека ops-group
+   * расширяет сигнатуру, тикет 02 размечает все точки вызова и делает поток
+   * обязательным. Без потока при заданной группе сообщение уходит в корень.
+   */
+  stream?: AlertStream;
+};

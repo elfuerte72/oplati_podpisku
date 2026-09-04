@@ -54,6 +54,9 @@ function optionalEnvString(inner: z.ZodTypeAny = z.string().min(1)): z.ZodType {
   return z.preprocess((v) => (v === '' ? undefined : v), inner.optional());
 }
 
+/** Thread id темы супергруппы — целое положительное число из ссылки `t.me/c/<id>/<thread>`. */
+const threadIdSchema = z.string().regex(/^\d+$/, 'must be a numeric Telegram thread id');
+
 /**
  * `KEY=` (пустая строка) — это «ещё не заполнил», а не значение. Отсекаем такие
  * ключи ДО схемы, один раз для всего объекта: `optionalEnvString` закрывал
@@ -563,6 +566,31 @@ const serverEnvSchema = z.object({
   // сообщениях, так что каналы не пересекаются.
   // Не задан → fallback на прод-бот (backward-compat).
   ALERT_BOT_TOKEN: optionalEnvString(),
+
+  // ─── Ops-группа с темами (трек ops-group, 2026-09-04) ────────────────────
+  //
+  // Одна приватная супергруппа «Оплатишка - Support», куда бот ВХОДА
+  // (`TELEGRAM_LOGIN_BOT_TOKEN`) раскладывает все машинные сообщения по темам:
+  // авария / платежи / поддержка / ошибки / деплой (`lib/alerts/streams.ts`).
+  //
+  // Задан id группы → `notifyOps`, `notifyStaff` (для разделов, открытых
+  // оператору) и Sentry-релей шлют в группу; `ALERT_BOT_TOKEN` и
+  // `ALERT_TELEGRAM_CHAT_ID` при этом не участвуют. Не задан → прежняя схема
+  // (личка `ALERT_TELEGRAM_CHAT_ID` через alert-бота) — это режим dev и
+  // страховка отката: выкат кода ничего не меняет до правки env.
+  //
+  // Thread id темы — из ссылки на неё (`t.me/c/<id>/<thread>`); незаданный
+  // thread id при заданной группе означает КОРЕНЬ группы, а не молчание.
+  // Протухший thread id (тема удалена) тоже не глушит алёрт: повтор в корень
+  // + одно сообщение в Sentry на процесс.
+  OPS_GROUP_CHAT_ID: optionalEnvString(
+    z.string().regex(/^-?\d+$/, 'must be a numeric Telegram chat id'),
+  ),
+  OPS_GROUP_THREAD_CRITICAL: optionalEnvString(threadIdSchema),
+  OPS_GROUP_THREAD_PAYMENTS: optionalEnvString(threadIdSchema),
+  OPS_GROUP_THREAD_SUPPORT: optionalEnvString(threadIdSchema),
+  OPS_GROUP_THREAD_ERRORS: optionalEnvString(threadIdSchema),
+  OPS_GROUP_THREAD_DEPLOY: optionalEnvString(threadIdSchema),
 
   // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
   // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —
