@@ -127,6 +127,14 @@
   --panel-radius-inner: 4px;
 
   /*
+   * Подложка липкой шапки таблицы. Умолчание — фон страницы: таблица списка
+   * живёт прямо на нём. Карточка переставляет значение для своего поддерева
+   * (`.panel-card` ниже) — таблица платежей и таблицы карточки клиента стоят
+   * на поверхности, и шапка цветом страницы читалась бы полосой поперёк.
+   */
+  --panel-table-head-bg: var(--panel-bg);
+
+  /*
    * ── Плотность ─────────────────────────────────────────────────────────
    *
    * Настройка сотрудника (`lib/panel/prefs.ts`). Числа живут ОДНИМ набором:
@@ -906,6 +914,10 @@
   border: 1px solid var(--panel-border);
   border-radius: var(--panel-radius-card);
   padding: var(--panel-card-pad);
+  /* Липкая шапка таблицы внутри карточки обязана краситься ПОВЕРХНОСТЬЮ, а не
+     фоном страницы: `background: inherit` на `th` разрешается в прозрачный
+     (у строки и таблицы фона нет), и строки просвечивали бы сквозь шапку. */
+  --panel-table-head-bg: var(--panel-surface);
 }
 
 /*
@@ -1235,7 +1247,7 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--panel-bg);
+  background: var(--panel-table-head-bg);
   color: var(--panel-muted);
   font-weight: 500;
   font-size: var(--panel-font-sm);
