@@ -309,7 +309,7 @@ export async function processFreekassaPaid(
       // Вне транзакции: DM не должен держать соединение и откатываться с ней.
       await notifyOps(
         `Недоплата по заказу (Freekassa): выставлено ${(payment.amountRub / 100).toFixed(2)} ₽, оплачено ${(gotKopecks / 100).toFixed(2)} ₽ (операция ${intid}). Заказ переведён в failed, карта НЕ выпущена — нужен ручной возврат клиенту.`,
-        { stream: 'payments' },
+        { stream: 'payments', title: 'Недоплата (Freekassa)', action: { text: 'вернуть деньги клиенту вручную', path: '/admin/orders?s=failed' } },
       );
     }
 
@@ -404,7 +404,7 @@ export async function processFreekassaPaid(
       });
       await notifyOps(
         `Оплата пришла по уже захороненному счёту (Freekassa, операция ${intid}): деньги приняты, заказ НЕ выполняется — нужен ручной возврат клиенту.`,
-        { stream: 'critical' },
+        { stream: 'critical', title: 'Оплата по захороненному счёту (Freekassa)', action: { text: 'вернуть деньги клиенту вручную', path: '/admin/orders?s=failed' } },
       );
       return { kind: 'idempotent_skip', paymentId: payment.id, reason: 'paid_after_terminal' };
     }
@@ -430,7 +430,7 @@ export async function processFreekassaPaid(
     // уходило только в Sentry — то есть могло остаться незамеченным.
     await notifyOps(
       `Оплата принята (Freekassa, операция ${intid}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
-      { stream: 'critical' },
+      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Freekassa)', action: { text: 'разобрать заказ вручную', path: '/admin/orders' } },
     );
   }
 
@@ -551,7 +551,7 @@ export async function processFreekassaTerminal(
           `оплачен (операция ${intid}, сумма ${(payment.amountRub / 100).toFixed(2)} ₽). ` +
           `Деньги вернулись отправителю, а заказ мог быть исполнен — нужна ручная сверка ` +
           `заказа и запрос в поддержку Freekassa.`,
-        { stream: 'payments' },
+        { stream: 'payments', title: 'Возврат по оплаченному платежу (Freekassa)', action: { text: 'сверить заказ и написать в поддержку Freekassa', path: '/admin/orders' } },
       );
     }
     log.info({
@@ -584,7 +584,7 @@ export async function processFreekassaTerminal(
       `Холд разрешился ОТКАЗОМ: банк отклонил перевод по заказу (операция ${intid}, ` +
         `сумма ${(payment.amountRub / 100).toFixed(2)} ₽). Клиенту отправлено сообщение, ` +
         `деньги должны вернуться отправителю — стоит проследить.`,
-      { stream: 'payments' },
+      { stream: 'payments', title: 'Холд разрешился отказом', action: { text: 'проследить возврат денег клиенту', path: '/admin/holds' } },
     );
   }
 

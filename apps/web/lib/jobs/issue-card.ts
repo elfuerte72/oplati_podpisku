@@ -271,7 +271,7 @@ export async function issueCard(orderId: string): Promise<void> {
               `(HTTP ${err.httpStatus}). Карта клиента ЖИВА и осталась активной. Повтор топапа ` +
               `идемпотентен по request_id — операцию можно безопасно повторить руками, когда ` +
               `провайдер ответит.`,
-            { stream: 'critical' },
+            { stream: 'critical', title: 'Топап не прошёл: PaySpace недоступен', action: { text: 'повторить топап руками, когда провайдер ответит', path: `/admin/orders/${order.shortId}` } },
           );
           throw err;
         }
@@ -458,9 +458,9 @@ export async function issueCard(orderId: string): Promise<void> {
       }
       await notifyOps(
         `Заказ ${order.shortId}: топап PaySpace завис в pending — исход неизвестен, деньги могли ` +
-          `зачислиться позже. Проверь операцию в кабинете: requestId=${err.requestId}, ` +
+          `зачислиться позже. Операция в кабинете PaySpace: requestId=${err.requestId}, ` +
           `cardId=${err.cardId}. Повтор топапа идемпотентен по request_id.`,
-        { stream: 'critical' },
+        { stream: 'critical', title: 'Топап с неизвестным исходом', action: { text: 'проверить операцию в кабинете PaySpace, затем выдать вручную', path: `/admin/orders/${order.shortId}` } },
       );
       await markOrderFailed(orderId, 'paypace_topup_pending', order.shortId);
       return;
@@ -507,7 +507,7 @@ export async function issueCard(orderId: string): Promise<void> {
         `Заказ ${order.shortId}: карта у провайдера ВЫПУЩЕНА (providerCardId=${issuedProviderCardId}), ` +
           `но запись в нашу БД не прошла. Реквизиты клиенту ` +
           `${credentialsDelivered ? 'отправлены' : 'НЕ отправлены'}. Нужно свести вручную.`,
-        { stream: 'critical' },
+        { stream: 'critical', title: 'Карта выпущена без записи в БД', action: { text: 'свести вручную', path: `/admin/orders/${order.shortId}` } },
       );
     }
 
@@ -551,7 +551,7 @@ async function markOrderFailed(orderId: string, reason: string, shortId?: string
   // пропустить. Канал не зависит от Sentry alert rules (см. notifyOps).
   await notifyOps(
     `Оплаченный заказ ${shortId ?? orderId} НЕ доставлен: выпуск карты упал (${reason}). Нужен ручной разбор.`,
-    { stream: 'critical' },
+    { stream: 'critical', title: 'Оплаченный заказ не доставлен', action: { text: 'разобрать и выдать вручную', path: shortId ? `/admin/orders/${shortId}` : '/admin/orders?s=failed' } },
   );
 }
 

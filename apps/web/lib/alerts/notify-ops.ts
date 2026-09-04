@@ -1,5 +1,8 @@
 import 'server-only';
 
+import { serverEnv } from '../env.server.ts';
+
+import { formatOpsMessage, type OpsAction } from './format.ts';
 import { type AlertStream, notifyStream } from './streams.ts';
 
 /**
@@ -21,7 +24,11 @@ import { type AlertStream, notifyStream } from './streams.ts';
  * за состоявшуюся (например, занимая ею окно дедупа на час вперёд).
  */
 export async function notifyOps(text: string, opts: NotifyOpsOptions): Promise<boolean> {
-  return notifyStream(opts.stream, text);
+  const composed = formatOpsMessage(
+    { title: opts.title, body: text, action: opts.action },
+    serverEnv.PANEL_HOST,
+  );
+  return notifyStream(opts.stream, composed);
 }
 
 export type NotifyOpsOptions = {
@@ -32,4 +39,8 @@ export type NotifyOpsOptions = {
    * `docs/runbooks/monitoring.md`.
    */
   stream: AlertStream;
+  /** Заголовок события — первая строка сообщения (`formatOpsMessage`). */
+  title?: string;
+  /** «Что делать» — последняя строка, с ссылкой на экран панели, где он есть. */
+  action?: OpsAction;
 };

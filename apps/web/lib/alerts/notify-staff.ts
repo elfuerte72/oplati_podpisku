@@ -4,9 +4,11 @@ import * as Sentry from '@sentry/nextjs';
 
 import { getDb, listStaffRecipients } from '@oplati/db';
 
+import { formatOpsMessage, type OpsAction } from './format';
 import { notifyOps } from './notify-ops';
 import { type AlertStream, notifyStream, opsGroup, streamForCapability } from './streams';
 
+import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { canAccess, type PanelCapability } from '@/lib/panel/permissions';
 import { sendStaffMessage, StaffBotNotConfiguredError } from '@/lib/telegram/staff-bot-client';
@@ -63,7 +65,7 @@ export type NotifyStaffResult = {
 };
 
 export async function notifyStaff(
-  text: string,
+  body: string,
   opts: {
     dedupKey?: string;
     now?: number;
@@ -96,9 +98,16 @@ export async function notifyStaff(
      * застрявший заказ и критический баланс идут в «Аварию».
      */
     stream?: AlertStream;
+    /** Заголовок события — первая строка сообщения (`formatOpsMessage`). */
+    title?: string;
+    /** «Что делать» — последняя строка, с ссылкой на экран панели, где он есть. */
+    action?: OpsAction;
   },
 ): Promise<NotifyStaffResult> {
   const now = opts.now ?? Date.now();
+  // Собираем один раз: и пост в группу, и личка, и фолбэк владельцу получают
+  // одну и ту же форму — заголовок, тело, «Что делать».
+  const text = formatOpsMessage({ title: opts.title, body, action: opts.action }, serverEnv.PANEL_HOST);
   const windowMs = opts.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS;
   // ⚠️ Окно ПРОВЕРЯЕМ, но не занимаем: занять до попытки значит получить час
   // (а то и сутки) молчания при живой аварии — база моргнула, бот не настроен,

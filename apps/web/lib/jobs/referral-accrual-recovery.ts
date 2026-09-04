@@ -155,7 +155,7 @@ export async function recoverReferralAccruals(): Promise<{
           `провалившемуся(ихся) заказу(ам) — обычно это делает сам путь перевода ` +
           `в failed. Если это не первый прогон после релиза, стоит проверить, ` +
           `какая ветка перестала гасить начисления.`,
-        { stream: 'payments' },
+        { stream: 'payments', title: 'Реферальный ledger: погашено сверщиком' },
       );
     }
   }
@@ -191,7 +191,7 @@ export async function recoverReferralAccruals(): Promise<{
           `комиссия партнёра погашена — партнёру недоплачено. Обычно это заказ, ` +
           `который упал при неизвестном исходе топапа, а потом был доведён до ` +
           `завершения вручную. Восстановление ручное, автоматически не досчитываем.`,
-        { stream: 'payments' },
+        { stream: 'payments', title: 'Реферальный ledger: партнёру недоплачено', action: { text: 'восстановить начисление вручную', path: '/admin/partners' } },
       );
     }
   } catch (err) {
@@ -216,7 +216,7 @@ export async function recoverReferralAccruals(): Promise<{
         `Реферальный баланс ушёл в отрицательные значения у ${negative.length} ` +
           `партнёра(ов): отмена начисления пришла на деньги, по которым уже есть ` +
           `заявка на вывод. Проверить до перевода.`,
-        { stream: 'payments' },
+        { stream: 'payments', title: 'Отрицательный реферальный баланс', action: { text: 'проверить до перевода', path: '/admin/partners/payouts' } },
       );
     }
   } catch (err) {

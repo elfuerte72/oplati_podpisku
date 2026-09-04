@@ -160,10 +160,15 @@ export async function pollPayments(): Promise<{
             if (after && after.status !== 'completed' && after.status !== 'in_fulfillment') {
               await notifyStaff(
                 `Заказ ${after.shortId} застрял после оплаты: автоматический повтор выпуска ` +
-                  `карты не помог, статус «${after.status}». Нужна ручная проверка — ` +
-                  `/admin/orders/${after.shortId}`,
+                  `карты не помог, статус «${after.status}».`,
                 // «Авария», а не «Платежи»: деньги приняты, карты нет, автомат сдался.
-                { dedupKey: `stuck:${order.id}`, capability: 'orders', stream: 'critical' },
+                {
+                  dedupKey: `stuck:${order.id}`,
+                  capability: 'orders',
+                  stream: 'critical',
+                  title: 'Заказ застрял после оплаты',
+                  action: { text: 'проверить и выдать вручную', path: `/admin/orders/${after.shortId}` },
+                },
               );
             }
           } catch (err) {

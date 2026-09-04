@@ -139,7 +139,11 @@ export async function requestReferralPayout(params: {
         `(брутто ${fmtUsd(amountUsdCents)}, удержание ${fmtUsd(feeUsdCents)}). ` +
         `⚠️ Реквизиты форма не собирает — уточнить у партнёра в Telegram. ` +
         `Исполняется вручную, автовыплат пока нет.`,
-      { capability: 'partners' },
+      {
+        capability: 'partners',
+        title: 'Заявка партнёра на выплату',
+        action: { text: 'уточнить реквизиты у партнёра и провести вручную', path: '/admin/partners/payouts' },
+      },
     ),
   );
 

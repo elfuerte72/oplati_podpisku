@@ -223,13 +223,11 @@ export async function handleFunnelCallback(
         new InlineKeyboard().text(START_SUPPORT_BUTTON, 'support'),
       );
       await notifyStaff(
-        buildLowRatingStaffAlert({
-          score,
-          shortId: order.shortId,
-          panelHost: serverEnv.PANEL_HOST ?? null,
-        }),
+        buildLowRatingStaffAlert({ score, shortId: order.shortId }),
         {
           capability: 'support',
+          title: 'Низкая оценка заказа',
+          action: { text: 'посмотреть заказ и при необходимости связаться с клиентом', path: `/admin/orders/${order.shortId}` },
           // DM и так уходит ровно один (гейт — факт вставки оценки); окно —
           // страховка от неожиданных повторов, не основной механизм.
           dedupKey: `funnel-rating-${orderId}`,

@@ -168,7 +168,7 @@ export async function rollupReferralMonth(opts?: {
       `Реферальная прогрессия: не посчитаны месяцы ${missedMonths.join(", ")} ` +
         `(крон не отработал 1-го числа). Нужен ручной прогон — автодобор осознанно ` +
         `не делается, он выдал бы бонусы задним числом. Подробности в docs/BACKLOG.md.`,
-      { stream: 'payments' },
+      { stream: 'payments', title: 'Реферальная прогрессия не посчитана', action: { text: 'ручной прогон роллапа за пропущенные месяцы (docs/BACKLOG.md)' } },
     );
   }
   log.info({ event: "cron.referral_rollup.start", monthKey, missedMonths });

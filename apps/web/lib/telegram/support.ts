@@ -38,9 +38,12 @@ export async function sendToSupportOperator(
     // там равен нулю даже при состоявшейся доставке, и клиент получал бы
     // «не получилось» при живом сообщении у владельца. Пустой штат — авария
     // конфигурации, о ней ниже отдельно.
+    // Заголовок не добавляем: у обращения он свой (собран вместе с текстом
+    // клиента), а хвост «Что делать» ведёт в раздел поддержки.
     const res = await notifyStaff(stripHtmlTags(operatorMessage), {
       capability: 'support',
       fallbackToOps: false,
+      action: { text: 'ответить клиенту', path: '/admin/support' },
     });
     if (res.delivered > 0) {
       log.info({ event: 'telegram.support.notified', delivered: res.delivered, ...logCtx });
