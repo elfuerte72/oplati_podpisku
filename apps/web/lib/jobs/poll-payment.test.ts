@@ -425,9 +425,13 @@ describe('pollPayments — добор по провайдерам', () => {
 
     await pollPayments();
 
-    expect(notifyOps).toHaveBeenCalledTimes(1);
-    const text = String(vi.mocked(notifyOps).mock.calls[0]?.[0]);
-    expect(text).toContain('нтифрод-холд');
+    // Одно сообщение на холд (трек ops-group): персоналу через `notifyStaff`,
+    // владелец получает его же — постом в группу или встроенным фолбэком.
+    // Отдельного `notifyOps` больше нет: в общей теме это был бы дубль.
+    expect(notifyOps).not.toHaveBeenCalled();
+    expect(h.notifyStaffMock).toHaveBeenCalledTimes(1);
+    const text = String(h.notifyStaffMock.mock.calls[0]?.[0]);
+    expect(text).toContain('антифрод');
     expect(text).not.toContain('нет в её документации');
     // Не терминален и не оплачен: заказ не трогаем.
     expect(h.fkPaidMock).not.toHaveBeenCalled();
@@ -441,7 +445,7 @@ describe('pollPayments — добор по провайдерам', () => {
     await pollPayments();
     await pollPayments();
 
-    expect(notifyOps).toHaveBeenCalledTimes(1);
+    expect(h.notifyStaffMock).toHaveBeenCalledTimes(1);
   });
 
   it('первый холд: заказ уходит «на проверку», клиент получает автосообщение', async () => {

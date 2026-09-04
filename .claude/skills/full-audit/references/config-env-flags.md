@@ -29,7 +29,8 @@
 | `CRON_SECRET` | fail-closed |
 | `getClientIp` невалидный правый XFF | fail-closed → `unknown`, БЕЗ добора левее |
 | `X-Client-IP` без совпадения `PROXY_SHARED_SECRET` | ветка мертва |
-| `SUPPORT_OPERATOR_CHAT_ID` не задан | не доставляется + Sentry (дефолта в коде НЕТ) |
+| `OPS_GROUP_CHAT_ID` не задан | прежняя схема: `notifyOps` → личка `ALERT_TELEGRAM_CHAT_ID`, `notifyStaff` → личка персоналу с фолбэком владельцу; задан — темы группы, незаданный thread id → корень |
+| `TELEGRAM_LOGIN_BOT_TOKEN` не задан при заданной группе | уведомления не доставляются, фолбэка на другого бота нет |
 | `wouldCreateCycle` при сбое обхода | fail-closed (отказ установки) |
 | PaySpace ключей нет | guard `skipped_no_paypace`, заказ остаётся в `paid` |
 

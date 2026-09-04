@@ -281,8 +281,9 @@ describe('notifyStaff при заданной ops-группе', () => {
     expect(h.sendStaffMessage).toHaveBeenCalledWith('222', 'выплата');
   });
 
-  it('раздел владельца при пустом штате → фолбэк владельцу НЕ зовётся', async () => {
-    // `notifyOps` при группе положил бы выплату в тему, которую видит оператор.
+  it('раздел владельца при пустом штате → фолбэк владельцу НЕ зовётся, но Sentry знает', async () => {
+    // `notifyOps` при группе положил бы выплату в тему, которую видит оператор;
+    // молчать при этом тоже нельзя — ошибка конфигурации не должна быть тишиной.
     h.listStaff.mockImplementation(async () => []);
 
     const res = await notifyStaff('выплата', { capability: 'partners' });
@@ -290,6 +291,7 @@ describe('notifyStaff при заданной ops-группе', () => {
     expect(res).toMatchObject({ delivered: 0 });
     expect(h.notifyOps).not.toHaveBeenCalled();
     expect(h.sendStaffMessage).not.toHaveBeenCalled();
+    expect(h.captureMessage).toHaveBeenCalledTimes(1);
   });
 
   it('пост не удался → failed = 1, фолбэк владельцу не зовётся даже при пустом штате', async () => {

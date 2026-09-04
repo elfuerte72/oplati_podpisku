@@ -430,7 +430,7 @@ export async function processFreekassaPaid(
     // уходило только в Sentry — то есть могло остаться незамеченным.
     await notifyOps(
       `Оплата принята (Freekassa, операция ${intid}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
-      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Freekassa)', action: { text: 'разобрать заказ вручную', path: '/admin/orders' } },
+      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Freekassa)', action: { text: 'разобрать заказ вручную', path: '/admin/pending' } },
     );
   }
 

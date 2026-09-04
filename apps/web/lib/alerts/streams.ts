@@ -109,7 +109,7 @@ export type NotifyStreamOptions = {
  * занимать окно дедупа несостоявшейся отправкой.
  */
 export async function notifyStream(
-  stream: AlertStream | null,
+  stream: AlertStream,
   text: string,
   opts: NotifyStreamOptions = {},
 ): Promise<boolean> {
@@ -120,11 +120,11 @@ export async function notifyStream(
 
 async function deliverToGroup(
   group: OpsGroup,
-  stream: AlertStream | null,
+  stream: AlertStream,
   text: string,
   opts: NotifyStreamOptions,
 ): Promise<boolean> {
-  const threadId = stream ? group.threads[stream] : null;
+  const threadId = group.threads[stream];
   try {
     await sendStaffMessage(group.chatId, text, threadId === null ? {} : { messageThreadId: threadId });
     log.info({ event: 'alerts.stream.sent', stream, threadId });
@@ -145,23 +145,23 @@ async function deliverToGroup(
       reportStaleThread(stream, threadId, opts);
       return sendToRoot(group, stream, text);
     }
-    log.error({ event: 'alerts.stream.failed', stream, err: describeError(err) });
+    log.error({ event: 'alerts.stream.failed', stream, err: describeTelegramError(err) });
     return false;
   }
 }
 
-async function sendToRoot(group: OpsGroup, stream: AlertStream | null, text: string): Promise<boolean> {
+async function sendToRoot(group: OpsGroup, stream: AlertStream, text: string): Promise<boolean> {
   try {
     await sendStaffMessage(group.chatId, text);
     log.info({ event: 'alerts.stream.sent', stream, threadId: null, fallback: 'root' });
     return true;
   } catch (err) {
-    log.error({ event: 'alerts.stream.failed', stream, fallback: 'root', err: describeError(err) });
+    log.error({ event: 'alerts.stream.failed', stream, fallback: 'root', err: describeTelegramError(err) });
     return false;
   }
 }
 
-async function deliverLegacy(stream: AlertStream | null, text: string): Promise<boolean> {
+async function deliverLegacy(stream: AlertStream, text: string): Promise<boolean> {
   const chatId = serverEnv.ALERT_TELEGRAM_CHAT_ID;
   if (!chatId) {
     log.warn({ event: 'alerts.ops.disabled', reason: 'no_chat_id', stream });
@@ -172,7 +172,7 @@ async function deliverLegacy(stream: AlertStream | null, text: string): Promise<
     log.info({ event: 'alerts.ops.sent', stream });
     return true;
   } catch (err) {
-    log.error({ event: 'alerts.ops.failed', stream, err: describeError(err) });
+    log.error({ event: 'alerts.ops.failed', stream, err: describeTelegramError(err) });
     return false;
   }
 }
@@ -185,9 +185,9 @@ function isThreadNotFound(err: unknown): boolean {
 /** Протухшие темы, о которых уже сообщили: одно сообщение на thread id за процесс. */
 const staleThreadsReported = new Set<string>();
 
-function reportStaleThread(stream: AlertStream | null, threadId: number, opts: NotifyStreamOptions): void {
+function reportStaleThread(stream: AlertStream, threadId: number, opts: NotifyStreamOptions): void {
   if (opts.reportToSentry === false) return;
-  const key = `${stream ?? 'root'}:${threadId}`;
+  const key = `${stream}:${threadId}`;
   if (staleThreadsReported.has(key)) return;
   staleThreadsReported.add(key);
   Sentry.captureMessage('Тема ops-группы не найдена — уведомления уходят в корень группы', {
@@ -200,9 +200,10 @@ function reportStaleThread(stream: AlertStream | null, threadId: number, opts: N
 /**
  * Ошибка Telegram — без тела запроса: grammY кладёт `payload.text` в
  * перечисляемое поле, а текст уведомления может нести данные клиента (обращение
- * в поддержку целиком). Тот же урок, что у `telegram/support.ts`.
+ * в поддержку целиком). Тот же урок, что у `telegram/support.ts`; общий для
+ * всего слоя алёртов.
  */
-function describeError(err: unknown): unknown {
+export function describeTelegramError(err: unknown): unknown {
   if (err instanceof GrammyError) {
     return { name: err.name, errorCode: err.error_code, description: err.description };
   }

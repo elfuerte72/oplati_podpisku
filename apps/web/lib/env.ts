@@ -580,6 +580,9 @@ const serverEnvSchema = z.object({
   OPS_GROUP_CHAT_ID: optionalEnvString(
     z.string().regex(/^-?\d+$/, 'must be a numeric Telegram chat id'),
   ),
+  // Зеркало (инвариант 10): thread id «Аварии» живёт ещё в GitHub secret
+  // `DEPLOY_ALERT_THREAD_ID` (deploy.yml) и в contact point Grafana — сменил
+  // тему здесь, смени там: разъезд не упадёт, просто алёрты разойдутся по темам.
   OPS_GROUP_THREAD_CRITICAL: optionalEnvString(threadIdSchema),
   OPS_GROUP_THREAD_PAYMENTS: optionalEnvString(threadIdSchema),
   OPS_GROUP_THREAD_SUPPORT: optionalEnvString(threadIdSchema),

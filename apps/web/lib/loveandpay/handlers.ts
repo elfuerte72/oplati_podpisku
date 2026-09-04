@@ -283,7 +283,7 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
     // ветке, `paid_after_terminal`).
     await notifyOps(
       `Оплата принята (Love&Pay, инвойс ${data.invoiceNumber ?? data.id}), но заказ не удалось перевести в оплаченный — карта НЕ выпущена. Нужен ручной разбор: заказ ${payment.orderId}.`,
-      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Love&Pay)', action: { text: 'разобрать заказ вручную', path: '/admin/orders' } },
+      { stream: 'critical', title: 'Оплата принята, заказ не переведён (Love&Pay)', action: { text: 'разобрать заказ вручную', path: '/admin/pending' } },
     );
   }
 

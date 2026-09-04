@@ -30,13 +30,17 @@ export type OpsAction = {
   path?: string;
 };
 
-export type OpsMessage = {
-  /** Первая строка — короткий заголовок события. */
+/** Что вызывающий добавляет к телу: заголовок и «Что делать». Общее для `notifyOps` и `notifyStaff`. */
+export type OpsMessageOptions = {
+  /** Заголовок события — первая строка сообщения. */
   title?: string;
+  /** «Что делать» — последняя строка, с ссылкой на экран панели, где он есть. */
+  action?: OpsAction;
+};
+
+export type OpsMessage = OpsMessageOptions & {
   /** Тело как есть. */
   body: string;
-  /** Хвост «Что делать» — только там, где действие есть. */
-  action?: OpsAction;
 };
 
 /** Абсолютная ссылка на экран панели; без хоста — сам путь. */

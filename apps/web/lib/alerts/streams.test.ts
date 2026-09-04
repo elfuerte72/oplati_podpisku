@@ -215,11 +215,6 @@ describe('notifyStream при заданной группе', () => {
     expect(h.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('поток null → корень группы', async () => {
-    await notifyStream(null, 'без потока');
-
-    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'без потока', {});
-  });
 });
 
 describe('notifyStream без группы — прежняя схема', () => {

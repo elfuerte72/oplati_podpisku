@@ -2,7 +2,7 @@ import 'server-only';
 
 import { serverEnv } from '../env.server.ts';
 
-import { formatOpsMessage, type OpsAction } from './format.ts';
+import { formatOpsMessage, type OpsMessageOptions } from './format.ts';
 import { type AlertStream, notifyStream } from './streams.ts';
 
 /**
@@ -31,7 +31,7 @@ export async function notifyOps(text: string, opts: NotifyOpsOptions): Promise<b
   return notifyStream(opts.stream, composed);
 }
 
-export type NotifyOpsOptions = {
+export type NotifyOpsOptions = OpsMessageOptions & {
   /**
    * Поток (тема группы) — ОБЯЗАТЕЛЕН: вызов без потока не компилируется, и
    * «забыл разметить» ловит typecheck, а не владелец, разбирающий корень
@@ -39,8 +39,4 @@ export type NotifyOpsOptions = {
    * `docs/runbooks/monitoring.md`.
    */
   stream: AlertStream;
-  /** Заголовок события — первая строка сообщения (`formatOpsMessage`). */
-  title?: string;
-  /** «Что делать» — последняя строка, с ссылкой на экран панели, где он есть. */
-  action?: OpsAction;
 };

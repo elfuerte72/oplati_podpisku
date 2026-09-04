@@ -4,9 +4,9 @@ import * as Sentry from '@sentry/nextjs';
 
 import { getDb, listStaffRecipients } from '@oplati/db';
 
-import { formatOpsMessage, type OpsAction } from './format';
+import { formatOpsMessage, type OpsMessageOptions } from './format';
 import { notifyOps } from './notify-ops';
-import { type AlertStream, notifyStream, opsGroup, streamForCapability } from './streams';
+import { type AlertStream, describeTelegramError, notifyStream, opsGroup, streamForCapability } from './streams';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
@@ -66,7 +66,7 @@ export type NotifyStaffResult = {
 
 export async function notifyStaff(
   body: string,
-  opts: {
+  opts: OpsMessageOptions & {
     dedupKey?: string;
     now?: number;
     /**
@@ -98,13 +98,10 @@ export async function notifyStaff(
      * застрявший заказ и критический баланс идут в «Аварию».
      */
     stream?: AlertStream;
-    /** Заголовок события — первая строка сообщения (`formatOpsMessage`). */
-    title?: string;
-    /** «Что делать» — последняя строка, с ссылкой на экран панели, где он есть. */
-    action?: OpsAction;
   },
 ): Promise<NotifyStaffResult> {
   const now = opts.now ?? Date.now();
+  const stream = opts.stream ?? streamForCapability(opts.capability);
   // Собираем один раз: и пост в группу, и личка, и фолбэк владельцу получают
   // одну и ту же форму — заголовок, тело, «Что делать».
   const text = formatOpsMessage({ title: opts.title, body, action: opts.action }, serverEnv.PANEL_HOST);
@@ -122,7 +119,6 @@ export async function notifyStaff(
     // Пост в тему группы — общее место, поэтому фолбэк владельцу не нужен
     // (он в группе), а «доставлено» равно единице: адресат один. Окно дедупа
     // — по ФАКТУ поста, как и в личке ниже.
-    const stream = opts.stream ?? streamForCapability(opts.capability);
     const posted = await notifyStream(stream, text);
     if (opts.dedupKey && posted) dedup.record(opts.dedupKey, now, windowMs);
     log.info({ event: 'alerts.staff.posted', stream, posted, capability: opts.capability });
@@ -150,7 +146,7 @@ export async function notifyStaff(
     // Окно — по ФАКТУ доставки владельцу, как и в основной ветке ниже: на
     // проде `staff` пуст до заведения персонала, и записанное по попытке окно
     // означало бы час молчания при незаданном канале владельца.
-    const toOwner = await fallback(text, opts);
+    const toOwner = await fallback(text, opts.capability, stream, opts.fallbackToOps);
     if (opts.dedupKey && toOwner) dedup.record(opts.dedupKey, now, windowMs);
     return { delivered: 0, failed: 0, deduped: false };
   }
@@ -177,11 +173,13 @@ export async function notifyStaff(
       }
       // ⚠️ Отказ ОДНОМУ не отменяет остальных: сотрудник, не запустивший бота
       // входа, даёт 403, и без этого цикла из-за него молчали бы все.
-      log.warn({ event: 'alerts.staff.send_failed', staffId: recipient.id, err });
+      // Без тела запроса: grammY кладёт текст уведомления в `payload`, а это
+      // может быть обращение клиента целиком.
+      log.warn({ event: 'alerts.staff.send_failed', staffId: recipient.id, err: describeTelegramError(err) });
     }
   }
 
-  const toOwner = delivered === 0 ? await fallback(text, opts) : false;
+  const toOwner = delivered === 0 ? await fallback(text, opts.capability, stream, opts.fallbackToOps) : false;
 
   // Окно занимает только СОСТОЯВШАЯСЯ доставка — хоть персоналу, хоть владельцу.
   // ⚠️ Именно факт, а не намерение: `notifyOps` при незаданном
@@ -206,18 +204,28 @@ export async function notifyStaff(
  */
 async function fallback(
   text: string,
-  opts: { capability: PanelCapability; fallbackToOps?: boolean; stream?: AlertStream },
+  capability: PanelCapability,
+  stream: AlertStream,
+  enabled: boolean | undefined,
 ): Promise<boolean> {
-  if (opts.fallbackToOps === false) return false;
+  if (enabled === false) return false;
   if (opsGroup()) {
-    log.warn({ event: 'alerts.staff.no_recipients_with_group', capability: opts.capability });
+    // Ошибка конфигурации (у раздела владельца нет ни одного админа в `staff`
+    // с Telegram) не должна означать тишину: Sentry-релей донесёт это до темы
+    // «Ошибки», а само сообщение в группу не кладём — раздел закрыт оператору.
+    log.warn({ event: 'alerts.staff.no_recipients_with_group', capability });
+    Sentry.captureMessage('Уведомление по разделу владельца не доставлено — в staff нет админов', {
+      level: 'warning',
+      tags: { source: 'alerts.staff' },
+      extra: { capability },
+    });
     return false;
   }
-  log.warn({ event: 'alerts.staff.fallback_to_ops', capability: opts.capability });
+  log.warn({ event: 'alerts.staff.fallback_to_ops', capability });
   Sentry.captureMessage('Уведомление персоналу не доставлено — ушло владельцу', {
     level: 'warning',
     tags: { source: 'alerts.staff' },
-    extra: { capability: opts.capability },
+    extra: { capability },
   });
-  return notifyOps(text, { stream: opts.stream ?? streamForCapability(opts.capability) });
+  return notifyOps(text, { stream });
 }

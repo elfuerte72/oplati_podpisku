@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,27 +70,24 @@ describe('канарейка тона уведомлений персоналу'
     /(?<![а-яё])(обнови|попробуй|проверь|сверь|подключись|посмотри|подожди|пополни|примени|переключи|убедись|держи|смотри|разбери|ты|тебе|тебя|твой|твоей|твою)(?![а-яё])/i;
   const INTERNAL_TOOLS = /sentry/i;
 
-  const CALL_SITES = [
-    'lib/payments/gateway.ts',
-    'lib/contacts/phone-gate.ts',
-    'lib/cabinet/referral-actions.ts',
-    'lib/freekassa/handlers.ts',
-    'lib/freekassa/nonce-alert.ts',
-    'lib/tool-handlers/propose-order.ts',
-    'lib/loveandpay/handlers.ts',
-    'lib/jobs/payment-review-watch.ts',
-    'lib/jobs/payment-conversion.ts',
-    'lib/jobs/referral-accrual-recovery.ts',
-    'lib/jobs/poll-payment-one.ts',
-    'lib/jobs/poll-payment.ts',
-    'lib/jobs/issue-card.ts',
-    'lib/jobs/referral-rollup.ts',
-    'lib/jobs/proxy-health.ts',
-    'lib/jobs/support-housekeeping.ts',
-    'lib/jobs/vcc-balance.ts',
-    'lib/pay-space/preflight.ts',
-    'lib/telegram/funnel-callbacks.ts',
-  ];
+  /**
+   * Точки вызова ищутся по исходникам, а не перечисляются руками: список был бы
+   * зеркалом (инвариант 10), и новый алёрт в новом файле проверялся бы, только
+   * если кто-то вспомнил про этот тест.
+   */
+  function walk(dir: string): string[] {
+    return readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory() ? walk(path) : [path];
+    });
+  }
+
+  function callSiteFiles(web: string): string[] {
+    return [...walk(join(web, 'lib')), ...walk(join(web, 'app'))]
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.includes('/lib/alerts/'))
+      .filter((f) => /notify(Ops|Staff)\(/.test(readFileSync(f, 'utf8')))
+      .map((f) => f.slice(web.length + 1));
+  }
 
   /** Аргументы вызова от строки с `notifyOps(`/`notifyStaff(` до закрывающей `);`. */
   function callSpans(src: string): string[] {
@@ -128,7 +125,9 @@ describe('канарейка тона уведомлений персоналу'
     const web = join(here, '..', '..');
     const offenders: string[] = [];
     let spans = 0;
-    for (const rel of CALL_SITES) {
+    const files = callSiteFiles(web);
+    expect(files.length).toBeGreaterThan(15);
+    for (const rel of files) {
       const src = readFileSync(join(web, rel), 'utf8');
       for (const span of callSpans(src)) {
         spans += 1;
