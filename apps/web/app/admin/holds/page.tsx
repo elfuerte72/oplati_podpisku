@@ -18,7 +18,9 @@ import {
 } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
-import { serverEnv } from '@/lib/env';
+// `env.server`, а не `env`: guarded-модуль добавляет `import 'server-only'` —
+// он и уронит сборку, если этот файл однажды утянут в клиентский бандл.
+import { serverEnv } from '@/lib/env.server';
 import {
   CELL_TEXT,
   COLUMN_TITLES,
@@ -86,7 +88,7 @@ export default async function PanelHoldsPage({
 
       {holds.length === 0 ? (
         /* Пусто — это норма: на 16 августа холдов было ноль. */
-        <p className="panel-empty">{EMPTY_TEXT.holds}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.holds}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">

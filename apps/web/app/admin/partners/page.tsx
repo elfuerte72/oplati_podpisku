@@ -71,7 +71,7 @@ export default async function PanelPartnersPage({
 
       {items.length === 0 ? (
         /* Программа на soft-start: пустой список — норма. */
-        <p className="panel-empty">{EMPTY_TEXT.partners}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.partners}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table">

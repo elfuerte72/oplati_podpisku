@@ -77,7 +77,13 @@ export default async function PanelPayoutsPage({
 
       {items.length === 0 ? (
         /* На 16 августа заявок было ноль — пустой экран это норма. */
-        <p className="panel-empty">{showAll ? EMPTY_TEXT.payouts : EMPTY_TEXT.payoutsOpen}</p>
+        <p className="panel-empty">
+          {page > 1
+            ? EMPTY_TEXT.beyondLastPage
+            : showAll
+              ? EMPTY_TEXT.payouts
+              : EMPTY_TEXT.payoutsOpen}
+        </p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table">

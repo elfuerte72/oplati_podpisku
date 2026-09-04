@@ -52,6 +52,18 @@ export const PANEL_MAX_ROWS = 100;
 export const PANEL_DEFAULT_ROWS = 50;
 
 /**
+ * Сколько строк соединения максимум читает выборка холдов.
+ *
+ * У неё смещение считается в JS (единица страницы — заказ, а строк на заказ
+ * столько, сколько платежей), поэтому объём чтения растёт с номером страницы.
+ * Потолок делает эту цену ограниченной: дальше него экран показывает пустую
+ * страницу, а не просит у базы сотню тысяч строк из-за пересланной ссылки с
+ * `?page=1000`. 1500 строк — это около пятисот заказов при запасе в три
+ * платежа на заказ; холдов на проде единицы.
+ */
+const HOLDS_MAX_SCAN_ROWS = 1500;
+
+/**
  * Приведение запрошенного размера страницы к допустимому.
  *
  * Вынесено и экспортировано намеренно: интеграционный тест потолка на
@@ -822,10 +834,15 @@ export async function listHoldsForPanel(
   // ⚠️ Смещение считается ПОСЛЕ дедупа, а не отдаётся в `OFFSET`: единица
   // страницы здесь — ЗАКАЗ, а строк на заказ приходит столько, сколько у него
   // платежей. `OFFSET 50` по соединённым строкам пропустил бы произвольное
-  // число заказов — тем большее, чем чаще счёт перевыставляли. Цена — прошлые
-  // страницы читаются заново; она ограничена потолком номера страницы и тем,
-  // что холдов на экране единицы.
-  const sqlLimit = (offset + maxRows) * 3 + 1;
+  // число заказов — тем большее, чем чаще счёт перевыставляли.
+  //
+  // ⚠️ Цена такого смещения — чтение прошлых страниц заново, и она РАСТЁТ с
+  // номером. Поэтому объём чтения жёстко ограничен: `?page=1000` из
+  // пересланной ссылки иначе просил бы у базы полтораста тысяч строк с
+  // четырёхтабличным соединением в том же процессе, что принимает вебхуки
+  // Freekassa и Telegram. Упёршись в потолок, экран честно показывает пустую
+  // страницу без «Дальше», а не тянет базу дальше.
+  const sqlLimit = Math.min((offset + maxRows) * 3 + 1, HOLDS_MAX_SCAN_ROWS);
   // Плюс ещё одна — ТОЛЬКО чтобы отличить «выбрали всё» от «упёрлись в потолок».
   // Без неё `rows.length === sqlLimit` означало и то и другое, и экран говорил
   // «показаны не все» там, где показаны все.
@@ -903,7 +920,12 @@ export async function listHoldsForPanel(
   // платежа на заказ может и не покрыть заказ с длинной историей перевыставлений:
   // упёршись в потолок SQL, мы просто НЕ ЗНАЕМ, что дальше, и молчать об этом
   // нельзя — пустой хвост читается как «холдов больше нет».
-  return { items: page, hasMore: items.length > offset + maxRows || truncatedBySqlLimit };
+  //
+  // ⚠️ Но только при ПОЛНОЙ странице: иначе «Дальше» вело бы на пустой экран и
+  // предлагало бы там ещё одно «Дальше» — бесконечно и без объяснения.
+  const hasMore =
+    items.length > offset + maxRows || (truncatedBySqlLimit && page.length === maxRows);
+  return { items: page, hasMore };
 }
 
 /**
@@ -1191,7 +1213,12 @@ export async function listSupportRequestsForPanel(
       JOIN conversations c ON c.id = m.conversation_id
       WHERE ${sql.join(conditions, sql` AND `)}
       GROUP BY m.conversation_id
-      ORDER BY max(m.created_at) DESC
+      -- ⚠️ Идентификатор в сортировке — не украшение: порядок обязан быть
+      -- ПОЛНЫМ. Два обращения с одинаковым временем последнего сообщения
+      -- Postgres волен отдать в разном порядке на запросе первой страницы и
+      -- на запросе второй — и разговор попадёт на обе сразу либо не попадёт
+      -- никуда. С LIMIT без OFFSET этого не было видно.
+      ORDER BY max(m.created_at) DESC, m.conversation_id
       -- Смещение стоит здесь, в подзапросе разговоров: наружный SELECT
       -- досчитывает по строке подзапроса, и смещение на нём пропускало бы
       -- уже отобранные разговоры вместо предыдущей страницы.
@@ -1216,7 +1243,9 @@ export async function listSupportRequestsForPanel(
     JOIN conversations c ON c.id = r.conversation_id
     JOIN users u ON u.id = c.user_id
     LEFT JOIN staff s ON s.id = c.assigned_operator_id
-    ORDER BY r.last_request_at DESC
+    -- Тот же порядок, что и в подзапросе: расходись они, страница показывала
+    -- бы отобранные разговоры в чужой последовательности.
+    ORDER BY r.last_request_at DESC, c.id
   `);
 
   const hasMore = rows.length > maxRows;
@@ -1540,7 +1569,10 @@ export async function listPartnerReferralsForPanel(
                         AND o.status IN ${PURCHASED_STATUSES_SQL}), 0) AS purchased
     FROM users u
     WHERE u.referred_by = ${partnerUserId}
-    ORDER BY purchased DESC, u.created_at DESC
+    -- Идентификатор замыкает порядок: два приглашённых с одинаковой суммой и
+    -- временем создания иначе делят место, и при листании один из них
+    -- появлялся бы дважды, а другой не появлялся вовсе.
+    ORDER BY purchased DESC, u.created_at DESC, u.id
     LIMIT ${maxRows + 1} OFFSET ${offset}
   `);
 
@@ -1627,7 +1659,11 @@ export async function listReferralPayoutsForPanel(
     JOIN users u ON u.id = p.user_id
     LEFT JOIN referral_partners rp ON rp.user_id = p.user_id
     ${openOnly}
-    ORDER BY p.requested_at DESC
+    -- Идентификатор замыкает порядок: время подачи ставится умолчанием базы,
+    -- и две заявки одного тика Postgres волен отдать в разном порядке на
+    -- первой странице и на второй — одна тогда показывается дважды, другая
+    -- не показывается никогда. Это не теория: тест листания на этом флакал.
+    ORDER BY p.requested_at DESC, p.id
     LIMIT ${maxRows + 1} OFFSET ${offset}
   `);
 

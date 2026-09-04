@@ -73,7 +73,7 @@ export default async function PanelPendingPage({
 
       {items.length === 0 ? (
         /* Поток около одного заказа в день: пустой экран — норма. */
-        <p className="panel-empty">{EMPTY_TEXT.pending}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.pending}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">

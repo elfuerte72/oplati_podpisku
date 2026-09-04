@@ -4358,6 +4358,12 @@ describe('панель: недожатые заказы (тикет 07)', () => 
 
     expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(true);
     expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 60_000 })).toBe(false);
+    // ⚠️ Пауза не «на всякий случай»: граница окна считается по часам ПРОЦЕССА
+    // (`Date.now() - cooldownMs`), а отметка получает время ТРАНЗАКЦИИ базы.
+    // С нулевым окном обе величины попадают в одну миллисекунду, сравнение
+    // `>=` считает прошлую отметку свежей, и тест краснеет примерно раз на
+    // десять прогонов. Ждём, пока часы процесса уйдут вперёд.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     // Окно меряется от отметки: с нулевым окном прошлая запись уже не мешает.
     expect(await claimPaymentReminder(db, { orderId: order.id, cooldownMs: 0 })).toBe(true);
   });

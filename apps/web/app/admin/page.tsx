@@ -180,9 +180,11 @@ export default async function PanelHomePage() {
             {balance?.state === 'ok' || balance?.state === 'stale' ? (
               <>
                 <p>
+                  {/* Тот же кегль, что у трёх соседних показателей стола: это
+                      число решает, сможем ли мы выдать карту по оплаченному
+                      заказу, и мельче остальных ему быть нечего. */}
                   <span
-                    className={STATUS_TONE_CLASS[balance.low ? 'danger' : 'ok']}
-                   
+                    className={`${STATUS_TONE_CLASS[balance.low ? 'danger' : 'ok']} panel-status--lg`}
                   >
                     {formatUsdCents(balance.balanceUsdCents)}
                   </span>{' '}

@@ -70,7 +70,7 @@ export default async function PanelPartnerPage({
       </PanelPageHeader>
 
       {items.length === 0 ? (
-        <p className="panel-empty">{EMPTY_TEXT.referrals}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.referrals}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table">

@@ -142,7 +142,7 @@ export default async function PanelFeedbackPage({
       </section>
 
       {feed.items.length === 0 ? (
-        <p className="panel-empty">{EMPTY_TEXT.feedback}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.feedback}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">

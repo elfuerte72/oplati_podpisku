@@ -69,7 +69,7 @@ export default async function PanelSupportPage({
 
       {items.length === 0 ? (
         /* Четыре обращения за три месяца — пустой экран это норма. */
-        <p className="panel-empty">{EMPTY_TEXT.support}</p>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.support}</p>
       ) : (
         <div className="panel-table-scroll">
           <table className="panel-table">
