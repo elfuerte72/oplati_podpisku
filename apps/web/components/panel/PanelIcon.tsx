@@ -179,3 +179,5 @@ export function PanelIcon({ name, className }: { name: PanelIconName; className?
 
 /** Для канарейки полноты набора: тест сверяет ключи со словарём разделов. */
 export const PANEL_ICON_NAMES = Object.keys(ICONS) as PanelIconName[];
+/** Только значки разделов — ровно те ключи, что обязаны совпасть со словарём. */
+export const SECTION_ICON_NAMES = Object.keys(SECTION_ICONS) as SectionKey[];

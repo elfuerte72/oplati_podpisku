@@ -35,7 +35,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const density = readDensity(jar.get(DENSITY_COOKIE)?.value);
 
   return (
-    <div className="panel" data-theme={theme} data-density={density}>
+    // `data-panel-theme`, а не `data-theme`: у витрины в `globals.css` есть
+    // селектор `[data-theme="light"]` без скоупа, и общее имя атрибута
+    // переопределяло бы токены сайта внутри поддерева панели (и наоборот).
+    <div className="panel" data-panel-theme={theme} data-density={density}>
       {children}
     </div>
   );

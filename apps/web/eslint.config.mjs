@@ -29,6 +29,8 @@ const eslintConfig = defineConfig([
       // Панель v3: боковое меню и быстрый поиск живут под 'use client'.
       "lib/panel/search.ts",
       "lib/panel/sidebar.ts",
+      // Панель v3.1: настройки вида пишут тумблеры под 'use client'.
+      "lib/panel/prefs.ts",
       "lib/retention-policy.ts",
     ],
     rules: {

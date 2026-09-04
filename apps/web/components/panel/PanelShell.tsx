@@ -2,7 +2,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { Suspense } from 'react';
 
-import { isMenuBadgeSection, menuBadges, type MenuBadgeSection } from '@/lib/panel/desk';
+import { groupBadgeTotal, isMenuBadgeSection, menuBadges, type MenuBadgeSection } from '@/lib/panel/desk';
 import { ACTION_TITLES, FORBIDDEN_TEXT, attentionLabel } from '@/lib/panel/labels';
 import type { PanelActor } from '@/lib/panel/login';
 import { readMenuCounts } from '@/lib/panel/menu-counts';
@@ -166,12 +166,7 @@ async function NavGroupBadge({
   role: PanelActor['role'];
   sections: readonly PanelSectionForRole[];
 }) {
-  const badges = menuBadges(role, await readMenuCounts(role));
-  let total = 0;
-  for (const section of sections) {
-    if (!isMenuBadgeSection(section.capability)) continue;
-    total += badges[section.capability] ?? 0;
-  }
+  const total = groupBadgeTotal(menuBadges(role, await readMenuCounts(role)), sections);
   if (total <= 0) return null;
   return (
     <span className="panel-nav-badge panel-nav-badge--group" aria-label={attentionLabel(total)}>

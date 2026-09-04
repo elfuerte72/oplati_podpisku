@@ -73,7 +73,18 @@ export function PanelLayout({
 
         <PanelSearch />
 
-        <nav className="panel-sidebar__nav" onClick={() => setDrawerOpen(false)}>
+        {/*
+         * Меню на телефоне закрывается ПЕРЕХОДОМ, а не любым кликом внутри:
+         * заголовок группы — тоже кнопка, и его нажатие всплывает сюда же.
+         * Закрывай меню на нём — и чтобы увидеть свёрнутую группу, меню
+         * пришлось бы открывать заново.
+         */}
+        <nav
+          className="panel-sidebar__nav"
+          onClick={(event) => {
+            if ((event.target as HTMLElement).closest('a')) setDrawerOpen(false);
+          }}
+        >
           {nav}
         </nav>
 

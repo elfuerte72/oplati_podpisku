@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PANEL_SECTION_GROUPS } from './permissions';
 import {
   DENSITY_COOKIE,
   NAV_CLOSED_COOKIE,
@@ -57,6 +58,15 @@ describe('readClosedGroups', () => {
   it('набор и строка cookie ходят туда-обратно', () => {
     const value = closedGroupsCookieValue(['orders', 'manage']);
     expect([...readClosedGroups(value)]).toEqual(['orders', 'manage']);
+  });
+
+  it('каждый настоящий ключ группы проходит фильтр', () => {
+    // Фильтр описывает алфавит ключей регэкспом, а ключи живут в
+    // `PANEL_SECTION_GROUPS` — связи между ними нет ни типом, ни рантаймом.
+    // Заведи группу `aiTools` — тумблер свернёт её в браузере, а сервер молча
+    // отбросит ключ, и группа разворачивалась бы на каждом переходе.
+    const value = closedGroupsCookieValue(PANEL_SECTION_GROUPS);
+    expect([...readClosedGroups(value)]).toEqual([...PANEL_SECTION_GROUPS]);
   });
 });
 

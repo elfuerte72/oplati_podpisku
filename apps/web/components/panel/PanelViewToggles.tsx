@@ -21,9 +21,11 @@ import { PanelIcon } from './PanelIcon';
  * меняет — без правки атрибута тема переключалась бы только на следующем
  * переходе, и тумблер выглядел бы сломанным.
  *
- * Атрибут ставится на ближайший `.panel`, а не на `<html>`: панель делит
- * приложение с витриной сайта, у которой своя тема и свой тумблер (общий
- * атрибут перекрашивал бы одну из них по вкусу другой).
+ * Атрибут ставится на ближайший `.panel`, а не на `<html>`, и зовётся
+ * `data-panel-theme`, а не `data-theme`: панель делит приложение с витриной
+ * сайта, у которой своя тема, свой тумблер и нескоупленный селектор
+ * `[data-theme="light"]` в `globals.css` — общее имя перекрашивало бы одну из
+ * них по вкусу другой.
  */
 export function PanelViewToggles({
   themeInitial,
@@ -36,23 +38,29 @@ export function PanelViewToggles({
   const [density, setDensity] = useState(densityInitial);
   const root = useRef<HTMLDivElement>(null);
 
-  function panelRoot(): HTMLElement | null {
-    return root.current?.closest('.panel') ?? null;
+  /**
+   * Корень панели. Тумблер рендерится только внутри `.panel` (`app/admin/
+   * layout.tsx`), поэтому его отсутствие — ошибка программы: бросаем, а не
+   * молчим. Тихий `if (el)` оставил бы cookie записанной и значок
+   * перевёрнутым при неизменившемся экране — и никто бы об этом не узнал.
+   */
+  function panelRoot(): HTMLElement {
+    const el = root.current?.closest<HTMLElement>('.panel');
+    if (!el) throw new Error('PanelViewToggles rendered outside .panel');
+    return el;
   }
 
   function switchTheme() {
     const next: PanelTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
-    const el = panelRoot();
-    if (el) el.dataset.theme = next;
+    panelRoot().dataset.panelTheme = next;
     document.cookie = prefCookieString(THEME_COOKIE, next);
   }
 
   function switchDensity() {
     const next: PanelDensity = density === 'cosy' ? 'compact' : 'cosy';
     setDensity(next);
-    const el = panelRoot();
-    if (el) el.dataset.density = next;
+    panelRoot().dataset.density = next;
     document.cookie = prefCookieString(DENSITY_COOKIE, next);
   }
 

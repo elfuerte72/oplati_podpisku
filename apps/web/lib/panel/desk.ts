@@ -105,3 +105,25 @@ export function menuBadges(
   }
   return badges;
 }
+
+/**
+ * Число у СВЁРНУТОЙ группы меню — сумма чисел её пунктов.
+ *
+ * Считается из того же `menuBadges`, что рисует числа у пунктов, а не из
+ * сырых `counts`: правила «ноль не показывать», «не получили — не ноль» и
+ * «закрытый роли раздел числа не получает» применяются один раз, и число
+ * группы не может оказаться больше суммы видимых пунктов. Пункты без
+ * счётчика (рабочий стол, отчёты) в сумму не входят. `0` — «нечего
+ * показывать»: оболочка не рисует бейдж.
+ */
+export function groupBadgeTotal(
+  badges: Partial<Record<MenuBadgeSection, number>>,
+  sections: readonly Pick<PanelSection, 'capability'>[],
+): number {
+  let total = 0;
+  for (const section of sections) {
+    if (!isMenuBadgeSection(section.capability)) continue;
+    total += badges[section.capability] ?? 0;
+  }
+  return total;
+}
