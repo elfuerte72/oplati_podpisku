@@ -148,8 +148,9 @@ lib/
   cabinet/                        Mini App: auth (initData), read (снапшот, денилист событий),
                                   actions, live-balance, payment-issues; referral-* партнёрки
   contacts/                       email/телефон/IP плательщика: гейты, redact, троттлинг IP
-  alerts/                         notify-ops (DM владельцу), notify-staff (персоналу через бота
-                                  входа), дедуп окон
+  alerts/                         streams (потоки → темы ops-группы, единственная точка доставки),
+                                  notify-ops (алёрт с обязательным потоком), notify-staff (персоналу:
+                                  в тему по капабилити или личкой), format (шаблон сообщения), дедуп окон
   analytics/                      track (server, never-throw) + client (sendBeacon) + identity
   ai/                             дневной токен-бюджет
   security/                       timing-safe сравнение
