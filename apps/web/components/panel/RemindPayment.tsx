@@ -6,7 +6,9 @@ import { useState } from 'react';
 import { lookupLabel } from '@/lib/panel/format';
 import { ACTION_TITLES, FALLBACK_ERROR_TEXT, REMIND_ERROR_TEXT } from '@/lib/panel/labels';
 
+import { useTwoStep } from './form-feedback';
 import { markPanelBusy } from './LiveRefresh';
+import { PanelNote } from './PanelNote';
 
 /**
  * Кнопка «напомнить об оплате» (тикет 07).
@@ -24,9 +26,12 @@ export function RemindPayment({ shortId }: { shortId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const confirm = useTwoStep();
 
   async function send() {
     if (busy) return;
+    // Первое нажатие только взводит кнопку — наружу ничего не уходит.
+    if (!confirm.press()) return;
     setBusy(true);
     setError(null);
     const releaseBusy = markPanelBusy();
@@ -54,19 +59,27 @@ export function RemindPayment({ shortId }: { shortId: string }) {
   }
 
   if (done && !error) {
-    return <span className="panel-status panel-status--ok">{ACTION_TITLES.sent}</span>;
+    // Кнопки больше нет: окно суток занято, и до перерисовки строки сервером
+    // повторное нажатие всё равно получило бы отказ. Остаётся тихая строка —
+    // тот же отклик, что у остальных форм панели.
+    return <PanelNote kind="ok">{ACTION_TITLES.sent}</PanelNote>;
   }
 
   return (
     <>
+      {/*
+       * Двухшаговая: первое нажатие взводит, второе отправляет. Кнопка стоит В
+       * СТРОКЕ списка из полусотни заказов, и промах строкой означал платёжный
+       * документ чужому клиенту плюс потраченное на него суточное окно.
+       */}
       <button type="button" className="panel-button" onClick={send} disabled={busy}>
-        {busy ? ACTION_TITLES.sending : ACTION_TITLES.remind}
+        {busy
+          ? ACTION_TITLES.sending
+          : confirm.armed
+            ? ACTION_TITLES.remindConfirm
+            : ACTION_TITLES.remind}
       </button>
-      {error ? (
-        <div className="panel-error" style={{ marginTop: 6 }}>
-          {error}
-        </div>
-      ) : null}
+      {error ? <PanelNote kind="error">{error}</PanelNote> : null}
     </>
   );
 }

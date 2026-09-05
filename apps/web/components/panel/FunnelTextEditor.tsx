@@ -4,9 +4,16 @@ import { useRouter } from 'next/navigation';
 import { useState, type SubmitEvent } from 'react';
 
 import { lookupLabel } from '@/lib/panel/format';
-import { FALLBACK_ERROR_TEXT, FUNNEL_TEXTS_TEXT, FUNNEL_TEXT_ERROR_TEXT } from '@/lib/panel/labels';
+import {
+  ACTION_TITLES,
+  FALLBACK_ERROR_TEXT,
+  FUNNEL_TEXTS_TEXT,
+  FUNNEL_TEXT_ERROR_TEXT,
+} from '@/lib/panel/labels';
 
+import { useTwoStep } from './form-feedback';
 import { markPanelBusy } from './LiveRefresh';
+import { PanelNote } from './PanelNote';
 
 /**
  * Форма правки одного текста воронки (панель v2, тикеты 11–12): textarea со
@@ -46,6 +53,7 @@ export function FunnelTextEditor({ textKey, value, isOverridden, maxLength, sing
   const [busy, setBusy] = useState<'save' | 'reset' | 'test' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const confirmReset = useTwoStep();
 
   async function post(url: string, body: unknown): Promise<{ ok: boolean; data: unknown }> {
     const res = await fetch(url, {
@@ -91,6 +99,10 @@ export function FunnelTextEditor({ textKey, value, isOverridden, maxLength, sing
   }
 
   function reset() {
+    // ⚠️ Второе нажатие просит ТОЛЬКО сброс: он стирает формулировку владельца.
+    // «Сохранить» подтверждения не требует — правка обратима, история правок
+    // ведётся, и лишний шаг на самом частом действии только мешал бы.
+    if (!confirmReset.press()) return;
     void run('reset', '/api/panel/texts/reset', { key: textKey }, () => {
       setNote(FUNNEL_TEXTS_TEXT.resetDone);
       router.refresh();
@@ -153,20 +165,12 @@ export function FunnelTextEditor({ textKey, value, isOverridden, maxLength, sing
             onClick={reset}
             disabled={busy !== null}
           >
-            {FUNNEL_TEXTS_TEXT.reset}
+            {confirmReset.armed ? ACTION_TITLES.resetConfirm : FUNNEL_TEXTS_TEXT.reset}
           </button>
         ) : null}
       </div>
-      {error ? (
-        <div className="panel-error" style={{ marginTop: 8 }}>
-          {error}
-        </div>
-      ) : null}
-      {note ? (
-        <div className="panel-muted" style={{ marginTop: 8 }}>
-          {note}
-        </div>
-      ) : null}
+      {error ? <PanelNote kind="error">{error}</PanelNote> : null}
+      {note ? <PanelNote kind="ok">{note}</PanelNote> : null}
     </form>
   );
 }

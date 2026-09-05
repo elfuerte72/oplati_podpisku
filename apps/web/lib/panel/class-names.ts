@@ -47,6 +47,19 @@ export function supportModeClass(mode: string): string {
     : STATUS_TONE_CLASS.muted;
 }
 
+/**
+ * Строка отклика формы. Вид определяет только цвет; классы перечислены здесь,
+ * а не склеены из `panel-note--${kind}`, — канарейка стилей ловит именно такие
+ * склейки, и на этом же компоненте она сработала при его написании.
+ */
+export const NOTE_KIND_CLASS = {
+  ok: 'panel-note panel-note--ok',
+  warn: 'panel-note panel-note--warn',
+  error: 'panel-note panel-note--error',
+} as const;
+
+export type PanelNoteKind = keyof typeof NOTE_KIND_CLASS;
+
 const THREAD_ROLE_CLASS: Record<string, string> = {
   user: 'panel-thread__item panel-thread__item--user',
   operator: 'panel-thread__item panel-thread__item--operator',
