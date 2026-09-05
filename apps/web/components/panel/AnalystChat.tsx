@@ -13,13 +13,16 @@ import {
 import { threadItemClass } from '@/lib/panel/class-names';
 import { lookupLabel } from '@/lib/panel/format';
 import {
+  ACTION_TITLES,
   ANALYST_ERROR_TEXT,
   ANALYST_QUERY_ERROR_TEXT,
   ANALYST_TEXT,
   FALLBACK_ERROR_TEXT,
 } from '@/lib/panel/labels';
 
+import { useTwoStep } from './form-feedback';
 import { markPanelBusy } from './LiveRefresh';
+import { PanelNote } from './PanelNote';
 
 /**
  * Чат с аналитиком (панель v2, тикет 07). Лента живёт в памяти компонента —
@@ -34,6 +37,7 @@ export function AnalystChat() {
   const [chat, setChat] = useState<ChatState>(EMPTY_CHAT);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
+  const confirmClear = useTwoStep();
 
   async function ask(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -101,23 +105,24 @@ export function AnalystChat() {
             {busy ? ANALYST_TEXT.thinking : ANALYST_TEXT.ask}
           </button>
           {chat.turns.length > 0 ? (
+            // Второе нажатие: чат нигде не хранится (решение «эфемерно» из
+            // спеки панели v2), и восстановить стёртое нечем.
             <button
               type="button"
               className="panel-button panel-button--secondary"
-              onClick={() => setChat(EMPTY_CHAT)}
+              onClick={() => {
+                if (!confirmClear.press()) return;
+                setChat(EMPTY_CHAT);
+              }}
               disabled={busy}
             >
-              {ANALYST_TEXT.clear}
+              {confirmClear.armed ? ACTION_TITLES.clearConfirm : ANALYST_TEXT.clear}
             </button>
           ) : null}
         </div>
       </form>
 
-      {errorText ? (
-        <div className="panel-error" style={{ marginTop: 8 }}>
-          {errorText}
-        </div>
-      ) : null}
+      {errorText ? <PanelNote kind="error">{errorText}</PanelNote> : null}
       {chat.failedToolCalls.length > 0 ? <ToolCalls calls={chat.failedToolCalls} /> : null}
     </div>
   );

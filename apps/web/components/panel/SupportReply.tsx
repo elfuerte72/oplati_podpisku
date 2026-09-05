@@ -9,10 +9,13 @@ import {
   FALLBACK_ERROR_TEXT,
   SUPPORT_ERROR_TEXT,
   SUPPORT_NOT_RECORDED_TEXT,
+  SUPPORT_REPLY_SENT_TEXT,
 } from '@/lib/panel/labels';
 import { SUPPORT_REPLY_MAX, SUPPORT_REPLY_MIN } from '@/lib/panel/support';
 
+import { useFlash, useTwoStep } from './form-feedback';
 import { markPanelBusy } from './LiveRefresh';
+import { PanelNote } from './PanelNote';
 
 /**
  * Ответ клиенту и кнопка «подключиться к диалогу» (тикет 10).
@@ -52,7 +55,10 @@ export function SupportReply({
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Предупреждение живёт до следующего действия: его надо успеть прочитать. */
   const [note, setNote] = useState<string | null>(null);
+  const [flash, setFlash] = useFlash();
+  const confirm = useTwoStep();
 
   async function post(url: string, body: unknown): Promise<{ ok: boolean; data: unknown }> {
     const res = await fetch(url, {
@@ -108,6 +114,9 @@ export function SupportReply({
   async function reply(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
+    // Первое нажатие взводит кнопку: сообщение уходит живому человеку в
+    // Telegram, отозвать его нельзя.
+    if (!confirm.press()) return;
     setBusy(true);
     setError(null);
     setNote(null);
@@ -122,6 +131,10 @@ export function SupportReply({
       // увидит. Молчать об этом нельзя.
       if (readField(data, 'warning') === 'not_recorded') {
         setNote(SUPPORT_NOT_RECORDED_TEXT);
+      } else {
+        // Раньше об успехе не говорилось НИЧЕГО: поле просто очищалось, и
+        // «отправилось» было не отличить от «форму сбросило».
+        setFlash(SUPPORT_REPLY_SENT_TEXT);
       }
       setText('');
       router.refresh();
@@ -164,23 +177,22 @@ export function SupportReply({
             style={{ marginTop: 8 }}
             disabled={busy}
           >
-            {busy ? ACTION_TITLES.sending : ACTION_TITLES.reply}
+            {busy
+              ? ACTION_TITLES.sending
+              : confirm.armed
+                ? ACTION_TITLES.replyConfirm
+                : ACTION_TITLES.reply}
           </button>
         </form>
       ) : null}
 
-      {/* Ошибка — вне формы: отказ «Вернуть»/«Закрыть» обязан быть виден и там,
+      {/* Отклик — вне формы: отказ «Вернуть»/«Закрыть» обязан быть виден и там,
           где поля ответа нет. */}
-      {error ? (
-        <p className="panel-error" style={{ marginTop: 8 }}>
-          {error}
-        </p>
-      ) : null}
-      {note ? (
-        <p className="panel-error" style={{ marginTop: 8 }}>
-          {note}
-        </p>
-      ) : null}
+      {error ? <PanelNote kind="error">{error}</PanelNote> : null}
+      {/* ⚠️ Предупреждение, а не отказ: сообщение клиенту УШЛО, повторять его
+          нельзя — он получит дубль. Красным оно звало сделать именно это. */}
+      {note ? <PanelNote kind="warn">{note}</PanelNote> : null}
+      {flash ? <PanelNote kind="ok">{flash}</PanelNote> : null}
 
       {canReturn || canClose ? (
         <p className="panel-muted" style={{ marginTop: 12 }}>
