@@ -108,10 +108,13 @@ components/
   info/                           статические страницы (about/privacy/terms): оболочка, футер, бейдж Freekassa
   cabinet/ partner/ contacts/     Mini App-кабинет, партнёрский кабинет, плашка контактов
   panel/                          UI панели: PanelShell (меню со счётчиками), PanelPageHeader,
-                                  кнопки операций (RemindPayment, ManualFulfillment, PayoutDecision,
-                                  SupportReply), AnalystChat (эфемерный чат), FunnelTextEditor,
-                                  LocalTime, LiveRefresh; charts/ — серверные SVG без клиентского
-                                  JS (BarsByDay, LineByDay, HBars, scale)
+                                  PanelPager (одно листание на все списки), PanelFilterSelect
+                                  (поле формы поиска, не отдельный виджет), кнопки операций
+                                  (RemindPayment, ManualFulfillment, PayoutDecision, SupportReply),
+                                  AnalystChat (эфемерный чат), FunnelTextEditor, LocalTime,
+                                  LiveRefresh; PanelNote + form-feedback (один отклик формы и
+                                  двухшаговое подтверждение необратимого); charts/ — серверные
+                                  SVG без клиентского JS (BarsByDay, LineByDay, HBars, scale)
 lib/
   env.ts / env.server.ts          Zod-валидация env, lazy; server-only re-export
   logger.ts / sentry.ts           pino + redact PII; beforeSend-скраббер Sentry
@@ -124,7 +127,10 @@ lib/
                                   (гейт операции и страницы, Origin), menu-counts (счётчики меню:
                                   pending/holds/support/feedback), desk, remind, fulfillment,
                                   payouts, support, format, vcc-balance, funnel-texts (валидация
-                                  для операций); analytics/period (период в адресе, окно по UTC);
+                                  для операций), paging (страница в адресе, одна на все списки),
+                                  class-names (закрытый словарь имён классов — склейка имени
+                                  подстановкой невидима канарейке стилей); analytics/period
+                                  (период в адресе, окно по UTC);
                                   ai/ — аналитик: run-sql (валидация, маска, формат), profile,
                                   system-prompt + schema-dictionary (зеркало гранта роли, тест),
                                   ask (ход, кап, учёт логом), chat-state (состояние чата без React)
