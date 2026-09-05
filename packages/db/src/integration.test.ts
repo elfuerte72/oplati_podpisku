@@ -64,7 +64,7 @@ import {
 } from './repositories/conversations.ts';
 import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
-import { setReferrerOnce } from './repositories/referrals.ts';
+import { resolveReferralCode, setReferrerOnce } from './repositories/referrals.ts';
 import {
   getOrCreateUserByTelegramId,
   getPayerPhoneForOrder,
@@ -951,6 +951,36 @@ describe('consumeLinkToken (merge пользователей)', () => {
     await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
 
     expect((await getUserPayerContact(db, telegramUser.id))?.email).toBe('tg@example.com');
+  });
+
+  it('merge переносит реферальный код веб-строки, если у telegram-строки своего нет', async () => {
+    // Сайт /partner выдаёт код ещё ДО привязки Telegram — партнёр мог уже раздать
+    // ссылку с ним. До 2026-09-05 DELETE веб-строки хоронил код, и друзья по той
+    // ссылке получали `code_unknown` — молча (разбор жалоб на реф-ссылки).
+    const webSessionId = `ws-refcode-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, referralCode: 'webcode01' });
+    const telegramUser = await makeUser();
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    const res = await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+    expect(res).toMatchObject({ ok: true, merged: true, userId: telegramUser.id });
+
+    // Розданная ссылка ведёт на выжившую строку.
+    expect(await resolveReferralCode(db, 'webcode01')).toBe(telegramUser.id);
+  });
+
+  it('коды у обеих строк → выживает код telegram-строки, веб-код перестаёт резолвиться', async () => {
+    // Второй код хранить негде (колонка UNIQUE, одна на пользователя) — это
+    // осознанная потеря, разбор алиасов кодов в BACKLOG.
+    const webSessionId = `ws-refcode2-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, referralCode: 'webcode02' });
+    const telegramUser = await makeUser({ referralCode: 'tgcode002' });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+
+    expect(await resolveReferralCode(db, 'tgcode002')).toBe(telegramUser.id);
+    expect(await resolveReferralCode(db, 'webcode02')).toBeNull();
   });
 
   it('самореферал гасится при merge компенсирующей строкой', async () => {

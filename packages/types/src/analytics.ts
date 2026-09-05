@@ -152,8 +152,13 @@ export const ANALYTICS_EVENTS = {
   },
   referral_link_share: {
     title: 'Поделился реф-ссылкой',
-    description: 'Скопировал или отправил партнёрскую ссылку из кабинета.',
-    channel: 'miniapp',
+    description:
+      'Скопировал или отправил партнёрскую ссылку. props.surface — откуда: карточка главного меню Mini App (cabinet_home) или партнёрский экран (partner_cabinet; он же живёт на сайте /partner).',
+    // `web`, а не `miniapp`: партнёрский экран открывается и на сайте. Приём
+    // помечает событие Mini App'ом сам, когда заявка канала подтверждена
+    // подписью initData; со спекой `miniapp` заход с сайта записывался бы как
+    // Mini App.
+    channel: 'web',
     origin: 'client',
     props: ['action', 'surface'],
   },

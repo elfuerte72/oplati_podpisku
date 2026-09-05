@@ -3,7 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { InlineKeyboard } from 'grammy';
 
-import { getDb, LINK_TOKEN_PREFIX, resolveReferralCode } from '@oplati/db';
+import { getDb, getUserTelegramId, LINK_TOKEN_PREFIX, resolveReferralCode } from '@oplati/db';
 import { GREETING } from '@oplati/agent';
 import { parseReferralCode, REFERRAL_DEEPLINK_PREFIX } from '@oplati/types';
 import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
@@ -18,9 +18,12 @@ import { handleLinkDeepLink } from './link-flow';
 import { handleSupportCommand } from './support-flow';
 import { SUPPORT_START_PAYLOAD } from './links';
 import { isSupportAiEnabled, openSupportFromBot, resetSupportOnStart } from './support-session';
-import { persistInbound, safeAppendMessage } from './persist';
+import { persistInbound, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely } from './send';
 import {
+  REFERRAL_PARTNER_JOINED_TEXT,
+  REFERRAL_SELF_LINK_TEXT,
+  REFERRAL_WELCOME_TEXT,
   START_APP_BUTTON,
   START_CHANNEL_BUTTON,
   START_HOWTO_BUTTON,
@@ -89,17 +92,11 @@ export async function handleStartCommand(
       : null;
 
   const ctx = await persistInbound(update, message, { referredBy });
+  // Что сказать после приветствия про реферальную ссылку (см. attachReferral).
+  let referralFeedback: ReferralFeedback = 'none';
   if (ctx) {
-    // Поздний захват: если строка юзера уже существовала (напр. он раньше
-    // открыл мини-апп кнопкой ☰ — тогда referred_by при создании не проставился),
-    // INSERT выше реферера не тронул. setReferrerOnce привяжет его сейчас
-    // (идемпотентно, с антифрод-гейтом по покупкам). Для нового юзера — no-op.
     if (referredBy) {
-      await captureReferralForUser({
-        userId: ctx.userId,
-        referrerId: referredBy,
-        source: 'bot_start',
-      });
+      referralFeedback = await attachReferral(ctx, referredBy, update.update_id);
     }
     await safeAppendMessage(
       ctx,
@@ -143,6 +140,90 @@ export async function handleStartCommand(
   }
 
   await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
+  if (referredBy && referralFeedback !== 'none') {
+    await sendReferralFeedback(chatId, referralFeedback, referredBy, update.update_id);
+  }
+}
+
+/**
+ * Что показать после приветствия по итогам `/start ref_`: `attached` — друг
+ * только что закреплён за партнёром, `self_link` — человек открыл свою же
+ * ссылку, `none` — ничего не изменилось (уже закреплён, есть покупки, сбой).
+ */
+type ReferralFeedback = 'none' | 'attached' | 'self_link';
+
+/**
+ * Закрепление реферера по `/start ref_<code>` и выбор обратной связи.
+ *
+ * Новая строка: реферер проставлен уже INSERT'ом (`getOrCreateUserByTelegramId`),
+ * поздний захват ей не нужен — раньше он звался и для неё, тратя два запроса на
+ * гарантированный `already_set`. Существующая строка (человек раньше открыл
+ * мини-апп кнопкой ☰ или пришёл без ссылки): `captureReferralForUser` —
+ * идемпотентно, с антифрод-гейтом по покупкам.
+ *
+ * ⚠️ Свою ссылку партнёры открывают регулярно — «проверить, работает ли».
+ * До 2026-09-05 ответом было обычное приветствие, и проверка «показывала», что
+ * ссылка сломана (разбор жалоб: три таких захода у одного партнёра за месяц при
+ * исправном захвате). Теперь это отдельный исход с подсказкой.
+ */
+async function attachReferral(
+  ctx: PersistContext,
+  referrerId: string,
+  updateId: number,
+): Promise<ReferralFeedback> {
+  if (referrerId === ctx.userId) {
+    log.info({ event: 'telegram.referral.self_link', updateId });
+    return 'self_link';
+  }
+  if (ctx.userCreated) {
+    log.info({ event: 'telegram.referral.attached', updateId, via: 'insert' });
+    return 'attached';
+  }
+  const outcome = await captureReferralForUser({
+    userId: ctx.userId,
+    referrerId,
+    source: 'bot_start',
+  });
+  if (outcome === 'set') {
+    log.info({ event: 'telegram.referral.attached', updateId, via: 'late_capture' });
+    return 'attached';
+  }
+  if (outcome === 'self_link') return 'self_link';
+  return 'none';
+}
+
+/**
+ * Обратная связь ПОСЛЕ приветствия: другу — что приглашение сработало (или что
+ * ссылка его собственная), партнёру — DM о новом друге. Всё best-effort:
+ * приветствие уже ушло, и ни один сбой здесь не должен долететь до webhook'а.
+ * Партнёру не называем ни имя, ни id друга — чужие данные ему не показываем;
+ * о каждом закреплении сообщается ровно один раз по построению
+ * (`referred_by` immutable, повтор даёт `already_set` → 'none').
+ */
+async function sendReferralFeedback(
+  chatId: number,
+  feedback: Exclude<ReferralFeedback, 'none'>,
+  referrerId: string,
+  updateId: number,
+): Promise<void> {
+  if (feedback === 'self_link') {
+    await sendSafely(chatId, REFERRAL_SELF_LINK_TEXT, updateId);
+    return;
+  }
+  await sendSafely(chatId, REFERRAL_WELCOME_TEXT, updateId);
+  try {
+    const partnerTelegramId = await getUserTelegramId(getDb(), referrerId);
+    if (!partnerTelegramId) {
+      // Партнёр — веб-строка без Telegram: писать ему некуда, увидит в кабинете.
+      log.info({ event: 'telegram.referral.partner_no_telegram', updateId });
+      return;
+    }
+    const delivered = await sendSafely(Number(partnerTelegramId), REFERRAL_PARTNER_JOINED_TEXT, updateId);
+    log.info({ event: 'telegram.referral.partner_notified', updateId, delivered });
+  } catch (err) {
+    log.warn({ event: 'telegram.referral.partner_notify_failed', updateId, err });
+    Sentry.captureException(err, { tags: { source: 'telegram.referral' } });
+  }
 }
 
 /**
@@ -182,8 +263,9 @@ export function buildStartMenuKeyboard(): InlineKeyboard {
 /**
  * Резолв реферера из payload `/start ref_<code>`. Best-effort: неизвестный код
  * или сбой БД → `null` (захвата нет, приветствие всё равно уходит). Самореферал
- * по Telegram структурно невозможен — существующий юзер попадает в ON CONFLICT
- * и referred_by не трогается; новый юзер своего кода ещё не имеет.
+ * дерево не меняет — существующий юзер попадает в ON CONFLICT и referred_by не
+ * трогается; новый юзер своего кода ещё не имеет. Но ЗАХОД по своей ссылке
+ * реален и получает отдельный ответ (`attachReferral`).
  */
 async function resolveReferrerFromStart(
   startPayload: string,

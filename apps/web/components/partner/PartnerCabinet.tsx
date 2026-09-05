@@ -2,7 +2,14 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import {
@@ -27,6 +34,8 @@ import type {
   ReferralHistoryEntry,
   ReferralSnapshot,
 } from '@/lib/cabinet/referral-types';
+import { track } from '@/lib/analytics/client';
+import { copyToClipboard } from '@/lib/clipboard';
 import { telegramShareLink } from '@/lib/telegram/links';
 
 import { fetchReferralSnapshot, requestPayout } from './partner-api';
@@ -651,10 +660,34 @@ function LinkCard({
         'Оплачиваю иностранные подписки в рублях через Оплатишку — попробуй!',
       )
     : '';
+  // Отказ буфера показываем ЧЕСТНО (разбор жалоб 2026-09-05). Раньше `.catch`
+  // звал тот же `onCopied`, и в Telegram WebView, где clipboard часто
+  // заблокирован, партнёр видел «Скопировано», а в буфере лежало старое —
+  // друзьям уходила не ссылка, и «ссылка не работает» было правдой.
+  const [copyFailed, setCopyFailed] = useState(false);
   const copy = useCallback(() => {
     if (!link) return;
-    void navigator.clipboard?.writeText(link).then(onCopied).catch(() => onCopied());
+    track('referral_link_share', { action: 'copy', surface: 'partner_cabinet' });
+    void copyToClipboard(link).then((ok) => {
+      setCopyFailed(!ok);
+      if (ok) onCopied();
+    });
   }, [link, onCopied]);
+  // В Mini App обычная ссылка `target="_blank"` на t.me/share уходит во внешний
+  // браузер или никуда — Telegram открывает свои ссылки только через SDK
+  // (`openTelegramLink`, как в карточке главного меню). На сайте `/partner`
+  // SDK нет, и ссылка отрабатывает как обычно.
+  const share = useCallback(
+    (e: MouseEvent<HTMLAnchorElement>) => {
+      track('referral_link_share', { action: 'share', surface: 'partner_cabinet' }, { immediate: true });
+      const tg = typeof window === 'undefined' ? undefined : window.Telegram?.WebApp;
+      if (tg?.openTelegramLink) {
+        e.preventDefault();
+        tg.openTelegramLink(shareUrl);
+      }
+    },
+    [shareUrl],
+  );
   return (
     <section className={`relative overflow-hidden p-7 text-center ${CARD} !shadow-[6px_6px_0_var(--shadow-ink)]`}>
       <Image
@@ -670,19 +703,31 @@ function LinkCard({
         Ты получаешь {formatBps(snap.rates.l1Bps)} с каждой его оплаты — всегда.
       </div>
       <div className={`mx-auto mb-4 flex w-full max-w-[460px] items-center justify-between gap-2.5 p-2.5 pl-4 ${SOFT} shadow-[2px_2px_0_var(--shadow-ink)]`}>
-        <span className="min-w-0 flex-1 truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
+        {/* select-all: тап по обрезанной ссылке выделяет её целиком — запасной
+            путь, когда буфер недоступен. */}
+        <span className="min-w-0 flex-1 select-all truncate font-display text-[15px] font-bold text-[var(--color-teal-light)]">
           {link || 'ссылка готовится…'}
         </span>
         <ComicButton onClick={copy} disabled={!link} className="shrink-0 !px-3.5 !py-2 text-[13px]">
           Скопировать
         </ComicButton>
       </div>
+      {copyFailed && (
+        <p
+          role="status"
+          className="mx-auto mb-4 max-w-[460px] rounded-[12px] border-2 border-[var(--color-stamp)] px-3 py-2 font-body text-[13px] text-[var(--color-stamp)]"
+        >
+          Не удалось скопировать автоматически. Нажми на ссылку выше — она выделится целиком — и
+          скопируй вручную.
+        </p>
+      )}
       <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5">
         {shareUrl && (
           <a
             href={shareUrl}
             target="_blank"
             rel="noreferrer"
+            onClick={share}
             className="inline-flex items-center gap-1.5 font-body text-[13px] text-[var(--link)] underline-offset-2 hover:underline"
           >
             <IconSend size={14} /> Поделиться в Telegram
