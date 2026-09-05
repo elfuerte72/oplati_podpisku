@@ -21,7 +21,7 @@ const body = Rubik({
 export const metadata: Metadata = {
   title: 'Оплати подписки',
   description:
-    'Сервис оплаты иностранных подписок (Claude, ChatGPT, Apple Music, Cursor и др.) для русскоязычных пользователей. Рубли, СБП, крипта.',
+    'Сервис оплаты иностранных подписок (Claude, ChatGPT, Apple Music, Cursor и др.) для русскоязычных пользователей. Оплата рублями: СБП или карта.',
   robots: { index: false, follow: false },
 };
 

@@ -13,7 +13,7 @@ export default function HomePage() {
     <>
       <h1 className="sr-only">
         Оплати подписки — оплата иностранных подписок (Claude, ChatGPT, Apple
-        Music, Cursor) рублями, СБП и криптой
+        Music, Cursor) рублями: СБП или картой
       </h1>
       <ChatClient />
       <IntroOverlay />
