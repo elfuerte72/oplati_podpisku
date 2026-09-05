@@ -12,8 +12,18 @@
  * значение не ошибка, а повод взять умолчание.
  */
 
-/** Тема панели. Тёмная — умолчание бренда (правило дизайн-системы). */
-export const PANEL_THEMES = ['dark', 'light'] as const;
+/**
+ * Тема панели — ТРИ состояния, и умолчание из них «как в системе» (решение
+ * владельца 04.09, пересмотр решения от 03.09 «тема только тёмная»).
+ *
+ * Рекомендации Apple просят следовать теме операционной системы и не заводить
+ * собственную настройку внешнего вида. Тумблер остаётся для тех, кому нужно
+ * иначе: уже сделанный выбор лежит в cookie и продолжает действовать — новое
+ * умолчание касается только тех, кто тумблер не трогал.
+ *
+ * Порядок в списке — порядок обхода тумблером.
+ */
+export const PANEL_THEMES = ['system', 'light', 'dark'] as const;
 export type PanelTheme = (typeof PANEL_THEMES)[number];
 
 /**
@@ -31,7 +41,15 @@ export const NAV_CLOSED_COOKIE = 'panel_nav_closed';
 export const PREF_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
 export function readTheme(value: string | undefined): PanelTheme {
-  return (PANEL_THEMES as readonly string[]).includes(value ?? '') ? (value as PanelTheme) : 'dark';
+  return (PANEL_THEMES as readonly string[]).includes(value ?? '')
+    ? (value as PanelTheme)
+    : 'system';
+}
+
+/** Что включится по следующему нажатию тумблера: система → светлая → тёмная. */
+export function nextTheme(current: PanelTheme): PanelTheme {
+  const at = PANEL_THEMES.indexOf(current);
+  return PANEL_THEMES[(at + 1) % PANEL_THEMES.length] ?? 'system';
 }
 
 export function readDensity(value: string | undefined): PanelDensity {

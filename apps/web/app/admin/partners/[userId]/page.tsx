@@ -3,12 +3,14 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
 
-import { getDb, listPartnerReferralsForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listPartnerReferralsForPanel } from '@oplati/db';
 
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { formatKopecks } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
 import {
   ACTION_TITLES,
   CELL_TEXT,
@@ -34,8 +36,10 @@ const idSchema = z.string().uuid();
 
 export default async function PanelPartnerPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ userId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const access = await panelPageAccess('partners');
   if (!access.allowed) {
@@ -50,7 +54,10 @@ export default async function PanelPartnerPage({
   const parsed = idSchema.safeParse(userId);
   if (!parsed.success) notFound();
 
-  const { items, hasMore } = await listPartnerReferralsForPanel(getDb(), parsed.data);
+  const page = parsePanelPage((await searchParams).page);
+  const { items, hasMore } = await listPartnerReferralsForPanel(getDb(), parsed.data, {
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
 
   return (
     <PanelShell actor={access.actor} current="/admin/partners">
@@ -63,11 +70,9 @@ export default async function PanelPartnerPage({
       </PanelPageHeader>
 
       {items.length === 0 ? (
-        <div className="panel-card">
-          <p className="panel-empty">{EMPTY_TEXT.referrals}</p>
-        </div>
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.referrals}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table">
             <thead>
               <tr>
@@ -93,11 +98,11 @@ export default async function PanelPartnerPage({
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: приглашённых больше, чем помещается на экран.
-        </p>
-      ) : null}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) => panelPageHref(`/admin/partners/${parsed.data}`, {}, next)}
+      />
     </PanelShell>
   );
 }

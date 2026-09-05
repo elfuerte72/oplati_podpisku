@@ -7,6 +7,7 @@ import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelShell } from '@/components/panel/PanelShell';
 import { isDeskQuiet } from '@/lib/panel/desk';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { formatCount, formatKopecks, formatUsdCents } from '@/lib/panel/format';
 import { requirePanelActor } from '@/lib/panel/guard';
 import { readHoldsCount, readPendingTotals, readUnansweredSupportCount } from '@/lib/panel/menu-counts';
@@ -14,6 +15,8 @@ import {
   ACTION_TITLES,
   CELL_TEXT,
   EMPTY_TEXT,
+  DESK_CARD_TITLES,
+  PAGE_HINT,
   PAGE_TITLES,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
@@ -89,8 +92,10 @@ export default async function PanelHomePage() {
 
   return (
     <PanelShell actor={actor}>
-      <PanelPageHeader title="Что требует внимания">
-        <p className="panel-muted">{quiet ? EMPTY_TEXT.desk : EMPTY_TEXT.deskAttention}</p>
+      {/* Заголовок совпадает с пунктом меню: «Что требует внимания» в шапке
+          при «Рабочем столе» в меню читалось как два разных экрана. */}
+      <PanelPageHeader title={SECTION_TITLES.desk}>
+        <p className="panel-muted">{quiet ? EMPTY_TEXT.desk : PAGE_HINT.desk}</p>
       </PanelPageHeader>
 
       <div className="panel-grid">
@@ -104,7 +109,7 @@ export default async function PanelHomePage() {
             ) : pendingTotals.count > 0 ? (
               <>
                 <p>
-                  <span className="panel-status panel-status--warn" style={{ fontSize: 16 }}>
+                  <span className="panel-status panel-status--warn panel-status--lg">
                     {pendingTotals.count}
                   </span>{' '}
                   <span className="panel-muted">
@@ -134,7 +139,7 @@ export default async function PanelHomePage() {
             <h2 className="panel-title">{SECTION_TITLES.holds}</h2>
             {holdsCount !== null && holdsCount > 0 ? (
               <p>
-                <span className="panel-status panel-status--danger" style={{ fontSize: 16 }}>
+                <span className="panel-status panel-status--danger panel-status--lg">
                   {formatCount(holdsCount)}
                 </span>{' '}
                 <span className="panel-muted">платежей на проверке или с отказом</span>
@@ -150,12 +155,12 @@ export default async function PanelHomePage() {
 
         {canSupport ? (
           <section className="panel-card">
-            <h2 className="panel-title">Новые обращения</h2>
+            <h2 className="panel-title">{DESK_CARD_TITLES.support}</h2>
             {unansweredCount === null ? (
               <p className="panel-muted">{CELL_TEXT.countUnavailable}</p>
             ) : unansweredCount > 0 ? (
               <p>
-                <span className="panel-status panel-status--warn" style={{ fontSize: 16 }}>
+                <span className="panel-status panel-status--warn panel-status--lg">
                   {unansweredCount}
                 </span>{' '}
                 <span className="panel-muted">без ответа</span>
@@ -171,13 +176,15 @@ export default async function PanelHomePage() {
 
         {canHolds ? (
           <section className="panel-card">
-            <h2 className="panel-title">Карточный счёт</h2>
+            <h2 className="panel-title">{DESK_CARD_TITLES.vccBalance}</h2>
             {balance?.state === 'ok' || balance?.state === 'stale' ? (
               <>
                 <p>
+                  {/* Тот же кегль, что у трёх соседних показателей стола: это
+                      число решает, сможем ли мы выдать карту по оплаченному
+                      заказу, и мельче остальных ему быть нечего. */}
                   <span
-                    className={`panel-status panel-status--${balance.low ? 'danger' : 'ok'}`}
-                    style={{ fontSize: 16 }}
+                    className={`${STATUS_TONE_CLASS[balance.low ? 'danger' : 'ok']} panel-status--lg`}
                   >
                     {formatUsdCents(balance.balanceUsdCents)}
                   </span>{' '}

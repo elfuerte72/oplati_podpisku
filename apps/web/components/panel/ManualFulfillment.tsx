@@ -101,7 +101,14 @@ export function ManualFulfillment({
         </p>
       ) : null}
 
-      <button type="submit" className="panel-button" style={{ marginTop: 8 }} disabled={busy}>
+      {/* Заметная кнопка карточки заказа: ручная выдача — то, ради чего сюда
+          заходят, и второго такого действия на экране нет. */}
+      <button
+        type="submit"
+        className="panel-button panel-button--primary"
+        style={{ marginTop: 8 }}
+        disabled={busy}
+      >
         {action === 'start' ? ACTION_TITLES.fulfillmentStart : ACTION_TITLES.fulfillmentComplete}
       </button>
     </form>

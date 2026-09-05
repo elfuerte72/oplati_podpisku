@@ -13,7 +13,7 @@ import type { PanelHelpCard } from '@/lib/panel/labels';
  */
 export function PanelHelp({ title, hint, cards }: { title: string; hint: string; cards: readonly PanelHelpCard[] }) {
   return (
-    <details className="panel-card panel-help">
+    <details className="panel-help">
       <summary className="panel-help__summary">
         <span className="panel-help__title">{title}</span>
         <span className="panel-muted"> {hint}</span>

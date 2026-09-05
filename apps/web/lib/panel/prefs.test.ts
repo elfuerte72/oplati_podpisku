@@ -12,6 +12,7 @@ import {
   readClosedGroups,
   readDensity,
   readTheme,
+  nextTheme,
 } from './prefs';
 
 /**
@@ -20,19 +21,41 @@ import {
  * темой», поэтому проверяется именно поведение на мусорных значениях.
  */
 describe('readTheme / readDensity', () => {
-  it('умолчания — тёмная тема и просторные строки', () => {
-    // Тёмная — правило бренда; просторная строка читается без привыкания.
-    expect(readTheme(undefined)).toBe('dark');
+  it('умолчания — тема как в системе и просторные строки', () => {
+    // Рекомендации Apple просят следовать теме операционной системы и не
+    // заводить собственную настройку внешнего вида (решение владельца 04.09).
+    expect(readTheme(undefined)).toBe('system');
     expect(readDensity(undefined)).toBe('cosy');
+  });
+
+  it('уже сделанный выбор не сбрасывается новым умолчанием', () => {
+    // Умолчание касается ТОЛЬКО тех, кто тумблер не трогал: у остальных в
+    // cookie лежит явное значение, и оно продолжает действовать.
+    expect(readTheme('dark')).toBe('dark');
+    expect(readTheme('light')).toBe('light');
   });
 
   it('незнакомое значение берёт умолчание, а не ломает экран', () => {
     // Cookie правится руками и переживает версии панели: значение из будущей
     // (или чужой) версии обязано выглядеть как «настройки нет».
-    expect(readTheme('sepia')).toBe('dark');
+    expect(readTheme('sepia')).toBe('system');
     expect(readDensity('')).toBe('cosy');
-    expect(readTheme('light')).toBe('light');
     expect(readDensity('compact')).toBe('compact');
+  });
+});
+
+describe('nextTheme', () => {
+  it('тумблер обходит три состояния по кругу', () => {
+    expect(nextTheme('system')).toBe('light');
+    expect(nextTheme('light')).toBe('dark');
+    expect(nextTheme('dark')).toBe('system');
+  });
+
+  it('«как в системе» достижимо, а не только начальное', () => {
+    // Иначе тумблер работает в одну сторону: сотрудник, один раз нажавший на
+    // него, уже никогда не вернул бы панель к теме своей машины.
+    const reachable = new Set([nextTheme('system'), nextTheme('light'), nextTheme('dark')]);
+    expect(reachable).toEqual(new Set(['system', 'light', 'dark']));
   });
 });
 

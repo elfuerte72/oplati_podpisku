@@ -116,7 +116,12 @@ export async function PanelShell({
           <div className="panel-actor">
             <PanelViewToggles themeInitial={theme} densityInitial={density} />
             <div className="panel-actor__row">
-              <span className="panel-actor__name">
+              {/* Подсказка нужна свёрнутому меню: там подпись скрыта, и до неё
+                  не было НИКАКОГО способа увидеть, под кем вошли. */}
+              <span
+                className="panel-actor__name"
+                title={`${actor.displayName} · ${staffRoleLabel(actor.role)}`}
+              >
                 {actor.displayName} · {staffRoleLabel(actor.role)}
               </span>
               <form method="post" action="/api/panel/auth/logout">

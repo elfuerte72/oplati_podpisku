@@ -19,7 +19,9 @@ export function PanelPageHeader({
   aside?: ReactNode;
 }) {
   return (
-    <section className="panel-card panel-page-header">
+    // Не карточка: шапка, справка, таблица и пагинация давали четыре рамки и
+    // четыре радиуса там, где хватает разделителя и отступа (HIG Layout).
+    <section className="panel-page-header">
       <div className="panel-page-header__main">
         <h1 className="panel-title">{title}</h1>
         {children}

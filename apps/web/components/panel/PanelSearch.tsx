@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { formatKopecks, orderStatusLabel } from '@/lib/panel/format';
 import { SEARCH_TEXT } from '@/lib/panel/labels';
@@ -17,6 +17,28 @@ import {
 } from '@/lib/panel/search';
 
 import { PanelIcon } from './PanelIcon';
+
+const noopSubscribe = () => () => {};
+
+/**
+ * Подпись сочетания клавиш: «⌘K» на технике Apple, «Ctrl+K» на остальной.
+ *
+ * `null` до гидратации — платформу знает только браузер, а серверный рендер
+ * один на всех; зашитое «⌘K» отсылало бы пользователя Windows к клавише,
+ * которой у него нет. Через `useSyncExternalStore`, а не `useState` +
+ * `useEffect`: последнее — установка состояния прямо в эффекте, то есть лишний
+ * каскад перерисовок (правило линтера, та же механика в `LocalTime`).
+ */
+function useHotkeyLabel(): string | null {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () =>
+      /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+        ? SEARCH_TEXT.hotkeyApple
+        : SEARCH_TEXT.hotkeyOther,
+    () => null,
+  );
+}
 
 /**
  * Быстрый поиск панели: ⌘K из любого экрана, заказы и клиенты в одной выдаче.
@@ -40,6 +62,7 @@ export function PanelSearch() {
   const [answer, setAnswer] = useState<(PanelSearchResults & { query: string }) | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
+  const hotkey = useHotkeyLabel();
 
   // ⌘K / Ctrl+K открывает, Esc закрывает. Обработчик на документе, а не на
   // поле: смысл сочетания в том, чтобы не искать поле мышью.
@@ -128,9 +151,15 @@ export function PanelSearch() {
       <button type="button" className="panel-search__open" onClick={() => setOpen(true)}>
         <PanelIcon name="search" />
         <span className="panel-search__open-label">{SEARCH_TEXT.open}</span>
-        <kbd className="panel-search__hotkey" aria-hidden>
-          ⌘K
-        </kbd>
+        {/* Подсказка называет ТУ клавишу, что есть на этой машине: «⌘K» на
+            Windows отсылает к клавише, которой там нет. До гидратации не
+            рисуется вовсе — платформу знает только браузер, а подсказка
+            декоративная (`aria-hidden`) и её отсутствие ничего не ломает. */}
+        {hotkey ? (
+          <kbd className="panel-search__hotkey" aria-hidden>
+            {hotkey}
+          </kbd>
+        ) : null}
       </button>
 
       {open ? (

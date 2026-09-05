@@ -52,6 +52,18 @@ export const PANEL_MAX_ROWS = 100;
 export const PANEL_DEFAULT_ROWS = 50;
 
 /**
+ * Сколько строк соединения максимум читает выборка холдов.
+ *
+ * У неё смещение считается в JS (единица страницы — заказ, а строк на заказ
+ * столько, сколько платежей), поэтому объём чтения растёт с номером страницы.
+ * Потолок делает эту цену ограниченной: дальше него экран показывает пустую
+ * страницу, а не просит у базы сотню тысяч строк из-за пересланной ссылки с
+ * `?page=1000`. 1500 строк — это около пятисот заказов при запасе в три
+ * платежа на заказ; холдов на проде единицы.
+ */
+const HOLDS_MAX_SCAN_ROWS = 1500;
+
+/**
  * Приведение запрошенного размера страницы к допустимому.
  *
  * Вынесено и экспортировано намеренно: интеграционный тест потолка на
@@ -740,6 +752,13 @@ export type PanelHoldRow = {
   orderStatus: OrderStatus;
   amountRubKopecks: number | null;
   orderCreatedAt: Date;
+  /**
+   * Что клиент покупал. Каталожное название или свободное описание — то же
+   * правило, что у соседних списков: экран холдов был единственным списком
+   * панели БЕЗ колонки «Сервис», и по нему нельзя было понять, о чём заказ, не
+   * открывая его.
+   */
+  serviceName: string | null;
   /** Без email: экран холдов его не показывает, а лишняя PII в процессе,
    *  который держит вебхуки Freekassa и Telegram, ни к чему. */
   client: PanelHoldClient;
@@ -805,11 +824,25 @@ export async function countHoldsForPanel(db: DB): Promise<number> {
  */
 export async function listHoldsForPanel(
   db: DB,
-  limit?: number,
+  opts: { limit?: number; offset?: number } = {},
 ): Promise<{ items: PanelHoldRow[]; hasMore: boolean }> {
+  const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
   // Дедуп идёт в JS, поэтому строк берём с запасом: несколько платежей у заказа
   // и одна строка сверх страницы (по ней и виден признак «есть ещё»).
-  const sqlLimit = clampPanelLimit(limit) * 3 + 1;
+  //
+  // ⚠️ Смещение считается ПОСЛЕ дедупа, а не отдаётся в `OFFSET`: единица
+  // страницы здесь — ЗАКАЗ, а строк на заказ приходит столько, сколько у него
+  // платежей. `OFFSET 50` по соединённым строкам пропустил бы произвольное
+  // число заказов — тем большее, чем чаще счёт перевыставляли.
+  //
+  // ⚠️ Цена такого смещения — чтение прошлых страниц заново, и она РАСТЁТ с
+  // номером. Поэтому объём чтения жёстко ограничен: `?page=1000` из
+  // пересланной ссылки иначе просил бы у базы полтораста тысяч строк с
+  // четырёхтабличным соединением в том же процессе, что принимает вебхуки
+  // Freekassa и Telegram. Упёршись в потолок, экран честно показывает пустую
+  // страницу без «Дальше», а не тянет базу дальше.
+  const sqlLimit = Math.min((offset + maxRows) * 3 + 1, HOLDS_MAX_SCAN_ROWS);
   // Плюс ещё одна — ТОЛЬКО чтобы отличить «выбрали всё» от «упёрлись в потолок».
   // Без неё `rows.length === sqlLimit` означало и то и другое, и экран говорил
   // «показаны не все» там, где показаны все.
@@ -820,6 +853,8 @@ export async function listHoldsForPanel(
       orderStatus: orders.status,
       amountRub: orders.amountRub,
       orderCreatedAt: orders.createdAt,
+      serviceName: services.name,
+      customServiceDescription: orders.customServiceDescription,
       clientId: users.id,
       clientDisplayName: users.displayName,
       clientTelegramId: users.telegramId,
@@ -831,6 +866,7 @@ export async function listHoldsForPanel(
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
+    .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(payments, eq(payments.orderId, orders.id))
     .where(holdsCondition())
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
@@ -861,6 +897,7 @@ export async function listHoldsForPanel(
       orderStatus: row.orderStatus,
       amountRubKopecks: row.amountRub,
       orderCreatedAt: row.orderCreatedAt,
+      serviceName: row.serviceName ?? row.customServiceDescription,
       client: {
         id: row.clientId,
         displayName: row.clientDisplayName,
@@ -877,14 +914,18 @@ export async function listHoldsForPanel(
   }
 
   const items = [...byOrder.values()];
-  const maxRows = clampPanelLimit(limit);
-  const page = items.slice(0, maxRows);
+  const page = items.slice(offset, offset + maxRows);
   await attachClientNotifiedAt(db, page);
   // «Есть ещё» — не только когда заказов набралось больше страницы. Запас в три
   // платежа на заказ может и не покрыть заказ с длинной историей перевыставлений:
   // упёршись в потолок SQL, мы просто НЕ ЗНАЕМ, что дальше, и молчать об этом
   // нельзя — пустой хвост читается как «холдов больше нет».
-  return { items: page, hasMore: items.length > maxRows || truncatedBySqlLimit };
+  //
+  // ⚠️ Но только при ПОЛНОЙ странице: иначе «Дальше» вело бы на пустой экран и
+  // предлагало бы там ещё одно «Дальше» — бесконечно и без объяснения.
+  const hasMore =
+    items.length > offset + maxRows || (truncatedBySqlLimit && page.length === maxRows);
+  return { items: page, hasMore };
 }
 
 /**
@@ -992,9 +1033,10 @@ export type PanelPendingOrder = {
  */
 export async function listPendingOrdersForPanel(
   db: DB,
-  opts: { limit?: number; shortId?: string; userId?: string } = {},
+  opts: { limit?: number; offset?: number; shortId?: string; userId?: string } = {},
 ): Promise<{ items: PanelPendingOrder[]; hasMore: boolean }> {
   const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
   // Фильтры сужают ту же выборку, а не заводят вторую:
   //   `shortId` — для ОПЕРАЦИИ (она обязана решать «живой ли счёт» тем же кодом,
   //     что и экран, но искать заказ перебором страницы нельзя: за потолком
@@ -1042,7 +1084,8 @@ export async function listPendingOrdersForPanel(
     .where(and(...conditions))
     // Старые сверху: они горят. Возраст и есть причина, по которой экран нужен.
     .orderBy(asc(orders.createdAt), asc(orders.id))
-    .limit(maxRows + 1);
+    .limit(maxRows + 1)
+    .offset(offset);
 
   const hasMore = rows.length > maxRows;
   const items = rows.slice(0, maxRows).map((row) => ({
@@ -1137,9 +1180,10 @@ export type PanelSupportRequest = {
  */
 export async function listSupportRequestsForPanel(
   db: DB,
-  opts: { limit?: number; userId?: string } = {},
+  opts: { limit?: number; offset?: number; userId?: string } = {},
 ): Promise<{ items: PanelSupportRequest[]; hasMore: boolean }> {
   const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
 
   // ⚠️ Идём ОТ СООБЩЕНИЙ, а не от разговоров. LATERAL по всей таблице
   // `conversations` выполнялся бы для каждой её строки, а она не чистится
@@ -1169,8 +1213,16 @@ export async function listSupportRequestsForPanel(
       JOIN conversations c ON c.id = m.conversation_id
       WHERE ${sql.join(conditions, sql` AND `)}
       GROUP BY m.conversation_id
-      ORDER BY max(m.created_at) DESC
-      LIMIT ${maxRows + 1}
+      -- ⚠️ Идентификатор в сортировке — не украшение: порядок обязан быть
+      -- ПОЛНЫМ. Два обращения с одинаковым временем последнего сообщения
+      -- Postgres волен отдать в разном порядке на запросе первой страницы и
+      -- на запросе второй — и разговор попадёт на обе сразу либо не попадёт
+      -- никуда. С LIMIT без OFFSET этого не было видно.
+      ORDER BY max(m.created_at) DESC, m.conversation_id
+      -- Смещение стоит здесь, в подзапросе разговоров: наружный SELECT
+      -- досчитывает по строке подзапроса, и смещение на нём пропускало бы
+      -- уже отобранные разговоры вместо предыдущей страницы.
+      LIMIT ${maxRows + 1} OFFSET ${offset}
     )
     SELECT c.id AS conversation_id,
            u.id AS user_id,
@@ -1191,7 +1243,9 @@ export async function listSupportRequestsForPanel(
     JOIN conversations c ON c.id = r.conversation_id
     JOIN users u ON u.id = c.user_id
     LEFT JOIN staff s ON s.id = c.assigned_operator_id
-    ORDER BY r.last_request_at DESC
+    -- Тот же порядок, что и в подзапросе: расходись они, страница показывала
+    -- бы отобранные разговоры в чужой последовательности.
+    ORDER BY r.last_request_at DESC, c.id
   `);
 
   const hasMore = rows.length > maxRows;
@@ -1416,9 +1470,10 @@ export type PanelPartner = {
  */
 export async function listReferralPartnersForPanel(
   db: DB,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; offset?: number } = {},
 ): Promise<{ items: PanelPartner[]; hasMore: boolean }> {
   const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
 
   const rows = await db.execute<{
     user_id: string;
@@ -1451,7 +1506,7 @@ export async function listReferralPartnersForPanel(
     JOIN users u ON u.id = i.user_id
     LEFT JOIN referral_partners p ON p.user_id = i.user_id
     ORDER BY accrued DESC, i.user_id
-    LIMIT ${maxRows + 1}
+    LIMIT ${maxRows + 1} OFFSET ${offset}
   `);
 
   const hasMore = rows.length > maxRows;
@@ -1493,9 +1548,10 @@ export type PanelPartnerReferral = {
 export async function listPartnerReferralsForPanel(
   db: DB,
   partnerUserId: string,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; offset?: number } = {},
 ): Promise<{ items: PanelPartnerReferral[]; hasMore: boolean }> {
   const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
 
   const rows = await db.execute<{
     user_id: string;
@@ -1513,8 +1569,11 @@ export async function listPartnerReferralsForPanel(
                         AND o.status IN ${PURCHASED_STATUSES_SQL}), 0) AS purchased
     FROM users u
     WHERE u.referred_by = ${partnerUserId}
-    ORDER BY purchased DESC, u.created_at DESC
-    LIMIT ${maxRows + 1}
+    -- Идентификатор замыкает порядок: два приглашённых с одинаковой суммой и
+    -- временем создания иначе делят место, и при листании один из них
+    -- появлялся бы дважды, а другой не появлялся вовсе.
+    ORDER BY purchased DESC, u.created_at DESC, u.id
+    LIMIT ${maxRows + 1} OFFSET ${offset}
   `);
 
   const hasMore = rows.length > maxRows;
@@ -1559,9 +1618,10 @@ export type PanelPayoutRequest = {
  */
 export async function listReferralPayoutsForPanel(
   db: DB,
-  opts: { limit?: number; onlyOpen?: boolean } = {},
+  opts: { limit?: number; offset?: number; onlyOpen?: boolean } = {},
 ): Promise<{ items: PanelPayoutRequest[]; hasMore: boolean }> {
   const maxRows = clampPanelLimit(opts.limit);
+  const offset = clampPanelOffset(opts.offset);
   const openOnly = opts.onlyOpen
     ? sql`WHERE p.status IN ('requested', 'processing')`
     : sql``;
@@ -1599,8 +1659,12 @@ export async function listReferralPayoutsForPanel(
     JOIN users u ON u.id = p.user_id
     LEFT JOIN referral_partners rp ON rp.user_id = p.user_id
     ${openOnly}
-    ORDER BY p.requested_at DESC
-    LIMIT ${maxRows + 1}
+    -- Идентификатор замыкает порядок: время подачи ставится умолчанием базы,
+    -- и две заявки одного тика Postgres волен отдать в разном порядке на
+    -- первой странице и на второй — одна тогда показывается дважды, другая
+    -- не показывается никогда. Это не теория: тест листания на этом флакал.
+    ORDER BY p.requested_at DESC, p.id
+    LIMIT ${maxRows + 1} OFFSET ${offset}
   `);
 
   const hasMore = rows.length > maxRows;

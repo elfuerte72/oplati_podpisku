@@ -84,7 +84,8 @@ export default async function PanelCodePage({
               required
               autoFocus
             />
-            <button type="submit" className="panel-button">
+            {/* Заметная кнопка экрана входа — единственное действие на нём. */}
+            <button type="submit" className="panel-button panel-button--primary">
               {ACTION_TITLES.signIn}
             </button>
           </div>

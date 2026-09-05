@@ -1,6 +1,9 @@
 import {
   CARD_STATUS_LABELS,
+  ORDER_ACTOR_LABELS,
+  ORDER_EVENT_LABELS,
   ORDER_STATUS_LABELS,
+  PAYMENT_PROVIDER_LABELS,
   PAYMENT_STATUS_LABELS,
   PROVIDER_STATUS_LABELS,
 } from './labels';
@@ -134,10 +137,17 @@ export function orderStatusLabel(status: string): string {
 }
 
 /**
+ * Тон строки: им красится пилюля статуса. Имя типа отдельно от функции, потому
+ * что по нему типизирован словарь классов (`class-names.ts`) — новый тон
+ * обязан сломать сборку, а не остаться без цвета.
+ */
+export type PanelStatusTone = 'danger' | 'warn' | 'ok' | 'muted';
+
+/**
  * Статусы, требующие внимания прямо сейчас, — для подсветки строки. Порядок
  * важности: деньги приняты, но заказ не доведён; банк держит; клиент не дожат.
  */
-export function orderStatusTone(status: string): 'danger' | 'warn' | 'ok' | 'muted' {
+export function orderStatusTone(status: string): PanelStatusTone {
   if (status === 'failed') return 'danger';
   if (status === 'payment_review' || status === 'paid' || status === 'in_fulfillment') {
     return 'warn';
@@ -149,6 +159,25 @@ export function orderStatusTone(status: string): 'danger' | 'warn' | 'ok' | 'mut
 
 export function cardStatusLabel(status: string): string {
   return lookupLabel(CARD_STATUS_LABELS, status) ?? status;
+}
+
+/**
+ * Подпись события в истории заказа. Неизвестное значение показываем как есть:
+ * событие могло появиться в коде раньше, чем строка в словаре, и прочерк вместо
+ * него скрыл бы от менеджера, что с заказом вообще что-то происходило.
+ */
+export function orderEventLabel(eventType: string): string {
+  return lookupLabel(ORDER_EVENT_LABELS, eventType) ?? eventType;
+}
+
+/** Кто сделал запись в истории заказа. */
+export function orderActorLabel(actorType: string): string {
+  return lookupLabel(ORDER_ACTOR_LABELS, actorType) ?? actorType;
+}
+
+/** Человеческое имя платёжного шлюза: в списке платежей стояло `loveandpay`. */
+export function paymentProviderLabel(provider: string): string {
+  return lookupLabel(PAYMENT_PROVIDER_LABELS, provider) ?? provider;
 }
 
 export function paymentStatusLabel(status: string): string {

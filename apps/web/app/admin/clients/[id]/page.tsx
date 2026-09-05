@@ -15,6 +15,7 @@ import {
   orderStatusLabel,
   orderStatusTone,
 } from '@/lib/panel/format';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { CELL_TEXT, COLUMN_TITLES, PAGE_TITLES } from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
@@ -179,7 +180,7 @@ export default async function PanelClientPage({
                     <td className="panel-num">{formatKopecks(order.amountRubKopecks)}</td>
                     <td>
                       <span
-                        className={`panel-status panel-status--${orderStatusTone(order.status)}`}
+                        className={STATUS_TONE_CLASS[orderStatusTone(order.status)]}
                       >
                         {orderStatusLabel(order.status)}
                       </span>

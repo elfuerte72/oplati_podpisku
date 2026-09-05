@@ -1,13 +1,15 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { getDb, listPendingOrdersForPanel } from '@oplati/db';
+import { PANEL_DEFAULT_ROWS, getDb, listPendingOrdersForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
+import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { RemindPayment } from '@/components/panel/RemindPayment';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { formatKopecks, orderStatusLabel, orderStatusTone } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
@@ -15,9 +17,11 @@ import {
   COLUMN_TITLES,
   EMPTY_TEXT,
   HELP_TEXT,
+  PAGE_HINT,
   REMIND_BLOCK_TEXT,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
+import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
 import { remindBlockReason, remindGateInput } from '@/lib/panel/remind';
 
 /**
@@ -35,7 +39,11 @@ export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: SECTION_TITLES.pending };
 
-export default async function PanelPendingPage() {
+export default async function PanelPendingPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const access = await panelPageAccess('pending');
   if (!access.allowed) {
     return (
@@ -45,16 +53,16 @@ export default async function PanelPendingPage() {
     );
   }
 
-  const { items, hasMore } = await listPendingOrdersForPanel(getDb());
+  const page = parsePanelPage((await searchParams).page);
+  const { items, hasMore } = await listPendingOrdersForPanel(getDb(), {
+    offset: panelOffset(page, PANEL_DEFAULT_ROWS),
+  });
   const now = new Date();
 
   return (
     <PanelShell actor={access.actor} current="/admin/pending">
       <PanelPageHeader title={SECTION_TITLES.pending}>
-        <p className="panel-muted">
-          Клиент оформил заказ и не оплатил. Напоминание отправляет ссылку уже выставленного
-          счёта — новый не создаётся и срок не продлевается. Не чаще раза в сутки на заказ.
-        </p>
+        <p className="panel-muted">{PAGE_HINT.pending}</p>
       </PanelPageHeader>
 
       <PanelHelp
@@ -64,12 +72,10 @@ export default async function PanelPendingPage() {
       />
 
       {items.length === 0 ? (
-        <div className="panel-card">
-          {/* Поток около одного заказа в день: пустой экран — норма. */}
-          <p className="panel-empty">{EMPTY_TEXT.pending}</p>
-        </div>
+        /* Поток около одного заказа в день: пустой экран — норма. */
+        <p className="panel-empty">{page > 1 ? EMPTY_TEXT.beyondLastPage : EMPTY_TEXT.pending}</p>
       ) : (
-        <div className="panel-card panel-table-scroll">
+        <div className="panel-table-scroll">
           <table className="panel-table panel-table--cards">
             <thead>
               <tr>
@@ -104,7 +110,7 @@ export default async function PanelPendingPage() {
                       {formatKopecks(item.amountRubKopecks)}
                     </td>
                     <td data-label={COLUMN_TITLES.status}>
-                      <span className={`panel-status panel-status--${orderStatusTone(item.status)}`}>
+                      <span className={STATUS_TONE_CLASS[orderStatusTone(item.status)]}>
                         {orderStatusLabel(item.status)}
                       </span>
                     </td>
@@ -161,11 +167,11 @@ export default async function PanelPendingPage() {
         </div>
       )}
 
-      {hasMore ? (
-        <p className="panel-muted" style={{ marginTop: 12 }}>
-          Показаны не все: заказов больше, чем помещается на экран.
-        </p>
-      ) : null}
+      <PanelPager
+        page={page}
+        hasMore={hasMore}
+        hrefFor={(next) => panelPageHref('/admin/pending', {}, next)}
+      />
     </PanelShell>
   );
 }

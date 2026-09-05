@@ -2,16 +2,30 @@
 
 import { useRef, useState } from 'react';
 
-import { ACTION_TITLES } from '@/lib/panel/labels';
+import { ACTION_TITLES, THEME_STATE_TITLES } from '@/lib/panel/labels';
 import {
   DENSITY_COOKIE,
   THEME_COOKIE,
+  nextTheme,
   prefCookieString,
   type PanelDensity,
   type PanelTheme,
 } from '@/lib/panel/prefs';
 
-import { PanelIcon } from './PanelIcon';
+import { PanelIcon, type PanelIconName } from './PanelIcon';
+
+/** Значок ТЕКУЩЕЙ темы и подсказка о том, что включит следующее нажатие. */
+const THEME_ICON: Record<PanelTheme, PanelIconName> = {
+  system: 'themeSystem',
+  light: 'sun',
+  dark: 'moon',
+};
+
+const THEME_ACTION: Record<PanelTheme, string> = {
+  system: ACTION_TITLES.themeSystem,
+  light: ACTION_TITLES.themeLight,
+  dark: ACTION_TITLES.themeDark,
+};
 
 /**
  * Тумблеры вида: тема и плотность строк.
@@ -51,7 +65,7 @@ export function PanelViewToggles({
   }
 
   function switchTheme() {
-    const next: PanelTheme = theme === 'dark' ? 'light' : 'dark';
+    const next = nextTheme(theme);
     setTheme(next);
     panelRoot().dataset.panelTheme = next;
     document.cookie = prefCookieString(THEME_COOKIE, next);
@@ -64,17 +78,27 @@ export function PanelViewToggles({
     document.cookie = prefCookieString(DENSITY_COOKIE, next);
   }
 
-  // Значок и подпись называют то, что ВКЛЮЧИТСЯ по нажатию, а не текущее
-  // состояние: кнопка — это действие. Текущее состояние видно по самому экрану.
-  const themeAction = theme === 'dark' ? ACTION_TITLES.themeLight : ACTION_TITLES.themeDark;
+  // Подсказка называет то, что ВКЛЮЧИТСЯ по нажатию: кнопка — это действие.
+  // А вот ТЕКУЩЕЕ состояние темы подписано словом прямо на кнопке: у трёх
+  // состояний третье («как в системе») значком не выразить, да и «солнце»
+  // одинаково законно читается и как «сейчас светло», и как «сделать светло».
+  const themeAction = THEME_ACTION[nextTheme(theme)];
   const densityAction = density === 'cosy' ? ACTION_TITLES.densityCompact : ACTION_TITLES.densityCosy;
 
   return (
     <div className="panel-view-toggles" ref={root}>
       <span className="panel-view-toggles__title">{ACTION_TITLES.viewSettings}</span>
-      <button type="button" className="panel-icon-button" onClick={switchTheme} title={themeAction}>
+      <button
+        type="button"
+        className="panel-view-toggles__theme"
+        onClick={switchTheme}
+        title={themeAction}
+      >
         <span className="panel-visually-hidden">{themeAction}</span>
-        <PanelIcon name={theme === 'dark' ? 'sun' : 'moon'} />
+        <PanelIcon name={THEME_ICON[theme]} />
+        <span className="panel-view-toggles__state" aria-hidden>
+          {THEME_STATE_TITLES[theme]}
+        </span>
       </button>
       <button type="button" className="panel-icon-button" onClick={switchDensity} title={densityAction}>
         <span className="panel-visually-hidden">{densityAction}</span>

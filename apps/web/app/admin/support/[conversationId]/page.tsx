@@ -9,6 +9,7 @@ import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { SupportReply } from '@/components/panel/SupportReply';
+import { threadItemClass } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
   ACTION_TITLES,
@@ -120,13 +121,13 @@ export default async function PanelSupportThreadPage({
               const note = supportStateNote(message.meta);
               if (note) {
                 return (
-                  <li key={message.id} className="panel-thread__item panel-thread__item--system panel-muted">
+                  <li key={message.id} className={`${threadItemClass('system')} panel-muted`}>
                     {note} · <LocalTime iso={message.createdAt.toISOString()} />
                   </li>
                 );
               }
               return (
-                <li key={message.id} className={`panel-thread__item panel-thread__item--${message.role}`}>
+                <li key={message.id} className={threadItemClass(message.role)}>
                   <div className="panel-muted">
                     {supportRoleLabel(message.role, message.staffName, message.meta)} ·{' '}
                     <LocalTime iso={message.createdAt.toISOString()} />

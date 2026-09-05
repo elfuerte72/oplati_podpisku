@@ -5,7 +5,12 @@ import { redirect } from 'next/navigation';
 import { TelegramLoginButton } from '@/components/panel/TelegramLoginButton';
 import { serverEnv } from '@/lib/env.server';
 import { lookupLabel } from '@/lib/panel/format';
-import { LOGIN_ERROR_TEXT, PAGE_TITLES } from '@/lib/panel/labels';
+import {
+  LOGIN_ERROR_TEXT,
+  LOGIN_TEXT,
+  PAGE_TITLES,
+  PANEL_TITLE_SUFFIX,
+} from '@/lib/panel/labels';
 import { readPanelActor } from '@/lib/panel/session';
 
 /**
@@ -41,10 +46,8 @@ export default async function PanelLoginPage({
     <div className="panel-login">
       <div className="panel-login-card">
         <div className="panel-card">
-          <h1 className="panel-title">Панель Оплатишки</h1>
-          <p className="panel-muted">
-            Вход только для сотрудников: Telegram и код из приложения.
-          </p>
+          <h1 className="panel-title">{PANEL_TITLE_SUFFIX}</h1>
+          <p className="panel-muted">{LOGIN_TEXT.hint}</p>
         </div>
 
         {errorText ? <p className="panel-error">{errorText}</p> : null}
@@ -53,10 +56,10 @@ export default async function PanelLoginPage({
           {botUsername ? (
             <TelegramLoginButton botUsername={botUsername} authUrl={authUrl} />
           ) : (
-            <p className="panel-muted">
-              Бот входа не настроен: нет `TELEGRAM_LOGIN_BOT_USERNAME`. Панель не пустит
-              никого, пока переменная не задана.
-            </p>
+            // Имя переменной окружения сотруднику не показываем: поправить её
+            // он не может, а за именем не видно, что делать. Диагностика для
+            // владельца живёт в логах и в рунбуке.
+            <p className="panel-muted">{LOGIN_TEXT.botNotConfigured}</p>
           )}
         </div>
       </div>
