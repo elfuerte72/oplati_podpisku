@@ -319,10 +319,11 @@ export async function findUnansweredSupportConversations(
     last_client_at: Date | string;
   }>(sql`
     WITH asked AS (
-      -- ТОТ ЖЕ предикат, что у панели (listSupportRequestsForPanel,
-      -- countUnansweredSupportRequests): маркер обращения на строке, а не
-      -- любая реплика клиента. Иначе бейдж «без ответа» в панели и пинг крона
-      -- считались бы по разным правилам и расходились на живых разговорах.
+      -- ТОТ ЖЕ предикат, что у счётчика панели (countUnansweredSupportRequests):
+      -- маркер обращения на строке, а не любая реплика клиента, И разговор в
+      -- режиме operator. Иначе бейдж «без ответа» в панели и пинг крона
+      -- считались бы по разным правилам и расходились на живых разговорах —
+      -- так закрытое без ответа обращение висело в «+1», а крон о нём молчал.
       SELECT m.conversation_id, max(m.created_at) AS last_client_at
         FROM messages m
         JOIN conversations c ON c.id = m.conversation_id

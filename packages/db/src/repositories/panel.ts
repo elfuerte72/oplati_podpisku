@@ -1415,11 +1415,20 @@ export async function countUnansweredSupportRequests(db: DB): Promise<number> {
   // ретеншеном не чистится и растёт вместе с числом клиентов навсегда. Рабочий
   // стол обновляется раз в 25 секунд на каждой открытой вкладке, и всё это — в
   // том же процессе, что принимает вебхуки платежей.
+  //
+  // Только разговоры в режиме `operator` — «ждём человека». Снять обращение со
+  // счётчика можно двумя способами: ответить или закрыть («Закрыть» переводит
+  // в `idle`, «Вернуть помощнику» — в `ai`). Без условия по режиму закрытое без
+  // ответа обращение висело бы в «+1» бессрочно, а крон `support-housekeeping`
+  // (`findUnansweredSupportConversations`) считал бы по другому правилу — он
+  // пингует персонал только по разговорам у оператора.
   const rows = await db.execute<{ cnt: string | number }>(sql`
     WITH requests AS (
       SELECT m.conversation_id, max(m.created_at) AS last_request_at
       FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
       WHERE (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
+        AND c.handoff_mode = 'operator'
       GROUP BY m.conversation_id
     )
     SELECT count(*) AS cnt
