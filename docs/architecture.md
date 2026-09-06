@@ -112,7 +112,8 @@ components/
                                   (поле формы поиска, не отдельный виджет), кнопки операций
                                   (RemindPayment, ManualFulfillment, PayoutDecision, SupportReply),
                                   AnalystChat (эфемерный чат), FunnelTextEditor, LocalTime,
-                                  LiveRefresh; PanelNote + form-feedback (один отклик формы и
+                                  LiveRefresh (SSE `/api/panel/events` + опрос 25 с страховкой);
+                                  PanelNote + form-feedback (один отклик формы и
                                   двухшаговое подтверждение необратимого); charts/ — серверные
                                   SVG без клиентского JS (BarsByDay, LineByDay, HBars, scale)
 lib/

@@ -2,6 +2,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 
 import { orders, payments } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import type { PaymentProvider, PaymentStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
@@ -176,6 +177,7 @@ export async function claimPaymentSucceeded(
     recoveredViaPolling,
   });
 
+  emitDbChange('payments');
   return row;
 }
 
@@ -216,6 +218,7 @@ export async function claimPaymentTerminal(
   }
 
   log.info({ event: 'db.payments.terminal_claimed', paymentId, orderId: row.orderId });
+  emitDbChange('payments');
   return row;
 }
 
@@ -398,6 +401,8 @@ export async function setPaymentProviderStatus(
     .update(payments)
     .set({ lastProviderStatus: input.providerStatus, lastProviderStatusAt: new Date() })
     .where(eq(payments.id, input.paymentId));
+  // Код холда (7) — то, что показывает экран проверки платежей.
+  emitDbChange('payments');
 }
 
 /**

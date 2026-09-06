@@ -40,6 +40,7 @@ import {
   hasPurchasedOrders,
   findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
+  transitionOrder,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import {
@@ -121,6 +122,8 @@ import {
   searchClientsForPanel,
 } from './repositories/panel.ts';
 import { transitionConversationMode } from './repositories/support.ts';
+import { onDbChange, type DbChange } from './change-feed.ts';
+import { recordClientFeedback } from './repositories/funnel.ts';
 import {
   claimStaffTotpStep,
   confirmStaffTotp,
@@ -5262,5 +5265,122 @@ describe('панель: страницы списков (вариант A, ти�
       (opts) => listReferralPayoutsForPanel(db, opts),
       (row) => row.payoutId,
     );
+  });
+});
+
+describe('лента изменений: репозитории сообщают о записи (панель, живое обновление)', () => {
+  // Слушаем ленту в каждом тесте заново: подписка живёт в globalThis, и
+  // хвост от соседнего теста иначе попадал бы в чужие ожидания.
+  function listen() {
+    const seen: DbChange[] = [];
+    const off = onDbChange((change) => seen.push(change));
+    return { seen, off };
+  }
+
+  it('переход статуса заказа сообщает про orders; несостоявшийся — молчит', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-order-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'feed order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    const { seen, off } = listen();
+    try {
+      await transitionOrder(db, { orderId: order.id, toStatus: 'ready_for_payment' });
+      expect(seen).toEqual([{ table: 'orders' }]);
+
+      // draft ← ready_for_payment машина не разрешает: записи нет — и уведомления нет.
+      await expect(
+        transitionOrder(db, { orderId: order.id, toStatus: 'draft' }),
+      ).rejects.toThrow();
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it('переход режима разговора сообщает про conversations только когда состоялся', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-conv-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const { seen, off } = listen();
+    try {
+      const res = await transitionConversationMode(db, {
+        conversationId: conversation.id,
+        from: 'idle',
+        to: 'operator',
+        trigger: 'hard',
+        modeExpiresAt: null,
+      });
+      expect(res.transitioned).toBe(true);
+      // Переход пишет и служебную строку в messages — это тоже изменение.
+      expect(seen).toEqual(
+        expect.arrayContaining([{ table: 'conversations' }, { table: 'messages' }]),
+      );
+
+      const before = seen.length;
+      const again = await transitionConversationMode(db, {
+        conversationId: conversation.id,
+        from: 'idle',
+        to: 'operator',
+        trigger: 'hard',
+        modeExpiresAt: null,
+      });
+      expect(again.transitioned).toBe(false);
+      expect(seen).toHaveLength(before);
+    } finally {
+      off();
+    }
+  });
+
+  it('сообщение в переписке сообщает про messages', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-msg-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const { seen, off } = listen();
+    try {
+      await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'привет' });
+      expect(seen).toEqual([{ table: 'messages' }]);
+    } finally {
+      off();
+    }
+  });
+
+  it('ответ клиента на опрос сообщает про client_feedback; повтор — нет', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-fb-${++seq}` });
+    const { seen, off } = listen();
+    try {
+      expect(
+        await recordClientFeedback(db, { userId: user.id, kind: 'start_survey', answer: 'thinking' }),
+      ).toBe(true);
+      expect(seen).toEqual([{ table: 'client_feedback' }]);
+
+      expect(
+        await recordClientFeedback(db, { userId: user.id, kind: 'start_survey', answer: 'other' }),
+      ).toBe(false);
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it('исход платежа и код провайдера сообщают про payments; повторный claim — нет', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-pay-${++seq}` });
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    const { seen, off } = listen();
+    try {
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      expect(seen).toEqual([{ table: 'payments' }]);
+
+      expect(await claimPaymentSucceeded(db, { paymentId: payment.id })).not.toBeNull();
+      expect(seen).toHaveLength(2);
+      expect(seen[1]).toEqual({ table: 'payments' });
+
+      expect(await claimPaymentSucceeded(db, { paymentId: payment.id })).toBeNull();
+      expect(seen).toHaveLength(2);
+    } finally {
+      off();
+    }
   });
 });
