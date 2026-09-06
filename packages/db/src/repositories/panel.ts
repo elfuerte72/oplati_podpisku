@@ -1,4 +1,18 @@
-import { and, asc, countDistinct, desc, eq, gte, inArray, ilike, lt, max, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  countDistinct,
+  desc,
+  eq,
+  gte,
+  inArray,
+  ilike,
+  lt,
+  max,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 
 import {
   DEFAULT_REFERRAL_RATE_L1_BPS,
@@ -1170,7 +1184,44 @@ export type PanelSupportRequest = {
   /** Кто ведёт диалог. */
   assignedOperatorName: string | null;
   handoffMode: string;
+  /**
+   * Обращение ждёт человека — ТО ЖЕ правило, что у счётчика в меню
+   * (`countUnansweredSupportRequests`): ответа оператора нет И разговор либо в
+   * режиме `operator`, либо пришёл флоу без режима. Экран красит «Без ответа»
+   * по этому флагу, а не выводит правило заново из `handoffMode`.
+   */
+  awaitingOperator: boolean;
 };
+
+/**
+ * Обращения флоу БЕЗ режима разговора: двухшаговый флоу бота при выключенном
+ * помощнике (`SUPPORT_AI_ENABLED` выкл) и всё, что было до трека support-ai.
+ * Такой флоу пересылает обращение оператору сам и режим `operator` не ставит —
+ * осознанно (эскалация запирает разговор до действия человека, и владелец
+ * решил, что выключенный помощник — не эскалация). Снять такое обращение
+ * можно только ответом: «Закрыть» и «Вернуть помощнику» требуют режима
+ * `operator` и отдают 409.
+ */
+const LEGACY_SUPPORT_SOURCE = 'support';
+
+/**
+ * ОБЩЕЕ условие «обращение ждёт человека» — для списка и для счётчика в меню
+ * (по образцу `holdsCondition`). Одно место, а не два: разъезд между «что
+ * красит экран» и «что считает бейдж» — зеркало, которое глазами не сверят.
+ *
+ * Разговор в режиме `operator` — ждём человека, пока он не ответит, не
+ * закроет («Закрыть» → `idle`) или не вернёт помощнику (→ `ai`). Обращение
+ * флоу без режима (`source = 'support'`) ждёт всегда — у него другого выхода,
+ * кроме ответа, нет. Закрытое эскалационное обращение (`source =
+ * 'support_escalation'`/`'support_follow_up'`, режим `idle`) сюда не попадает —
+ * ровно тот случай, что висел в «+1» бессрочно (2026-09-06).
+ *
+ * `handoffMode` — выражение с режимом разговора, `lastSource` — `source`
+ * ПОСЛЕДНЕГО сообщения с маркером обращения.
+ */
+function awaitingOperatorCondition(handoffMode: SQL, lastSource: SQL): SQL {
+  return sql`(${handoffMode} = 'operator' OR ${lastSource} = ${LEGACY_SUPPORT_SOURCE})`;
+}
 
 /**
  * Обращения в поддержку (спека §5.6). Единица — РАЗГОВОР, а не сообщение:
@@ -1203,12 +1254,16 @@ export async function listSupportRequestsForPanel(
     last_reply_at: Date | string | null;
     operator_name: string | null;
     handoff_mode: string;
+    last_source: string | null;
+    awaiting_operator: boolean | string | null;
   }>(sql`
     WITH requests AS (
       SELECT m.conversation_id,
              max(m.created_at) AS last_request_at,
              (array_agg(m.meta ->> ${SUPPORT_DELIVERED_META_KEY}
-                        ORDER BY m.created_at DESC))[1] AS last_delivered
+                        ORDER BY m.created_at DESC))[1] AS last_delivered,
+             (array_agg(m.meta ->> 'source'
+                        ORDER BY m.created_at DESC))[1] AS last_source
       FROM messages m
       JOIN conversations c ON c.id = m.conversation_id
       WHERE ${sql.join(conditions, sql` AND `)}
@@ -1224,12 +1279,18 @@ export async function listSupportRequestsForPanel(
       -- уже отобранные разговоры вместо предыдущей страницы.
       LIMIT ${maxRows + 1} OFFSET ${offset}
     )
+    SELECT x.*,
+           (x.last_reply_at IS NULL
+             AND ${awaitingOperatorCondition(sql.raw('x.handoff_mode'), sql.raw('x.last_source'))}
+           ) AS awaiting_operator
+    FROM (
     SELECT c.id AS conversation_id,
            u.id AS user_id,
            u.display_name,
            u.telegram_id,
            r.last_request_at,
            r.last_delivered,
+           r.last_source,
            -- Ответ ПОСЛЕ последнего обращения, а не любой в истории: разговор
            -- один на клиента, и постоянный клиент, которому когда-то отвечали,
            -- иначе навсегда числился бы отвеченным.
@@ -1243,9 +1304,10 @@ export async function listSupportRequestsForPanel(
     JOIN conversations c ON c.id = r.conversation_id
     JOIN users u ON u.id = c.user_id
     LEFT JOIN staff s ON s.id = c.assigned_operator_id
+    ) AS x
     -- Тот же порядок, что и в подзапросе: расходись они, страница показывала
     -- бы отобранные разговоры в чужой последовательности.
-    ORDER BY r.last_request_at DESC, c.id
+    ORDER BY x.last_request_at DESC, x.conversation_id
   `);
 
   const hasMore = rows.length > maxRows;
@@ -1263,6 +1325,7 @@ export async function listSupportRequestsForPanel(
     lastOperatorReplyAt: row.last_reply_at === null ? null : new Date(row.last_reply_at),
     assignedOperatorName: row.operator_name,
     handoffMode: row.handoff_mode,
+    awaitingOperator: String(row.awaiting_operator) === 'true',
   }));
 
   return { items, hasMore };
@@ -1416,24 +1479,28 @@ export async function countUnansweredSupportRequests(db: DB): Promise<number> {
   // стол обновляется раз в 25 секунд на каждой открытой вкладке, и всё это — в
   // том же процессе, что принимает вебхуки платежей.
   //
-  // Только разговоры в режиме `operator` — «ждём человека». Снять обращение со
-  // счётчика можно двумя способами: ответить или закрыть («Закрыть» переводит
-  // в `idle`, «Вернуть помощнику» — в `ai`). Без условия по режиму закрытое без
-  // ответа обращение висело бы в «+1» бессрочно, а крон `support-housekeeping`
-  // (`findUnansweredSupportConversations`) считал бы по другому правилу — он
+  // Считаем только то, что «ждёт человека» (`awaitingOperatorCondition`, общее
+  // с подсветкой списка): разговоры в режиме `operator` и обращения флоу без
+  // режима. Снять обращение со счётчика можно ответом, закрытием («Закрыть»
+  // → `idle`) или возвратом помощнику (→ `ai`). Без условия по режиму закрытое
+  // без ответа обращение висело в «+1» бессрочно, а крон `support-housekeeping`
+  // (`findUnansweredSupportConversations`) считал по другому правилу — он
   // пингует персонал только по разговорам у оператора.
   const rows = await db.execute<{ cnt: string | number }>(sql`
     WITH requests AS (
-      SELECT m.conversation_id, max(m.created_at) AS last_request_at
+      SELECT m.conversation_id,
+             max(m.created_at) AS last_request_at,
+             (array_agg(m.meta ->> 'source'
+                        ORDER BY m.created_at DESC))[1] AS last_source
       FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id
       WHERE (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
-        AND c.handoff_mode = 'operator'
       GROUP BY m.conversation_id
     )
     SELECT count(*) AS cnt
     FROM requests r
-    WHERE NOT EXISTS (
+    JOIN conversations c ON c.id = r.conversation_id
+    WHERE ${awaitingOperatorCondition(sql.raw('c.handoff_mode'), sql.raw('r.last_source'))}
+      AND NOT EXISTS (
       SELECT 1 FROM messages o
       WHERE o.conversation_id = r.conversation_id
         AND o.role = 'operator'
