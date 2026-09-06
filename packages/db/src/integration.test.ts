@@ -120,6 +120,7 @@ import {
   listOrdersForPanel,
   searchClientsForPanel,
 } from './repositories/panel.ts';
+import { transitionConversationMode } from './repositories/support.ts';
 import {
   claimStaffTotpStep,
   confirmStaffTotp,
@@ -3901,11 +3902,28 @@ describe('панель: поддержка (тикет 10)', () => {
       role: 'user',
       content: opts.text ?? 'не проходит оплата, помогите',
     });
+    // Как в проде: маркер обращения — на строке эскалации помощника
+    // (`source: 'support_escalation'`, `session.ts`) и ставится вместе с
+    // переходом разговора к человеку. Флоу без режима (`source: 'support'`)
+    // проверяется отдельным тестом ниже. Срок — null: неотвеченное обращение
+    // не гаснет никогда.
     await appendMessage(db, {
       conversationId: conversation.id,
       role: 'assistant',
       content: 'Передали в поддержку',
-      meta: { source: 'support', support_request: true, support_delivered: opts.delivered ?? true },
+      meta: {
+        source: 'support_escalation',
+        support_request: true,
+        support_delivered: opts.delivered ?? true,
+      },
+    });
+    await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: ['idle', 'ai'],
+      to: 'operator',
+      trigger: 'hard',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
     });
     return conversation;
   }
@@ -4124,6 +4142,86 @@ describe('панель: поддержка (тикет 10)', () => {
     expect(await countUnansweredSupportRequests(db)).toBe(before);
   });
 
+  it('закрытие без ответа снимает обращение со счётчика', async () => {
+    // Регресс 2026-09-06: владелец закрыл обращение кнопкой «Закрыть», не
+    // отвечая (помощник уже всё сказал), а «+1» у «Поддержки» остался — счётчик
+    // не смотрел режим разговора, и снять закрытое обращение можно было только
+    // ответом клиенту в закрытом разговоре.
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-close-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+    // Пока разговор у оператора, список красит обращение как ждущее человека —
+    // тем же правилом, что и счётчик.
+    const open = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(open.items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(
+      true,
+    );
+
+    // «Закрыть» из панели: operator → idle без единой реплики оператора.
+    const closed = await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: 'operator',
+      to: 'idle',
+      trigger: 'operator_close',
+      actorName: 'Владелец',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    expect(closed.transitioned).toBe(true);
+
+    // Закрытый разговор не «ждёт человека»: бейдж и рабочий стол его не считают…
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+
+    // …а в списке он остаётся с фактом «ответа оператора не было» — экран
+    // показывает его приглушённо, без зова к действию.
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((i) => i.conversationId === conversation.id);
+    expect(row?.handoffMode).toBe('idle');
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(row?.awaitingOperator).toBe(false);
+  });
+
+  it('обращение флоу без режима (помощник выключен) ждёт человека до ответа', async () => {
+    // Двухшаговый флоу бота при выключенном помощнике пересылает обращение
+    // оператору сам и режим `operator` не ставит (решение владельца: выключенный
+    // помощник — не эскалация). Закрыть такое обращение нечем, кроме ответа, —
+    // и счётчик обязан его видеть, иначе в режиме деградации панель слепнет.
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-legacy-count-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: true },
+    });
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+    const open = await listSupportRequestsForPanel(db, { userId: user.id });
+    const openRow = open.items.find((i) => i.conversationId === conversation.id);
+    expect(openRow?.handoffMode).toBe('idle');
+    expect(openRow?.awaitingOperator).toBe(true);
+
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+    const done = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(done.items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(
+      false,
+    );
+  });
+
   it('лента отдаёт КОНЕЦ переписки и говорит про обрыв', async () => {
     const user = await makeUser({ telegramId: `tg-support-thread-${++seq}` });
     const conversation = await makeSupportRequest(user.id);
@@ -4157,7 +4255,15 @@ describe('панель: поддержка (тикет 10)', () => {
     const thread = await getSupportThreadForPanel(db, conversation.id, 50);
 
     expect(thread?.hasMore).toBe(false);
-    expect(thread?.messages).toHaveLength(2);
+    // Реплика клиента, «передали в поддержку» и служебная строка перехода к
+    // оператору — панель показывает и её (серой, с триггером). Состав, а не
+    // порядок: три INSERT'а подряд ложатся в одну отметку `now()`.
+    expect(thread?.messages).toHaveLength(3);
+    expect([...(thread?.messages ?? [])].map((m) => m.role).sort()).toEqual([
+      'assistant',
+      'system',
+      'user',
+    ]);
   });
 
   it('несуществующий диалог — null, а не пустая лента', async () => {

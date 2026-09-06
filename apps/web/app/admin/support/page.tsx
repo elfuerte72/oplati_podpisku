@@ -102,8 +102,15 @@ export default async function PanelSupportPage({
                   <td className={item.lastOperatorReplyAt ? 'panel-muted' : undefined}>
                     {item.lastOperatorReplyAt ? (
                       <LocalTime iso={item.lastOperatorReplyAt.toISOString()} />
-                    ) : (
+                    ) : item.awaitingOperator ? (
+                      // Ждёт человека — флаг считает репозиторий тем же правилом,
+                      // что и счётчик в меню: подсветка зовёт к действию только
+                      // там, где действие ещё нужно.
                       <span className="panel-status panel-status--warn">{CELL_TEXT.notAnswered}</span>
+                    ) : (
+                      // Закрыли или вернули помощнику без ответа оператора —
+                      // факт остаётся виден, но звать к действию ему нечего.
+                      <span className="panel-muted">{CELL_TEXT.notAnswered}</span>
                     )}
                   </td>
                   <td>
