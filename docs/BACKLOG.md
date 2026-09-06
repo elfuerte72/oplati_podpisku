@@ -1110,7 +1110,7 @@ address карты (в нашей Zod-схеме `card/info` адресных п
 > **Обновление 2026-07-26: этапы 1–3 ТЗ реализованы** в ветке `feature/freekassa`
 > (клиент+подписи, вебхук, переключатель `PAYMENT_PRIMARY_PROVIDER`, тесты).
 > Всё ниже оставлено как контекст решения; **актуальный статус** — в шапке
-> [`plan-freekassa-integration.md`](plan-freekassa-integration.md), фактический
+> [`history/plan-2026-07-freekassa-integration.md`](history/plan-2026-07-freekassa-integration.md), фактический
 > контракт и открытые вопросы — в [`reference/freekassa-api.md`](reference/freekassa-api.md).
 >
 > **Обновление 2026-07-26 (вторая волна): этап 4 тоже сделан** — `poll-payment`

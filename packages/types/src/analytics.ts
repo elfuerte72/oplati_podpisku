@@ -153,7 +153,7 @@ export const ANALYTICS_EVENTS = {
   referral_link_share: {
     title: 'Поделился реф-ссылкой',
     description:
-      'Скопировал или отправил партнёрскую ссылку. props.surface — откуда: карточка главного меню Mini App (cabinet_home) или партнёрский экран (partner_cabinet; он же живёт на сайте /partner).',
+      'Скопировал или отправил партнёрскую ссылку. props.action — что вышло: copy (в буфере), copy_failed (буфер отказал — в Telegram WebView это обычное дело, клиенту показана подсказка выделить ссылку), share (отправил через Telegram). props.surface — откуда: карточка главного меню Mini App (cabinet_home) или партнёрский экран (partner_cabinet; он же живёт на сайте /partner).',
     // `web`, а не `miniapp`: партнёрский экран открывается и на сайте. Приём
     // помечает событие Mini App'ом сам, когда заявка канала подтверждена
     // подписью initData; со спекой `miniapp` заход с сайта записывался бы как
