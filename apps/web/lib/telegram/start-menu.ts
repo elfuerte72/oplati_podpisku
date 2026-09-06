@@ -140,8 +140,8 @@ export async function handleStartCommand(
   }
 
   await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
-  if (referredBy && referralFeedback !== 'none') {
-    await sendReferralFeedback(chatId, referralFeedback, referredBy, update.update_id);
+  if (ctx && referredBy && referralFeedback !== 'none') {
+    await sendReferralFeedback(ctx, chatId, referralFeedback, referredBy, update.update_id);
   }
 }
 
@@ -158,10 +158,10 @@ type ReferralFeedback = 'none' | 'attached' | 'self_link';
  * Новая строка: реферер проставлен уже INSERT'ом (`getOrCreateUserByTelegramId`),
  * поздний захват ей не нужен — раньше он звался и для неё, тратя два запроса на
  * гарантированный `already_set`. Существующая строка (человек раньше открыл
- * мини-апп кнопкой ☰ или пришёл без ссылки): `captureReferralForUser` —
+ * мини-апп кнопкой меню или пришёл без ссылки): `captureReferralForUser` —
  * идемпотентно, с антифрод-гейтом по покупкам.
  *
- * ⚠️ Свою ссылку партнёры открывают регулярно — «проверить, работает ли».
+ * Свою ссылку партнёры открывают регулярно — «проверить, работает ли».
  * До 2026-09-05 ответом было обычное приветствие, и проверка «показывала», что
  * ссылка сломана (разбор жалоб: три таких захода у одного партнёра за месяц при
  * исправном захвате). Теперь это отдельный исход с подсказкой.
@@ -196,21 +196,31 @@ async function attachReferral(
  * Обратная связь ПОСЛЕ приветствия: другу — что приглашение сработало (или что
  * ссылка его собственная), партнёру — DM о новом друге. Всё best-effort:
  * приветствие уже ушло, и ни один сбой здесь не должен долететь до webhook'а.
- * Партнёру не называем ни имя, ни id друга — чужие данные ему не показываем;
- * о каждом закреплении сообщается ровно один раз по построению
- * (`referred_by` immutable, повтор даёт `already_set` → 'none').
+ * Партнёру не называем ни имя, ни id друга — чужие данные ему не показываем.
+ *
+ * О закреплении сообщается НЕ БОЛЕЕ одного раза: `referred_by` immutable, повтор
+ * даёт `already_set` → 'none'. Ровно одного раза нет: если persist создал строку
+ * `users`, но упал на разговоре (`ctx === null`), закрепление состоялось молча,
+ * и следующий `/start` его уже не объявит — принятая деградация, приветствие при
+ * этом всё равно уходит.
+ *
+ * Сказанное клиенту пишется в `messages` ПОСЛЕ отправки (как GREETING) — иначе в
+ * ленте `/admin/support` разговор выглядит так, будто бот этого не говорил, и
+ * оператор не находит источник «странного сообщения про приглашение».
  */
 async function sendReferralFeedback(
+  ctx: PersistContext,
   chatId: number,
   feedback: Exclude<ReferralFeedback, 'none'>,
   referrerId: string,
   updateId: number,
 ): Promise<void> {
-  if (feedback === 'self_link') {
-    await sendSafely(chatId, REFERRAL_SELF_LINK_TEXT, updateId);
-    return;
+  const text = feedback === 'self_link' ? REFERRAL_SELF_LINK_TEXT : REFERRAL_WELCOME_TEXT;
+  const delivered = await sendSafely(chatId, text, updateId);
+  if (delivered) {
+    await safeAppendMessage(ctx, 'assistant', text, { source: 'referral_feedback' }, updateId);
   }
-  await sendSafely(chatId, REFERRAL_WELCOME_TEXT, updateId);
+  if (feedback === 'self_link') return;
   try {
     const partnerTelegramId = await getUserTelegramId(getDb(), referrerId);
     if (!partnerTelegramId) {

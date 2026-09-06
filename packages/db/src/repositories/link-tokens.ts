@@ -385,12 +385,19 @@ export async function consumeLinkToken(
           // telegram-строки — второй хранить негде (алиасы кодов — в BACKLOG).
           if (byWebSession.referral_code !== null) {
             if (byTelegram.referral_code === null) {
-              await tx.execute(sql`
+              const moved = await tx.execute<{ id: string }>(sql`
                 UPDATE users
                 SET referral_code = ${byWebSession.referral_code}, updated_at = now()
                 WHERE id = ${byTelegram.id} AND referral_code IS NULL
+                RETURNING id
               `);
-              log.info({ event: 'db.referral.merge_code_moved', userId: byTelegram.id });
+              // Лог — по ФАКТУ (RETURNING), а не по намерению: под FOR UPDATE ноль
+              // строк невозможен, но ослабь кто-то замок — расхождение должно быть видно.
+              if (moved.length > 0) {
+                log.info({ event: 'db.referral.merge_code_moved', userId: byTelegram.id });
+              } else {
+                log.warn({ event: 'db.referral.merge_code_move_lost', userId: byTelegram.id });
+              }
             } else {
               log.warn({ event: 'db.referral.merge_code_dropped', userId: byTelegram.id });
             }

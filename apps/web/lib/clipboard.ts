@@ -31,7 +31,22 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     const ok = document.execCommand('copy');
     ta.remove();
     return ok;
-  } catch {
+  } catch (err) {
+    // Бросок здесь (SecurityError и подобное) — не отказ буфера, а поломка
+    // запасного пути: пользователю всё равно `false` и подсказка, но нам об этом
+    // надо знать. Один раз на страницу — залипшая кнопка не должна штормить.
+    reportFallbackFailure(err);
     return false;
   }
+}
+
+let fallbackFailureReported = false;
+function reportFallbackFailure(err: unknown): void {
+  if (fallbackFailureReported) return;
+  fallbackFailureReported = true;
+  void import('@sentry/nextjs')
+    .then((Sentry) => {
+      Sentry.captureException(err, { tags: { source: 'clipboard.fallback' } });
+    })
+    .catch(() => undefined);
 }

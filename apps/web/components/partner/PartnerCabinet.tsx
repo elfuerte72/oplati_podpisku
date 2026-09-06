@@ -667,8 +667,10 @@ function LinkCard({
   const [copyFailed, setCopyFailed] = useState(false);
   const copy = useCallback(() => {
     if (!link) return;
-    track('referral_link_share', { action: 'copy', surface: 'partner_cabinet' });
     void copyToClipboard(link).then((ok) => {
+      // Трек — по результату: отказ буфера (тот самый WebView-кейс) не должен
+      // считаться в отчёте как «скопировал».
+      track('referral_link_share', { action: ok ? 'copy' : 'copy_failed', surface: 'partner_cabinet' });
       setCopyFailed(!ok);
       if (ok) onCopied();
     });

@@ -605,8 +605,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
-                track('referral_link_share', { action: 'copy', surface: 'cabinet_home' });
                 void copyToClipboard(link).then((ok) => {
+                  // Трек по результату: отказ буфера не считается «скопировал».
+                  track('referral_link_share', { action: ok ? 'copy' : 'copy_failed', surface: 'cabinet_home' });
                   if (ok) {
                     setRefCopied(true);
                     setTimeout(() => setRefCopied(false), 1600);

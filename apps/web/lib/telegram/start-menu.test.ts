@@ -44,7 +44,7 @@ import { captureReferralForUser } from '@/lib/cabinet/referral-capture';
 import { getUserTelegramId, resolveReferralCode } from '@oplati/db';
 import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
-import { persistInbound } from './persist.ts';
+import { persistInbound, safeAppendMessage } from './persist.ts';
 import { sendSafely } from './send.ts';
 import { buildStartMenuKeyboard, handleStartCommand } from './start-menu.ts';
 import {
@@ -109,6 +109,7 @@ describe('handleStartCommand — обратная связь на /start ref_', 
 
   beforeEach(() => {
     h.env.REFERRAL_ENABLED = true;
+    vi.mocked(safeAppendMessage).mockReset().mockResolvedValue(true);
     vi.mocked(sendSafely).mockReset().mockResolvedValue(true);
     vi.mocked(resolveReferralCode).mockReset().mockResolvedValue(PARTNER_ID);
     vi.mocked(getUserTelegramId).mockReset().mockResolvedValue(String(PARTNER_CHAT));
@@ -123,6 +124,43 @@ describe('handleStartCommand — обратная связь на /start ref_', 
 
     expect(vi.mocked(persistInbound).mock.calls[0]?.[2]).toEqual({ referredBy: PARTNER_ID });
     expect(captureReferralForUser).not.toHaveBeenCalled();
+    expect(sent()).toEqual([
+      [CHAT, 'greeting'],
+      [CHAT, REFERRAL_WELCOME_TEXT],
+      [PARTNER_CHAT, REFERRAL_PARTNER_JOINED_TEXT],
+    ]);
+    // Сказанное клиенту записано в переписку — лента панели его увидит.
+    expect(safeAppendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'friend-uuid' }),
+      'assistant',
+      REFERRAL_WELCOME_TEXT,
+      { source: 'referral_feedback' },
+      1,
+    );
+  });
+
+  it('persist упал (ctx === null) → только приветствие, захват и DM не зовутся, без исключения', async () => {
+    vi.mocked(persistInbound).mockResolvedValue(null);
+
+    await expect(startWith('/start ref_abc12345')).resolves.toBeUndefined();
+
+    expect(captureReferralForUser).not.toHaveBeenCalled();
+    expect(getUserTelegramId).not.toHaveBeenCalled();
+    expect(sent()).toEqual([[CHAT, 'greeting']]);
+  });
+
+  it('другу не доставлено (403) → в переписку не пишем, партнёра всё равно уведомляем', async () => {
+    vi.mocked(sendSafely).mockImplementation(async (_chat, text) => text !== REFERRAL_WELCOME_TEXT);
+
+    await startWith('/start ref_abc12345');
+
+    expect(safeAppendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'assistant',
+      REFERRAL_WELCOME_TEXT,
+      expect.anything(),
+      expect.anything(),
+    );
     expect(sent()).toEqual([
       [CHAT, 'greeting'],
       [CHAT, REFERRAL_WELCOME_TEXT],
