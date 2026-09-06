@@ -8,6 +8,7 @@ import {
 
 import { conversations, messages } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
@@ -217,6 +218,10 @@ export async function transitionConversationMode(
     });
 
     log.info({ event: 'db.support.transitioned', conversationId, from: fromModes, to, trigger });
+    // Панель слушает ленту изменений: режим — кто отвечает клиенту, а служебная
+    // строка — часть ленты обращения.
+    emitDbChange('conversations');
+    emitDbChange('messages');
 
     return {
       transitioned: true,

@@ -9,6 +9,7 @@ import {
   type orderStatusEnum,
 } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import {
   isAllowedTransition,
   OrderTransitionError,
@@ -311,6 +312,10 @@ export async function transitionOrderDetailed(
       actorType,
       eventType,
     });
+
+    // Панель слушает ленту изменений (живое обновление): статус заказа — то,
+    // что она показывает на столе и в списках.
+    emitDbChange('orders');
 
     return { order: updatedRow, transitioned: true };
   });

@@ -36,6 +36,8 @@ export type DBTx = Parameters<Parameters<DB['transaction']>[0]>[0];
 export type DBLike = DB | DBTx;
 
 export { listSchemaTables } from './schema-meta.ts';
+export { DB_CHANGE_TABLES, emitDbChange, onDbChange } from './change-feed.ts';
+export type { DbChange, DbChangeListener, DbChangeTable } from './change-feed.ts';
 
 export {
   runReadOnlyQuery,

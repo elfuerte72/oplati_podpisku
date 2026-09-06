@@ -3,11 +3,17 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
-import { PANEL_REFRESH_MS, canRefreshNow } from '@/lib/panel/live';
+import {
+  PANEL_EVENTS_PATH,
+  PANEL_REFRESH_MS,
+  canRefreshNow,
+  createRefreshScheduler,
+} from '@/lib/panel/live';
 
 /**
- * Живое обновление списка (спека §3.4): раз в 25 секунд экран сам подтягивает
- * свежие данные.
+ * Живое обновление списка (спека §3.4): по событию с сервера (SSE,
+ * `GET /api/panel/events`, трек panel-live) экран перерисовывается сразу, а раз
+ * в 25 секунд — страховкой на случай разрыва потока.
  *
  * Обновляем через `router.refresh()`, а не своим запросом к API: страница —
  * серверный компонент, и рефреш перерисовывает ЕЁ же, без второго способа
@@ -55,16 +61,35 @@ export function LiveRefresh() {
   const router = useRouter();
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      const allowed = canRefreshNow({
+    const canRefresh = () =>
+      canRefreshNow({
         visible: document.visibilityState === 'visible',
         busy: document.body.hasAttribute(PANEL_BUSY_ATTRIBUTE),
         typing: isTyping(),
       });
-      if (allowed) router.refresh();
+    const refresh = () => router.refresh();
+
+    const timer = setInterval(() => {
+      if (canRefresh()) refresh();
     }, PANEL_REFRESH_MS);
 
-    return () => clearInterval(timer);
+    // Живые события: сервер шлёт `change`, когда в базе что-то изменилось;
+    // переподключение при обрыве делает сам браузер. Событие, пришедшее в
+    // скрытую вкладку, не теряется — добирается при возвращении.
+    const scheduler = createRefreshScheduler({ refresh, canRefresh });
+    const source = typeof EventSource === 'function' ? new EventSource(PANEL_EVENTS_PATH) : null;
+    source?.addEventListener('change', () => scheduler.onEvent());
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') scheduler.onVisible();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      clearInterval(timer);
+      source?.close();
+      scheduler.dispose();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [router]);
 
   return null;
