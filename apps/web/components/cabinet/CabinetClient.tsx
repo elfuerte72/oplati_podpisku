@@ -20,6 +20,7 @@ import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import { track } from '@/lib/analytics/client';
+import { copyToClipboard } from '@/lib/clipboard';
 import {
   doMarkSubscriptionPaid,
   doPay,
@@ -42,38 +43,6 @@ import { CatalogView } from './CatalogView';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
 type Phase = 'loading' | 'no-telegram' | 'error' | 'ready';
-
-/**
- * Копирование в буфер с fallback под Telegram WebView, где `navigator.clipboard`
- * часто заблокирован (не https-контекст доверия / нет permission). Возвращает
- * `true`, если хоть один способ сработал — вызывающий решает, что показать.
- */
-async function copyToClipboard(text: string): Promise<boolean> {
-  // Основной путь — Clipboard API. Reject (в Telegram WebView он часто
-  // заблокирован) обрабатываем вторым коллбэком .then, без bare catch — при
-  // неудаче падаем на execCommand ниже.
-  if (navigator.clipboard?.writeText) {
-    const ok = await navigator.clipboard.writeText(text).then(
-      () => true,
-      () => false,
-    );
-    if (ok) return true;
-  }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.top = '-9999px';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 const CABINET_INTRO_KEY = 'oplatishka_cabinet_intro_seen';
 const noopSubscribe = () => () => {};
@@ -636,8 +605,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
-                track('referral_link_share', { action: 'copy', surface: 'cabinet_home' });
                 void copyToClipboard(link).then((ok) => {
+                  // Трек по результату: отказ буфера не считается «скопировал».
+                  track('referral_link_share', { action: ok ? 'copy' : 'copy_failed', surface: 'cabinet_home' });
                   if (ok) {
                     setRefCopied(true);
                     setTimeout(() => setRefCopied(false), 1600);

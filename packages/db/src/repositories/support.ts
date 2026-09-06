@@ -416,6 +416,9 @@ export async function findLastStaffFollowUpAt(
 const NON_CONVERSATIONAL_SOURCES = [
   'static_greeting',
   'silent_hint',
+  // Ответ бота на реферальную ссылку («ты по приглашению» / «это твоя ссылка»,
+  // 2026-09-05): маскот на «ты», к разговору с помощником отношения не имеет.
+  'referral_feedback',
   'support_greeting',
   'support_follow_up_ping',
 ];
