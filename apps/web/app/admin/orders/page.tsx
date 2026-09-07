@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { PANEL_DEFAULT_ROWS, getDb, listOrdersForPanel } from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
+import { PanelFilterSelect } from '@/components/panel/PanelFilterSelect';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelPager } from '@/components/panel/PanelPager';
@@ -17,6 +18,7 @@ import {
   COLUMN_TITLES,
   EMPTY_TEXT,
   HELP_TEXT,
+  ORDERS_FILTER_TEXT,
   ORDERS_PERIOD_TEXT,
   PERIOD_TITLES,
   SECTION_TITLES,
@@ -109,80 +111,76 @@ export default async function PanelOrdersPage({
           </form>
         }
       >
-        <form method="get" style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-          <input
-            type="search"
-            name="q"
-            className="panel-input"
-            placeholder="Номер заказа, telegram, email, имя"
-            defaultValue={filters.query}
-            maxLength={100}
-            style={{ minWidth: 260, flex: 1 }}
-          />
-          {/* Фильтр и сортировка едут вместе с поиском: иначе выборка слетает
-              при вводе, а пересланная ссылка перестаёт значить то же самое. */}
+        {/*
+         * Поиск, статус и два списка — ОДНА форма. Сортировка и период едут
+         * её полями: сменил значение — форма отправилась, а без скрипта
+         * работает та же кнопка «Найти». Статус остался ссылками: это главный
+         * срез экрана, и он обязан меняться одним нажатием.
+         */}
+        <form method="get" className="panel-filters">
+          <div className="panel-filters__search">
+            <input
+              type="search"
+              name="q"
+              className="panel-input"
+              placeholder="Номер заказа, telegram, email, имя"
+              defaultValue={filters.query}
+              maxLength={100}
+            />
+            <button type="submit" className="panel-button">
+              {ACTION_TITLES.search}
+            </button>
+          </div>
+
+          {/* Срез статуса едет вместе с поиском: иначе выборка слетает при
+              вводе, а пересланная ссылка перестаёт значить то же самое. */}
           {filters.preset.key === 'all' ? null : (
             <input type="hidden" name="s" value={filters.preset.key} />
           )}
           {filters.status ? <input type="hidden" name="status" value={filters.status} /> : null}
-          {filters.sort === 'newest' ? null : (
-            <input type="hidden" name="sort" value={filters.sort} />
-          )}
-          {filters.period ? <input type="hidden" name="period" value={filters.period} /> : null}
-          <button type="submit" className="panel-button">
-            {ACTION_TITLES.search}
-          </button>
+
+          <div className="panel-filters__tools">
+            <nav className="panel-segmented" aria-label={ORDERS_FILTER_TEXT.status}>
+              {STATUS_PRESETS.map((preset) => (
+                <Link
+                  key={preset.key}
+                  href={ordersHref({ ...linkState, presetKey: preset.key, status: null })}
+                  aria-current={
+                    preset.key === filters.preset.key && !filters.status ? 'page' : undefined
+                  }
+                >
+                  {preset.title}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="panel-filters__selects">
+              <PanelFilterSelect
+                name="sort"
+                value={filters.sort}
+                label={ORDERS_FILTER_TEXT.sort}
+                options={SORT_OPTIONS.map((option) => ({
+                  value: option.key,
+                  title: option.title,
+                }))}
+              />
+              <PanelFilterSelect
+                name="period"
+                // Пустое значение — «всё время»: ключа в адресе тогда нет, и
+                // ссылка совпадает с той, по которой в раздел приходят из меню.
+                value={filters.period === null ? '' : String(filters.period)}
+                label={ORDERS_PERIOD_TEXT.label}
+                options={[
+                  { value: '', title: ORDERS_PERIOD_TEXT.allTime },
+                  ...ANALYTICS_PERIODS.map((days) => ({
+                    value: String(days),
+                    title: PERIOD_TITLES[days],
+                  })),
+                ]}
+              />
+            </div>
+          </div>
         </form>
-
-        <nav className="panel-nav" style={{ marginTop: 12 }}>
-          {STATUS_PRESETS.map((preset) => (
-            <Link
-              key={preset.key}
-              href={ordersHref({ ...linkState, presetKey: preset.key, status: null })}
-              aria-current={
-                preset.key === filters.preset.key && !filters.status ? 'page' : undefined
-              }
-            >
-              {preset.title}
-            </Link>
-          ))}
-        </nav>
-
-        <nav className="panel-nav" style={{ marginTop: 4 }}>
-          <span className="panel-muted" style={{ padding: '4px 10px' }}>
-            Сортировка:
-          </span>
-          {SORT_OPTIONS.map((option) => (
-            <Link
-              key={option.key}
-              href={ordersHref({ ...linkState, sort: option.key })}
-              aria-current={option.key === filters.sort ? 'page' : undefined}
-            >
-              {option.title}
-            </Link>
-          ))}
-        </nav>
-
-        <nav className="panel-nav" style={{ marginTop: 4 }}>
-          <span className="panel-muted" style={{ padding: '4px 10px' }}>
-            {ORDERS_PERIOD_TEXT.label}:
-          </span>
-          <Link
-            href={ordersHref({ ...linkState, period: null })}
-            aria-current={filters.period === null ? 'page' : undefined}
-          >
-            {ORDERS_PERIOD_TEXT.allTime}
-          </Link>
-          {ANALYTICS_PERIODS.map((days) => (
-            <Link
-              key={days}
-              href={ordersHref({ ...linkState, period: days })}
-              aria-current={filters.period === days ? 'page' : undefined}
-            >
-              {PERIOD_TITLES[days]}
-            </Link>
-          ))}
-        </nav>
 
         {filters.status ? (
           <p className="panel-muted" style={{ marginTop: 8 }}>

@@ -118,8 +118,9 @@ export async function consumeLinkToken(
       telegram_id: string | null;
       web_session_id: string | null;
       referred_by: string | null;
+      referral_code: string | null;
     }>(sql`
-      SELECT id, telegram_id, web_session_id, referred_by
+      SELECT id, telegram_id, web_session_id, referred_by, referral_code
       FROM users
       WHERE telegram_id = ${telegramId} OR web_session_id = ${webSessionId}
       FOR UPDATE
@@ -374,6 +375,33 @@ export async function consumeLinkToken(
           `);
 
           await tx.execute(sql`DELETE FROM users WHERE id = ${byWebSession.id}`);
+
+          // Реферальный код веб-строки переживает merge (разбор жалоб 2026-09-05).
+          // Сайт `/partner` выдаёт код ещё ДО привязки Telegram, и партнёр мог уже
+          // раздать ссылку с ним; DELETE выше хоронил код, и каждый друг по той
+          // ссылке получал `code_unknown` — молча, обычным приветствием. Переносим
+          // ПОСЛЕ DELETE: колонка UNIQUE, и пока веб-строка жива, второго владельца
+          // у кода быть не может. Если код есть у ОБЕИХ строк, выживает код
+          // telegram-строки — второй хранить негде (алиасы кодов — в BACKLOG).
+          if (byWebSession.referral_code !== null) {
+            if (byTelegram.referral_code === null) {
+              const moved = await tx.execute<{ id: string }>(sql`
+                UPDATE users
+                SET referral_code = ${byWebSession.referral_code}, updated_at = now()
+                WHERE id = ${byTelegram.id} AND referral_code IS NULL
+                RETURNING id
+              `);
+              // Лог — по ФАКТУ (RETURNING), а не по намерению: под FOR UPDATE ноль
+              // строк невозможен, но ослабь кто-то замок — расхождение должно быть видно.
+              if (moved.length > 0) {
+                log.info({ event: 'db.referral.merge_code_moved', userId: byTelegram.id });
+              } else {
+                log.warn({ event: 'db.referral.merge_code_move_lost', userId: byTelegram.id });
+              }
+            } else {
+              log.warn({ event: 'db.referral.merge_code_dropped', userId: byTelegram.id });
+            }
+          }
           merged = true;
         } else {
           // Веб-сессия числится за ДРУГИМ telegram-аккаунтом: его историю не

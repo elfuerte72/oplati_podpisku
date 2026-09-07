@@ -990,6 +990,91 @@
   border-top: 1px solid var(--panel-border);
 }
 
+/*
+ * ── Фильтры экрана ──────────────────────────────────────────────────────
+ *
+ * Было три полосы одинаковых плашек: статус (6), сортировка (4), период (4) —
+ * четырнадцать кнопок, каждая сама по себе. Стало: поиск, ОДИН сегментный
+ * переключатель статуса и два списка.
+ */
+.panel-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.panel-filters__search {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.panel-filters__search .panel-input {
+  flex: 1;
+  min-width: 260px;
+}
+/* Сегмент слева, списки справа; на узком экране списки переезжают вниз. */
+.panel-filters__tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.panel-filters__selects {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/*
+ * Сегментный переключатель: дорожка с подсвеченным сегментом внутри, а не
+ * шесть отдельных кнопок. Радиус сегмента концентричен дорожке — её радиус
+ * минус её же отступ (правило концентричности файла).
+ */
+.panel-segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--panel-radius-control);
+  background: var(--panel-surface-2);
+}
+.panel .panel-segmented a {
+  padding: 4px 10px;
+  border-radius: calc(var(--panel-radius-control) - 2px);
+  color: var(--panel-muted);
+  white-space: nowrap;
+}
+.panel .panel-segmented a:hover {
+  color: var(--panel-text);
+  text-decoration: none;
+}
+/*
+ * Выбранный сегмент — ПОВЕРХНОСТЬ, а не акцентная заливка: заливкой он стал бы
+ * вторым заметным действием на экране, где заметное должно быть одно.
+ */
+.panel .panel-segmented a[aria-current="page"] {
+  background: var(--panel-surface);
+  color: var(--panel-text);
+  font-weight: 500;
+}
+
+/* Стрелку списка рисует система по `color-scheme` — своей не заводим. */
+.panel-select {
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border-strong);
+  border-radius: var(--panel-radius-control);
+  background: var(--panel-surface);
+  color: var(--panel-text);
+  font: inherit;
+  cursor: pointer;
+}
+.panel-select:focus-visible {
+  outline: none;
+  border-color: var(--panel-accent);
+  box-shadow: var(--panel-focus-ring);
+}
+
 /* Счётчик работы в меню. Ноль и «не получили» не рисуются вовсе. */
 .panel-nav-badge {
   display: inline-block;
@@ -1034,6 +1119,33 @@
   /* Подложка считается ИЗ цвета линии: два независимых значения разъезжались
      бы при смене темы, и в светлой заливка осталась бы тёмной. */
   background: color-mix(in srgb, var(--panel-danger) 12%, transparent);
+}
+
+/*
+ * Отклик формы — одна строка на все формы панели (тикет 05).
+ *
+ * Без рамки и заливки: это сообщение РЯДОМ с кнопкой, а не блок содержимого.
+ * Цвет несёт единственное различие, которое требуется на глаз: получилось,
+ * получилось с оговоркой, не получилось.
+ */
+.panel-note {
+  margin: 6px 0 0;
+  font-size: var(--panel-font-sm);
+}
+.panel-note--ok {
+  color: var(--panel-ok-text);
+}
+/*
+ * ⚠️ Предупреждение — НЕ отказ. «Клиенту отправлено, но в переписку не
+ * записалось» красилось красным, как ошибка, и звало повторить отправку:
+ * клиент получал второе сообщение. Здесь янтарный: «сделано, но обратите
+ * внимание».
+ */
+.panel-note--warn {
+  color: var(--panel-warn-text);
+}
+.panel-note--error {
+  color: var(--panel-danger-text);
 }
 
 /*

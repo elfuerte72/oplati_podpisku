@@ -9,6 +9,7 @@ import {
   type orderStatusEnum,
 } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import {
   isAllowedTransition,
   OrderTransitionError,
@@ -185,6 +186,27 @@ export async function getOrderEventsByOrderId(
     .orderBy(sql`${orderEvents.createdAt} ASC`);
 }
 
+/**
+ * Заказ под `SELECT ... FOR UPDATE` — для операций, которые принимают решение по
+ * статусу заказа И трогают его платежи в одной транзакции.
+ *
+ * Нужен там, где `transitionOrder` недостаточно: он берёт лок ПОСЛЕ того, как
+ * вызывающий уже прочитал платежи, и в это окно конкурент успевает создать
+ * счёт. Так ломалась отмена заказа клиентом: между чтением «живого счёта нет» и
+ * переходом `payments/create` коммитил `pending`-платёж вместе с
+ * `ready_for_payment → pending_payment`, отмена проходила по разрешённому
+ * переходу и оставляла живой незаклеймённый платёж — клиент платил по уже
+ * полученной ссылке, `claimPaymentSucceeded` проходил, а `transitionOrder(paid)`
+ * из `cancelled` падал и гасился (деньги приняты, заказа нет, алёрта нет).
+ *
+ * Лок берётся ПЕРВЫМ действием транзакции: конкурентный `payments/create` тогда
+ * ждёт на своём переходе заказа, и его платёж мы либо видим, либо его ещё нет.
+ */
+export async function lockOrderForUpdate(db: DBLike, orderId: string): Promise<OrderRow | null> {
+  const rows = await db.select().from(orders).where(eq(orders.id, orderId)).for('update').limit(1);
+  return rows[0] ?? null;
+}
+
 export type TransitionOrderInput = {
   orderId: string;
   toStatus: OrderStatus;
@@ -311,6 +333,10 @@ export async function transitionOrderDetailed(
       actorType,
       eventType,
     });
+
+    // Панель слушает ленту изменений (живое обновление): статус заказа — то,
+    // что она показывает на столе и в списках.
+    emitDbChange('orders');
 
     return { order: updatedRow, transitioned: true };
   });

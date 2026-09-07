@@ -24,6 +24,10 @@ import {
 } from '@/lib/cabinet/actions';
 import { PAYMENT_ISSUE_TYPES, PAYMENT_PROBLEM_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
+// Отмена — общий модуль на все каналы (кабинет и кнопка бота), а не метод
+// кабинета: иначе тесты действий кабинета тянули бы платёжный поллер, а второй
+// канал жил бы со своей копией гейтов.
+import { cancelOrderByClient } from '@/lib/orders/cancel';
 
 /**
  * POST /api/cabinet — бэкенд личного кабинета Telegram Mini App.
@@ -107,6 +111,8 @@ const requestSchema = z.discriminatedUnion('action', [
   }),
   // «Подписка оплачена» — клиент подтвердил успех на сайте сервиса.
   orderAction.extend({ action: z.literal('subscription-paid') }),
+  // «Отменить заказ» — клиент передумал платить (экран заказа Mini App).
+  orderAction.extend({ action: z.literal('cancel') }),
 ]);
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
@@ -328,6 +334,15 @@ export async function POST(req: Request): Promise<NextResponse> {
           body.problemType,
           body.comment,
         );
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
+      }
+      case 'cancel': {
+        const result = await cancelOrderByClient({
+          userId,
+          orderId: body.orderId,
+          source: 'cabinet',
+        });
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
       }

@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import { messages } from '../schema.ts';
 import type { DB } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
@@ -65,6 +66,7 @@ export async function appendMessage(
     hasMeta: meta !== null && meta !== undefined,
   });
 
+  emitDbChange('messages');
   return { id: row.id };
 }
 

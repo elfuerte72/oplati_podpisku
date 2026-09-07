@@ -2,6 +2,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 
 import { orders, payments } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import type { PaymentProvider, PaymentStatus } from '@oplati/types';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
@@ -176,6 +177,7 @@ export async function claimPaymentSucceeded(
     recoveredViaPolling,
   });
 
+  emitDbChange('payments');
   return row;
 }
 
@@ -216,6 +218,7 @@ export async function claimPaymentTerminal(
   }
 
   log.info({ event: 'db.payments.terminal_claimed', paymentId, orderId: row.orderId });
+  emitDbChange('payments');
   return row;
 }
 
@@ -360,7 +363,10 @@ export async function findPaymentByProviderInvoiceNumber(
  * confirm_order (вместо второго живого инвойса).
  */
 export async function findPendingPaymentByOrderId(
-  db: DB,
+  // DBLike: отмена заказа клиентом перечитывает платёж ВНУТРИ своей транзакции,
+  // под локом заказа, — снапшот, снятый до транзакции, к моменту записи уже
+  // устаревает (конкурентный `payments/create` создаёт счёт в это окно).
+  db: DBLike,
   orderId: string,
 ): Promise<PaymentRow | null> {
   const rows = await db
@@ -398,6 +404,8 @@ export async function setPaymentProviderStatus(
     .update(payments)
     .set({ lastProviderStatus: input.providerStatus, lastProviderStatusAt: new Date() })
     .where(eq(payments.id, input.paymentId));
+  // Код холда (7) — то, что показывает экран проверки платежей.
+  emitDbChange('payments');
 }
 
 /**

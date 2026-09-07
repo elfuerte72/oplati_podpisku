@@ -8,6 +8,7 @@ import {
 
 import { conversations, messages } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
@@ -217,6 +218,10 @@ export async function transitionConversationMode(
     });
 
     log.info({ event: 'db.support.transitioned', conversationId, from: fromModes, to, trigger });
+    // Панель слушает ленту изменений: режим — кто отвечает клиенту, а служебная
+    // строка — часть ленты обращения.
+    emitDbChange('conversations');
+    emitDbChange('messages');
 
     return {
       transitioned: true,
@@ -319,10 +324,13 @@ export async function findUnansweredSupportConversations(
     last_client_at: Date | string;
   }>(sql`
     WITH asked AS (
-      -- ТОТ ЖЕ предикат, что у панели (listSupportRequestsForPanel,
-      -- countUnansweredSupportRequests): маркер обращения на строке, а не
-      -- любая реплика клиента. Иначе бейдж «без ответа» в панели и пинг крона
-      -- считались бы по разным правилам и расходились на живых разговорах.
+      -- ТО ЖЕ правило, что у счётчика панели (countUnansweredSupportRequests,
+      -- awaitingOperatorCondition): маркер обращения на строке, а не любая
+      -- реплика клиента, И разговор в режиме operator. Иначе бейдж «без
+      -- ответа» в панели и пинг крона расходились бы на живых разговорах — так
+      -- закрытое без ответа обращение висело в «+1», а крон о нём молчал.
+      -- Единственная оговорка: обращения флоу без режима (source = support)
+      -- панель считает, а крон не пингует — им DM оператору ушёл при подаче.
       SELECT m.conversation_id, max(m.created_at) AS last_client_at
         FROM messages m
         JOIN conversations c ON c.id = m.conversation_id
@@ -416,6 +424,9 @@ export async function findLastStaffFollowUpAt(
 const NON_CONVERSATIONAL_SOURCES = [
   'static_greeting',
   'silent_hint',
+  // Ответ бота на реферальную ссылку («ты по приглашению» / «это твоя ссылка»,
+  // 2026-09-05): маскот на «ты», к разговору с помощником отношения не имеет.
+  'referral_feedback',
   'support_greeting',
   'support_follow_up_ping',
 ];

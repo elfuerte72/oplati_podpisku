@@ -2,6 +2,7 @@ import { and, count, desc, eq, gte, isNull, lte, sql, type SQL } from 'drizzle-o
 
 import { clientFeedback, conversations, funnelSends, orders, users } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
+import { emitDbChange } from '../change-feed.ts';
 import { funnelKind, type FunnelKind } from '@oplati/types';
 import { clampPanelLimit, clampPanelOffset } from './panel.ts';
 
@@ -168,7 +169,9 @@ export async function recordClientFeedback(
     })
     .onConflictDoNothing()
     .returning({ id: clientFeedback.id });
-  return rows.length > 0;
+  const inserted = rows.length > 0;
+  if (inserted) emitDbChange('client_feedback');
+  return inserted;
 }
 
 // ─── Выборки крон-джобы ───────────────────────────────────────────────────

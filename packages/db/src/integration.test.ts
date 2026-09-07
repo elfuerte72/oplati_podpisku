@@ -40,6 +40,7 @@ import {
   hasPurchasedOrders,
   findStaleOrdersInPaymentReview,
   setOrderExpiresAt,
+  transitionOrder,
   transitionOrderDetailed,
 } from './repositories/orders.ts';
 import {
@@ -51,7 +52,7 @@ import {
   getVccBalanceSnapshot,
   saveVccBalanceSnapshot,
 } from './repositories/vcc-balance.ts';
-import { findOrdersCommittingCardFund } from './repositories/orders.ts';
+import { findOrdersCommittingCardFund, lockOrderForUpdate } from './repositories/orders.ts';
 import {
   acquireCardFundLock,
   insertCardFundReservation,
@@ -64,7 +65,7 @@ import {
 } from './repositories/conversations.ts';
 import { countInvoiceConversion } from './repositories/payments.ts';
 import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts';
-import { setReferrerOnce } from './repositories/referrals.ts';
+import { resolveReferralCode, setReferrerOnce } from './repositories/referrals.ts';
 import {
   getOrCreateUserByTelegramId,
   getPayerPhoneForOrder,
@@ -120,6 +121,9 @@ import {
   listOrdersForPanel,
   searchClientsForPanel,
 } from './repositories/panel.ts';
+import { transitionConversationMode } from './repositories/support.ts';
+import { onDbChange, type DbChange } from './change-feed.ts';
+import { recordClientFeedback } from './repositories/funnel.ts';
 import {
   claimStaffTotpStep,
   confirmStaffTotp,
@@ -951,6 +955,36 @@ describe('consumeLinkToken (merge пользователей)', () => {
     await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
 
     expect((await getUserPayerContact(db, telegramUser.id))?.email).toBe('tg@example.com');
+  });
+
+  it('merge переносит реферальный код веб-строки, если у telegram-строки своего нет', async () => {
+    // Сайт /partner выдаёт код ещё ДО привязки Telegram — партнёр мог уже раздать
+    // ссылку с ним. До 2026-09-05 DELETE веб-строки хоронил код, и друзья по той
+    // ссылке получали `code_unknown` — молча (разбор жалоб на реф-ссылки).
+    const webSessionId = `ws-refcode-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, referralCode: 'webcode01' });
+    const telegramUser = await makeUser();
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    const res = await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+    expect(res).toMatchObject({ ok: true, merged: true, userId: telegramUser.id });
+
+    // Розданная ссылка ведёт на выжившую строку.
+    expect(await resolveReferralCode(db, 'webcode01')).toBe(telegramUser.id);
+  });
+
+  it('коды у обеих строк → выживает код telegram-строки, веб-код перестаёт резолвиться', async () => {
+    // Второй код хранить негде (колонка UNIQUE, одна на пользователя) — это
+    // осознанная потеря, разбор алиасов кодов в BACKLOG.
+    const webSessionId = `ws-refcode2-${++seq}`;
+    await makeUser({ telegramId: null, webSessionId, referralCode: 'webcode02' });
+    const telegramUser = await makeUser({ referralCode: 'tgcode002' });
+
+    const { token } = await createLinkToken(db, { webSessionId });
+    await consumeLinkToken(db, { token, telegramId: telegramUser.telegramId ?? '' });
+
+    expect(await resolveReferralCode(db, 'tgcode002')).toBe(telegramUser.id);
+    expect(await resolveReferralCode(db, 'webcode02')).toBeNull();
   });
 
   it('самореферал гасится при merge компенсирующей строкой', async () => {
@@ -3871,11 +3905,28 @@ describe('панель: поддержка (тикет 10)', () => {
       role: 'user',
       content: opts.text ?? 'не проходит оплата, помогите',
     });
+    // Как в проде: маркер обращения — на строке эскалации помощника
+    // (`source: 'support_escalation'`, `session.ts`) и ставится вместе с
+    // переходом разговора к человеку. Флоу без режима (`source: 'support'`)
+    // проверяется отдельным тестом ниже. Срок — null: неотвеченное обращение
+    // не гаснет никогда.
     await appendMessage(db, {
       conversationId: conversation.id,
       role: 'assistant',
       content: 'Передали в поддержку',
-      meta: { source: 'support', support_request: true, support_delivered: opts.delivered ?? true },
+      meta: {
+        source: 'support_escalation',
+        support_request: true,
+        support_delivered: opts.delivered ?? true,
+      },
+    });
+    await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: ['idle', 'ai'],
+      to: 'operator',
+      trigger: 'hard',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
     });
     return conversation;
   }
@@ -4094,6 +4145,86 @@ describe('панель: поддержка (тикет 10)', () => {
     expect(await countUnansweredSupportRequests(db)).toBe(before);
   });
 
+  it('закрытие без ответа снимает обращение со счётчика', async () => {
+    // Регресс 2026-09-06: владелец закрыл обращение кнопкой «Закрыть», не
+    // отвечая (помощник уже всё сказал), а «+1» у «Поддержки» остался — счётчик
+    // не смотрел режим разговора, и снять закрытое обращение можно было только
+    // ответом клиенту в закрытом разговоре.
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-close-${++seq}` });
+    const conversation = await makeSupportRequest(user.id);
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+    // Пока разговор у оператора, список красит обращение как ждущее человека —
+    // тем же правилом, что и счётчик.
+    const open = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(open.items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(
+      true,
+    );
+
+    // «Закрыть» из панели: operator → idle без единой реплики оператора.
+    const closed = await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: 'operator',
+      to: 'idle',
+      trigger: 'operator_close',
+      actorName: 'Владелец',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    expect(closed.transitioned).toBe(true);
+
+    // Закрытый разговор не «ждёт человека»: бейдж и рабочий стол его не считают…
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+
+    // …а в списке он остаётся с фактом «ответа оператора не было» — экран
+    // показывает его приглушённо, без зова к действию.
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((i) => i.conversationId === conversation.id);
+    expect(row?.handoffMode).toBe('idle');
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(row?.awaitingOperator).toBe(false);
+  });
+
+  it('обращение флоу без режима (помощник выключен) ждёт человека до ответа', async () => {
+    // Двухшаговый флоу бота при выключенном помощнике пересылает обращение
+    // оператору сам и режим `operator` не ставит (решение владельца: выключенный
+    // помощник — не эскалация). Закрыть такое обращение нечем, кроме ответа, —
+    // и счётчик обязан его видеть, иначе в режиме деградации панель слепнет.
+    const before = await countUnansweredSupportRequests(db);
+    const user = await makeUser({ telegramId: `tg-support-legacy-count-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true, support_delivered: true },
+    });
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+    const open = await listSupportRequestsForPanel(db, { userId: user.id });
+    const openRow = open.items.find((i) => i.conversationId === conversation.id);
+    expect(openRow?.handoffMode).toBe('idle');
+    expect(openRow?.awaitingOperator).toBe(true);
+
+    const { id } = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'ответили',
+      staffId: SUPPORT_STAFF_ID,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(schema.messages.id, id));
+
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+    const done = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(done.items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(
+      false,
+    );
+  });
+
   it('лента отдаёт КОНЕЦ переписки и говорит про обрыв', async () => {
     const user = await makeUser({ telegramId: `tg-support-thread-${++seq}` });
     const conversation = await makeSupportRequest(user.id);
@@ -4127,7 +4258,15 @@ describe('панель: поддержка (тикет 10)', () => {
     const thread = await getSupportThreadForPanel(db, conversation.id, 50);
 
     expect(thread?.hasMore).toBe(false);
-    expect(thread?.messages).toHaveLength(2);
+    // Реплика клиента, «передали в поддержку» и служебная строка перехода к
+    // оператору — панель показывает и её (серой, с триггером). Состав, а не
+    // порядок: три INSERT'а подряд ложатся в одну отметку `now()`.
+    expect(thread?.messages).toHaveLength(3);
+    expect([...(thread?.messages ?? [])].map((m) => m.role).sort()).toEqual([
+      'assistant',
+      'system',
+      'user',
+    ]);
   });
 
   it('несуществующий диалог — null, а не пустая лента', async () => {
@@ -5126,5 +5265,166 @@ describe('панель: страницы списков (вариант A, ти�
       (opts) => listReferralPayoutsForPanel(db, opts),
       (row) => row.payoutId,
     );
+  });
+});
+
+describe('лента изменений: репозитории сообщают о записи (панель, живое обновление)', () => {
+  // Слушаем ленту в каждом тесте заново: подписка живёт в globalThis, и
+  // хвост от соседнего теста иначе попадал бы в чужие ожидания.
+  function listen() {
+    const seen: DbChange[] = [];
+    const off = onDbChange((change) => seen.push(change));
+    return { seen, off };
+  }
+
+  it('переход статуса заказа сообщает про orders; несостоявшийся — молчит', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-order-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'draft',
+      customServiceDescription: 'feed order',
+      amountRub: 50000,
+      originalAmount: 500,
+      originalCurrency: 'USD',
+    });
+    const { seen, off } = listen();
+    try {
+      await transitionOrder(db, { orderId: order.id, toStatus: 'ready_for_payment' });
+      expect(seen).toEqual([{ table: 'orders' }]);
+
+      // draft ← ready_for_payment машина не разрешает: записи нет — и уведомления нет.
+      await expect(
+        transitionOrder(db, { orderId: order.id, toStatus: 'draft' }),
+      ).rejects.toThrow();
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it('переход режима разговора сообщает про conversations только когда состоялся', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-conv-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const { seen, off } = listen();
+    try {
+      const res = await transitionConversationMode(db, {
+        conversationId: conversation.id,
+        from: 'idle',
+        to: 'operator',
+        trigger: 'hard',
+        modeExpiresAt: null,
+      });
+      expect(res.transitioned).toBe(true);
+      // Переход пишет и служебную строку в messages — это тоже изменение.
+      expect(seen).toEqual(
+        expect.arrayContaining([{ table: 'conversations' }, { table: 'messages' }]),
+      );
+
+      const before = seen.length;
+      const again = await transitionConversationMode(db, {
+        conversationId: conversation.id,
+        from: 'idle',
+        to: 'operator',
+        trigger: 'hard',
+        modeExpiresAt: null,
+      });
+      expect(again.transitioned).toBe(false);
+      expect(seen).toHaveLength(before);
+    } finally {
+      off();
+    }
+  });
+
+  it('сообщение в переписке сообщает про messages', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-msg-${++seq}` });
+    const conversation = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const { seen, off } = listen();
+    try {
+      await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'привет' });
+      expect(seen).toEqual([{ table: 'messages' }]);
+    } finally {
+      off();
+    }
+  });
+
+  it('ответ клиента на опрос сообщает про client_feedback; повтор — нет', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-fb-${++seq}` });
+    const { seen, off } = listen();
+    try {
+      expect(
+        await recordClientFeedback(db, { userId: user.id, kind: 'start_survey', answer: 'thinking' }),
+      ).toBe(true);
+      expect(seen).toEqual([{ table: 'client_feedback' }]);
+
+      expect(
+        await recordClientFeedback(db, { userId: user.id, kind: 'start_survey', answer: 'other' }),
+      ).toBe(false);
+      expect(seen).toHaveLength(1);
+    } finally {
+      off();
+    }
+  });
+
+  it('исход платежа и код провайдера сообщают про payments; повторный claim — нет', async () => {
+    const user = await makeUser({ telegramId: `tg-feed-pay-${++seq}` });
+    const { payment } = await makeOrderWithPendingPayment({ userId: user.id });
+    const { seen, off } = listen();
+    try {
+      await setPaymentProviderStatus(db, { paymentId: payment.id, providerStatus: 7 });
+      expect(seen).toEqual([{ table: 'payments' }]);
+
+      expect(await claimPaymentSucceeded(db, { paymentId: payment.id })).not.toBeNull();
+      expect(seen).toHaveLength(2);
+      expect(seen[1]).toEqual({ table: 'payments' });
+
+      expect(await claimPaymentSucceeded(db, { paymentId: payment.id })).toBeNull();
+      expect(seen).toHaveLength(2);
+    } finally {
+      off();
+    }
+  });
+});
+
+describe('lockOrderForUpdate (отмена заказа клиентом, ревью 2026-09-07)', () => {
+  it('внутри транзакции отдаёт свежую строку заказа', async () => {
+    const user = await makeUser({ telegramId: `tg-lock-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'lock test',
+      amountRub: 50_000,
+    });
+
+    const locked = await db.transaction(async (tx) => await lockOrderForUpdate(tx, order.id));
+
+    expect(locked?.id).toBe(order.id);
+    expect(locked?.status).toBe('ready_for_payment');
+  });
+
+  it('видит статус, изменённый ДО транзакции, — снапшот вызывающего не используется', async () => {
+    // Смысл лока в отмене: решение принимается по строке, прочитанной под ним,
+    // а не по той, что вызывающий прочитал раньше (за это время крон мог
+    // похоронить заказ, а вебхук — оплатить).
+    const user = await makeUser({ telegramId: `tg-lock2-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'lock test 2',
+      amountRub: 50_000,
+      expiresAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    await transitionOrder(db, { orderId: order.id, toStatus: 'expired' });
+
+    const locked = await db.transaction(async (tx) => await lockOrderForUpdate(tx, order.id));
+
+    expect(locked?.status).toBe('expired');
+  });
+
+  it('несуществующий заказ — null, а не бросок', async () => {
+    const missing = await db.transaction(
+      async (tx) => await lockOrderForUpdate(tx, '00000000-0000-0000-0000-000000000000'),
+    );
+
+    expect(missing).toBeNull();
   });
 });

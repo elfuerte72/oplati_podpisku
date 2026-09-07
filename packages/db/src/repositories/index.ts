@@ -158,6 +158,7 @@ export {
   getOrderEventsByOrderId,
   transitionOrder,
   transitionOrderDetailed,
+  lockOrderForUpdate,
   setOrderCardId,
   setOrderExpiresAt,
   findExpiredPayableOrders,

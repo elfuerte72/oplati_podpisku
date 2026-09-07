@@ -634,6 +634,13 @@ describe('loadSupportHistory (контекст помощника)', () => {
       content: 'В переписке я не отвечаю',
       meta: { source: 'silent_hint' },
     });
+    // Ответ на реферальную ссылку (2026-09-05) — тоже маскот на «ты».
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Вижу, ты по приглашению друга',
+      meta: { source: 'referral_feedback' },
+    });
     await transitionConversationMode(db, {
       conversationId: conversation.id,
       from: 'ai',

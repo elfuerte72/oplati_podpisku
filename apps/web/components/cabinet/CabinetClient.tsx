@@ -20,7 +20,9 @@ import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
 import { loadTelegramWebApp, type TelegramWebApp } from './telegram';
 import { track } from '@/lib/analytics/client';
+import { copyToClipboard } from '@/lib/clipboard';
 import {
+  doCancelOrder,
   doMarkSubscriptionPaid,
   doPay,
   doReportPaymentIssue,
@@ -29,6 +31,7 @@ import {
   fetchCardDetails,
   fetchOrderDetail,
   fetchSnapshot,
+  type CancelOrderResult,
   type OrderDetail,
   type Snapshot,
 } from './cabinet-api';
@@ -37,43 +40,13 @@ import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment
 import { Mascot } from '@/components/chat/Mascot';
 
 import { CardHero, type CardDetails } from './CardHero';
+import { PendingOrdersList } from './PendingOrdersList';
+import { selectPendingPaymentOrders } from '@/lib/cabinet/pending-orders';
 import { errorTextFor } from './error-text';
 import { CatalogView } from './CatalogView';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 
 type Phase = 'loading' | 'no-telegram' | 'error' | 'ready';
-
-/**
- * Копирование в буфер с fallback под Telegram WebView, где `navigator.clipboard`
- * часто заблокирован (не https-контекст доверия / нет permission). Возвращает
- * `true`, если хоть один способ сработал — вызывающий решает, что показать.
- */
-async function copyToClipboard(text: string): Promise<boolean> {
-  // Основной путь — Clipboard API. Reject (в Telegram WebView он часто
-  // заблокирован) обрабатываем вторым коллбэком .then, без bare catch — при
-  // неудаче падаем на execCommand ниже.
-  if (navigator.clipboard?.writeText) {
-    const ok = await navigator.clipboard.writeText(text).then(
-      () => true,
-      () => false,
-    );
-    if (ok) return true;
-  }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.top = '-9999px';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 const CABINET_INTRO_KEY = 'oplatishka_cabinet_intro_seen';
 const noopSubscribe = () => () => {};
@@ -306,6 +279,26 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return res;
   }, [detail, refreshDetail]);
 
+  // «Отменить заказ» — клиент передумал платить. При успехе уводим на главный
+  // экран сами: отменённый заказ перестаёт быть оплатимым, и оставить клиента
+  // на экране с кнопкой «Оплатить» значит показать ему кнопку, которая теперь
+  // отвечает отказом. Снапшот перечитываем — заказ уходит из «Ждут оплаты».
+  const cancelCurrentOrder = useCallback(async (): Promise<CancelOrderResult> => {
+    if (!detail) {
+      return { ok: false as const, error: 'no_order', message: 'Заказ не открыт.' };
+    }
+    const res = await doCancelOrder(initDataRef.current, detail.orderId);
+    if (res.ok) {
+      activeOrderIdRef.current = null;
+      setDetail(null);
+      setActionMsg(null);
+      setView('list');
+      setNotice(res.message);
+      void reloadSnapshot();
+    }
+    return res;
+  }, [detail, reloadSnapshot]);
+
   const onPay = useCallback(async (contactsToSend: { email?: string; phone?: string }) => {
     if (!detail) return;
     setBusy('pay');
@@ -451,6 +444,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           onReportIssue={reportIssue}
           onReportPaymentProblem={reportPaymentProblem}
           onSubscriptionPaid={confirmSubscriptionPaid}
+          onCancel={cancelCurrentOrder}
           // Закрываем Mini App — пользователь оказывается в чате бота, где
           // работает /support. Своего канала связи у кабинета нет, а оставлять
           // клиента с «попробуй позже» и без выхода нельзя. Старый клиент
@@ -512,6 +506,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // Заказ карты для «Не проходит оплата?» — сузили в переменную, чтобы замыкание
   // держало string, а не nullable-поле.
   const issueOrderId = primaryCard?.purposeOrderId ?? null;
+  // «Ждут оплаты»: оплатимые заказы с ещё живым сроком, самые срочные сверху.
+  const pendingOrders = selectPendingPaymentOrders(snapshot.orders);
 
   return (
     <>
@@ -566,6 +562,17 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           />
         )}
       </div>
+
+      {/* Незакрытые дела клиента — сразу под главным действием: заказ живёт
+          часы, и вернувшийся в кабинет должен видеть его, а не искать. */}
+      <PendingOrdersList
+        orders={pendingOrders}
+        onOpen={(orderId) => {
+          setCardDetails(null);
+          setNotice(null);
+          void openOrder(orderId);
+        }}
+      />
 
       {/* Карта клиента — главный акцент. */}
       <CardHero
@@ -636,8 +643,9 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
               onClick={() => {
                 const link = snapshot.referralLink;
                 if (!link) return;
-                track('referral_link_share', { action: 'copy', surface: 'cabinet_home' });
                 void copyToClipboard(link).then((ok) => {
+                  // Трек по результату: отказ буфера не считается «скопировал».
+                  track('referral_link_share', { action: ok ? 'copy' : 'copy_failed', surface: 'cabinet_home' });
                   if (ok) {
                     setRefCopied(true);
                     setTimeout(() => setRefCopied(false), 1600);
@@ -674,9 +682,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         </div>
       )}
 
-      {/* Списка заказов (истории покупок) в кабинете осознанно НЕТ — решение
-          владельца 2026-07-02: только действие «оплатить» + карта + партнёрка.
-          К свежесозданному заказу ведёт flow каталога (view 'detail'). */}
+      {/* Полной истории покупок в кабинете по-прежнему НЕТ — решение владельца
+          2026-07-02. Наверху показываем только то, что ждёт действия клиента
+          («Ждут оплаты», решение владельца 2026-09-07): без этого блока заказ,
+          созданный и оставленный, из кабинета было не открыть вовсе. */}
 
       {/* Документы и контакты — те же публичные страницы сайта (требование
           платёжного провайдера). Абсолютные ссылки: кабинет живёт на другом

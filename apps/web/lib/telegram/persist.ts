@@ -30,6 +30,14 @@ const dbLog = childLogger('db');
 export type PersistContext = {
   userId: string;
   conversationId: string;
+  /**
+   * Строка `users` создана ЭТИМ апдейтом (`xmax = 0` в upsert'е). Нужен
+   * `/start ref_`: у только что созданной строки реферер уже проставлен INSERT'ом,
+   * и поздний захват ей не нужен — зато нужно сказать другу и партнёру, что
+   * приглашение сработало. У контекстов, собранных не из persistInbound
+   * (callback-и), поля нет.
+   */
+  userCreated?: boolean;
 };
 
 /**
@@ -94,7 +102,7 @@ export async function persistInbound(
       durationMs: Date.now() - startedAt,
     });
 
-    return { userId: user.id, conversationId: conversation.id };
+    return { userId: user.id, conversationId: conversation.id, userCreated: user.created };
   } catch (err) {
     log.error({
       event: 'telegram.persist.failed',

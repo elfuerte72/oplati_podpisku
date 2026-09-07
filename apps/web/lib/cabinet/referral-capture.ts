@@ -34,6 +34,23 @@ const log = childLogger('referral.capture');
 type CaptureSource = 'miniapp_startapp' | 'bot_start';
 
 /**
+ * Чем кончился захват. Вызывающему важны два исхода: `set` (друг закреплён —
+ * можно сказать об этом ему и партнёру) и `self_link` (человек открыл СВОЮ
+ * ссылку — раньше это молча превращалось в обычное приветствие, и партнёры
+ * решали, что ссылка сломана; разбор жалоб 2026-09-05). Остальные исходы —
+ * штатное «ничего не изменилось», о котором клиенту говорить нечего.
+ */
+export type ReferralCaptureOutcome =
+  | 'set'
+  | 'already_set'
+  | 'self_link'
+  | 'has_purchases'
+  | 'cycle'
+  | 'user_not_found'
+  | 'disabled'
+  | 'failed';
+
+/**
  * Отложенная привязка уже существующего пользователя к рефереру. Best-effort.
  * Антифрод-гейт: пропускаем, если у пользователя уже есть состоявшаяся покупка.
  * Идемпотентность/самореферал — на `setReferrerOnce`.
@@ -42,17 +59,22 @@ export async function captureReferralForUser(input: {
   userId: string;
   referrerId: string;
   source: CaptureSource;
-}): Promise<void> {
-  if (!serverEnv.REFERRAL_ENABLED) return;
+}): Promise<ReferralCaptureOutcome> {
+  if (!serverEnv.REFERRAL_ENABLED) return 'disabled';
   const { userId, referrerId, source } = input;
-  if (referrerId === userId) return;
+  if (referrerId === userId) {
+    // Раньше выход был без лога: в Loki такой заход выглядел как успешный
+    // захват (`telegram.referral.captured`) без следа результата.
+    log.info({ event: 'referral.capture.self_link', userId, source });
+    return 'self_link';
+  }
 
   try {
     const db = getDb();
     // Антифрод: устоявшегося покупателя не переприсваиваем реферер-ссылке.
     if (await hasPurchasedOrders(db, userId)) {
       log.info({ event: 'referral.capture.skipped_has_purchases', userId, source });
-      return;
+      return 'has_purchases';
     }
     const result = await setReferrerOnce(db, userId, referrerId, log);
     log.info({
@@ -61,9 +83,13 @@ export async function captureReferralForUser(input: {
       reason: result.set ? undefined : result.reason,
       source,
     });
+    if (result.set) return 'set';
+    // `self_referral` из репозитория недостижим: тот же гейт стоит выше.
+    return result.reason === 'self_referral' ? 'self_link' : result.reason;
   } catch (err) {
     log.warn({ event: 'referral.capture.failed', userId, source, err });
     Sentry.captureException(err, { tags: { source: 'referral.capture' } });
+    return 'failed';
   }
 }
 

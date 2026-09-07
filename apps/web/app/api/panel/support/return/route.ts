@@ -5,6 +5,7 @@ import { getDb, getSupportThreadForPanel, transitionConversationMode } from '@op
 import { trackServer } from '@/lib/analytics/track';
 import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
+import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { canReturnToAi } from '@/lib/panel/permissions';
 import { sessionDeadline } from '@/lib/support/session';
 import { SUPPORT_RETURNED_TO_AI } from '@/lib/support/texts';
@@ -81,6 +82,9 @@ export async function POST(req: Request): Promise<Response> {
     // на устаревшей странице.
     return Response.json({ ok: false, error: 'not_in_operator_mode' }, { status: 409 });
   }
+  // Возврат помощнику снимает обращение с «без ответа» — счётчик меню обязан
+  // это показать следующим же рендером, а не после срока памятки.
+  invalidateMenuCounts('support');
 
   if (thread.client.telegramId) {
     try {
