@@ -608,8 +608,9 @@ function PaymentProblemBlock({
  * может (API отмены инвойса у провайдеров нет) — оплата по ней после отмены
  * означает ручной возврат. Барьер тут дешевле разбора.
  *
- * Кнопка приглушённая и стоит под «Оплатить»: это выход, а не действие,
- * к которому мы клиента ведём.
+ * Кнопка стоит под «Оплатить» и красится цветом отказа (`--color-stamp`,
+ * решение владельца 2026-09-07): приглушённая серая читалась как подпись, а не
+ * как действие. Заливки у неё нет — заметное действие на экране одно, «Оплатить».
  */
 function CancelOrderBlock({
   invoiceIssued,
@@ -653,7 +654,7 @@ function CancelOrderBlock({
             setErrorText(null);
             setConfirming(true);
           }}
-          className="font-display text-sm font-bold text-[var(--text-muted)] underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
         >
           Отменить заказ
         </button>
@@ -661,7 +662,7 @@ function CancelOrderBlock({
 
       {confirming && (
         <div className="space-y-2.5">
-          <p className="font-body text-sm leading-snug text-[var(--text)]">
+          <p className="font-body text-sm leading-snug text-[var(--color-stamp)]">
             {invoiceIssued
               ? 'Счёт уже выставлен. Если ты его оплатил — не отменяй: заказ подтвердится сам. Отменить заказ и закрыть счёт?'
               : 'Отменить заказ? Оплатить его будет уже нельзя — при желании оформишь заново.'}
