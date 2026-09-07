@@ -360,6 +360,35 @@ export async function doReportPaymentIssue(
   return { ok: false, error: GENERIC_ERROR, message: 'Сеть недоступна. Попробуй ещё раз.' };
 }
 
+const cancelOrderResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), invoiceClosed: z.boolean(), message: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
+]);
+
+export type CancelOrderResult =
+  | Extract<z.infer<typeof cancelOrderResultSchema>, { ok: true }>
+  | CabinetFailure;
+
+/** «Отменить заказ» — клиент передумал платить (до оплаты). */
+export async function doCancelOrder(
+  initData: string,
+  orderId: string,
+): Promise<CancelOrderResult> {
+  const resp = await callCabinet({ action: 'cancel', initData, orderId });
+  const parsed = resp ? cancelOrderResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return withMessage(parsed.data);
+  // Ответ пришёл, но не наш контракт (401 протухшей сессии, 429): «нет сети»
+  // здесь врёт и зовёт долбить кнопку, которая уходит клиенту в деньги.
+  if (resp) {
+    return {
+      ok: false,
+      error: 'unexpected',
+      message: 'Не получилось. Переоткрой кабинет и попробуй ещё раз.',
+    };
+  }
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
+}
+
 const subscriptionPaidResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true) }),
   z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),

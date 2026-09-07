@@ -27,6 +27,7 @@ import {
 
 import { StatusBadge } from './StatusBadge';
 import type {
+  CancelOrderResult,
   OrderDetail,
   PaymentIssueResult,
   PaymentProblemResult,
@@ -59,6 +60,12 @@ type Props = {
     comment?: string,
   ) => Promise<PaymentProblemResult>;
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
+  /**
+   * «Отменить заказ» — клиент передумал платить. Возвращает результат, а уводит
+   * с экрана родитель: после отмены заказ перестаёт быть оплатимым, и оставлять
+   * клиента на экране с кнопкой «Оплатить» нельзя.
+   */
+  onCancel: () => Promise<CancelOrderResult>;
   /**
    * Уйти в поддержку из плашки ошибки. Нужен, когда счёт не выставился
    * (лежит платёжный шлюз): «попробуй позже» без выхода — тупик, из которого
@@ -599,6 +606,95 @@ function PaymentProblemBlock({
  * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
  * открытия платёжной ссылки).
  */
+/**
+ * «Отменить заказ» — клиент выбрал сервис и передумал платить.
+ *
+ * Подтверждение в два шага и вопрос ставится ПРЯМО («если уже оплатил — не
+ * отменяй»): отмена закрывает выставленный счёт, и оплата, разошедшаяся с ней
+ * на секунды, приходит по захороненному платежу — деньги приняты, заказ мёртв,
+ * нужен ручной возврат. Барьер тут дешевле разбора.
+ *
+ * Кнопка приглушённая и стоит под «Оплатить»: это выход, а не действие,
+ * к которому мы клиента ведём.
+ */
+function CancelOrderBlock({
+  invoiceIssued,
+  onCancel,
+}: {
+  invoiceIssued: boolean;
+  onCancel: () => Promise<CancelOrderResult>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const confirm = async () => {
+    if (sending) return;
+    setSending(true);
+    setErrorText(null);
+    const res = await onCancel();
+    // При успехе экран заказа закрывает родитель (уводит в список), поэтому
+    // сбрасываем только состояние отказа: «отменяю…» должно гореть до ухода.
+    if (res.ok) return;
+    setSending(false);
+    setConfirming(false);
+    setErrorText(res.message);
+  };
+
+  return (
+    <div className="mt-4 border-t-2 border-dashed border-[var(--shadow-ink)] pt-3">
+      {!confirming && (
+        <button
+          type="button"
+          onClick={() => {
+            setErrorText(null);
+            setConfirming(true);
+          }}
+          className="font-display text-sm font-bold text-[var(--text-muted)] underline-offset-2 hover:underline"
+        >
+          Отменить заказ
+        </button>
+      )}
+
+      {confirming && (
+        <div className="space-y-2.5">
+          <p className="font-body text-sm leading-snug text-[var(--text)]">
+            {invoiceIssued
+              ? 'Счёт уже выставлен. Если ты его оплатил — не отменяй: заказ подтвердится сам. Отменить заказ и закрыть счёт?'
+              : 'Отменить заказ? Оплатить его будет уже нельзя — при желании оформишь заново.'}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {/* Своя кнопка, а не ComicButton: цвет варианта задаётся тем же
+                свойством `color`, и класс из пропа его не перебивает — в CSS
+                побеждает не порядок в атрибуте, а порядок правил. Отменяющее
+                действие должно отличаться от «Не отменять» на вид. */}
+            <button
+              type="button"
+              disabled={sending}
+              onClick={() => void confirm()}
+              className="rounded-[var(--radius-card)] border-[2.5px] border-[var(--color-stamp)] bg-[var(--surface)] px-4 py-2 font-display text-sm font-bold text-[var(--color-stamp)] shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {sending ? 'Отменяю…' : 'Да, отменить'}
+            </button>
+            <ComicButton
+              variant="surface"
+              className="px-4 py-2 text-sm"
+              disabled={sending}
+              onClick={() => setConfirming(false)}
+            >
+              Не отменять
+            </ComicButton>
+          </div>
+        </div>
+      )}
+
+      {errorText && (
+        <p className="mt-2 font-body text-sm text-[var(--color-stamp)]">{errorText}</p>
+      )}
+    </div>
+  );
+}
+
 export function OrderDetailView({
   order,
   hasActiveCard,
@@ -614,6 +710,7 @@ export function OrderDetailView({
   onReportIssue,
   onReportPaymentProblem,
   onSubscriptionPaid,
+  onCancel,
   onContactSupport,
   onRequestTelegramPhone,
 }: Props) {
@@ -718,6 +815,10 @@ export function OrderDetailView({
                   : ' — после оплаты сумма не изменится.'}
               </p>
             )}
+            <CancelOrderBlock
+              invoiceIssued={order.status === 'pending_payment'}
+              onCancel={onCancel}
+            />
           </div>
         )}
 

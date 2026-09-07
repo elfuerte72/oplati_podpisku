@@ -16,6 +16,7 @@ import { upsertCabinetUser, verifyCabinetInitData } from '@/lib/cabinet/auth';
 import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
 import { getReferralLinkForCabinet } from '@/lib/cabinet/referral-read';
 import {
+  cancelOrder,
   markSubscriptionActivated,
   payOrder,
   proposeNewOrder,
@@ -107,6 +108,8 @@ const requestSchema = z.discriminatedUnion('action', [
   }),
   // «Подписка оплачена» — клиент подтвердил успех на сайте сервиса.
   orderAction.extend({ action: z.literal('subscription-paid') }),
+  // «Отменить заказ» — клиент передумал платить (экран заказа Mini App).
+  orderAction.extend({ action: z.literal('cancel') }),
 ]);
 
 const RATE_LIMITED_TEXT = 'Слишком много запросов подряд. Подожди минутку и попробуй снова.';
@@ -328,6 +331,11 @@ export async function POST(req: Request): Promise<NextResponse> {
           body.problemType,
           body.comment,
         );
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
+      }
+      case 'cancel': {
+        const result = await cancelOrder(userId, body.orderId);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
       }
