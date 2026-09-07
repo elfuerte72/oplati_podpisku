@@ -601,27 +601,29 @@ function PaymentProblemBlock({
 }
 
 /**
- * Экран деталей заказа: сводка, кнопка «Оплатить <сумма>» (финальная сумма — на
- * кнопке, ТЗ §3), таймлайн событий, платежи и блок «что дальше» после выпуска
- * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
- * открытия платёжной ссылки).
- */
-/**
  * «Отменить заказ» — клиент выбрал сервис и передумал платить.
  *
  * Подтверждение в два шага и вопрос ставится ПРЯМО («если уже оплатил — не
- * отменяй»): отмена закрывает выставленный счёт, и оплата, разошедшаяся с ней
- * на секунды, приходит по захороненному платежу — деньги приняты, заказ мёртв,
- * нужен ручной возврат. Барьер тут дешевле разбора.
+ * отменяй»): сервер перед отменой спрашивает шлюз, но ссылку счёта закрыть не
+ * может (API отмены инвойса у провайдеров нет) — оплата по ней после отмены
+ * означает ручной возврат. Барьер тут дешевле разбора.
  *
  * Кнопка приглушённая и стоит под «Оплатить»: это выход, а не действие,
  * к которому мы клиента ведём.
  */
 function CancelOrderBlock({
   invoiceIssued,
+  payInFlight,
   onCancel,
 }: {
   invoiceIssued: boolean;
+  /**
+   * Идёт выставление счёта («Готовлю счёт…»). Отмену в этот момент не даём:
+   * счёт рождается прямо сейчас, и отмена гонялась бы с его созданием — заказ
+   * ушёл бы в `cancelled` при живом платеже (или уронил бы `payments/create`
+   * запрещённым переходом, оставив осиротевший счёт у шлюза).
+   */
+  payInFlight: boolean;
   onCancel: () => Promise<CancelOrderResult>;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -646,11 +648,12 @@ function CancelOrderBlock({
       {!confirming && (
         <button
           type="button"
+          disabled={payInFlight}
           onClick={() => {
             setErrorText(null);
             setConfirming(true);
           }}
-          className="font-display text-sm font-bold text-[var(--text-muted)] underline-offset-2 hover:underline"
+          className="font-display text-sm font-bold text-[var(--text-muted)] underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
         >
           Отменить заказ
         </button>
@@ -670,7 +673,7 @@ function CancelOrderBlock({
                 действие должно отличаться от «Не отменять» на вид. */}
             <button
               type="button"
-              disabled={sending}
+              disabled={sending || payInFlight}
               onClick={() => void confirm()}
               className="rounded-[var(--radius-card)] border-[2.5px] border-[var(--color-stamp)] bg-[var(--surface)] px-4 py-2 font-display text-sm font-bold text-[var(--color-stamp)] shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -695,6 +698,12 @@ function CancelOrderBlock({
   );
 }
 
+/**
+ * Экран деталей заказа: сводка, кнопка «Оплатить <сумма>» (финальная сумма — на
+ * кнопке, ТЗ §3), таймлайн событий, платежи и блок «что дальше» после выпуска
+ * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
+ * открытия платёжной ссылки).
+ */
 export function OrderDetailView({
   order,
   hasActiveCard,
@@ -817,6 +826,7 @@ export function OrderDetailView({
             )}
             <CancelOrderBlock
               invoiceIssued={order.status === 'pending_payment'}
+              payInFlight={busy === 'pay'}
               onCancel={onCancel}
             />
           </div>

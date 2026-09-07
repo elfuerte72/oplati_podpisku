@@ -363,7 +363,10 @@ export async function findPaymentByProviderInvoiceNumber(
  * confirm_order (вместо второго живого инвойса).
  */
 export async function findPendingPaymentByOrderId(
-  db: DB,
+  // DBLike: отмена заказа клиентом перечитывает платёж ВНУТРИ своей транзакции,
+  // под локом заказа, — снапшот, снятый до транзакции, к моменту записи уже
+  // устаревает (конкурентный `payments/create` создаёт счёт в это окно).
+  db: DBLike,
   orderId: string,
 ): Promise<PaymentRow | null> {
   const rows = await db

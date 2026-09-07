@@ -5,7 +5,6 @@ import * as Sentry from '@sentry/nextjs';
 import { fulfillmentCapacityText } from '../payments/capacity.ts';
 import {
   appendOrderEvent,
-  claimPaymentTerminal,
   findCardByIdForUser,
   findPaymentsByOrderId,
   findPendingPaymentByOrderId,
@@ -17,7 +16,7 @@ import {
   hasRecentOrderEvent,
   transitionOrder,
 } from '@oplati/db';
-import { orderParameters, OrderTransitionError, type OrderStatus } from '@oplati/types';
+import { orderParameters, OrderTransitionError } from '@oplati/types';
 
 import { EMAIL_REQUIRED_TEXT } from '../contacts/email.ts';
 import { PHONE_REQUIRED_FALLBACK_TEXT, phoneRequiredText } from '../contacts/phone.ts';
@@ -207,153 +206,6 @@ export async function payOrder(userId: string, orderId: string): Promise<PayOrde
       ok: false,
       error: 'failed',
       message: 'Не получилось создать счёт. Попробуй ещё раз через минуту.',
-    };
-  }
-}
-
-// ─── Отмена заказа клиентом ───────────────────────────────────────────────
-
-export type CancelOrderResult =
-  | { ok: true; invoiceClosed: boolean; message: string }
-  | {
-      ok: false;
-      error: 'not_found' | 'not_cancellable' | 'payment_in_progress' | 'failed';
-      message: string;
-    };
-
-/**
- * Текст отказа по ФАКТИЧЕСКОМУ статусу заказа: «этот заказ уже нельзя
- * отменить» одинаково описывает оплаченный заказ, протухший и отменённый
- * секунду назад из второй вкладки — а действия клиента после этого разные.
- */
-function notCancellableText(status: OrderStatus): string {
-  switch (status) {
-    case 'cancelled':
-      return 'Заказ уже отменён.';
-    case 'expired':
-      return 'Срок заказа истёк — он закрылся сам.';
-    case 'payment_review':
-      return 'Банк проверяет платёж по этому заказу — дождись решения, отменить сейчас нельзя.';
-    case 'paid':
-    case 'in_fulfillment':
-    case 'completed':
-      return 'Заказ уже оплачен — отменить его нельзя. Если что-то пошло не так, напиши в поддержку.';
-    default:
-      return 'Этот заказ уже нельзя отменить.';
-  }
-}
-
-const PAYMENT_IN_PROGRESS_TEXT =
-  'Оплата по этому заказу сейчас обрабатывается — отменять его нельзя. Обнови экран через минуту.';
-
-/**
- * Клиент передумал: «Отменить заказ» на экране заказа в Mini App.
- *
- * Отменяем оба оплатимых статуса, включая `pending_payment` (решение владельца
- * 2026-09-07): счёт живёт час, и заказ, по которому клиент уже решил не
- * платить, всё это время держит карточный фонд (`findOrdersCommittingCardFund`
- * считает живой `pending_payment` обязательством) и мозолит глаза в списке
- * «ждут оплаты».
- *
- * ⚠️ ПОРЯДОК как в `expire-payments`: сначала атомарный claim живого платежа
- * (`pending → failed`), и только потом заказ. Наоборот — значит окно, в котором
- * заказ уже `cancelled`, а платёж ещё `pending`: пришедший в это окно вебхук
- * успешно клеймит оплату и упирается в запрещённый переход `cancelled → paid`,
- * то есть деньги приняты, а восстановить заказ нечем. Обе записи — в ОДНОЙ
- * транзакции: сорванный переход откатывает claim, и платёж остаётся живым.
- *
- * Гонка «клиент оплатил и тут же нажал отмену» остаётся возможной, но не
- * молчаливой: оплата по захороненному счёту идёт веткой `paid_after_terminal`
- * — Sentry + сообщение в ops-группу «нужен ручной возврат». Поэтому UI и
- * спрашивает подтверждение с прямым «если уже оплатил — не отменяй».
- */
-export async function cancelOrder(userId: string, orderId: string): Promise<CancelOrderResult> {
-  const db = getDb();
-  const order = await getOrderById(db, orderId);
-  if (!order || order.userId !== userId) {
-    return { ok: false, error: 'not_found', message: 'Заказ не найден.' };
-  }
-  if (!isPayableStatus(order.status)) {
-    return { ok: false, error: 'not_cancellable', message: notCancellableText(order.status) };
-  }
-
-  // Успешный платёж при заказе, ещё не доехавшем до `paid`, — рассинхрон
-  // (вебхук в процессе, сорвался переход). Деньги приняты: отмена превратила
-  // бы это в оплаченный, но отменённый заказ. Тот же барьер, что
-  // `NOT EXISTS (succeeded)` у выборки протухших заказов.
-  const existingPayments = await findPaymentsByOrderId(db, orderId);
-  if (existingPayments.some((p) => p.status === 'succeeded')) {
-    log.warn({ event: 'cabinet.cancel.succeeded_payment_present', orderId, status: order.status });
-    return { ok: false, error: 'payment_in_progress', message: PAYMENT_IN_PROGRESS_TEXT };
-  }
-
-  const pending = await findPendingPaymentByOrderId(db, orderId);
-
-  try {
-    const cancelled = await db.transaction(async (tx) => {
-      if (pending) {
-        const claimed = await claimPaymentTerminal(tx, pending.id, dbLog);
-        // Платёж перестал быть `pending` между чтением и claim'ом: его забрал
-        // вебхук (оплата) или крон (захоронение). Кто именно — разбираем ПОСЛЕ
-        // транзакции, перечитав строку; здесь просто не отменяем.
-        if (!claimed) return false;
-      }
-      await transitionOrder(tx, {
-        orderId,
-        toStatus: 'cancelled',
-        actorType: 'user',
-        actorId: userId,
-        eventType: 'user_cancelled',
-        payload: {
-          source: 'cabinet',
-          fromStatus: order.status,
-          ...(pending ? { paymentId: pending.id } : {}),
-        },
-      });
-      return true;
-    });
-
-    if (!cancelled) {
-      // Платёж увели из-под нас. Оплата — единственная причина отказать
-      // клиенту; захороненный платёж отмене не мешает, и повтор её проведёт.
-      const fresh = await findPaymentsByOrderId(db, orderId);
-      const paid = fresh.some((p) => p.status === 'succeeded');
-      log.info({ event: 'cabinet.cancel.payment_claimed_elsewhere', orderId, paid });
-      return {
-        ok: false,
-        error: 'payment_in_progress',
-        message: paid
-          ? 'Оплата по заказу прошла — отменять уже нечего. Открой заказ заново.'
-          : PAYMENT_IN_PROGRESS_TEXT,
-      };
-    }
-
-    log.info({
-      event: 'cabinet.cancel.done',
-      orderId,
-      fromStatus: order.status,
-      invoiceClosed: pending !== null,
-    });
-    return {
-      ok: true,
-      invoiceClosed: pending !== null,
-      message: pending
-        ? 'Заказ отменён, счёт закрыт. Оформить заново можно в любой момент.'
-        : 'Заказ отменён. Оформить заново можно в любой момент.',
-    };
-  } catch (err) {
-    // Заказ ушёл в другой статус между проверкой и переходом (крон похоронил,
-    // вебхук оплатил). Не наша ошибка — говорим клиенту, что случилось.
-    if (err instanceof OrderTransitionError) {
-      log.info({ event: 'cabinet.cancel.transition_race', orderId, from: err.from });
-      return { ok: false, error: 'not_cancellable', message: notCancellableText(err.from) };
-    }
-    log.error({ event: 'cabinet.cancel.failed', orderId, err });
-    Sentry.captureException(err, { tags: { source: 'cabinet.cancel' }, extra: { orderId } });
-    return {
-      ok: false,
-      error: 'failed',
-      message: 'Не получилось отменить заказ. Попробуй ещё раз через минуту.',
     };
   }
 }

@@ -3,10 +3,10 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { InlineKeyboard } from 'grammy';
 
-import { getDb, getOrderById, transitionOrder } from '@oplati/db';
 import type { TelegramCallbackQuery } from '@oplati/types';
 
 import { fulfillmentCapacityText } from '../payments/capacity.ts';
+import { cancelOrderByClient } from '../orders/cancel.ts';
 import {
   filterCatalogForDisplay,
   groupCatalog,
@@ -458,38 +458,21 @@ export async function handleOrderActionCallback(
   }
 
   // action === 'cancel'
-  try {
-    const db = getDb();
-    const order = await getOrderById(db, orderId);
-    // Не раскрываем существование чужого заказа — тот же ответ, что и not-found.
-    if (!order || order.userId !== userId) {
-      if (order && order.userId !== userId) {
-        log.warn({ event: 'telegram.callback.cancel.ownership_mismatch', updateId, orderId });
-        Sentry.captureMessage('cancel callback: ownership mismatch', {
-          level: 'warning',
-          tags: { source: 'telegram.callback', step: 'cancel' },
-          extra: { orderId },
-        });
-      }
-      await sendSafely(chatId, 'Заказ уже не найден. Если хочешь начать заново — напиши /start.', updateId);
-      return;
-    }
-    // cancel валиден только из draft/clarifying/ready_for_payment/pending_payment.
-    // Если order уже paid/in_fulfillment/etc — transitionOrder бросит OrderTransitionError.
-    await transitionOrder(db, {
-      orderId,
-      toStatus: 'cancelled',
-      actorType: 'user',
-      eventType: 'user_cancelled',
-      payload: { source: 'telegram_inline_button' },
-    });
-    await sendSafely(chatId, 'Заказ отменён. Если передумаешь — напиши /start.', updateId);
-  } catch (err) {
-    log.error({ event: 'telegram.callback.cancel.failed', updateId, orderId, err });
-    Sentry.captureException(err, {
-      tags: { source: 'telegram.callback', step: 'cancel' },
-      extra: { orderId },
-    });
-    await sendSafely(chatId, 'Не получилось отменить заказ. Напиши «оператор», подключу человека.', updateId);
+  //
+  // Логика — ОБЩАЯ с кнопкой кабинета (`lib/orders/cancel.ts`). Здесь был свой
+  // голый `transitionOrder(cancelled)`: он не сверялся со шлюзом, не хоронил
+  // живой счёт и не брал лок заказа, то есть отменял заказ, по которому счёт
+  // оставался `pending` — пришедшая следом оплата упиралась в запрещённый
+  // `cancelled → paid` (деньги приняты, заказа нет). Два канала — один гейт.
+  const result = await cancelOrderByClient({ userId, orderId, source: 'telegram_inline_button' });
+  if (!result.ok) {
+    log.info({ event: 'telegram.callback.cancel.refused', updateId, orderId, reason: result.error });
+    const text =
+      result.error === 'not_found'
+        ? 'Заказ уже не найден. Если хочешь начать заново — напиши /start.'
+        : result.message;
+    await sendSafely(chatId, text, updateId);
+    return;
   }
+  await sendSafely(chatId, `${result.message}\n\nЧтобы оформить новый — напиши /start.`, updateId);
 }
