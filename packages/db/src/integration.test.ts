@@ -52,7 +52,7 @@ import {
   getVccBalanceSnapshot,
   saveVccBalanceSnapshot,
 } from './repositories/vcc-balance.ts';
-import { findOrdersCommittingCardFund } from './repositories/orders.ts';
+import { findOrdersCommittingCardFund, lockOrderForUpdate } from './repositories/orders.ts';
 import {
   acquireCardFundLock,
   insertCardFundReservation,
@@ -5382,5 +5382,49 @@ describe('лента изменений: репозитории сообщают
     } finally {
       off();
     }
+  });
+});
+
+describe('lockOrderForUpdate (отмена заказа клиентом, ревью 2026-09-07)', () => {
+  it('внутри транзакции отдаёт свежую строку заказа', async () => {
+    const user = await makeUser({ telegramId: `tg-lock-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'lock test',
+      amountRub: 50_000,
+    });
+
+    const locked = await db.transaction(async (tx) => await lockOrderForUpdate(tx, order.id));
+
+    expect(locked?.id).toBe(order.id);
+    expect(locked?.status).toBe('ready_for_payment');
+  });
+
+  it('видит статус, изменённый ДО транзакции, — снапшот вызывающего не используется', async () => {
+    // Смысл лока в отмене: решение принимается по строке, прочитанной под ним,
+    // а не по той, что вызывающий прочитал раньше (за это время крон мог
+    // похоронить заказ, а вебхук — оплатить).
+    const user = await makeUser({ telegramId: `tg-lock2-${++seq}` });
+    const order = await createDraftOrder(db, {
+      userId: user.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'lock test 2',
+      amountRub: 50_000,
+      expiresAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    await transitionOrder(db, { orderId: order.id, toStatus: 'expired' });
+
+    const locked = await db.transaction(async (tx) => await lockOrderForUpdate(tx, order.id));
+
+    expect(locked?.status).toBe('expired');
+  });
+
+  it('несуществующий заказ — null, а не бросок', async () => {
+    const missing = await db.transaction(
+      async (tx) => await lockOrderForUpdate(tx, '00000000-0000-0000-0000-000000000000'),
+    );
+
+    expect(missing).toBeNull();
   });
 });
