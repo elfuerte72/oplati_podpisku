@@ -1,0 +1,61 @@
+# Сигнал SMM-агенту о новом мерже в main.
+#
+# Гилфойл (Hermes, бостонский VPS) пишет посты только по команде владельца —
+# расписания у него нет по решению владельца 2026-09-05. Чтобы новости продукта
+# не терялись, каждый мерж в main оставляет одну строку в теме «Входящие»
+# форум-группы «SMM | Оплатишка»: номер, заголовок, ссылка. Разбор того, что из
+# этого касается клиента, делает владелец кнопкой «Что нового в продукте» в /menu
+# (агент читает PR через публичный GitHub API сам). Это событие, не крон.
+#
+# Отправитель — бот Гилфойла: токен лежит в секрете SMM_BOT_TOKEN (второе место
+# после .env профиля на сервере агента; при утечке менять в обоих). SMM_CHAT_ID и
+# SMM_THREAD_ID — группа и тема «Входящие». Секреты не заданы — шаг молчит с
+# ::warning, деплой это не трогает: workflow отдельный.
+
+name: SMM merge notify
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Сообщить в «Входящие» SMM-группы
+        env:
+          BOT_TOKEN: ${{ secrets.SMM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.SMM_CHAT_ID }}
+          THREAD_ID: ${{ secrets.SMM_THREAD_ID }}
+          # Всё из контекста github.* — через env: заголовок PR пишет автор ветки,
+          # в теле скрипта он стал бы кодом.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -u
+          if [ -z "${BOT_TOKEN}" ] || [ -z "${CHAT_ID}" ]; then
+            echo "::warning::Секреты SMM_BOT_TOKEN/SMM_CHAT_ID не заданы — SMM-группа не уведомлена."
+            exit 0
+          fi
+          text="Смержен PR #${PR_NUMBER}: ${PR_TITLE}
+          ${PR_URL}
+
+          Что из этого новость для клиента: /menu → «Что нового в продукте»."
+          thread_arg=()
+          if [ -n "${THREAD_ID}" ]; then
+            thread_arg=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          fi
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 30 \
+            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            "${thread_arg[@]}" \
+            --data-urlencode "disable_web_page_preview=true" \
+            --data-urlencode "text=${text}" \
+            -o /dev/null -w 'Telegram HTTP %{http_code}\n' || echo "::warning::Уведомление SMM-группы отправить не удалось."
