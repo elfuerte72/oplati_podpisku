@@ -129,6 +129,24 @@ export type SentryHint = SentryTypes.EventHint;
  */
 const FOREIGN_RUNTIME_ERRORS = [
   "Cannot assign to read only property 'push'",
+  /*
+   * `Error invoking postMessage: Java object is gone` — сообщение Android
+   * WebView, а не нашего кода. Внутри WebView страница общается с нативной
+   * частью через проброшенный Java-объект; когда WebView уничтожается (человек
+   * закрыл окно, свернул приложение, нажал «назад»), объект освобождается, а
+   * инжектированный скрипт продолжает слать в мост `postMessage`.
+   *
+   * У нас мост инжектит сам встроенный браузер: Telegram на Android открывает
+   * внешние ссылки во внутреннем WebView с `TelegramWebviewProxy`, так же
+   * поступают in-app браузеры VK и Instagram. Что это чужое, видно по адресу
+   * события — `/`, то есть главная сайта, где SDK Telegram не грузится вовсе
+   * (`components/cabinet/telegram.ts` подключает его только в кабинете).
+   *
+   * Клиент от этого не страдает: ошибка возникает в момент, когда он уже
+   * уходит со страницы. А вот алёрт по ней — фон, который приучает не читать
+   * алёрты (2026-09-09).
+   */
+  'Java object is gone',
 ] as const;
 
 function isForeignRuntimeError(event: SentryEvent): boolean {
