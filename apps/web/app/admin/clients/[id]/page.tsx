@@ -8,6 +8,7 @@ import { getClientDetailForPanel, getDb } from '@oplati/db';
 import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { ensureClientTelegramUsername } from '@/lib/panel/client-username';
 import {
   cardStatusLabel,
   formatKopecks,
@@ -17,8 +18,9 @@ import {
 } from '@/lib/panel/format';
 import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { CELL_TEXT, COLUMN_TITLES, PAGE_TITLES } from '@/lib/panel/labels';
+import { ACTION_TITLES, CELL_TEXT, COLUMN_TITLES, PAGE_TITLES } from '@/lib/panel/labels';
 import { clientReachability } from '@/lib/panel/reachability';
+import { clientDirectMessage } from '@/lib/panel/telegram-dm';
 
 /**
  * `/admin/clients/<id>` — всё про человека на одной странице (спека §5.3).
@@ -62,6 +64,17 @@ export default async function PanelClientPage({
 
   const { client } = detail;
   const reach = clientReachability(client);
+  // Личка — главное действие карточки: половина обращений решается одной
+  // фразой человеку, а не перепиской через бота. Username сверяется с Telegram
+  // (best-effort, свой поводок), поэтому ссылка есть и у клиентов, заведённых
+  // до появления колонки.
+  const username = await ensureClientTelegramUsername({
+    userId: client.id,
+    telegramId: client.telegramId,
+    telegramUsername: client.telegramUsername,
+    telegramUsernameCheckedAt: client.telegramUsernameCheckedAt,
+  });
+  const dm = clientDirectMessage({ telegramId: client.telegramId, telegramUsername: username });
   // Список заказов режется потолком выборки, поэтому итоги берутся ИЗ БАЗЫ
   // (`detail.totals`), а не складываются по видимым строкам: у клиента со 100+
   // заказами сумма по срезу молча занижала бы деньги, а «Заказов» показывало бы
@@ -70,11 +83,40 @@ export default async function PanelClientPage({
 
   return (
     <PanelShell actor={access.actor}>
-      <PanelPageHeader title={client.displayName ?? CELL_TEXT.clientNoName}>
+      <PanelPageHeader
+        title={client.displayName ?? CELL_TEXT.clientNoName}
+        aside={
+          dm.available ? (
+            // Обычная ссылка, а не кнопка со скриптом: адрес виден в статусной
+            // строке, работает средний клик и «открыть в приложении».
+            // `rel=noreferrer` — адрес карточки клиента не должен уезжать в
+            // Telegram реферером (в нём id клиента).
+            <a
+              className="panel-button panel-button--primary"
+              href={dm.url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {ACTION_TITLES.writeDirect} {dm.handle}
+            </a>
+          ) : detail.conversationId ? (
+            <Link className="panel-button" href={`/admin/support/${detail.conversationId}`}>
+              {ACTION_TITLES.openConversation}
+            </Link>
+          ) : null
+        }
+      >
         <p className="panel-muted">
           {client.telegramId ? `Telegram ${client.telegramId}` : client.hasWebSession ? 'Только сайт' : 'Без канала связи'} · с{' '}
           <LocalTime iso={client.createdAt.toISOString()} />
         </p>
+        {!dm.available && dm.reason === 'no_username' ? (
+          // Честный отказ вместо мёртвой кнопки: `tg://user?id=` для чужого
+          // человека молча не открывается — писать остаётся через бота.
+          <p className="panel-muted" style={{ marginTop: 4 }}>
+            {CELL_TEXT.noTelegramUsername}. {CELL_TEXT.writeViaBotHint}
+          </p>
+        ) : null}
         {reach.reachable ? null : (
           <p className="panel-error" style={{ marginTop: 8 }}>
             {reach.reason}: клиент оформил заказ на сайте и Telegram не привязал.

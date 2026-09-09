@@ -98,6 +98,16 @@ export async function notifyStaff(
      * застрявший заказ и критический баланс идут в «Аварию».
      */
     stream?: AlertStream;
+    /**
+     * Слать ЕЩЁ И личкой, когда пост в группу состоялся.
+     *
+     * По умолчанию нет: группа и есть общее место, а дубль в личке превращает
+     * уведомления в шум и их перестают читать. Исключение — обращения клиентов
+     * (решение владельца 2026-09-09): человек ждёт ответа, группу можно
+     * пролистать, и цена пропущенного обращения — клиент, который тринадцать
+     * часов считает нас мошенниками.
+     */
+    alsoDirect?: boolean;
   },
 ): Promise<NotifyStaffResult> {
   const now = opts.now ?? Date.now();
@@ -123,35 +133,88 @@ export async function notifyStaff(
     // (он в группе), а «доставлено» равно единице: адресат один. Окно дедупа
     // — по ФАКТУ поста, как и в личке ниже.
     const posted = await notifyStream(stream, text);
-    if (opts.dedupKey && posted) dedup.record(opts.dedupKey, now, windowMs);
     log.info({ event: 'alerts.staff.posted', stream, posted, capability: opts.capability });
-    return posted
-      ? { delivered: 1, failed: 0, deduped: false }
-      : { delivered: 0, failed: 1, deduped: false };
+    if (!opts.alsoDirect) {
+      if (opts.dedupKey && posted) dedup.record(opts.dedupKey, now, windowMs);
+      return posted
+        ? { delivered: 1, failed: 0, deduped: false }
+        : { delivered: 0, failed: 1, deduped: false };
+    }
+    // Дубль в личку. Провал одного канала не отменяет успеха другого.
+    const direct = await sendDirect(text, opts.capability);
+    // ⚠️ Окно занимает ЛЮБАЯ состоявшаяся доставка, а не только пост: упавший
+    // пост (бота выкинули из группы) при доставленной личке оставлял бы окно
+    // свободным, и каждое следующее сообщение клиента снова рассылало бы DM
+    // всему персоналу — тот самый шум, ради которого дедуп и заведён.
+    if (opts.dedupKey && (posted || direct.delivered > 0)) {
+      dedup.record(opts.dedupKey, now, windowMs);
+    }
+    return {
+      delivered: (posted ? 1 : 0) + direct.delivered,
+      failed: (posted ? 0 : 1) + direct.failed,
+      deduped: false,
+    };
   }
 
+  const direct = await sendDirect(text, opts.capability);
+
+  if (direct.recipients < 0) {
+    // Список получателей не прочитан — молча выходим, как было до рефакторинга.
+    return { delivered: 0, failed: 0, deduped: false };
+  }
+
+  if (direct.recipients === 0) {
+    log.warn({ event: 'alerts.staff.no_recipients', capability: opts.capability });
+    // Окно — по ФАКТУ доставки владельцу: на проде `staff` пуст до заведения
+    // персонала, и записанное по попытке окно означало бы час молчания при
+    // незаданном канале владельца.
+    const toOwner = await fallback(text, opts.capability, stream, opts.fallbackToOps);
+    if (opts.dedupKey && toOwner) dedup.record(opts.dedupKey, now, windowMs);
+    return { delivered: 0, failed: 0, deduped: false };
+  }
+
+  const toOwner =
+    direct.delivered === 0 ? await fallback(text, opts.capability, stream, opts.fallbackToOps) : false;
+
+  // Окно занимает только СОСТОЯВШАЯСЯ доставка — хоть персоналу, хоть владельцу.
+  // ⚠️ Именно факт, а не намерение: `notifyOps` при незаданном
+  // `ALERT_TELEGRAM_CHAT_ID` и при отказе Telegram молчит по построению
+  // (анти-петля), и записанное по попытке окно давало бы час (а то и сутки)
+  // тишины при живой аварии — том самом случае, ради которого фолбэк и есть.
+  if (opts.dedupKey && (direct.delivered > 0 || toOwner)) {
+    dedup.record(opts.dedupKey, now, windowMs);
+  }
+
+  log.info({ event: 'alerts.staff.sent', delivered: direct.delivered, failed: direct.failed });
+  return { delivered: direct.delivered, failed: direct.failed, deduped: false };
+}
+
+/**
+ * Рассылка личкой каждому сотруднику с правом на раздел.
+ *
+ * Вынесена отдельно, потому что зовётся ДВУМЯ путями: обычным (группы нет) и
+ * дублирующим (`alsoDirect` при заданной группе). Дедуп и фолбэк владельцу
+ * сюда не входят намеренно — они разные у этих путей.
+ */
+async function sendDirect(
+  text: string,
+  capability: PanelCapability,
+): Promise<{ delivered: number; failed: number; recipients: number }> {
   let recipients: { id: string; telegramId: string }[] = [];
   try {
     // Узкая выборка: `listStaff` отдаёт строку целиком, вместе с `totp_secret`,
     // а работа этой функции — сформатировать текст для Telegram.
     const staff = await listStaffRecipients(getDb());
     recipients = staff
-      .filter((member) => canAccess(member.role, opts.capability))
+      .filter((member) => canAccess(member.role, capability))
       .map((member) => ({ id: member.id, telegramId: member.telegramId }));
   } catch (err) {
     // База недоступна — сказать некому. Это не повод ронять вызывающего.
+    // ⚠️ `recipients: -1`, а не 0: «список не прочитан» и «в штате никого» —
+    // разные новости. Второе зовёт фолбэк владельцу и пишет в Sentry «нет
+    // получателей»; для первого это была бы неправда.
     log.error({ event: 'alerts.staff.recipients_failed', err });
-    return { delivered: 0, failed: 0, deduped: false };
-  }
-
-  if (recipients.length === 0) {
-    log.warn({ event: 'alerts.staff.no_recipients', capability: opts.capability });
-    // Окно — по ФАКТУ доставки владельцу, как и в основной ветке ниже: на
-    // проде `staff` пуст до заведения персонала, и записанное по попытке окно
-    // означало бы час молчания при незаданном канале владельца.
-    const toOwner = await fallback(text, opts.capability, stream, opts.fallbackToOps);
-    if (opts.dedupKey && toOwner) dedup.record(opts.dedupKey, now, windowMs);
-    return { delivered: 0, failed: 0, deduped: false };
+    return { delivered: 0, failed: 0, recipients: -1 };
   }
 
   let delivered = 0;
@@ -182,19 +245,7 @@ export async function notifyStaff(
     }
   }
 
-  const toOwner = delivered === 0 ? await fallback(text, opts.capability, stream, opts.fallbackToOps) : false;
-
-  // Окно занимает только СОСТОЯВШАЯСЯ доставка — хоть персоналу, хоть владельцу.
-  // ⚠️ Именно факт, а не намерение: `notifyOps` при незаданном
-  // `ALERT_TELEGRAM_CHAT_ID` и при отказе Telegram молчит по построению
-  // (анти-петля), и записанное по попытке окно давало бы час (а то и сутки)
-  // тишины при живой аварии — том самом случае, ради которого фолбэк и есть.
-  if (opts.dedupKey && (delivered > 0 || toOwner)) {
-    dedup.record(opts.dedupKey, now, windowMs);
-  }
-
-  log.info({ event: 'alerts.staff.sent', delivered, failed });
-  return { delivered, failed, deduped: false };
+  return { delivered, failed, recipients: recipients.length };
 }
 
 /**

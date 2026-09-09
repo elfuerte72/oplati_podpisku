@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildSupportOperatorMessage, SUPPORT_MESSAGE_MAX_LEN } from './templates';
 
 describe('buildSupportOperatorMessage', () => {
-  it('включает имя, @username, id, tg-ссылку и текст', () => {
+  it('включает имя, рабочую ссылку на личку, id и текст', () => {
     const msg = buildSupportOperatorMessage({
       telegramId: 111222333,
       firstName: 'Иван',
@@ -12,10 +12,25 @@ describe('buildSupportOperatorMessage', () => {
       description: 'Не приходит ссылка на оплату',
     });
     expect(msg).toContain('Иван Петров');
-    expect(msg).toContain('@ivan');
+    expect(msg).toContain('<a href="https://t.me/ivan">@ivan</a>');
     expect(msg).toContain('<code>111222333</code>');
-    expect(msg).toContain('tg://user?id=111222333');
     expect(msg).toContain('Не приходит ссылка на оплату');
+    /*
+     * РЕГРЕСС: `tg://user?id=` убран намеренно. Такая ссылка требует
+     * `access_hash`, которого у персонала нет, — она молча открывала пустоту, и
+     * строка «Профиль: открыть чат» обещала переход, которого не было.
+     */
+    expect(msg).not.toContain('tg://user?id=');
+  });
+
+  it('мусор вместо username ссылкой не становится', () => {
+    const msg = buildSupportOperatorMessage({
+      telegramId: 5,
+      username: 'evil/path',
+      description: 'привет',
+    });
+    expect(msg).not.toContain('t.me/evil/path');
+    expect(msg).toContain('нет @username');
   });
 
   it('экранирует HTML-спецсимволы в имени и описании', () => {
@@ -31,10 +46,13 @@ describe('buildSupportOperatorMessage', () => {
     expect(msg).toContain('&lt;script&gt;alert(1)&lt;/script&gt; &amp; прочим');
   });
 
-  it('подставляет «без имени» и «—» при отсутствии полей', () => {
+  it('без имени и без username — говорит прямо, что личка недоступна', () => {
     const msg = buildSupportOperatorMessage({ telegramId: 42, description: 'помогите' });
     expect(msg).toContain('без имени');
-    expect(msg).toMatch(/Username:<\/b>\s—/);
+    // Не прочерк: прочерк читается как «не заполнено», а тут причина другая —
+    // писать лично физически нельзя, и это меняет действие оператора.
+    expect(msg).toContain('нет @username');
+    expect(msg).toContain('через панель');
   });
 
   it('обрезает слишком длинное описание до лимита', () => {

@@ -506,6 +506,10 @@ export type PanelClientDetail = {
     id: string;
     displayName: string | null;
     telegramId: string | null;
+    /** Публичный @username: по нему и только по нему открывается личка. */
+    telegramUsername: string | null;
+    /** Когда username последний раз сверялся с Telegram (`null` — никогда). */
+    telegramUsernameCheckedAt: Date | null;
     /**
      * Есть ли веб-сессия. Именно ФЛАГ, а не сам `web_session_id`: его значение
      * — содержимое httpOnly-cookie клиента, то есть живой креденшл (`Cookie:
@@ -532,6 +536,12 @@ export type PanelClientDetail = {
   referredBy: PanelClientReferralLink | null;
   /** Кого привёл он (потолок — как у списков). */
   referrals: PanelClientReferralLink[];
+  /**
+   * Последний разговор клиента в Telegram — чтобы из карточки попадать сразу в
+   * переписку, а не искать её в общем списке поддержки. `null` у клиента,
+   * который боту не писал ни разу.
+   */
+  conversationId: string | null;
 };
 
 /**
@@ -618,6 +628,8 @@ export async function getClientDetailForPanel(
       id: users.id,
       displayName: users.displayName,
       telegramId: users.telegramId,
+      telegramUsername: users.telegramUsername,
+      telegramUsernameCheckedAt: users.telegramUsernameCheckedAt,
       webSessionId: users.webSessionId,
       email: users.email,
       phone: users.phone,
@@ -633,79 +645,91 @@ export async function getClientDetailForPanel(
   const head = headRows[0];
   if (!head) return null;
 
-  const [orderRows, totalsRows, cardRows, referrerRows, referralRows] = await Promise.all([
-    db
-      .select({
-        id: orders.id,
-        shortId: orders.shortId,
-        status: orders.status,
-        amountRub: orders.amountRub,
-        customServiceDescription: orders.customServiceDescription,
-        serviceName: services.name,
-        createdAt: orders.createdAt,
-      })
-      .from(orders)
-      .leftJoin(services, eq(orders.serviceId, services.id))
-      .where(eq(orders.userId, userId))
-      .orderBy(desc(orders.createdAt), desc(orders.id))
-      .limit(PANEL_MAX_ROWS),
-    // Итоги — отдельным запросом по ВСЕМ заказам и картам клиента, а не по
-    // видимому срезу: списки режутся потолком, и складывать их значило бы молча
-    // занижать цифры у клиента со 100+ заказами. Набор «покупка состоялась»
-    // берётся из общего `PURCHASED_STATUSES_SQL` — своя копия статусов ровно
-    // то, против чего этот фрагмент и заведён.
-    db.execute<{
-      orders_count: string | number;
-      purchased_sum: string | number | null;
-      cards_count: string | number;
-    }>(sql`
-      SELECT count(*) AS orders_count,
-             COALESCE(SUM(amount_rub) FILTER (
-               WHERE status IN ${PURCHASED_STATUSES_SQL}
-             ), 0) AS purchased_sum,
-             (SELECT count(*) FROM cards WHERE user_id = ${userId}) AS cards_count
-      FROM orders WHERE user_id = ${userId}
-    `),
-    db
-      .select({
-        id: cards.id,
-        panMasked: cards.panMasked,
-        status: cards.status,
-        balanceUsdCents: cards.balanceUsdCents,
-        createdAt: cards.createdAt,
-      })
-      .from(cards)
-      .where(eq(cards.userId, userId))
-      .orderBy(desc(cards.createdAt))
-      .limit(PANEL_MAX_ROWS),
-    head.referredBy
-      ? db
-          .select({
-            id: users.id,
-            displayName: users.displayName,
-            telegramId: users.telegramId,
-          })
-          .from(users)
-          .where(eq(users.id, head.referredBy))
-          .limit(1)
-      : Promise.resolve([]),
-    db
-      .select({
-        id: users.id,
-        displayName: users.displayName,
-        telegramId: users.telegramId,
-      })
-      .from(users)
-      .where(eq(users.referredBy, userId))
-      .orderBy(desc(users.createdAt))
-      .limit(PANEL_MAX_ROWS),
-  ]);
+  const [orderRows, totalsRows, cardRows, referrerRows, referralRows, conversationRows] =
+    await Promise.all([
+      db
+        .select({
+          id: orders.id,
+          shortId: orders.shortId,
+          status: orders.status,
+          amountRub: orders.amountRub,
+          customServiceDescription: orders.customServiceDescription,
+          serviceName: services.name,
+          createdAt: orders.createdAt,
+        })
+        .from(orders)
+        .leftJoin(services, eq(orders.serviceId, services.id))
+        .where(eq(orders.userId, userId))
+        .orderBy(desc(orders.createdAt), desc(orders.id))
+        .limit(PANEL_MAX_ROWS),
+      // Итоги — отдельным запросом по ВСЕМ заказам и картам клиента, а не по
+      // видимому срезу: списки режутся потолком, и складывать их значило бы молча
+      // занижать цифры у клиента со 100+ заказами. Набор «покупка состоялась»
+      // берётся из общего `PURCHASED_STATUSES_SQL` — своя копия статусов ровно
+      // то, против чего этот фрагмент и заведён.
+      db.execute<{
+        orders_count: string | number;
+        purchased_sum: string | number | null;
+        cards_count: string | number;
+      }>(sql`
+        SELECT count(*) AS orders_count,
+               COALESCE(SUM(amount_rub) FILTER (
+                 WHERE status IN ${PURCHASED_STATUSES_SQL}
+               ), 0) AS purchased_sum,
+               (SELECT count(*) FROM cards WHERE user_id = ${userId}) AS cards_count
+        FROM orders WHERE user_id = ${userId}
+      `),
+      db
+        .select({
+          id: cards.id,
+          panMasked: cards.panMasked,
+          status: cards.status,
+          balanceUsdCents: cards.balanceUsdCents,
+          createdAt: cards.createdAt,
+        })
+        .from(cards)
+        .where(eq(cards.userId, userId))
+        .orderBy(desc(cards.createdAt))
+        .limit(PANEL_MAX_ROWS),
+      head.referredBy
+        ? db
+            .select({
+              id: users.id,
+              displayName: users.displayName,
+              telegramId: users.telegramId,
+            })
+            .from(users)
+            .where(eq(users.id, head.referredBy))
+            .limit(1)
+        : Promise.resolve([]),
+      db
+        .select({
+          id: users.id,
+          displayName: users.displayName,
+          telegramId: users.telegramId,
+        })
+        .from(users)
+        .where(eq(users.referredBy, userId))
+        .orderBy(desc(users.createdAt))
+        .limit(PANEL_MAX_ROWS),
+      // Переписка клиента с ботом — вход в ответ из карточки. Канал `telegram`
+      // намеренно: ответить из панели можно только туда, веб-разговор такой
+      // ссылкой обещал бы доставку, которой нет.
+      db
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(and(eq(conversations.userId, userId), eq(conversations.channel, 'telegram')))
+        .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+        .limit(1),
+    ]);
 
   return {
     client: {
       id: head.id,
       displayName: head.displayName,
       telegramId: head.telegramId,
+      telegramUsername: head.telegramUsername,
+      telegramUsernameCheckedAt: head.telegramUsernameCheckedAt,
       hasWebSession: head.webSessionId !== null,
       email: head.email,
       phone: head.phone,
@@ -729,6 +753,7 @@ export async function getClientDetailForPanel(
     cards: cardRows,
     referredBy: referrerRows[0] ?? null,
     referrals: referralRows,
+    conversationId: conversationRows[0]?.id ?? null,
   };
 }
 
@@ -1354,8 +1379,9 @@ export type PanelSupportThread = {
   handoffMode: string;
   messages: PanelSupportMessage[];
   /**
-   * Сообщений больше, чем показано. Переписка старше 90 дней удаляется кроном
-   * `retention` — обрыв ленты объясняется на экране, а не выглядит потерей.
+   * Сообщений больше, чем показано. Переписка старше срока из
+   * `MESSAGES_RETENTION_DAYS` удаляется кроном `retention` — обрыв ленты
+   * объясняется на экране, а не выглядит потерей.
    */
   hasMore: boolean;
 };

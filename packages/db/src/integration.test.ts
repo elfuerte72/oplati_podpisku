@@ -68,6 +68,8 @@ import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts
 import { resolveReferralCode, setReferrerOnce } from './repositories/referrals.ts';
 import {
   getOrCreateUserByTelegramId,
+  setTelegramUsername,
+  touchTelegramUsernameCheck,
   getPayerPhoneForOrder,
   getUserPayerContact,
   touchUserLastSeenIp,
@@ -615,6 +617,110 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
     );
     expect(row.referredBy).toBeNull();
     expect(row.referredBySetAt).toBeNull();
+  });
+});
+
+describe('@username клиента (ссылка на личку в панели)', () => {
+  it('username из апдейта сохраняется при создании и обновляется при следующем', async () => {
+    const telegramId = `tg-un-${++seq}`;
+    const created = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'first_name_u',
+    });
+    expect(created.created).toBe(true);
+
+    const again = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'renamed_u',
+    });
+    expect(again.id).toBe(created.id);
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, created.id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBe('renamed_u');
+  });
+
+  /*
+   * Апдейт без username приходит и от клиента, у которого он есть (Telegram
+   * присылает поле не всегда). Затирать по нему значило бы гасить ссылку на
+   * личку до следующей сверки — поэтому upsert обновляет только непустым.
+   */
+  it('апдейт без username не стирает известное имя', async () => {
+    const telegramId = `tg-un-keep-${++seq}`;
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'keep_me_u',
+    });
+    await getOrCreateUserByTelegramId(db, { telegramId });
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBe('keep_me_u');
+  });
+
+  it('сверка перезаписывает имя непустым и продвигает отметку', async () => {
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId: `tg-un-rename-${++seq}`,
+      telegramUsername: 'before_u',
+    });
+
+    await setTelegramUsername(db, { userId: id, username: 'after_u' });
+    const first = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(first.telegramUsername).toBe('after_u');
+    const firstCheckedAt = first.telegramUsernameCheckedAt;
+    expect(firstCheckedAt).toBeInstanceOf(Date);
+
+    // Вторая сверка обязана ПРОДВИНУТЬ отметку: реализация, ставящая её один
+    // раз, оставила бы окно навсегда протухшим.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await setTelegramUsername(db, { userId: id, username: 'after_u' });
+    const second = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(second.telegramUsernameCheckedAt!.getTime()).toBeGreaterThan(firstCheckedAt!.getTime());
+  });
+
+  /*
+   * Отказ Telegram «чат недоступен» — не повод стирать рабочее имя, но повод
+   * запомнить, что спрашивали.
+   */
+  it('отметка сверки ставится без изменения имени', async () => {
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId: `tg-un-touch-${++seq}`,
+      telegramUsername: 'keep_u',
+    });
+
+    await touchTelegramUsernameCheck(db, { userId: id });
+
+    const row = firstOf(await db.select().from(schema.users).where(eq(schema.users.id, id)), 'user');
+    expect(row.telegramUsername).toBe('keep_u');
+    expect(row.telegramUsernameCheckedAt).toBeInstanceOf(Date);
+  });
+
+  it('сверка с Telegram — авторитетна: пустой ответ стирает имя и ставит отметку', async () => {
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId: `tg-un-clear-${++seq}`,
+      telegramUsername: 'was_here_u',
+    });
+
+    await setTelegramUsername(db, { userId: id, username: null });
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBeNull();
+    // Отметка — единственное, по чему панель понимает «уже спрашивали»: без неё
+    // карточка клиента без username ходила бы в Bot API на каждое открытие.
+    expect(row.telegramUsernameCheckedAt).toBeInstanceOf(Date);
   });
 });
 
@@ -3489,6 +3595,57 @@ describe('панель: карточка клиента (тикет 04)', () => 
     expect(detail?.cards[0]).toMatchObject({ panMasked: '555555******7777' });
     expect(detail?.referredBy).toMatchObject({ id: partner.id, displayName: 'Партнёр' });
     expect(detail?.referrals.map((r) => r.id)).toContain(invited.id);
+  });
+
+  /*
+   * Кнопка «Открыть переписку» на карточке ведёт в разговор ИМЕННО канала
+   * telegram: ответ из панели уходит клиентскому боту, и веб-разговор обещал бы
+   * доставку, которой нет. Плюс берётся самый свежий: у клиента их может быть
+   * несколько.
+   */
+  it('карточка отдаёт последний telegram-разговор клиента, а не веб', async () => {
+    const client = await makeUser({ telegramId: `tg-conv-${++seq}` });
+    const older = firstOf(
+      await db
+        .insert(schema.conversations)
+        .values({
+          userId: client.id,
+          channel: 'telegram',
+          updatedAt: new Date('2026-09-01T10:00:00Z'),
+        })
+        .returning(),
+      'older conversation',
+    );
+    const newest = firstOf(
+      await db
+        .insert(schema.conversations)
+        .values({
+          userId: client.id,
+          channel: 'telegram',
+          updatedAt: new Date('2026-09-08T10:00:00Z'),
+        })
+        .returning(),
+      'newest conversation',
+    );
+    await db
+      .insert(schema.conversations)
+      .values({
+        userId: client.id,
+        channel: 'web',
+        updatedAt: new Date('2026-09-09T10:00:00Z'),
+      })
+      .returning();
+
+    const detail = await getClientDetailForPanel(db, client.id);
+
+    expect(detail?.conversationId).toBe(newest.id);
+    expect(detail?.conversationId).not.toBe(older.id);
+  });
+
+  it('у клиента без переписки с ботом ссылки на разговор нет', async () => {
+    const client = await makeUser({ telegramId: `tg-noconv-${++seq}` });
+
+    expect((await getClientDetailForPanel(db, client.id))?.conversationId).toBeNull();
   });
 
   it('клиент только с сайта отдаётся без telegram_id — панель скажет это прямо', async () => {

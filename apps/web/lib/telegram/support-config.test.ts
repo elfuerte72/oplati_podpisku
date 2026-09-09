@@ -70,6 +70,17 @@ describe('sendToSupportOperator — обращение уходит ПЕРСОН
     expect(h.notifyStaffMock.mock.calls[0]?.[1]).toMatchObject({ fallbackToOps: false });
   });
 
+  /*
+   * Обращение уходит И в тему группы, И личкой (решение владельца 2026-09-09):
+   * группу листают, а человек ждёт ответа. Без этого теста строку `alsoDirect`
+   * можно удалить, и весь прогон останется зелёным.
+   */
+  it('обращение дублируется в личку, а не только в тему группы', async () => {
+    await sendToSupportOperator('текст');
+
+    expect(h.notifyStaffMock.mock.calls[0]?.[1]).toMatchObject({ alsoDirect: true });
+  });
+
   it('в текст персоналу уходит СНЯТАЯ разметка, а не сырой HTML', async () => {
     await sendToSupportOperator('<b>Клиент</b>: не проходит оплата');
 

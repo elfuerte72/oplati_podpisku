@@ -174,6 +174,22 @@ describe('notifyStaff', () => {
     await expect(notifyStaff('текст', { capability: 'support' })).resolves.toMatchObject({ delivered: 0 });
   });
 
+  /*
+   * «Список не прочитан» и «в штате никого» — разные новости: вторая зовёт
+   * фолбэк владельцу и пишет в Sentry «нет получателей», для первой это была бы
+   * неправда о состоянии штата.
+   */
+  it('недоступная база НЕ выдаётся за пустой штат', async () => {
+    h.listStaff.mockImplementation(async () => {
+      throw new Error('db down');
+    });
+
+    const res = await notifyStaff('текст', { capability: 'support' });
+
+    expect(res).toEqual({ delivered: 0, failed: 0, deduped: false });
+    expect(h.notifyOps).not.toHaveBeenCalled();
+  });
+
   it('получателей нет — уходит ВЛАДЕЛЬЦУ, а не в тишину', async () => {
     // На проде `staff` пуст до ручного заведения и первого входа сотрудника, а
     // у баланса карт и застрявшего заказа второго телеграм-канала нет вовсе:
@@ -253,6 +269,88 @@ describe('notifyStaff при заданной ops-группе', () => {
     expect(res).toEqual({ delivered: 1, failed: 0, deduped: false });
     expect(h.sendStaffMessage).toHaveBeenCalledTimes(1);
     expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'обращение', { messageThreadId: 33 });
+    expect(h.listStaff).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Обращения клиентов идут И в тему, И личкой (решение владельца 2026-09-09):
+   * группу листают, а человек ждёт ответа. Остальные события дубля не получают —
+   * иначе уведомления превращаются в шум, который перестают читать.
+   */
+  it('alsoDirect: пост в тему И личка каждому с правом', async () => {
+    h.listStaff.mockImplementation(async () => [
+      member({ id: 's1', telegramId: '111', role: 'operator' }),
+      member({ id: 's2', telegramId: '222', role: 'admin' }),
+    ]);
+
+    const res = await notifyStaff('обращение', { capability: 'support', alsoDirect: true });
+
+    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'обращение', { messageThreadId: 33 });
+    expect(h.sendStaffMessage).toHaveBeenCalledWith('111', 'обращение');
+    expect(h.sendStaffMessage).toHaveBeenCalledWith('222', 'обращение');
+    expect(res).toMatchObject({ delivered: 3, failed: 0 });
+  });
+
+  it('alsoDirect: провал лички не отменяет успеха поста — персонал уже видит', async () => {
+    h.sendStaffMessage.mockImplementation(async (chatId: unknown) => {
+      if (chatId !== GROUP) throw new Error('403: bot was blocked by the user');
+    });
+
+    const res = await notifyStaff('обращение', { capability: 'support', alsoDirect: true });
+
+    expect(res).toMatchObject({ delivered: 1, failed: 1 });
+  });
+
+  it('alsoDirect: дедуп занимает окно ОДИН раз — повтор не уходит никуда', async () => {
+    await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-42',
+      now: T0,
+    });
+    h.sendStaffMessage.mockClear();
+
+    const second = await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-42',
+      now: T0 + 60_000,
+    });
+
+    expect(second.deduped).toBe(true);
+    expect(h.sendStaffMessage).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Окно должна занимать ЛЮБАЯ состоявшаяся доставка. Иначе упавший пост (бота
+   * выкинули из группы) при доставленной личке оставлял бы окно свободным, и
+   * каждое следующее сообщение клиента снова рассылало бы DM всему персоналу.
+   */
+  it('alsoDirect: пост упал, личка дошла — окно всё равно занято', async () => {
+    h.sendStaffMessage.mockImplementation(async (chatId: unknown) => {
+      if (chatId === GROUP) throw new Error('bot is not a member of the group chat');
+    });
+
+    const first = await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-7',
+      now: T0,
+    });
+    expect(first).toMatchObject({ delivered: 1, failed: 1 });
+
+    const second = await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-7',
+      now: T0 + 60_000,
+    });
+    expect(second.deduped).toBe(true);
+  });
+
+  it('без alsoDirect дубля в личку нет — штат даже не читается', async () => {
+    await notifyStaff('холд', { capability: 'holds' });
+
     expect(h.listStaff).not.toHaveBeenCalled();
   });
 
