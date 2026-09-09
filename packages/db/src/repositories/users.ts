@@ -30,6 +30,14 @@ import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 export type GetOrCreateUserByTelegramIdInput = {
   telegramId: string;
   displayName?: string | null;
+  /**
+   * Публичный @username из апдейта (`from.username`). Обновляется по COALESCE:
+   * апдейт без username (у клиента его нет или Telegram не прислал) НЕ стирает
+   * известное значение — авторитетная перезапись живёт в `setTelegramUsername`,
+   * которую зовёт сверка панели. Иначе один апдейт без поля гасил бы ссылку на
+   * личку до следующей сверки.
+   */
+  telegramUsername?: string | null;
   language?: string;
   /**
    * Реферер (id пригласившего партнёра). Проставляется ТОЛЬКО при создании
@@ -49,7 +57,7 @@ export async function getOrCreateUserByTelegramId(
   input: GetOrCreateUserByTelegramIdInput,
   log: RepoLogger = noopLogger,
 ): Promise<GetOrCreateUserByTelegramIdResult> {
-  const { telegramId, displayName, language, referredBy } = input;
+  const { telegramId, displayName, telegramUsername, language, referredBy } = input;
   const telegramIdHash = hashTelegramId(telegramId);
   const startedAt = Date.now();
 
@@ -64,10 +72,11 @@ export async function getOrCreateUserByTelegramId(
   // referred_by — только в INSERT-ветке; DO UPDATE его не упоминает, поэтому при
   // повторном /start (ON CONFLICT) реферер существующего юзера не перезаписывается.
   const rows = await db.execute<{ id: string; created: boolean }>(sql`
-    INSERT INTO users (telegram_id, display_name, language, referred_by, referred_by_set_at)
+    INSERT INTO users (telegram_id, display_name, telegram_username, language, referred_by, referred_by_set_at)
     VALUES (
       ${telegramId},
       ${displayName ?? null},
+      ${telegramUsername ?? null},
       ${language ?? 'ru'},
       ${referredBy ?? null},
       ${referredBy ? sql`now()` : null}
@@ -75,6 +84,7 @@ export async function getOrCreateUserByTelegramId(
     ON CONFLICT (telegram_id) WHERE telegram_id IS NOT NULL
     DO UPDATE SET
       display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+      telegram_username = COALESCE(EXCLUDED.telegram_username, users.telegram_username),
       updated_at = now()
     RETURNING id, (xmax = 0) AS created
   `);
@@ -380,6 +390,30 @@ export async function touchUserLastSeenIp(
     RETURNING id
   `);
   return rows.length > 0;
+}
+
+/**
+ * Записать результат сверки @username с Telegram (панель, `getChat`).
+ *
+ * В отличие от upsert'а из апдейтов, запись АВТОРИТЕТНАЯ: `null` затирает
+ * известное значение. Так и надо — сверка спросила Telegram напрямую, и если
+ * username сняли, ссылка `t.me/<старый>` ведёт в никуда; держать её значит
+ * обещать персоналу переписку, которой нет.
+ *
+ * Отметка времени ставится ВСЕГДА, даже когда username пустой: она и есть
+ * ответ «мы уже спрашивали», по которому карточка не ходит в Bot API снова.
+ */
+export async function setTelegramUsername(
+  db: DB,
+  input: { userId: string; username: string | null },
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE users
+    SET telegram_username = ${input.username},
+        telegram_username_checked_at = now(),
+        updated_at = now()
+    WHERE id = ${input.userId}
+  `);
 }
 
 /**

@@ -118,6 +118,16 @@ export const users = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     telegramId: text('telegram_id'),
+    // Публичный @username клиента — единственный способ открыть с ним личную
+    // переписку из панели: ссылка `t.me/<username>`. По числовому id Telegram
+    // писать не даёт (нужен access_hash, которого у персонала нет), поэтому
+    // клиент без username личкой недостижим — и панель говорит это прямо.
+    // Пишется из апдейтов бота и initData кабинета, добирается через getChat.
+    telegramUsername: text('telegram_username'),
+    // Когда username последний раз сверялся с Telegram. Нужен ИМЕННО отдельным
+    // полем: у клиента без username сверка возвращает пустоту, и без памятки
+    // «уже смотрели» карточка ходила бы в Bot API на каждое открытие.
+    telegramUsernameCheckedAt: timestamp('telegram_username_checked_at', { withTimezone: true }),
     webSessionId: text('web_session_id'),
     displayName: text('display_name'),
     language: text('language').default('ru').notNull(),

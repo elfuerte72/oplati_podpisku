@@ -79,6 +79,11 @@ export async function persistInbound(
       {
         telegramId,
         displayName,
+        // @username — единственный ключ к личной переписке из панели
+        // (`t.me/<username>`); по числовому id Telegram писать не даёт.
+        // Приходит в каждом апдейте, поэтому и берём его здесь, а не отдельным
+        // походом в Bot API.
+        telegramUsername: message.from.username ?? null,
         language: message.from.language_code ?? 'ru',
         // referred_by ставится только при создании строки (см. репозиторий);
         // для не-/start апдейтов opts отсутствует → реферер не трогается.
@@ -178,6 +183,7 @@ export async function resolveCallbackContext(
       {
         telegramId: String(cb.from.id),
         displayName: nameParts.length > 0 ? nameParts.join(' ') : null,
+        telegramUsername: cb.from.username ?? null,
         language: cb.from.language_code ?? 'ru',
       },
       dbLog,

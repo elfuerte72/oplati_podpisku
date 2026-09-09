@@ -316,6 +316,13 @@
       "when": 1788322424610,
       "tag": "0044_funnel_text_revisions_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1788938300593,
+      "tag": "0045_omniscient_proudstar",
+      "breakpoints": true
     }
   ]
 }

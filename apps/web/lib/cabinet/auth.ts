@@ -90,6 +90,10 @@ export async function upsertCabinetUser(
       {
         telegramId: identity.telegramId,
         displayName: telegramUserDisplayName(identity.user),
+        // initData несёт @username — забираем его здесь же: клиент, который
+        // ходит только в Mini App и боту не пишет, иначе остался бы без
+        // ссылки на личку в панели.
+        telegramUsername: identity.user.username ?? null,
         language: identity.user.language_code ?? 'ru',
       },
       dbLog,

@@ -506,6 +506,10 @@ export type PanelClientDetail = {
     id: string;
     displayName: string | null;
     telegramId: string | null;
+    /** Публичный @username: по нему и только по нему открывается личка. */
+    telegramUsername: string | null;
+    /** Когда username последний раз сверялся с Telegram (`null` — никогда). */
+    telegramUsernameCheckedAt: Date | null;
     /**
      * Есть ли веб-сессия. Именно ФЛАГ, а не сам `web_session_id`: его значение
      * — содержимое httpOnly-cookie клиента, то есть живой креденшл (`Cookie:
@@ -532,6 +536,12 @@ export type PanelClientDetail = {
   referredBy: PanelClientReferralLink | null;
   /** Кого привёл он (потолок — как у списков). */
   referrals: PanelClientReferralLink[];
+  /**
+   * Последний разговор клиента в Telegram — чтобы из карточки попадать сразу в
+   * переписку, а не искать её в общем списке поддержки. `null` у клиента,
+   * который боту не писал ни разу.
+   */
+  conversationId: string | null;
 };
 
 /**
@@ -618,6 +628,8 @@ export async function getClientDetailForPanel(
       id: users.id,
       displayName: users.displayName,
       telegramId: users.telegramId,
+      telegramUsername: users.telegramUsername,
+      telegramUsernameCheckedAt: users.telegramUsernameCheckedAt,
       webSessionId: users.webSessionId,
       email: users.email,
       phone: users.phone,
@@ -633,7 +645,8 @@ export async function getClientDetailForPanel(
   const head = headRows[0];
   if (!head) return null;
 
-  const [orderRows, totalsRows, cardRows, referrerRows, referralRows] = await Promise.all([
+  const [orderRows, totalsRows, cardRows, referrerRows, referralRows, conversationRows] =
+    await Promise.all([
     db
       .select({
         id: orders.id,
@@ -699,6 +712,15 @@ export async function getClientDetailForPanel(
       .where(eq(users.referredBy, userId))
       .orderBy(desc(users.createdAt))
       .limit(PANEL_MAX_ROWS),
+    // Переписка клиента с ботом — вход в ответ из карточки. Канал `telegram`
+    // намеренно: ответить из панели можно только туда, веб-разговор такой
+    // ссылкой обещал бы доставку, которой нет.
+    db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(and(eq(conversations.userId, userId), eq(conversations.channel, 'telegram')))
+      .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+      .limit(1),
   ]);
 
   return {
@@ -706,6 +728,8 @@ export async function getClientDetailForPanel(
       id: head.id,
       displayName: head.displayName,
       telegramId: head.telegramId,
+      telegramUsername: head.telegramUsername,
+      telegramUsernameCheckedAt: head.telegramUsernameCheckedAt,
       hasWebSession: head.webSessionId !== null,
       email: head.email,
       phone: head.phone,
@@ -729,6 +753,7 @@ export async function getClientDetailForPanel(
     cards: cardRows,
     referredBy: referrerRows[0] ?? null,
     referrals: referralRows,
+    conversationId: conversationRows[0]?.id ?? null,
   };
 }
 

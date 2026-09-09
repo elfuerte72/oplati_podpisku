@@ -68,6 +68,7 @@ import { consumeLinkToken, createLinkToken } from './repositories/link-tokens.ts
 import { resolveReferralCode, setReferrerOnce } from './repositories/referrals.ts';
 import {
   getOrCreateUserByTelegramId,
+  setTelegramUsername,
   getPayerPhoneForOrder,
   getUserPayerContact,
   touchUserLastSeenIp,
@@ -615,6 +616,67 @@ describe('getOrCreateUserByTelegramId (реферальный захват пр�
     );
     expect(row.referredBy).toBeNull();
     expect(row.referredBySetAt).toBeNull();
+  });
+});
+
+describe('@username клиента (ссылка на личку в панели)', () => {
+  it('username из апдейта сохраняется при создании и обновляется при следующем', async () => {
+    const telegramId = `tg-un-${++seq}`;
+    const created = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'first_name_u',
+    });
+    expect(created.created).toBe(true);
+
+    const again = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'renamed_u',
+    });
+    expect(again.id).toBe(created.id);
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, created.id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBe('renamed_u');
+  });
+
+  /*
+   * Апдейт без username приходит и от клиента, у которого он есть (Telegram
+   * присылает поле не всегда). Затирать по нему значило бы гасить ссылку на
+   * личку до следующей сверки — поэтому upsert обновляет только непустым.
+   */
+  it('апдейт без username не стирает известное имя', async () => {
+    const telegramId = `tg-un-keep-${++seq}`;
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId,
+      telegramUsername: 'keep_me_u',
+    });
+    await getOrCreateUserByTelegramId(db, { telegramId });
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBe('keep_me_u');
+  });
+
+  it('сверка с Telegram — авторитетна: пустой ответ стирает имя и ставит отметку', async () => {
+    const { id } = await getOrCreateUserByTelegramId(db, {
+      telegramId: `tg-un-clear-${++seq}`,
+      telegramUsername: 'was_here_u',
+    });
+
+    await setTelegramUsername(db, { userId: id, username: null });
+
+    const row = firstOf(
+      await db.select().from(schema.users).where(eq(schema.users.id, id)),
+      'user',
+    );
+    expect(row.telegramUsername).toBeNull();
+    // Отметка — единственное, по чему панель понимает «уже спрашивали»: без неё
+    // карточка клиента без username ходила бы в Bot API на каждое открытие.
+    expect(row.telegramUsernameCheckedAt).toBeInstanceOf(Date);
   });
 });
 

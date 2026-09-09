@@ -397,7 +397,7 @@ export const PANEL_AI_SCHEMA: readonly SchemaEntry[] = [
 export const PANEL_AI_UNAVAILABLE: readonly string[] = [
   'таблица messages (переписка клиентов) и attachments — недоступны',
   'таблица link_tokens и сырая таблица analytics_events — недоступны (только вьюхи)',
-  'users: email, phone, display_name, last_seen_ip, web_session_id, notes — недоступны; если спрашивают контакт клиента — ответить, что данные недоступны аналитику, и предложить карточку клиента в панели',
+  'users: email, phone, display_name, telegram_username, last_seen_ip, web_session_id, notes — недоступны; если спрашивают контакт клиента — ответить, что данные недоступны аналитику, и предложить карточку клиента в панели',
   'payments.raw_payload, referral_payouts.destination, staff: email/telegram_id/totp_*, vpn_subscriptions.subscription_url — недоступны',
 ];
 
