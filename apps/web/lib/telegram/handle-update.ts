@@ -26,6 +26,7 @@ import {
   releaseSilentHint,
 } from './silent-hint';
 import { handleFunnelCallback } from './funnel-callbacks';
+import { notifyStaffAboutInboundMessage } from './inbound-alert';
 import { handleStartCommand } from './start-menu';
 import { openSupportEntry } from './support-entry';
 import {
@@ -252,6 +253,19 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           SILENT_MEDIA_HINT,
           update.update_id,
         );
+        // Фото — обычный способ пожаловаться (скриншот отказа оплаты), и такой
+        // клиент так же невидим без уведомления. Самого файла персоналу не шлём:
+        // в текст уходит только пометка о типе вложения.
+        if (message.from) {
+          await notifyStaffAboutInboundMessage({
+            telegramId: message.from.id,
+            firstName: message.from.first_name,
+            lastName: message.from.last_name,
+            username: message.from.username,
+            text: `[${mediaKind}]`,
+            updateId: update.update_id,
+          });
+        }
         // Событие остаётся: оно меряет, сколько людей приходит в бота за тем,
         // чего он при выключенном AI не умеет. `hinted` отделяет прежнюю
         // тишину от нынешней подсказки.
@@ -454,6 +468,21 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     // тишиной, а человек, промахнувшийся мимо команды, тем более нуждается в
     // указателе. Известные команды и кнопки до этой точки не доходят.
     const hinted = await sendSilentHint(chatId, rlIdentity, SILENT_TEXT_HINT, update.update_id);
+    // ⚠️ Персонал узнаёт о ЛЮБОМ написавшем, а не только о нажавшем кнопку
+    // (решение владельца 2026-09-09). Правило В3 не меняется — обращение
+    // по-прежнему создаётся кнопкой; меняется видимость: человек, написавший
+    // «помогите», раньше не попадал никуда, кроме переписки, которую никто не
+    // открывал. Дедуп (30 минут на клиента) и доставка — внутри модуля.
+    if (message.from) {
+      await notifyStaffAboutInboundMessage({
+        telegramId: message.from.id,
+        firstName: message.from.first_name,
+        lastName: message.from.last_name,
+        username: message.from.username,
+        text,
+        updateId: update.update_id,
+      });
+    }
     // Подсказку кладём в переписку — иначе лента обращения в панели (тикет 10)
     // показывала бы вопрос клиента без единого ответа, хотя ответ был.
     if (hinted && ctx) {

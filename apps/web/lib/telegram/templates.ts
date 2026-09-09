@@ -421,24 +421,56 @@ function truncateEscapedHtml(escaped: string, max: number): string {
  * ронял sendMessage). Бюджет тела = остаток до 4096 после шапки (и не больше
  * SUPPORT_MESSAGE_MAX_LEN). `tg://user?id=` — кликабельный переход к клиенту.
  */
+/**
+ * @username Telegram: латиница, цифры и `_`, 4–32 символа. Проверка нужна, а не
+ * «для порядка»: значение приходит из апдейта и подставляется в ссылку, а
+ * `/`, `?` или `#` внутри увели бы её на чужой адрес.
+ *
+ * Зеркала с `lib/panel/telegram-dm.ts` тут нет намеренно: там модуль панели, и
+ * тянуть его в шаблоны бота — кросс-импорт ради шести символов регэкспа;
+ * ⚠️ но правило одно, и правится в обоих местах.
+ */
+function normalizeTelegramUsername(raw: string | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().replace(/^@/, '');
+  return /^[A-Za-z0-9_]{4,32}$/.test(trimmed) ? trimmed : null;
+}
+
+/** Заголовок уведомления «клиент просто написал», без создания обращения. */
+export const INBOUND_ALERT_TITLE = '💬 <b>Клиент написал в бота</b>';
+
+/** Заголовок обращения — человек нажал «Поддержка». */
+const SUPPORT_REQUEST_TITLE = '🆘 <b>Новое обращение в поддержку</b>';
+
 export function buildSupportOperatorMessage(params: {
   telegramId: number;
   firstName?: string;
   lastName?: string;
   username?: string;
   description: string;
+  /** По умолчанию — обращение; уведомление о свободном сообщении меняет только шапку. */
+  title?: string;
 }): string {
   const name = [params.firstName, params.lastName]
     .filter((p): p is string => typeof p === 'string' && p.length > 0)
     .join(' ');
   const nameLine = name.length > 0 ? escapeHtml(name) : 'без имени';
-  const handleLine = params.username ? `@${escapeHtml(params.username)}` : '—';
+  /*
+   * Личка открывается ТОЛЬКО по @username: ссылка `tg://user?id=` требует
+   * `access_hash`, которого у персонала нет, — она молча открывает пустоту.
+   * Поэтому строка «Профиль» с таким адресом убрана (она обещала переход,
+   * которого не было), а вместо неё — либо рабочая ссылка на профиль, либо
+   * прямая правда, что писать придётся через панель.
+   */
+  const handle = normalizeTelegramUsername(params.username);
+  const contactLine = handle
+    ? `<b>Написать лично:</b> <a href="https://t.me/${handle}">@${handle}</a>\n`
+    : '<b>Написать лично:</b> нельзя — у клиента нет @username, отвечать через панель\n';
   const header =
-    '🆘 <b>Новое обращение в поддержку</b>\n\n' +
+    `${params.title ?? SUPPORT_REQUEST_TITLE}\n\n` +
     `<b>Пользователь:</b> ${nameLine}\n` +
-    `<b>Username:</b> ${handleLine}\n` +
-    `<b>Telegram ID:</b> <code>${params.telegramId}</code>\n` +
-    `<b>Профиль:</b> <a href="tg://user?id=${params.telegramId}">открыть чат</a>\n\n` +
+    contactLine +
+    `<b>Telegram ID:</b> <code>${params.telegramId}</code>\n\n` +
     '<b>Сообщение:</b>\n';
   // -1 — запас под «…», добавляемый при обрезке.
   const bodyBudget = Math.max(

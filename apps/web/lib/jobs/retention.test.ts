@@ -23,6 +23,7 @@ vi.mock('@oplati/db', () => ({
   deleteExpiredCardFundReservations: h.fundReservationsDeleteMock,
 }));
 
+import { MESSAGES_RETENTION_DAYS, PAYLOAD_RETENTION_DAYS } from '../retention-policy.ts';
 import { runRetention } from './retention.ts';
 
 beforeEach(() => {
@@ -50,12 +51,14 @@ describe('runRetention (M-13: чистка messages и raw_payload)', () => {
     // Сроки — решение владельца 2026-07-19: 90 дней переписка, 180 — raw_payload.
     expect(h.deleteMock).toHaveBeenCalledWith(
       expect.anything(),
-      { olderThanDays: 90, limit: 500 },
+      // Срок берётся из общей политики, а не зашит числом: копия здесь молча
+      // разъезжалась бы с кроном и с текстом политики конфиденциальности.
+      { olderThanDays: MESSAGES_RETENTION_DAYS, limit: 500 },
       expect.anything(),
     );
     expect(h.stripMock).toHaveBeenCalledWith(
       expect.anything(),
-      { olderThanDays: 180, limit: 500 },
+      { olderThanDays: PAYLOAD_RETENTION_DAYS, limit: 500 },
       expect.anything(),
     );
   });

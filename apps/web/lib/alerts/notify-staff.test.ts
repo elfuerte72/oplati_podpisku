@@ -256,6 +256,61 @@ describe('notifyStaff при заданной ops-группе', () => {
     expect(h.listStaff).not.toHaveBeenCalled();
   });
 
+  /*
+   * Обращения клиентов идут И в тему, И личкой (решение владельца 2026-09-09):
+   * группу листают, а человек ждёт ответа. Остальные события дубля не получают —
+   * иначе уведомления превращаются в шум, который перестают читать.
+   */
+  it('alsoDirect: пост в тему И личка каждому с правом', async () => {
+    h.listStaff.mockImplementation(async () => [
+      member({ id: 's1', telegramId: '111', role: 'operator' }),
+      member({ id: 's2', telegramId: '222', role: 'admin' }),
+    ]);
+
+    const res = await notifyStaff('обращение', { capability: 'support', alsoDirect: true });
+
+    expect(h.sendStaffMessage).toHaveBeenCalledWith(GROUP, 'обращение', { messageThreadId: 33 });
+    expect(h.sendStaffMessage).toHaveBeenCalledWith('111', 'обращение');
+    expect(h.sendStaffMessage).toHaveBeenCalledWith('222', 'обращение');
+    expect(res).toMatchObject({ delivered: 3, failed: 0 });
+  });
+
+  it('alsoDirect: провал лички не отменяет успеха поста — персонал уже видит', async () => {
+    h.sendStaffMessage.mockImplementation(async (chatId: unknown) => {
+      if (chatId !== GROUP) throw new Error('403: bot was blocked by the user');
+    });
+
+    const res = await notifyStaff('обращение', { capability: 'support', alsoDirect: true });
+
+    expect(res).toMatchObject({ delivered: 1, failed: 1 });
+  });
+
+  it('alsoDirect: дедуп занимает окно ОДИН раз — повтор не уходит никуда', async () => {
+    await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-42',
+      now: T0,
+    });
+    h.sendStaffMessage.mockClear();
+
+    const second = await notifyStaff('обращение', {
+      capability: 'support',
+      alsoDirect: true,
+      dedupKey: 'inbound-42',
+      now: T0 + 60_000,
+    });
+
+    expect(second.deduped).toBe(true);
+    expect(h.sendStaffMessage).not.toHaveBeenCalled();
+  });
+
+  it('без alsoDirect дубля в личку нет — штат даже не читается', async () => {
+    await notifyStaff('холд', { capability: 'holds' });
+
+    expect(h.listStaff).not.toHaveBeenCalled();
+  });
+
   it('holds → тема «Платежи»', async () => {
     await notifyStaff('холд', { capability: 'holds' });
 
