@@ -143,6 +143,29 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
   // поедет, незачем.
   if (isForeignRuntimeError(event)) return null;
 
+  scrubEventEnvelope(event);
+  return event;
+}
+
+/**
+ * Чистка «обёртки» события: запрос, крошки, contexts/extra/tags, свободный
+ * текст. Вынесена отдельно, потому что нужна ДВУМ хукам — ошибкам и
+ * транзакциям.
+ *
+ * ⚠️ Транзакции идут МИМО `beforeSend`, и без этого вызова хук транзакций
+ * закрывал бы один канал из четырёх: `requestDataIntegration` кладёт в них тот
+ * же `request` с разобранной cookie сессии панели и строкой поиска `?q=`, а
+ * сэмплируется на проде каждая десятая (находка ревью 2026-09-09).
+ */
+function scrubEventEnvelope(event: {
+  request?: SentryEvent['request'];
+  breadcrumbs?: SentryEvent['breadcrumbs'];
+  extra?: SentryEvent['extra'];
+  contexts?: SentryEvent['contexts'];
+  tags?: SentryEvent['tags'];
+  message?: SentryEvent['message'];
+  exception?: SentryEvent['exception'];
+}): void {
   // Request body / query / headers — денилист PII
   if (event.request) {
     if (event.request.data) {
@@ -205,8 +228,10 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
         }
       }
       if (crumb.message) {
-        // превентивная обрезка потенциальных токенов в сообщениях
-        crumb.message = crumb.message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED]');
+        // Полный денилист, а не один `Bearer`: console-крошки Node SDK включены
+        // по умолчанию, и туда попадает и адрес Bot API с токеном, и
+        // PAN-подобная последовательность из ответа провайдера.
+        crumb.message = scrubText(crumb.message);
       }
     }
   }
@@ -236,8 +261,6 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
       if (typeof value.value === 'string') value.value = scrubText(value.value);
     }
   }
-
-  return event;
 }
 
 /**
@@ -249,7 +272,15 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
 export function beforeSendTransaction<T extends { transaction?: string; spans?: unknown[] }>(
   event: T,
 ): T {
+  // Та же чистка, что у ошибок: транзакция несёт `request` (cookie сессии
+  // панели, `?q=` с контактом клиента), крошки и contexts.
+  scrubEventEnvelope(event as Parameters<typeof scrubEventEnvelope>[0]);
+
   if (typeof event.transaction === 'string') {
+    // `as` — плата за generic-сигнатуру: тип `TransactionEvent` в
+    // `@sentry/nextjs` не реэкспортируется, а тянуть его из `@sentry/core`
+    // значит прописать транзитивную зависимость. Значение здесь заведомо
+    // строка (проверено строкой выше).
     event.transaction = scrubUrl(event.transaction) as T['transaction'];
   }
   if (!Array.isArray(event.spans)) return event;
@@ -259,10 +290,14 @@ export function beforeSendTransaction<T extends { transaction?: string; spans?: 
     if (typeof record.description === 'string') record.description = scrubUrl(record.description);
     const attrs = record.data;
     if (typeof attrs !== 'object' || attrs === null) continue;
-    const bag = attrs as Record<string, unknown>;
+    // ⚠️ Прогоняем КАЖДОЕ строковое значение, а не только похожее на адрес Bot
+    // API: у спана входящего запроса в атрибутах лежит `http.query` и
+    // `url.full` — то есть поиск по email клиента из формы панели.
+    record.data = scrubPii(attrs) as Record<string, unknown>;
+    const bag = record.data as Record<string, unknown>;
     for (const key of Object.keys(bag)) {
       const value = bag[key];
-      if (typeof value === 'string' && value.includes('/bot')) bag[key] = scrubUrl(value);
+      if (typeof value === 'string') bag[key] = scrubUrl(value);
     }
   }
   return event;

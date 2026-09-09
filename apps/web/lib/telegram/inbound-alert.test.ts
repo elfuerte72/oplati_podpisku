@@ -19,10 +19,16 @@ const notifyStaff = vi.hoisted(() =>
 
 vi.mock('@/lib/alerts/notify-staff', () => ({ notifyStaff }));
 
-import { INBOUND_ALERT_DEDUP_MS, notifyStaffAboutInboundMessage } from './inbound-alert.ts';
+import {
+  INBOUND_ALERT_DEDUP_MS,
+  INBOUND_ALERT_HOURLY_CAP,
+  notifyStaffAboutInboundMessage,
+  resetInboundAlertCapForTests,
+} from './inbound-alert.ts';
 
 beforeEach(() => {
   notifyStaff.mockClear();
+  resetInboundAlertCapForTests();
 });
 
 function lastCall() {
@@ -100,5 +106,37 @@ describe('уведомление о входящем сообщении клие
     await notifyStaffAboutInboundMessage({ telegramId: 9, text: '[photo]', updateId: 7 });
 
     expect(lastCall().text).toContain('[photo]');
+  });
+
+  /*
+   * Дедуп держит одного клиента, но не десяток аккаунтов сразу. Без общего
+   * потолка всплеск дал бы поток постов и личек — и персонал перестал бы их
+   * читать, то есть исход тот же, что без уведомлений вовсе.
+   */
+  it('всплеск с разных аккаунтов упирается в часовой потолок', async () => {
+    const now = Date.parse('2026-09-09T10:00:00Z');
+    for (let i = 0; i < INBOUND_ALERT_HOURLY_CAP + 5; i++) {
+      await notifyStaffAboutInboundMessage({ telegramId: 1000 + i, text: 'спам', updateId: i }, now);
+    }
+
+    expect(notifyStaff).toHaveBeenCalledTimes(INBOUND_ALERT_HOURLY_CAP);
+    // На самом потолке персонал предупреждён ОДИН раз — тишина без объяснения
+    // читается как поломка уведомлений.
+    expect(lastCall().text).toContain('до конца часа не придут');
+  });
+
+  it('через час окно открывается снова', async () => {
+    const now = Date.parse('2026-09-09T10:00:00Z');
+    for (let i = 0; i < INBOUND_ALERT_HOURLY_CAP + 3; i++) {
+      await notifyStaffAboutInboundMessage({ telegramId: 2000 + i, text: 'x', updateId: i }, now);
+    }
+    notifyStaff.mockClear();
+
+    await notifyStaffAboutInboundMessage(
+      { telegramId: 3001, text: 'после паузы', updateId: 99 },
+      now + 61 * 60 * 1000,
+    );
+
+    expect(notifyStaff).toHaveBeenCalledTimes(1);
   });
 });

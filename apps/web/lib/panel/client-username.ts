@@ -45,6 +45,12 @@ export const USERNAME_RECHECK_AFTER_MS = 24 * 60 * 60 * 1000;
  */
 const GET_CHAT_TIMEOUT_SECONDS = 2;
 
+/**
+ * Коды, на которых повторять сверку в ближайшие сутки бессмысленно: чат боту
+ * недоступен. Всё остальное (429, 5xx) — временно, и памятку не заслуживает.
+ */
+const PERMANENT_CHAT_ERRORS = new Set([400, 403]);
+
 let cachedApi: Api | undefined;
 
 /**
@@ -53,7 +59,7 @@ let cachedApi: Api | undefined;
  * никаких ожиданий в рендере. Транспорт при этом ОБЩИЙ — URL Bot API собирает
  * grammY, своего адреса модуль не строит.
  */
-function analystApi(token: string): Api {
+function getChatApi(token: string): Api {
   cachedApi ??= new Api(token, { timeoutSeconds: GET_CHAT_TIMEOUT_SECONDS });
   return cachedApi;
 }
@@ -121,7 +127,7 @@ async function syncUsername(
   known: string | null,
 ): Promise<string | null> {
   try {
-    const chat = await analystApi(token).getChat(Number(client.telegramId));
+    const chat = await getChatApi(token).getChat(Number(client.telegramId));
     const raw = 'username' in chat ? chat.username : undefined;
     const fresh = normalizeUsername(raw);
     if (raw && !fresh) {
@@ -138,12 +144,19 @@ async function syncUsername(
     });
     return fresh;
   } catch (err) {
-    if (err instanceof GrammyError) {
+    if (err instanceof GrammyError && PERMANENT_CHAT_ERRORS.has(err.error_code)) {
       // Ответ по существу: чат недоступен боту. Имя не трогаем, память ставим.
       log.warn({ event: 'panel.client_username.chat_unavailable', code: err.error_code });
       runLater(async () => {
         await touchCheck(client.userId);
       });
+      return known;
+    }
+    if (err instanceof GrammyError) {
+      // 429 flood-wait и 5xx — временная авария провайдера, а не «чата нет».
+      // Памятку не ставим: иначе у клиента с живым @username кнопка лички
+      // пропадала бы на сутки из-за минутного всплеска у Telegram.
+      log.warn({ event: 'panel.client_username.lookup_unavailable', code: err.error_code });
       return known;
     }
     // Таймаут или обрыв — ничего не записываем: записать пустоту значило бы

@@ -376,3 +376,54 @@ describe('beforeSendTransaction: адрес в трассировке', () => {
     expect(out.spans[0]?.data['url.full']).not.toContain('AAHfakeTokenValue_x1');
   });
 });
+
+/**
+ * Транзакции идут мимо `beforeSend`, и у них тот же `request` от
+ * `requestDataIntegration`: разобранная cookie сессии панели и `?q=` с
+ * контактом клиента. Хук, чистящий только имя транзакции, закрывал бы один
+ * канал из четырёх (находка ревью 2026-09-09).
+ */
+describe('beforeSendTransaction: та же чистка, что у ошибок', () => {
+  it('РЕГРЕСС: cookie сессии панели не уезжает в трассировке', () => {
+    const out = beforeSendTransaction({
+      transaction: 'GET /admin/orders',
+      request: { cookies: { '__Host-panel_session': 'signed.token.value' } },
+    } as never) as unknown as { request: { cookies: Record<string, string> } };
+
+    expect(out.request.cookies).toEqual({});
+  });
+
+  it('РЕГРЕСС: поиск по клиенту в адресе транзакции вычищается', () => {
+    const out = beforeSendTransaction({
+      transaction: 'GET /admin/orders',
+      request: { url: 'https://admin.example.com/admin/orders?q=client@example.com' },
+      spans: [{ data: { 'http.query': 'q=client@example.com', 'url.full': 'https://x/?q=a@b.c' } }],
+    } as never) as unknown as {
+      request: { url: string };
+      spans: { data: Record<string, unknown> }[];
+    };
+
+    expect(out.request.url).not.toContain('client@example.com');
+    expect(out.spans[0]?.data['http.query']).toBe('[REDACTED]');
+    expect(String(out.spans[0]?.data['url.full'])).not.toContain('a@b.c');
+  });
+});
+
+describe('beforeSend: крошки', () => {
+  it('РЕГРЕСС: токен и PAN в тексте крошки маскируются, а не только Bearer', () => {
+    const out = beforeSend(
+      makeEvent({
+        breadcrumbs: [
+          {
+            category: 'console',
+            message: 'POST https://api.telegram.org/bot7712345678:AAHsecretvalue_x/sendMessage 4111111111111111',
+          },
+        ],
+      }),
+    ) as unknown as { breadcrumbs: { message: string }[] };
+
+    const message = out.breadcrumbs[0]?.message ?? '';
+    expect(message).not.toContain('AAHsecretvalue_x');
+    expect(message).not.toContain('4111111111111111');
+  });
+});

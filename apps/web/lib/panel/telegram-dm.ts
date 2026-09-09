@@ -13,17 +13,15 @@
  * Второй путь связи — ответ через бота из раздела «Поддержка» — работает
  * ВСЕГДА, пока у клиента есть `telegram_id`, и именно его мы предлагаем, когда
  * личка недоступна.
+ *
+ * Правило самого имени живёт в `lib/telegram/username.ts` — общем для панели и
+ * шаблонов бота, чтобы регэксп не расходился между ними.
  */
 
-/**
- * Допустимый @username: латиница, цифры и `_`, 4–32 символа (Telegram выдаёт
- * 5–32, но у ранних аккаунтов встречаются четырёхбуквенные).
- *
- * Проверка обязательна, а не «для порядка»: значение приходит из внешнего
- * источника и подставляется в `href`. Символ `/`, `?` или `#` внутри увёл бы
- * ссылку на чужой адрес прямо из карточки клиента.
- */
-const USERNAME_RE = /^[A-Za-z0-9_]{4,32}$/;
+import { normalizeUsername } from '../telegram/username';
+
+/** Реэкспорт для потребителей панели: правило одно, точек входа две. */
+export { normalizeUsername };
 
 export type ClientDirectMessage =
   | { available: true; url: string; handle: string }
@@ -46,15 +44,4 @@ export function clientDirectMessage(client: {
   const handle = normalizeUsername(client.telegramUsername);
   if (!handle) return { available: false, reason: 'no_username' };
   return { available: true, url: `https://t.me/${handle}`, handle: `@${handle}` };
-}
-
-/**
- * Приводит username к каноничному виду: снимает ведущую `@` и пробелы.
- * Возвращает `null` для всего, что не похоже на username Telegram, — мусор из
- * базы не должен доехать до `href`.
- */
-export function normalizeUsername(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().replace(/^@/, '');
-  return USERNAME_RE.test(trimmed) ? trimmed : null;
 }

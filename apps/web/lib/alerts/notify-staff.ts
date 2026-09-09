@@ -133,17 +133,22 @@ export async function notifyStaff(
     // (он в группе), а «доставлено» равно единице: адресат один. Окно дедупа
     // — по ФАКТУ поста, как и в личке ниже.
     const posted = await notifyStream(stream, text);
-    if (opts.dedupKey && posted) dedup.record(opts.dedupKey, now, windowMs);
     log.info({ event: 'alerts.staff.posted', stream, posted, capability: opts.capability });
     if (!opts.alsoDirect) {
+      if (opts.dedupKey && posted) dedup.record(opts.dedupKey, now, windowMs);
       return posted
         ? { delivered: 1, failed: 0, deduped: false }
         : { delivered: 0, failed: 1, deduped: false };
     }
-    // Дубль в личку. ⚠️ Окно дедупа уже занято постом выше — второй раз его не
-    // трогаем, иначе неудачная личка «освобождала» бы группу. Провал лички не
-    // отменяет успеха поста: сообщение персонал уже видит.
+    // Дубль в личку. Провал одного канала не отменяет успеха другого.
     const direct = await sendDirect(text, opts.capability);
+    // ⚠️ Окно занимает ЛЮБАЯ состоявшаяся доставка, а не только пост: упавший
+    // пост (бота выкинули из группы) при доставленной личке оставлял бы окно
+    // свободным, и каждое следующее сообщение клиента снова рассылало бы DM
+    // всему персоналу — тот самый шум, ради которого дедуп и заведён.
+    if (opts.dedupKey && (posted || direct.delivered > 0)) {
+      dedup.record(opts.dedupKey, now, windowMs);
+    }
     return {
       delivered: (posted ? 1 : 0) + direct.delivered,
       failed: (posted ? 0 : 1) + direct.failed,
@@ -152,6 +157,11 @@ export async function notifyStaff(
   }
 
   const direct = await sendDirect(text, opts.capability);
+
+  if (direct.recipients < 0) {
+    // Список получателей не прочитан — молча выходим, как было до рефакторинга.
+    return { delivered: 0, failed: 0, deduped: false };
+  }
 
   if (direct.recipients === 0) {
     log.warn({ event: 'alerts.staff.no_recipients', capability: opts.capability });
@@ -200,8 +210,11 @@ async function sendDirect(
       .map((member) => ({ id: member.id, telegramId: member.telegramId }));
   } catch (err) {
     // База недоступна — сказать некому. Это не повод ронять вызывающего.
+    // ⚠️ `recipients: -1`, а не 0: «список не прочитан» и «в штате никого» —
+    // разные новости. Второе зовёт фолбэк владельцу и пишет в Sentry «нет
+    // получателей»; для первого это была бы неправда.
     log.error({ event: 'alerts.staff.recipients_failed', err });
-    return { delivered: 0, failed: 0, recipients: 0 };
+    return { delivered: 0, failed: 0, recipients: -1 };
   }
 
   let delivered = 0;

@@ -9,6 +9,8 @@ import {
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { isValidLuhn } from '@oplati/types';
+
+import { normalizeUsername } from './username';
 import type { ExpiredSurveyAnswer, StartSurveyAnswer } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
@@ -421,21 +423,6 @@ function truncateEscapedHtml(escaped: string, max: number): string {
  * ронял sendMessage). Бюджет тела = остаток до 4096 после шапки (и не больше
  * SUPPORT_MESSAGE_MAX_LEN). `tg://user?id=` — кликабельный переход к клиенту.
  */
-/**
- * @username Telegram: латиница, цифры и `_`, 4–32 символа. Проверка нужна, а не
- * «для порядка»: значение приходит из апдейта и подставляется в ссылку, а
- * `/`, `?` или `#` внутри увели бы её на чужой адрес.
- *
- * Зеркала с `lib/panel/telegram-dm.ts` тут нет намеренно: там модуль панели, и
- * тянуть его в шаблоны бота — кросс-импорт ради шести символов регэкспа;
- * ⚠️ но правило одно, и правится в обоих местах.
- */
-function normalizeTelegramUsername(raw: string | undefined): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim().replace(/^@/, '');
-  return /^[A-Za-z0-9_]{4,32}$/.test(trimmed) ? trimmed : null;
-}
-
 /** Заголовок уведомления «клиент просто написал», без создания обращения. */
 export const INBOUND_ALERT_TITLE = '💬 <b>Клиент написал в бота</b>';
 
@@ -462,7 +449,7 @@ export function buildSupportOperatorMessage(params: {
    * которого не было), а вместо неё — либо рабочая ссылка на профиль, либо
    * прямая правда, что писать придётся через панель.
    */
-  const handle = normalizeTelegramUsername(params.username);
+  const handle = normalizeUsername(params.username);
   const contactLine = handle
     ? `<b>Написать лично:</b> <a href="https://t.me/${handle}">@${handle}</a>\n`
     : '<b>Написать лично:</b> нельзя — у клиента нет @username, отвечать через панель\n';

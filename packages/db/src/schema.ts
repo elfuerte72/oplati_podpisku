@@ -293,7 +293,7 @@ export const messages = pgTable(
     // Покрытие FK (аудит 2026-07-11 F-10): без индекса удаление/поиск по staff
     // деградирует в seq scan по messages.
     staffIdx: index('messages_staff_id_idx').on(t.staffId),
-    // Под retention-джоб (удаление сообщений старше 90 дней): без индекса это
+    // Под retention-джоб (удаление сообщений старше срока ретенции): без индекса это
     // Seq Scan по самой объёмной таблице, и с ростом переписки батч перестаёт
     // укладываться в окно крона.
     createdAtIdx: index('messages_created_at_idx').on(t.createdAt),

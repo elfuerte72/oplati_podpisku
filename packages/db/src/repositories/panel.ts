@@ -1379,8 +1379,9 @@ export type PanelSupportThread = {
   handoffMode: string;
   messages: PanelSupportMessage[];
   /**
-   * Сообщений больше, чем показано. Переписка старше 90 дней удаляется кроном
-   * `retention` — обрыв ленты объясняется на экране, а не выглядит потерей.
+   * Сообщений больше, чем показано. Переписка старше срока из
+   * `MESSAGES_RETENTION_DAYS` удаляется кроном `retention` — обрыв ленты
+   * объясняется на экране, а не выглядит потерей.
    */
   hasMore: boolean;
 };

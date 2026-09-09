@@ -34,7 +34,11 @@ export function getStaffBot(): Bot | null {
   // `withFloodRetry` — как у клиентского бота: 429 от Telegram означает
   // «подожди N секунд», и без повтора уведомление менеджеру (тикет 11) молча
   // терялось бы, оставляя в логах один warning.
-  _bot = withFloodRetry(new Bot(token));
+  //
+  // ⚠️ Поводок обязателен: дефолт grammY — 500 секунд, а этого бота ждут кроны
+  // и обработчик апдейтов (у последнего весь бюджет 90 секунд). Подвисший Bot
+  // API без поводка съедал бы чужой бюджет целиком (находка ревью 2026-09-09).
+  _bot = withFloodRetry(new Bot(token, { client: { timeoutSeconds: 15 } }));
   log.debug({ event: 'telegram.staff_bot.initialized' });
   return _bot;
 }

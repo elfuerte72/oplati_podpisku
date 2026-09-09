@@ -159,6 +159,24 @@ describe('сверка @username клиента с Telegram', () => {
   });
 
   /*
+   * 429 и 5xx — временная авария Telegram, а не «чата нет»: памятка здесь
+   * означала бы, что у клиента с живым @username кнопка лички пропала на сутки
+   * из-за минутного всплеска у провайдера.
+   */
+  it('Telegram отвечает 429 — памятку НЕ ставим', async () => {
+    getChat.mockRejectedValue(new grammyErrorClass(429, 'Too Many Requests: retry after 30'));
+
+    const result = await ensureClientTelegramUsername(
+      { userId: 'u1', telegramId: '42', telegramUsername: 'known', telegramUsernameCheckedAt: null },
+      NOW,
+    );
+
+    expect(result).toBe('known');
+    expect(touchTelegramUsernameCheck).not.toHaveBeenCalled();
+    expect(setTelegramUsername).not.toHaveBeenCalled();
+  });
+
+  /*
    * А вот транспорт памятку НЕ ставит: записать её значило бы сутки не
    * пытаться снова из-за одного таймаута.
    */
