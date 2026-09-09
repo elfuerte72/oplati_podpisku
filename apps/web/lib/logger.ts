@@ -31,6 +31,11 @@ export const redactPaths: string[] = [
   // закрыт, заголовок оставался открытым (находка ревью).
   'req.headers["x-alert-token"]',
   'headers["x-alert-token"]',
+  // Контакты клиента живут в режиме PAN (антифрод-трек). @username — публичное
+  // имя, но это прямой идентификатор человека, и в логах ему делать нечего:
+  // telegram_id мы и то храним хэшем.
+  '*.telegramUsername',
+  '*.telegram_username',
   // secrets
   '*.password',
   '*.token',

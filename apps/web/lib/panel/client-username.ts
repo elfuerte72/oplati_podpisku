@@ -1,12 +1,11 @@
 import 'server-only';
 
+import { Api, GrammyError } from 'grammy';
 import { after } from 'next/server';
-import { z } from 'zod';
 
-import { getDb, setTelegramUsername } from '@oplati/db';
+import { getDb, setTelegramUsername, touchTelegramUsernameCheck } from '@oplati/db';
 
 import { serverEnv } from '@/lib/env.server';
-import { fetchJsonWithTimeout } from '@/lib/http';
 import { childLogger } from '@/lib/logger';
 
 import { normalizeUsername } from './telegram-dm';
@@ -19,36 +18,50 @@ import { normalizeUsername } from './telegram-dm';
  * initData кабинета, но у базы, накопленной ДО этого, поля нет вовсе. Один
  * `getChat` по `telegram_id` возвращает его для всех, с кем у бота есть чат, —
  * то есть для всех наших клиентов (иначе они бы не оформили заказ). Контракт
- * снят живым вызовом 2026-09-09: `{"ok":true,"result":{"id":…,"first_name":…}}`,
- * поле `username` присутствует, только если оно есть у человека.
+ * снят живым вызовом 2026-09-09: поле `username` присутствует, только если оно
+ * есть у человека.
  *
- * ⚠️ Отметка о сверке пишется и при ПУСТОМ ответе: username может не быть вовсе
- * (на выборке из 25 клиентов прода — у 3), и без памятки карточка ходила бы в
- * Telegram на каждое открытие. Отметка живёт неделю — за это время username
- * успевает и появиться, и смениться, а десяток лишних запросов в неделю не
- * стоит того, чтобы держать протухшую ссылку дольше.
+ * ⚠️ Отметка о сверке пишется ВСЕГДА, когда Telegram ответил, — в том числе на
+ * пустоту (username нет вовсе) и на отказ «чат недоступен». Без неё карточка
+ * такого клиента ходила бы в Bot API на каждое открытие, а страница панели
+ * живая: `router.refresh()` раз в 25 секунд превратил бы это в поток запросов.
  *
- * Всё best-effort: сбой Bot API не должен ронять карточку клиента, поэтому
- * возвращаем то, что знали, и пишем предупреждение в лог.
+ * ⚠️ Окно — СУТКИ, а не неделя: освободившийся @username Telegram отдаёт
+ * другому человеку, и протухшая ссылка означает не «кнопка не работает», а
+ * «оператор написал постороннему».
+ *
+ * Всё best-effort: сбой Bot API не должен ронять карточку клиента.
  */
 
 const log = childLogger('panel-client-username');
 
 /** Насколько долго верим прошлой сверке. */
-export const USERNAME_RECHECK_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const USERNAME_RECHECK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Поводок на запрос к Telegram. Карточка ждёт его СИНХРОННО (значение нужно
- * для ссылки), поэтому две секунды: медленный Bot API не должен превращать
- * открытие клиента в ожидание.
+ * Поводок на запрос к Telegram. Ждём его синхронно только когда username
+ * НЕизвестен (иначе кнопки на экране всё равно не будет), поэтому две секунды —
+ * потолок задержки для карточки клиента, а не для каждой.
  */
-const GET_CHAT_TIMEOUT_MS = 2_000;
+const GET_CHAT_TIMEOUT_SECONDS = 2;
 
-/** Ответ `getChat` — берём ровно одно поле, остальное нас не касается. */
-const getChatSchema = z.object({
-  ok: z.literal(true),
-  result: z.object({ username: z.string().optional() }),
-});
+let cachedApi: Api | undefined;
+
+/**
+ * Отдельный экземпляр Api, а не общий `getBot()`: тому задан свой транспорт и
+ * flood-retry под отправку сообщений клиентам, а здесь нужен короткий поводок и
+ * никаких ожиданий в рендере. Транспорт при этом ОБЩИЙ — URL Bot API собирает
+ * grammY, своего адреса модуль не строит.
+ */
+function analystApi(token: string): Api {
+  cachedApi ??= new Api(token, { timeoutSeconds: GET_CHAT_TIMEOUT_SECONDS });
+  return cachedApi;
+}
+
+/** Только для тестов: сбросить экземпляр между случаями. */
+export function resetClientUsernameApiForTests(): void {
+  cachedApi = undefined;
+}
 
 export type ClientUsernameInput = {
   userId: string;
@@ -58,8 +71,12 @@ export type ClientUsernameInput = {
 };
 
 /**
- * Возвращает актуальный username клиента (без `@`) или `null`, если его нет.
- * Побочный эффект — запись результата сверки — уходит в `after()`.
+ * Возвращает username клиента (без `@`) или `null`.
+ *
+ * Ждём Telegram, только если известного имени нет: тогда от ответа зависит,
+ * будет ли на экране кнопка. Если имя известно, а сверка протухла — карточка
+ * рисуется сразу, а сверка уходит в фон и поправит значение к следующему
+ * открытию (страница и так обновляется сама).
  */
 export async function ensureClientTelegramUsername(
   client: ClientUsernameInput,
@@ -72,31 +89,14 @@ export async function ensureClientTelegramUsername(
   const token = serverEnv.TELEGRAM_BOT_TOKEN;
   if (!token) return known;
 
-  let fresh: string | null;
-  try {
-    const res = await fetchJsonWithTimeout(
-      `https://api.telegram.org/bot${token}/getChat?chat_id=${encodeURIComponent(client.telegramId)}`,
-      { method: 'GET' },
-      getChatSchema,
-      GET_CHAT_TIMEOUT_MS,
-    );
-    // `null` — недоступный Telegram, «chat not found» или неожиданное тело.
-    // Ни одно из этого не факт «username нет»: записать пустоту значило бы
-    // погасить рабочую ссылку на неделю по чужой ошибке.
-    if (!res) {
-      log.warn({ event: 'panel.client_username.lookup_empty' });
-      return known;
-    }
-    fresh = normalizeUsername(res.result.username);
-  } catch (err) {
-    // Ожидаемые неудачи: таймаут, обрыв соединения. Не повод ронять экран и не
-    // повод для Sentry — карточка покажет то, что знала, сверка повторится.
-    log.warn({ event: 'panel.client_username.lookup_failed', err });
+  if (known) {
+    // Имя есть — экран не ждёт: сверяем в фоне.
+    runLater(async () => {
+      await syncUsername(token, client, known);
+    });
     return known;
   }
-
-  persistLater(client.userId, fresh);
-  return fresh;
+  return await syncUsername(token, client, known);
 }
 
 function needsRecheck(checkedAt: Date | null, now: Date): boolean {
@@ -105,21 +105,82 @@ function needsRecheck(checkedAt: Date | null, now: Date): boolean {
 }
 
 /**
- * Запись результата — после ответа страницы: рендер карточки не должен ждать
- * ещё и UPDATE. Вне запроса (тест, скрипт) `after()` бросает — тогда пишем
- * синхронно, тем же приёмом, что и аналитика (`lib/analytics/track.ts`).
+ * Один заход в Telegram и запись результата. Возвращает то, что показывать.
+ *
+ * Три исхода различаются намеренно:
+ *   - Telegram ответил именем → пишем имя (авторитетно, в том числе пустое);
+ *   - Telegram ответил ОТКАЗОМ по существу (400 «chat not found», 403) → имя не
+ *     трогаем (отказ не значит «username сняли»), но памятку ставим: иначе
+ *     клиент с мёртвым `telegram_id` навсегда добавляет по два поводка к
+ *     каждому открытию карточки;
+ *   - транспорт (таймаут, обрыв) → не пишем ничего: сверка повторится.
  */
-function persistLater(userId: string, username: string | null): void {
-  const write = async () => {
-    try {
-      await setTelegramUsername(getDb(), { userId, username });
-    } catch (err) {
-      log.warn({ event: 'panel.client_username.persist_failed', err });
-    }
-  };
+async function syncUsername(
+  token: string,
+  client: ClientUsernameInput,
+  known: string | null,
+): Promise<string | null> {
   try {
-    after(write);
-  } catch {
-    void write();
+    const chat = await analystApi(token).getChat(Number(client.telegramId));
+    const raw = 'username' in chat ? chat.username : undefined;
+    const fresh = normalizeUsername(raw);
+    if (raw && !fresh) {
+      // Telegram прислал то, что не похоже на username. Такого быть не должно;
+      // стирать по этому известное имя нельзя — оно рабочее, а это аномалия.
+      log.warn({ event: 'panel.client_username.unexpected_shape' });
+      runLater(async () => {
+        await touchCheck(client.userId);
+      });
+      return known;
+    }
+    runLater(async () => {
+      await persist(client.userId, fresh);
+    });
+    return fresh;
+  } catch (err) {
+    if (err instanceof GrammyError) {
+      // Ответ по существу: чат недоступен боту. Имя не трогаем, память ставим.
+      log.warn({ event: 'panel.client_username.chat_unavailable', code: err.error_code });
+      runLater(async () => {
+        await touchCheck(client.userId);
+      });
+      return known;
+    }
+    // Таймаут или обрыв — ничего не записываем: записать пустоту значило бы
+    // погасить рабочую ссылку на сутки по чужой аварии.
+    log.warn({ event: 'panel.client_username.lookup_failed', err });
+    return known;
+  }
+}
+
+async function persist(userId: string, username: string | null): Promise<void> {
+  try {
+    await setTelegramUsername(getDb(), { userId, username });
+  } catch (err) {
+    log.warn({ event: 'panel.client_username.persist_failed', err });
+  }
+}
+
+async function touchCheck(userId: string): Promise<void> {
+  try {
+    await touchTelegramUsernameCheck(getDb(), { userId });
+  } catch (err) {
+    log.warn({ event: 'panel.client_username.touch_failed', err });
+  }
+}
+
+/**
+ * Побочный эффект — после ответа страницы: рендер карточки не должен ждать
+ * запись. Вне запроса (тест, скрипт) `after()` бросает — тогда выполняем
+ * синхронно, тем же приёмом, что и аналитика (`lib/analytics/track.ts`), и с
+ * такой же записью причины: молчащий фолбэк скрыл бы, что `after()` перестал
+ * работать в новом контексте.
+ */
+function runLater(work: () => Promise<void>): void {
+  try {
+    after(work);
+  } catch (err) {
+    log.debug({ event: 'panel.client_username.after_unavailable', err });
+    void work();
   }
 }

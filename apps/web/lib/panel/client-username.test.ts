@@ -4,11 +4,39 @@ process.env.APP_URL = 'https://example.com';
 process.env.TELEGRAM_BOT_TOKEN = 'test-token';
 
 const setTelegramUsername = vi.hoisted(() => vi.fn());
+const touchTelegramUsernameCheck = vi.hoisted(() => vi.fn());
+const getChat = vi.hoisted(() => vi.fn());
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as never,
   setTelegramUsername,
+  touchTelegramUsernameCheck,
 }));
+
+/*
+ * Класс ошибки объявлен ЗДЕСЬ и подставлен в мок: код различает отказ Telegram
+ * по существу через `instanceof`, значит тест обязан бросать ровно тот класс,
+ * который модуль получит из мока. Конструктор настоящего `GrammyError` требует
+ * четыре аргумента — повторять его форму ради двух полей незачем.
+ */
+const grammyErrorClass = vi.hoisted(
+  () =>
+    class GrammyError extends Error {
+      error_code: number;
+      constructor(code: number, description: string) {
+        super(description);
+        this.name = 'GrammyError';
+        this.error_code = code;
+      }
+    },
+);
+
+vi.mock('grammy', () => {
+  class Api {
+    getChat = getChat;
+  }
+  return { Api, GrammyError: grammyErrorClass };
+});
 
 // `after()` вне запроса Next бросает — модуль обязан переживать это и писать
 // синхронно, иначе результат сверки терялся бы в тестах и в кроне.
@@ -18,20 +46,19 @@ vi.mock('next/server', () => ({
   },
 }));
 
-import { ensureClientTelegramUsername, USERNAME_RECHECK_AFTER_MS } from './client-username.ts';
+import {
+  ensureClientTelegramUsername,
+  resetClientUsernameApiForTests,
+  USERNAME_RECHECK_AFTER_MS,
+} from './client-username.ts';
 
 const NOW = new Date('2026-09-09T07:00:00.000Z');
 
-function chatResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
 beforeEach(() => {
-  setTelegramUsername.mockClear();
-  setTelegramUsername.mockResolvedValue(undefined);
+  setTelegramUsername.mockClear().mockResolvedValue(undefined);
+  touchTelegramUsernameCheck.mockClear().mockResolvedValue(undefined);
+  getChat.mockReset();
+  resetClientUsernameApiForTests();
 });
 
 afterEach(() => {
@@ -40,10 +67,7 @@ afterEach(() => {
 
 describe('сверка @username клиента с Telegram', () => {
   it('никогда не сверяли — спрашиваем Telegram и запоминаем ответ', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(chatResponse({ ok: true, result: { id: 1, username: 'nigora_n' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    getChat.mockResolvedValue({ id: 1, username: 'nigora_n' });
 
     const result = await ensureClientTelegramUsername(
       {
@@ -56,20 +80,17 @@ describe('сверка @username клиента с Telegram', () => {
     );
 
     expect(result).toBe('nigora_n');
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(getChat).toHaveBeenCalledOnce();
     expect(setTelegramUsername).toHaveBeenCalledWith({}, { userId: 'u1', username: 'nigora_n' });
   });
 
   /*
    * Ради этого случая и заведена отметка о сверке: у клиента username нет
    * вовсе, ответ Telegram пустой — и без памятки карточка ходила бы в Bot API
-   * на каждое открытие.
+   * на каждое открытие, а страница панели обновляется сама раз в 25 секунд.
    */
   it('username нет — пустой результат тоже записывается', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(chatResponse({ ok: true, result: { id: 1, first_name: 'Ni' } })),
-    );
+    getChat.mockResolvedValue({ id: 1, first_name: 'Ni' });
 
     const result = await ensureClientTelegramUsername(
       { userId: 'u1', telegramId: '42', telegramUsername: null, telegramUsernameCheckedAt: null },
@@ -81,9 +102,6 @@ describe('сверка @username клиента с Telegram', () => {
   });
 
   it('сверяли недавно — в Telegram не ходим', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
     const result = await ensureClientTelegramUsername(
       {
         userId: 'u1',
@@ -95,15 +113,16 @@ describe('сверка @username клиента с Telegram', () => {
     );
 
     expect(result).toBe('nemo');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getChat).not.toHaveBeenCalled();
     expect(setTelegramUsername).not.toHaveBeenCalled();
   });
 
-  it('отметка протухла — сверяем снова и обновляем', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(chatResponse({ ok: true, result: { username: 'new_name' } })),
-    );
+  /*
+   * Экран не должен ждать сеть ради подписи кнопки, которая и так будет
+   * нарисована: известное имя показывается сразу, сверка идёт следом.
+   */
+  it('имя известно, но сверка протухла — показываем сразу и обновляем в фоне', async () => {
+    getChat.mockResolvedValue({ username: 'new_name' });
 
     const result = await ensureClientTelegramUsername(
       {
@@ -115,33 +134,36 @@ describe('сверка @username клиента с Telegram', () => {
       NOW,
     );
 
-    expect(result).toBe('new_name');
+    expect(result).toBe('old_name');
+    // Фоновая работа выполняется синхронным фолбэком `after()` — к этому моменту
+    // она уже прошла.
     expect(setTelegramUsername).toHaveBeenCalledWith({}, { userId: 'u1', username: 'new_name' });
   });
 
   /*
-   * Отказ Telegram — не факт «username нет»: записать пустоту значило бы
-   * погасить рабочую ссылку на неделю по чужой аварии.
+   * Отказ Telegram по существу («чат недоступен боту») — не факт «username
+   * сняли»: имя остаётся, но памятка ставится, иначе клиент с мёртвым
+   * telegram_id добавляет два поводка к каждому открытию карточки навсегда.
    */
-  it('Telegram не ответил — показываем известное и ничего не пишем', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(chatResponse({ ok: false }, 400)));
+  it('Telegram отвечает 400 — имя не трогаем, но помечаем сверку', async () => {
+    getChat.mockRejectedValue(new grammyErrorClass(400, 'Bad Request: chat not found'));
 
     const result = await ensureClientTelegramUsername(
-      {
-        userId: 'u1',
-        telegramId: '42',
-        telegramUsername: 'known',
-        telegramUsernameCheckedAt: null,
-      },
+      { userId: 'u1', telegramId: '42', telegramUsername: 'known', telegramUsernameCheckedAt: null },
       NOW,
     );
 
     expect(result).toBe('known');
     expect(setTelegramUsername).not.toHaveBeenCalled();
+    expect(touchTelegramUsernameCheck).toHaveBeenCalledWith({}, { userId: 'u1' });
   });
 
-  it('сеть отвалилась — тот же исход, экран не падает', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+  /*
+   * А вот транспорт памятку НЕ ставит: записать её значило бы сутки не
+   * пытаться снова из-за одного таймаута.
+   */
+  it('сеть отвалилась — не пишем ничего, экран не падает', async () => {
+    getChat.mockRejectedValue(new TypeError('fetch failed'));
 
     const result = await ensureClientTelegramUsername(
       { userId: 'u1', telegramId: '42', telegramUsername: null, telegramUsernameCheckedAt: null },
@@ -150,33 +172,51 @@ describe('сверка @username клиента с Telegram', () => {
 
     expect(result).toBeNull();
     expect(setTelegramUsername).not.toHaveBeenCalled();
+    expect(touchTelegramUsernameCheck).not.toHaveBeenCalled();
   });
 
   it('клиент без Telegram — запроса нет вовсе', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
     const result = await ensureClientTelegramUsername(
       { userId: 'u1', telegramId: null, telegramUsername: null, telegramUsernameCheckedAt: null },
       NOW,
     );
 
     expect(result).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getChat).not.toHaveBeenCalled();
   });
 
-  it('мусор из ответа Telegram ссылкой не станет', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(chatResponse({ ok: true, result: { username: 'evil/path' } })),
-    );
+  /*
+   * Мусор в ответе — аномалия, а не «имя сменилось»: рабочую ссылку по нему не
+   * гасим, иначе один странный ответ Telegram лишает оператора лички на сутки.
+   */
+  it('мусор из ответа Telegram не стирает известное имя', async () => {
+    getChat.mockResolvedValue({ username: 'evil/path' });
 
     const result = await ensureClientTelegramUsername(
-      { userId: 'u1', telegramId: '42', telegramUsername: null, telegramUsernameCheckedAt: null },
+      { userId: 'u1', telegramId: '42', telegramUsername: 'known', telegramUsernameCheckedAt: null },
       NOW,
     );
 
-    expect(result).toBeNull();
-    expect(setTelegramUsername).toHaveBeenCalledWith({}, { userId: 'u1', username: null });
+    expect(result).toBe('known');
+    expect(setTelegramUsername).not.toHaveBeenCalled();
+    expect(touchTelegramUsernameCheck).toHaveBeenCalledWith({}, { userId: 'u1' });
+  });
+
+  it('без токена бота сверки нет — показываем известное', async () => {
+    const saved = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = '';
+    vi.resetModules();
+    try {
+      const { ensureClientTelegramUsername: fresh } = await import('./client-username.ts');
+      const result = await fresh(
+        { userId: 'u1', telegramId: '42', telegramUsername: 'known', telegramUsernameCheckedAt: null },
+        NOW,
+      );
+      expect(result).toBe('known');
+      expect(getChat).not.toHaveBeenCalled();
+    } finally {
+      process.env.TELEGRAM_BOT_TOKEN = saved;
+      vi.resetModules();
+    }
   });
 });

@@ -5,6 +5,7 @@ export {
   getUserPayerContact,
   touchUserLastSeenIp,
   setTelegramUsername,
+  touchTelegramUsernameCheck,
   updateUserContacts,
   getPayerPhoneForOrder,
   getUserProfileById,

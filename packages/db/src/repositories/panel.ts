@@ -647,81 +647,81 @@ export async function getClientDetailForPanel(
 
   const [orderRows, totalsRows, cardRows, referrerRows, referralRows, conversationRows] =
     await Promise.all([
-    db
-      .select({
-        id: orders.id,
-        shortId: orders.shortId,
-        status: orders.status,
-        amountRub: orders.amountRub,
-        customServiceDescription: orders.customServiceDescription,
-        serviceName: services.name,
-        createdAt: orders.createdAt,
-      })
-      .from(orders)
-      .leftJoin(services, eq(orders.serviceId, services.id))
-      .where(eq(orders.userId, userId))
-      .orderBy(desc(orders.createdAt), desc(orders.id))
-      .limit(PANEL_MAX_ROWS),
-    // Итоги — отдельным запросом по ВСЕМ заказам и картам клиента, а не по
-    // видимому срезу: списки режутся потолком, и складывать их значило бы молча
-    // занижать цифры у клиента со 100+ заказами. Набор «покупка состоялась»
-    // берётся из общего `PURCHASED_STATUSES_SQL` — своя копия статусов ровно
-    // то, против чего этот фрагмент и заведён.
-    db.execute<{
-      orders_count: string | number;
-      purchased_sum: string | number | null;
-      cards_count: string | number;
-    }>(sql`
-      SELECT count(*) AS orders_count,
-             COALESCE(SUM(amount_rub) FILTER (
-               WHERE status IN ${PURCHASED_STATUSES_SQL}
-             ), 0) AS purchased_sum,
-             (SELECT count(*) FROM cards WHERE user_id = ${userId}) AS cards_count
-      FROM orders WHERE user_id = ${userId}
-    `),
-    db
-      .select({
-        id: cards.id,
-        panMasked: cards.panMasked,
-        status: cards.status,
-        balanceUsdCents: cards.balanceUsdCents,
-        createdAt: cards.createdAt,
-      })
-      .from(cards)
-      .where(eq(cards.userId, userId))
-      .orderBy(desc(cards.createdAt))
-      .limit(PANEL_MAX_ROWS),
-    head.referredBy
-      ? db
-          .select({
-            id: users.id,
-            displayName: users.displayName,
-            telegramId: users.telegramId,
-          })
-          .from(users)
-          .where(eq(users.id, head.referredBy))
-          .limit(1)
-      : Promise.resolve([]),
-    db
-      .select({
-        id: users.id,
-        displayName: users.displayName,
-        telegramId: users.telegramId,
-      })
-      .from(users)
-      .where(eq(users.referredBy, userId))
-      .orderBy(desc(users.createdAt))
-      .limit(PANEL_MAX_ROWS),
-    // Переписка клиента с ботом — вход в ответ из карточки. Канал `telegram`
-    // намеренно: ответить из панели можно только туда, веб-разговор такой
-    // ссылкой обещал бы доставку, которой нет.
-    db
-      .select({ id: conversations.id })
-      .from(conversations)
-      .where(and(eq(conversations.userId, userId), eq(conversations.channel, 'telegram')))
-      .orderBy(desc(conversations.updatedAt), desc(conversations.id))
-      .limit(1),
-  ]);
+      db
+        .select({
+          id: orders.id,
+          shortId: orders.shortId,
+          status: orders.status,
+          amountRub: orders.amountRub,
+          customServiceDescription: orders.customServiceDescription,
+          serviceName: services.name,
+          createdAt: orders.createdAt,
+        })
+        .from(orders)
+        .leftJoin(services, eq(orders.serviceId, services.id))
+        .where(eq(orders.userId, userId))
+        .orderBy(desc(orders.createdAt), desc(orders.id))
+        .limit(PANEL_MAX_ROWS),
+      // Итоги — отдельным запросом по ВСЕМ заказам и картам клиента, а не по
+      // видимому срезу: списки режутся потолком, и складывать их значило бы молча
+      // занижать цифры у клиента со 100+ заказами. Набор «покупка состоялась»
+      // берётся из общего `PURCHASED_STATUSES_SQL` — своя копия статусов ровно
+      // то, против чего этот фрагмент и заведён.
+      db.execute<{
+        orders_count: string | number;
+        purchased_sum: string | number | null;
+        cards_count: string | number;
+      }>(sql`
+        SELECT count(*) AS orders_count,
+               COALESCE(SUM(amount_rub) FILTER (
+                 WHERE status IN ${PURCHASED_STATUSES_SQL}
+               ), 0) AS purchased_sum,
+               (SELECT count(*) FROM cards WHERE user_id = ${userId}) AS cards_count
+        FROM orders WHERE user_id = ${userId}
+      `),
+      db
+        .select({
+          id: cards.id,
+          panMasked: cards.panMasked,
+          status: cards.status,
+          balanceUsdCents: cards.balanceUsdCents,
+          createdAt: cards.createdAt,
+        })
+        .from(cards)
+        .where(eq(cards.userId, userId))
+        .orderBy(desc(cards.createdAt))
+        .limit(PANEL_MAX_ROWS),
+      head.referredBy
+        ? db
+            .select({
+              id: users.id,
+              displayName: users.displayName,
+              telegramId: users.telegramId,
+            })
+            .from(users)
+            .where(eq(users.id, head.referredBy))
+            .limit(1)
+        : Promise.resolve([]),
+      db
+        .select({
+          id: users.id,
+          displayName: users.displayName,
+          telegramId: users.telegramId,
+        })
+        .from(users)
+        .where(eq(users.referredBy, userId))
+        .orderBy(desc(users.createdAt))
+        .limit(PANEL_MAX_ROWS),
+      // Переписка клиента с ботом — вход в ответ из карточки. Канал `telegram`
+      // намеренно: ответить из панели можно только туда, веб-разговор такой
+      // ссылкой обещал бы доставку, которой нет.
+      db
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(and(eq(conversations.userId, userId), eq(conversations.channel, 'telegram')))
+        .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+        .limit(1),
+    ]);
 
   return {
     client: {

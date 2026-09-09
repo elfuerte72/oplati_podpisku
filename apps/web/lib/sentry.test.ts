@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { beforeSend, type SentryEvent } from './sentry.ts';
+import { beforeSend, beforeSendTransaction, type SentryEvent } from './sentry.ts';
 
 /**
  * Canary-тесты PII-скраббера (аудит 2026-07-11 F-06): фиксируют, что карточные
@@ -312,5 +312,67 @@ describe('beforeSend: свободный текст message и exception', () =>
     });
 
     expect(beforeSend(event)).not.toBeNull();
+  });
+});
+
+/**
+ * Токен бота в ПУТИ адреса Bot API. Денилист строки запроса тут бессилен —
+ * секрет стоит до `?`, а инструментация исходящих запросов кладёт путь в
+ * крошку и в спан целиком. Находка ревью 2026-09-09 (ось «безопасность и PII»).
+ */
+describe('beforeSend: токен бота в адресе Telegram', () => {
+  const TOKEN_URL = 'https://api.telegram.org/bot7712345678:AAHfakeTokenValue_x1/getChat?chat_id=42';
+
+  it('РЕГРЕСС: токен вырезается из request.url', () => {
+    const out = beforeSend(
+      makeEvent({ request: { url: TOKEN_URL } }),
+    ) as unknown as { request: { url: string } };
+
+    expect(out.request.url).not.toContain('AAHfakeTokenValue_x1');
+    expect(out.request.url).toContain('/bot[REDACTED]/getChat');
+  });
+
+  it('РЕГРЕСС: токен вырезается из навигационной крошки', () => {
+    const out = beforeSend(
+      makeEvent({ breadcrumbs: [{ category: 'http', data: { url: TOKEN_URL } }] }),
+    ) as unknown as { breadcrumbs: { data: { url: string } }[] };
+
+    expect(out.breadcrumbs[0]?.data.url).not.toContain('AAHfakeTokenValue_x1');
+  });
+
+  it('РЕГРЕСС: токен вырезается из текста ошибки транспорта', () => {
+    const out = beforeSend({
+      message: `request to ${TOKEN_URL} failed`,
+    } as unknown as SentryEvent) as unknown as { message: string };
+
+    expect(out.message).not.toContain('AAHfakeTokenValue_x1');
+    expect(out.message).toContain('/bot[REDACTED]');
+  });
+
+  it('chat_id клиента не уезжает отдельным ключом крошки', () => {
+    const out = beforeSend(
+      makeEvent({ breadcrumbs: [{ category: 'http', data: { 'http.query': 'chat_id=8069374561' } }] }),
+    ) as unknown as { breadcrumbs: { data: Record<string, unknown> }[] };
+
+    expect(out.breadcrumbs[0]?.data['http.query']).toBe('[REDACTED]');
+  });
+});
+
+describe('beforeSendTransaction: адрес в трассировке', () => {
+  it('РЕГРЕСС: токен бота вырезается из спана — транзакции идут мимо beforeSend', () => {
+    const out = beforeSendTransaction({
+      transaction: 'GET /admin/clients/[id]',
+      spans: [
+        {
+          description: 'GET https://api.telegram.org/bot7712345678:AAHfakeTokenValue_x1/getChat',
+          data: { 'url.full': 'https://api.telegram.org/bot7712345678:AAHfakeTokenValue_x1/getChat' },
+        },
+      ],
+    } as never) as unknown as {
+      spans: { description: string; data: Record<string, unknown> }[];
+    };
+
+    expect(out.spans[0]?.description).not.toContain('AAHfakeTokenValue_x1');
+    expect(out.spans[0]?.data['url.full']).not.toContain('AAHfakeTokenValue_x1');
   });
 });

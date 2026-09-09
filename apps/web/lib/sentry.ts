@@ -20,7 +20,7 @@ import type * as SentryTypes from '@sentry/nextjs';
 // закрыл один канал и открыл соседний. Плейсхолдер поля прямо предлагает искать
 // по почте и телефону, поэтому ключ несёт контакт клиента по построению.
 const PII_KEY_RE =
-  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q)$/i;
+  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q|http\.query|telegram_?username|chat_?id)$/i;
 
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
 function scrubPii(value: unknown, depth = 0): unknown {
@@ -53,9 +53,14 @@ function scrubPii(value: unknown, depth = 0): unknown {
  * строке дешевле, чем отправить номер карты в внешний сервис.
  */
 function scrubText(text: string): string {
-  return text
-    .replace(/\d(?:[ .\-/]?\d){12,18}/g, (match) => `**** ${match.replace(/\D/g, '').slice(-4)}`)
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED]');
+  return (
+    text
+      .replace(/\d(?:[ .\-/]?\d){12,18}/g, (match) => `**** ${match.replace(/\D/g, '').slice(-4)}`)
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer [REDACTED]')
+      // Сообщение об ошибке транспорта несёт адрес целиком («request to
+      // https://api.telegram.org/bot<token>/… failed»), а токен стоит ДО `?`.
+      .replace(/\/bot\d+:[A-Za-z0-9_-]+/g, '/bot[REDACTED]')
+  );
 }
 
 /**
@@ -81,11 +86,26 @@ function scrubQueryString(query: string): string {
   );
 }
 
-/** Тот же денилист для строки запроса внутри полного URL. */
+/**
+ * Токен бота в ПУТИ адреса Bot API: `https://api.telegram.org/bot<token>/getChat`.
+ *
+ * ⚠️ Денилист строки запроса тут бессилен — секрет стоит до `?`. А инструментация
+ * исходящих запросов Sentry кладёт путь в http-крошку и в атрибут спана целиком
+ * (она чистит только query и `user:pass@`), поэтому один необработанный сбой на
+ * любом пути, ходящем в Telegram — а это КАЖДАЯ отправка сообщения клиенту, —
+ * увозил бы во внешний сервис токен, который равен чтению всех клиентских чатов
+ * и отправке от имени бота. Найдено ревью 2026-09-09 (ось «безопасность и PII»).
+ */
+function scrubBotToken(url: string): string {
+  return url.replace(/\/bot\d+:[A-Za-z0-9_-]+/g, '/bot[REDACTED]');
+}
+
+/** Тот же денилист для строки запроса внутри полного URL — плюс токен в пути. */
 function scrubUrl(url: string): string {
-  const cut = url.indexOf('?');
-  if (cut === -1) return url;
-  return `${url.slice(0, cut)}?${scrubQueryString(url.slice(cut + 1))}`;
+  const withoutToken = scrubBotToken(url);
+  const cut = withoutToken.indexOf('?');
+  if (cut === -1) return withoutToken;
+  return `${withoutToken.slice(0, cut)}?${scrubQueryString(withoutToken.slice(cut + 1))}`;
 }
 
 export type SentryEvent = SentryTypes.ErrorEvent;
@@ -220,6 +240,34 @@ export function beforeSend(event: SentryEvent): SentryEvent | null {
   return event;
 }
 
+/**
+ * Транзакции идут МИМО `beforeSend` — у них свой хук. Без него спан исходящего
+ * запроса к Bot API увозил бы адрес с токеном в путь трассировки: на проде
+ * сэмплируется каждая десятая транзакция, то есть это вопрос времени, а не
+ * случая. Чистим ровно то, что несёт адрес: имя транзакции и атрибуты спанов.
+ */
+export function beforeSendTransaction<T extends { transaction?: string; spans?: unknown[] }>(
+  event: T,
+): T {
+  if (typeof event.transaction === 'string') {
+    event.transaction = scrubUrl(event.transaction) as T['transaction'];
+  }
+  if (!Array.isArray(event.spans)) return event;
+  for (const span of event.spans) {
+    if (typeof span !== 'object' || span === null) continue;
+    const record = span as Record<string, unknown>;
+    if (typeof record.description === 'string') record.description = scrubUrl(record.description);
+    const attrs = record.data;
+    if (typeof attrs !== 'object' || attrs === null) continue;
+    const bag = attrs as Record<string, unknown>;
+    for (const key of Object.keys(bag)) {
+      const value = bag[key];
+      if (typeof value === 'string' && value.includes('/bot')) bag[key] = scrubUrl(value);
+    }
+  }
+  return event;
+}
+
 export function resolveEnvironment(): 'development' | 'preview' | 'production' | string {
   return process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
 }
@@ -229,4 +277,5 @@ export const sharedOptions = {
   environment: resolveEnvironment(),
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
   beforeSend,
+  beforeSendTransaction,
 } as const;

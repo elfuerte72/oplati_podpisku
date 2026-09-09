@@ -85,6 +85,13 @@ export async function getOrCreateUserByTelegramId(
     DO UPDATE SET
       display_name = COALESCE(EXCLUDED.display_name, users.display_name),
       telegram_username = COALESCE(EXCLUDED.telegram_username, users.telegram_username),
+      -- Апдейт от самого клиента — источник свежее любой нашей сверки, поэтому
+      -- он же продлевает памятку. Иначе клиент, писавший боту минуту назад, всё
+      -- равно вызывал бы поход в Bot API при открытии карточки.
+      telegram_username_checked_at = CASE
+        WHEN EXCLUDED.telegram_username IS NOT NULL THEN now()
+        ELSE users.telegram_username_checked_at
+      END,
       updated_at = now()
     RETURNING id, (xmax = 0) AS created
   `);
@@ -410,9 +417,29 @@ export async function setTelegramUsername(
   await db.execute(sql`
     UPDATE users
     SET telegram_username = ${input.username},
-        telegram_username_checked_at = now(),
-        updated_at = now()
+        telegram_username_checked_at = now()
     WHERE id = ${input.userId}
+  `);
+}
+
+/**
+ * Отметить, что сверка состоялась, НЕ трогая само имя.
+ *
+ * Нужна там, где Telegram ответил отказом по существу («чат недоступен боту»):
+ * это не значит, что username сняли, поэтому известное значение остаётся, но
+ * повторять запрос на каждое открытие карточки незачем.
+ *
+ * ⚠️ `updated_at` здесь и в `setTelegramUsername` НЕ двигается намеренно: обе
+ * пишет ПРОСМОТР карточки персоналом, а `users.updated_at` означает «в данных
+ * клиента что-то изменилось». Иначе открытая вкладка панели метила бы клиента
+ * как активного.
+ */
+export async function touchTelegramUsernameCheck(
+  db: DB,
+  input: { userId: string },
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE users SET telegram_username_checked_at = now() WHERE id = ${input.userId}
   `);
 }
 
