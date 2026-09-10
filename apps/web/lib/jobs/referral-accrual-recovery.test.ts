@@ -40,7 +40,7 @@ vi.mock('@oplati/db', () => ({
   }),
   findPurchasedOrdersWithReversedAccruals: vi.fn(async () => dbState.underpaid),
   findNegativeReferralBalances: vi.fn(async () => dbState.negative),
-  findFailedOrdersWithLiveBonus: vi.fn(async () => dbState.staleBonus),
+  findOrdersWithStuckBonus: vi.fn(async () => dbState.staleBonus),
   // Репозиторий зовётся напрямую: он БРОСАЕТ при сбое БД, и крон обязан это
   // увидеть (graceful-обёртка вернула бы 0 и спрятала аварию).
   reverseAccrualsForOrder: vi.fn(async (_db: unknown, orderId: string) => {
@@ -303,7 +303,7 @@ describe('сторож списанных баллов на проваливши
   });
 
   it('сбой сторожа не роняет прогон и считается ошибкой', async () => {
-    vi.mocked(db.findFailedOrdersWithLiveBonus).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(db.findOrdersWithStuckBonus).mockRejectedValueOnce(new Error('boom'));
 
     const result = await recoverReferralAccruals();
 

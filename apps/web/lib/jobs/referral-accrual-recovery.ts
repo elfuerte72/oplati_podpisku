@@ -3,7 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
-  findFailedOrdersWithLiveBonus,
+  findOrdersWithStuckBonus,
   findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
@@ -59,14 +59,16 @@ export function resetReferralRecoveryAlertDedupForTests(): void {
 }
 
 /**
- * Провалившиеся заказы со списанными баллами старше трёх дней → напоминание
- * персоналу. Только сигнал: возвращать баллы автоматически нельзя (см. выше).
+ * Заказы со списанными баллами, ждущими решения человека, старше трёх дней →
+ * напоминание персоналу. Только сигнал: возвращать баллы автоматически нельзя
+ * (см. выше). Какие заказы сюда попадают — решает `isBonusAwaitingDecision`,
+ * та же функция, что зажигает кнопку возврата в панели.
  *
  * Never-throw: сторож не должен ронять прогон крона, у которого есть ещё три
  * денежные сверки.
  */
 async function remindAboutStaleBonuses(db: ReturnType<typeof getDb>): Promise<void> {
-  const stale = await findFailedOrdersWithLiveBonus(db, {
+  const stale = await findOrdersWithStuckBonus(db, {
     olderThanMs: STALE_BONUS_AGE_MS,
     limit: RECOVERY_LIMIT,
   });

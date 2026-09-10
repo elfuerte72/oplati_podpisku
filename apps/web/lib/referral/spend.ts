@@ -11,7 +11,7 @@ import {
   getPartnerProfile,
   getReferralBalanceUsdCents,
   getUserTelegramId,
-  releaseBonusReservation,
+  releaseUnusedBonusReservation,
   reserveBonusForOrder,
   type OrderRow,
 } from '@oplati/db';
@@ -60,6 +60,33 @@ export function isBonusSpendEnabled(): boolean {
   return serverEnv.REFERRAL_ENABLED && serverEnv.REFERRAL_SPEND_ENABLED;
 }
 
+/**
+ * Доступно ли списание баллов ЭТОМУ клиенту — без привязки к заказу.
+ *
+ * Нужен кабинету партнёра: он рассказывает про переключатель, а тот живёт на
+ * экране заказа. Обещать кнопку тому, у кого её нет (флаг выключен, клиент вне
+ * allowlist, партнёр заблокирован), — способ получить обращение в поддержку.
+ *
+ * Never-throw: подпись под витриной, а не под деньгами.
+ */
+export async function isBonusSpendAvailableForUser(userId: string): Promise<boolean> {
+  if (!isBonusSpendEnabled()) return false;
+  try {
+    const db = getDb();
+    const allowed = allowlist();
+    if (allowed.length > 0) {
+      const telegramId = await getUserTelegramId(db, userId);
+      if (telegramId === null || !allowed.includes(telegramId)) return false;
+    }
+    const profile = await getPartnerProfile(db, userId);
+    return !profile?.suspended;
+  } catch (err) {
+    log.error({ event: 'referral.spend.availability_failed', userId, err });
+    Sentry.captureException(err, { tags: { source: 'referral.spend', step: 'availability' } });
+    return false;
+  }
+}
+
 export type BonusSpendState = {
   /** Живой баланс баллов, USD-центы. */
   balanceUsdCents: number;
@@ -81,30 +108,43 @@ export type BonusSpendState = {
  * Требования «иметь свою покупку» нет: баланс возникает только от ЧУЖОЙ оплаты,
  * то есть деньги в систему уже пришли.
  *
- * Never-throw: сбой чтения баланса гасит предложение, но не ломает экран заказа.
+ * ⚠️ БРОСАЕТ при сбое чтения. Never-throw-обёртка — `loadBonusSpendStateSafe`,
+ * и она годится только витрине: на пути ОПЛАТЫ проглоченная ошибка означала бы
+ * молча выставленный полный счёт клиенту, который нажал «оплатить со скидкой»
+ * (находка ревью). Там сбой обязан стать честным отказом.
  */
 export async function loadBonusSpendState(order: OrderRow): Promise<BonusSpendState | null> {
   if (!isBonusSpendEnabled()) return null;
+  const db = getDb();
+  const allowed = allowlist();
+  if (allowed.length > 0) {
+    const telegramId = await getUserTelegramId(db, order.userId);
+    if (telegramId === null || !allowed.includes(telegramId)) return null;
+  }
+  const profile = await getPartnerProfile(db, order.userId);
+  if (profile?.suspended) return null;
+
+  const balanceUsdCents = await getReferralBalanceUsdCents(db, order.userId);
+  if (balanceUsdCents <= 0) return null;
+
+  const minInvoice = minInvoiceKopecks();
+  return {
+    balanceUsdCents,
+    capKopecks: bonusSpendCapKopecks({ order, minInvoiceKopecks: minInvoice }),
+    offer: planBonusSpend({ order, balanceUsdCents, minInvoiceKopecks: minInvoice }),
+    minSpendUsdCents: referralSpendMinUsdCents(),
+  };
+}
+
+/**
+ * То же для ВИТРИНЫ: сбой гасит блок баллов, но не ломает экран заказа —
+ * человеку важнее увидеть свой заказ, чем предложение скидки.
+ */
+export async function loadBonusSpendStateSafe(
+  order: OrderRow,
+): Promise<BonusSpendState | null> {
   try {
-    const db = getDb();
-    const allowed = allowlist();
-    if (allowed.length > 0) {
-      const telegramId = await getUserTelegramId(db, order.userId);
-      if (telegramId === null || !allowed.includes(telegramId)) return null;
-    }
-    const profile = await getPartnerProfile(db, order.userId);
-    if (profile?.suspended) return null;
-
-    const balanceUsdCents = await getReferralBalanceUsdCents(db, order.userId);
-    if (balanceUsdCents <= 0) return null;
-
-    const minInvoice = minInvoiceKopecks();
-    return {
-      balanceUsdCents,
-      capKopecks: bonusSpendCapKopecks({ order, minInvoiceKopecks: minInvoice }),
-      offer: planBonusSpend({ order, balanceUsdCents, minInvoiceKopecks: minInvoice }),
-      minSpendUsdCents: referralSpendMinUsdCents(),
-    };
+    return await loadBonusSpendState(order);
   } catch (err) {
     log.error({ event: 'referral.spend.state_failed', orderId: order.id, err });
     Sentry.captureException(err, { tags: { source: 'referral.spend', step: 'state' } });
@@ -145,7 +185,18 @@ export type BonusClaimResult =
  * баланс перепроверяется ВНУТРИ лока — расчёт снаружи мог устареть.
  */
 export async function claimBonusForOrder(order: OrderRow): Promise<BonusClaimResult> {
-  const state = await loadBonusSpendState(order);
+  let state: BonusSpendState | null;
+  try {
+    state = await loadBonusSpendState(order);
+  } catch (err) {
+    // ⚠️ Сбой чтения — это `unavailable`, а НЕ `skipped`. Проглоченная ошибка
+    // здесь означала бы счёт на полную сумму клиенту, который нажал «оплатить
+    // со списанием баллов»: то самое молчаливое враньё, ради запрета которого
+    // и заведён отдельный исход (находка ревью).
+    log.error({ event: 'referral.spend.claim_state_failed', orderId: order.id, err });
+    Sentry.captureException(err, { tags: { source: 'referral.spend', step: 'claim_state' } });
+    return { kind: 'unavailable', balanceUsdCents: 0 };
+  }
   if (state === null) return { kind: 'skipped' };
   if (state.offer === null) {
     log.info({
@@ -264,14 +315,16 @@ async function reportSelfReferralIfAny(userId: string): Promise<void> {
  * шлюза, после которых заказ живёт дальше и клиент вернётся. Но и не молча:
  * несостоявшееся освобождение держит баллы клиента занятыми до протухания
  * заказа, и знать об этом по строке в логах никто не будет.
+ *
+ * ⚠️ Занятие под УЖЕ созданным счётом не снимается (условие живёт в
+ * `releaseUnusedBonusReservation`): параллельная попытка того же заказа могла
+ * успеть выставить счёт со скидкой, и освобождение отдало бы клиенту скидку
+ * бесплатно — списывать на вебхуке было бы уже нечего.
  */
 export async function releaseBonusClaim(orderId: string): Promise<void> {
   try {
     const db = getDb();
-    const { applied, redemption } = await releaseBonusReservation(db, {
-      orderId,
-      releasedBy: null,
-    });
+    const { applied, redemption } = await releaseUnusedBonusReservation(db, orderId);
     if (!applied || !redemption) return;
     log.info({
       event: 'referral.spend.released',

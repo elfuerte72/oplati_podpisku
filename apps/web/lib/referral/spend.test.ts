@@ -53,7 +53,7 @@ vi.mock('@oplati/db', () => ({
   getPartnerProfile: vi.fn(async () => ({ suspended: h.state.suspended })),
   getReferralBalanceUsdCents: vi.fn(async () => h.state.balance),
   reserveBonusForOrder: h.reserveMock,
-  releaseBonusReservation: h.releaseMock,
+  releaseUnusedBonusReservation: h.releaseMock,
   findRedemptionByOrderId: vi.fn(async () => null),
   findSelfReferralSignals: h.selfReferralMock,
   appendOrderEvent: h.appendEventMock,
@@ -63,6 +63,7 @@ vi.mock('@oplati/db', () => ({
 import {
   claimBonusForOrder,
   loadBonusSpendState,
+  loadBonusSpendStateSafe,
   resetSelfReferralDedupForTests,
 } from './spend.ts';
 
@@ -138,11 +139,18 @@ describe('loadBonusSpendState — гейты доступа', () => {
     expect(state?.minSpendUsdCents).toBe(100);
   });
 
-  it('сбой чтения баланса гасит предложение, но не бросает', async () => {
+  it('ВИТРИНА переживает сбой чтения: блока нет, экран заказа цел', async () => {
     const db = await import('@oplati/db');
     vi.mocked(db.getReferralBalanceUsdCents).mockRejectedValueOnce(new Error('db down'));
 
-    expect(await loadBonusSpendState(ORDER)).toBeNull();
+    expect(await loadBonusSpendStateSafe(ORDER)).toBeNull();
+  });
+
+  it('на ПУТИ ОПЛАТЫ сбой не глотается — иначе счёт уйдёт на полную сумму', async () => {
+    const db = await import('@oplati/db');
+    vi.mocked(db.getReferralBalanceUsdCents).mockRejectedValueOnce(new Error('db down'));
+
+    await expect(loadBonusSpendState(ORDER)).rejects.toThrow('db down');
   });
 });
 
@@ -182,6 +190,16 @@ describe('claimBonusForOrder — три исхода', () => {
     });
 
     expect(await claimBonusForOrder(ORDER)).toEqual({ kind: 'unavailable', balanceUsdCents: 12 });
+  });
+
+  it('сбой чтения баланса → unavailable, а НЕ тихий полный счёт', async () => {
+    // Проглоченная ошибка здесь означала бы счёт на полную сумму клиенту,
+    // который нажал «оплатить со списанием баллов» (находка ревью).
+    const db = await import('@oplati/db');
+    vi.mocked(db.getReferralBalanceUsdCents).mockRejectedValueOnce(new Error('db down'));
+
+    expect((await claimBonusForOrder(ORDER)).kind).toBe('unavailable');
+    expect(h.reserveMock).not.toHaveBeenCalled();
   });
 
   it('чужое занятие того же заказа — claimed с ЕГО суммой и без владения', async () => {

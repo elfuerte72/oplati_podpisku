@@ -932,11 +932,15 @@ export function OrderDetailView({
                   ? `Оплатить ${formatRub(payableKopecks)}`
                   : 'Оплатить'}
             </ComicButton>
-            {order.amountKopecks !== null &&
-              buyerFeeAmountNote(order.amountKopecks, order.buyerFeePercent, formatRub) !==
-                null && (
+            {/* ⚠️ Надбавка платёжной системы считается от суммы СЧЁТА, а не
+                от цены заказа: провайдер начисляет её на то, что мы у него
+                запросили. С применённой скидкой полная цена обещала бы клиенту
+                неверное число на странице оплаты — ровно то, что исправлено в
+                напоминании об оплате из панели. */}
+            {payableKopecks !== null &&
+              buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub) !== null && (
                 <p className="mt-2 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
-                  {buyerFeeAmountNote(order.amountKopecks, order.buyerFeePercent, formatRub)}
+                  {buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub)}
                 </p>
               )}
             {order.expiresAt && (

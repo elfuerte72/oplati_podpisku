@@ -7,6 +7,7 @@ import {
   BONUS_RELEASED_EVENT,
   getDb,
   getOrderDetailForPanel,
+  isBonusAwaitingDecision,
   releaseBonusReservation,
 } from '@oplati/db';
 
@@ -32,6 +33,11 @@ import { getBot } from '@/lib/telegram/bot';
  *
  * Право — `fulfillment` (оператор и владелец): разделять решение о деньгах и
  * решение о баллах между двумя людьми значит потерять его посередине.
+ *
+ * Где кнопка вообще имеет смысл, решает общий `isBonusAwaitingDecision`: это
+ * `failed` и редкий разрыв «заказ похоронен, а оплата пришла следом»
+ * (`paid_after_terminal`). Оплатимые статусы сюда не входят — там заказ ещё жив
+ * и вернёт баллы сам.
  */
 
 export const dynamic = 'force-dynamic';
@@ -75,7 +81,14 @@ export async function POST(req: Request): Promise<Response> {
     log.info({ event: 'panel.bonus_refund.nothing', staffId: guard.actor.id, shortId: body.shortId });
     return Response.json({ ok: false, error: 'no_bonus' }, { status: 409 });
   }
-  if (detail.order.status !== 'failed') {
+  // ТА ЖЕ функция, что зажигает кнопку на экране и будит сторожа в кроне:
+  // разъезд означал бы кнопку, которую сервер отвергает, или наоборот.
+  if (
+    !isBonusAwaitingDecision({
+      orderStatus: detail.order.status,
+      hasSucceededPayment: detail.hasSucceededPayment,
+    })
+  ) {
     log.warn({
       event: 'panel.bonus_refund.wrong_status',
       staffId: guard.actor.id,

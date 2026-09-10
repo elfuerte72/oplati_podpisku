@@ -81,11 +81,12 @@ function orderWithBonus(
     status?: string;
     bonusStatus?: 'reserved' | 'spent' | 'released' | null;
     telegramId?: string | null;
+    hasSucceededPayment?: boolean;
   } = {},
 ) {
   const bonusStatus = over.bonusStatus === undefined ? 'spent' : over.bonusStatus;
   return {
-    hasSucceededPayment: true,
+    hasSucceededPayment: over.hasSucceededPayment ?? true,
     order: { id: 'order-1', shortId: SHORT_ID, status: over.status ?? 'failed' },
     client: { id: 'user-1', telegramId: over.telegramId ?? '777', displayName: null, email: null },
     events: [],
@@ -195,14 +196,38 @@ describe('POST /api/panel/orders/bonus-refund', () => {
     expect(h.release).not.toHaveBeenCalled();
   });
 
-  it('заказ не в failed — возврат не проводится', async () => {
-    // Оплатимый заказ возвращает баллы САМ (правилом), а оплаченный ещё не
-    // разобран: кнопка живёт только там, где решение принадлежит человеку.
-    h.getOrderDetail.mockImplementation(async () => orderWithBonus({ status: 'paid' }));
+  it('оплатимый заказ возврата не получает — он вернёт баллы САМ', async () => {
+    // Кнопка живёт только там, где решение принадлежит человеку.
+    h.getOrderDetail.mockImplementation(async () => orderWithBonus({ status: 'ready_for_payment' }));
 
     const res = await POST(request({ shortId: SHORT_ID }));
 
     expect(res.status).toBe(409);
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  it('оплаченный заказ ещё не разобран — возврат не проводится', async () => {
+    h.getOrderDetail.mockImplementation(async () => orderWithBonus({ status: 'paid' }));
+
+    expect((await POST(request({ shortId: SHORT_ID }))).status).toBe(409);
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  it('похороненный заказ с УСПЕШНЫМ платежом — возврат доступен', async () => {
+    // `paid_after_terminal`: крон похоронил заказ, оплата пришла следом. Баллы
+    // правилом не возвращаются (скидка по счёту дана), решает человек.
+    h.getOrderDetail.mockImplementation(async () => orderWithBonus({ status: 'expired' }));
+
+    expect((await POST(request({ shortId: SHORT_ID }))).status).toBe(200);
+    expect(h.release).toHaveBeenCalled();
+  });
+
+  it('похороненный заказ БЕЗ оплаты возврата не получает — правило уже вернуло', async () => {
+    h.getOrderDetail.mockImplementation(async () =>
+      orderWithBonus({ status: 'expired', hasSucceededPayment: false }),
+    );
+
+    expect((await POST(request({ shortId: SHORT_ID }))).status).toBe(409);
     expect(h.release).not.toHaveBeenCalled();
   });
 

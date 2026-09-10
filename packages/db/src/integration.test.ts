@@ -91,7 +91,7 @@ import {
 } from './repositories/referral-cabinet.ts';
 import {
   claimBonusSpent,
-  findFailedOrdersWithLiveBonus,
+  findOrdersWithStuckBonus,
   findRedemptionByOrderId,
   findRedemptionsByOrderIds,
   findSelfReferralSignals,
@@ -5867,6 +5867,48 @@ describe('referral_redemptions (списание баллов в счёт зак
     expect(negatives.map((n) => n.userId)).toContain(partner.id);
   });
 
+  it('баллы под оплаченным счётом НЕ возвращаются, даже если заказ похоронен', async () => {
+    // `expire-payments` хоронит заказ и клеймит платёж, а вебхук приходит следом
+    // (`paid_after_terminal`): скидка по счёту уже дана. Автовозврат здесь
+    // отдал бы клиенту и скидку, и баллы — молча.
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    const { payment } = await makeOrderWithPendingPayment({ userId: partner.id });
+    await db.execute(sql`UPDATE payments SET order_id = ${order.id} WHERE id = ${payment.id}`);
+    await db.execute(sql`UPDATE payments SET status = 'succeeded' WHERE id = ${payment.id}`);
+    await db.execute(sql`UPDATE orders SET status = 'expired' WHERE id = ${order.id}`);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(646);
+
+    // И сторож обязан позвать человека: сам такой резерв не рассосётся.
+    await db.execute(sql`
+      UPDATE referral_redemptions SET reserved_at = now() - interval '5 days' WHERE order_id = ${order.id}
+    `);
+    const stuck = await findOrdersWithStuckBonus(db, {
+      olderThanMs: 3 * 24 * 60 * 60 * 1000,
+      limit: 50,
+    });
+    expect(stuck.map((f) => f.orderId)).toContain(order.id);
+  });
+
+  it('протухший заказ БЕЗ оплаты баллы возвращает и сторожа не будит', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    await db.execute(sql`UPDATE orders SET status = 'expired' WHERE id = ${order.id}`);
+    await db.execute(sql`
+      UPDATE referral_redemptions SET reserved_at = now() - interval '5 days' WHERE order_id = ${order.id}
+    `);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+    const stuck = await findOrdersWithStuckBonus(db, {
+      olderThanMs: 3 * 24 * 60 * 60 * 1000,
+      limit: 50,
+    });
+    expect(stuck.map((f) => f.orderId)).not.toContain(order.id);
+  });
+
   it('сторож видит failed-заказ с живым списанием и не видит возвращённое', async () => {
     const partner = await makePartnerWithBalance(1000);
     const stale = await makePayableOrder(partner.id);
@@ -5879,14 +5921,14 @@ describe('referral_redemptions (списание баллов в счёт зак
       UPDATE referral_redemptions SET reserved_at = now() - interval '5 days' WHERE order_id = ${stale.id}
     `);
 
-    const found = await findFailedOrdersWithLiveBonus(db, {
+    const found = await findOrdersWithStuckBonus(db, {
       olderThanMs: 3 * 24 * 60 * 60 * 1000,
       limit: 50,
     });
     expect(found.map((f) => f.orderId)).toContain(stale.id);
 
     await releaseBonusReservation(db, { orderId: stale.id, releasedBy: null });
-    const after = await findFailedOrdersWithLiveBonus(db, {
+    const after = await findOrdersWithStuckBonus(db, {
       olderThanMs: 3 * 24 * 60 * 60 * 1000,
       limit: 50,
     });

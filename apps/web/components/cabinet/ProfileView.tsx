@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
+import { formatUsd } from '@/components/comic/format';
 import { IconArrowLeft } from '@/components/comic/icons';
 import { phoneSourceNote } from '@/components/contacts/ContactCard';
 import { EMAIL_INVALID_TEXT, normalizeEmail } from '@/lib/contacts/email';
@@ -118,6 +119,17 @@ export function ProfileView({ profile, onBack, onSave, onRequestTelegramPhone }:
             {profile.displayName ?? '—'}
           </p>
         </Field>
+
+        {/* Баллы партнёрской программы. Показываем только когда они есть:
+            строка «0 баллов» ничего не сообщает тому, кто никого не приглашал,
+            а тому, кто приглашал, важно видеть баланс и вне экрана заказа. */}
+        {profile.bonusBalanceUsdCents != null && profile.bonusBalanceUsdCents > 0 && (
+          <Field label="Баллы" note="списываются при оплате заказа">
+            <p className="mt-1.5 font-body text-sm text-[var(--text)]">
+              {formatUsd(profile.bonusBalanceUsdCents)}
+            </p>
+          </Field>
+        )}
 
         <Field label="Почта для связи">
           <input

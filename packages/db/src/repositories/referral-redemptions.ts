@@ -178,12 +178,16 @@ export async function reserveBonusForOrder(
 }
 
 /**
- * Вернуть занятые баллы: `reserved|spent → released`.
+ * Вернуть занятые баллы РЕШЕНИЕМ ЧЕЛОВЕКА: `reserved|spent → released`.
  *
  * Условный UPDATE, поэтому повтор идемпотентен (`applied:false` — «уже
- * вернули», а не ошибка). `releasedBy = null` — системный откат из
- * `payments/create` (счёт создать не удалось); заполненный — возврат оператором
- * на провалившемся заказе.
+ * вернули», а не ошибка).
+ *
+ * ⚠️ Живой счёт этой функции не помеха — и это намеренно: оператор возвращает
+ * баллы по заказу, где деньги как раз приняты. Системный откат несостоявшегося
+ * счёта — ДРУГАЯ функция (`releaseUnusedBonusReservation`) со своим условием:
+ * снять занятие под уже созданным счётом значило бы отдать клиенту скидку
+ * бесплатно.
  *
  * Возвращает саму строку, когда возврат состоялся: вызывающему нужны сумма и
  * пользователь для события `order_events` и сообщения клиенту, а второй запрос
@@ -207,6 +211,50 @@ export async function releaseBonusReservation(
       event: 'db.referral.bonus_released',
       orderId,
       releasedBy,
+      amountUsdCents: row.amountUsdCents,
+    });
+    emitDbChange('referral_redemptions');
+    return { applied: true, redemption: row };
+  }
+  return { applied: false, redemption: null };
+}
+
+/**
+ * Системный откат несостоявшегося счёта: `reserved → released`, но ТОЛЬКО пока
+ * по заказу нет живого или успешного платежа.
+ *
+ * ⚠️ Оговорка про платёж — не перестраховка, а закрытая дыра. Два
+ * одновременных «Оплатить» по одному заказу: A занимает баллы, B видит чужое
+ * занятие, берёт из него скидку и успевает СОЗДАТЬ счёт, после чего A падает
+ * на таймауте шлюза и идёт снимать «своё» занятие. Без условия резерв уходит в
+ * `released` под живым счётом со скидкой: `claimBonusSpent` на вебхуке не
+ * находит `reserved`, списывать нечего — клиент получает скидку бесплатно.
+ *
+ * Возврат ОПЕРАТОРОМ этой оговорки не имеет и иметь не должен: там платёж как
+ * раз успешный, и человек возвращает баллы осознанно.
+ */
+export async function releaseUnusedBonusReservation(
+  db: DBLike,
+  orderId: string,
+  log: RepoLogger = noopLogger,
+): Promise<{ applied: boolean; redemption: RedemptionRow | null }> {
+  const rows = await db.execute<RawRedemption>(sql`
+    UPDATE referral_redemptions
+    SET status = 'released', released_by = NULL, settled_at = now()
+    WHERE order_id = ${orderId}
+      AND status = 'reserved'
+      AND NOT EXISTS (
+        SELECT 1 FROM payments p
+        WHERE p.order_id = ${orderId} AND p.status IN ('pending', 'succeeded')
+      )
+    RETURNING ${SELECT_COLUMNS}
+  `);
+  const row = rows[0] ? mapRedemption(rows[0]) : null;
+  if (row) {
+    log.info({
+      event: 'db.referral.bonus_released',
+      orderId,
+      releasedBy: null,
       amountUsdCents: row.amountUsdCents,
     });
     emitDbChange('referral_redemptions');
@@ -278,7 +326,7 @@ export async function findRedemptionsByOrderIds(
   return new Map(rows.map((r) => [r.order_id, mapRedemption(r)]));
 }
 
-export type FailedOrderWithBonus = {
+export type StuckBonusOrder = {
   orderId: string;
   shortId: string;
   userId: string;
@@ -288,17 +336,49 @@ export type FailedOrderWithBonus = {
 };
 
 /**
- * Сторож (тикет 07): заказы в `failed` с ЖИВЫМ списанием старше `olderThanMs`.
+ * Заказы, где списанные баллы ЖДУТ РЕШЕНИЯ ЧЕЛОВЕКА, — и сторож, и кнопка
+ * панели опираются на одно и то же понятие.
  *
- * Возврат баллов при `failed` — решение оператора (деньги приняты, и автовозврат
- * оттуда был бы единственным путём к отрицательному балансу клиента). Решение
- * может потеряться, поэтому крон о нём напоминает. Порог короче, чем 7 дней у
- * холдов банка: там мы ждём внешнюю систему, здесь только себя.
+ * Такое состояние даёт ровно два пути:
+ *
+ *  - заказ в `failed` — деньги приняты, выдать не смогли. Автовозврат оттуда
+ *    был бы единственным путём к отрицательному балансу клиента (ручная выдача
+ *    списала бы баллы повторно), поэтому решает оператор;
+ *  - заказ в `expired`/`cancelled`, но с УСПЕШНЫМ платежом — редкий разрыв:
+ *    крон похоронил заказ, а оплата пришла следом (`paid_after_terminal`).
+ *    Правило автовозврата такие баллы намеренно НЕ возвращает (клиент получил
+ *    скидку по оплаченному счёту), и вернуть их может только человек — тот же,
+ *    кто разбирается с самими деньгами по этому заказу.
+ *
+ * Оплатимые статусы сюда не входят: там заказ ещё жив и вернёт баллы сам.
  */
-export async function findFailedOrdersWithLiveBonus(
+export function isBonusAwaitingDecision(input: {
+  orderStatus: string;
+  hasSucceededPayment: boolean;
+}): boolean {
+  if (input.orderStatus === 'failed') return true;
+  return (
+    (input.orderStatus === 'expired' || input.orderStatus === 'cancelled') &&
+    input.hasSucceededPayment
+  );
+}
+
+/**
+ * Сторож (тикет 07): заказы с ЖИВЫМ списанием, ждущим решения, старше
+ * `olderThanMs`. Решение может потеряться, поэтому крон о нём напоминает. Порог
+ * короче, чем 7 дней у холдов банка: там мы ждём внешнюю систему, здесь только
+ * себя.
+ *
+ * SQL отбирает КАНДИДАТОВ (три терминальных статуса + признак успешного
+ * платежа), а решение принимает `isBonusAwaitingDecision` в JS — та же функция,
+ * что решает, показывать ли кнопку возврата в панели. Второе условие в SQL было
+ * бы зеркалом на денежном пути: сторож молчал бы о том, что оператор видит, или
+ * наоборот. Состояние редкое, поэтому лишние строки ничего не стоят.
+ */
+export async function findOrdersWithStuckBonus(
   db: DBLike,
   input: { olderThanMs: number; limit: number },
-): Promise<FailedOrderWithBonus[]> {
+): Promise<StuckBonusOrder[]> {
   const cutoff = new Date(Date.now() - input.olderThanMs).toISOString();
   const rows = await db.execute<{
     order_id: string;
@@ -307,24 +387,37 @@ export async function findFailedOrdersWithLiveBonus(
     amount_usd_cents: number;
     discount_kopecks: number;
     reserved_at: string | Date;
+    order_status: string;
+    has_succeeded_payment: boolean;
   }>(sql`
-    SELECT r.order_id, o.short_id, r.user_id, r.amount_usd_cents, r.discount_kopecks, r.reserved_at
+    SELECT r.order_id, o.short_id, r.user_id, r.amount_usd_cents, r.discount_kopecks,
+           r.reserved_at, o.status AS order_status,
+           EXISTS (
+             SELECT 1 FROM payments p WHERE p.order_id = r.order_id AND p.status = 'succeeded'
+           ) AS has_succeeded_payment
     FROM referral_redemptions r
     JOIN orders o ON o.id = r.order_id
-    WHERE o.status = 'failed'
+    WHERE o.status IN ('failed', 'expired', 'cancelled')
       AND r.status IN ('reserved', 'spent')
       AND r.reserved_at < ${cutoff}
     ORDER BY r.reserved_at ASC
     LIMIT ${input.limit}
   `);
-  return rows.map((r) => ({
-    orderId: r.order_id,
-    shortId: r.short_id,
-    userId: r.user_id,
-    amountUsdCents: Number(r.amount_usd_cents),
-    discountKopecks: Number(r.discount_kopecks),
-    reservedAt: new Date(r.reserved_at),
-  }));
+  return rows
+    .filter((r) =>
+      isBonusAwaitingDecision({
+        orderStatus: r.order_status,
+        hasSucceededPayment: r.has_succeeded_payment,
+      }),
+    )
+    .map((r) => ({
+      orderId: r.order_id,
+      shortId: r.short_id,
+      userId: r.user_id,
+      amountUsdCents: Number(r.amount_usd_cents),
+      discountKopecks: Number(r.discount_kopecks),
+      reservedAt: new Date(r.reserved_at),
+    }));
 }
 
 /**

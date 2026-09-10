@@ -220,6 +220,44 @@ describe('accrueReferralForPayment', () => {
    * покупатель гасил бы комиссию баллами, а его реферер получал бы процент из
    * уже потраченной маржи — заказ уходил бы в минус вторым путём.
    */
+  it('съеденная баллами комиссия — НЕ аномалия: начисления нет, но и алёрта нет', async () => {
+    // Потолок списания равен всей комиссии заказа, поэтому клиент, погасивший
+    // её баллами, штатно не оставляет рефереру ничего. Error-алёрт на обычной
+    // покупке — способ, которым денежные алёрты перестают читать.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 400 }));
+    m.__setRedemption({ amountUsdCents: 550, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(0);
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('начисление выше комиссии БЕЗ баллов — по-прежнему аномалия с алёртом', async () => {
+    // Мисконфиг ставок обязан кричать: объяснить его нечем.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 1 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 2 }));
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('начисление выше ПОЛНОЙ комиссии даже при списании — всё ещё аномалия', async () => {
+    // Баллами объясняется только та часть, что не выходит за исходную комиссию.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 1 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 2 }));
+    m.__setRedemption({ amountUsdCents: 5, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('списанные баллы уменьшают потолок: начисление + списание ≤ комиссия', async () => {
     // База $20, комиссия 30% = 600 ¢. Начисление 4% = 80 ¢.
     m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
@@ -231,7 +269,6 @@ describe('accrueReferralForPayment', () => {
     await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
 
     expect(m.__insertCalls()).toHaveLength(0);
-    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
   });
 
   it('вся комиссия погашена баллами → рефереру не начисляется ничего', async () => {

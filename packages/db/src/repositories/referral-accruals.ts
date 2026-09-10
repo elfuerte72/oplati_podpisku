@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 
 import type { DB, DBLike } from '../index.ts';
+import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import { PURCHASED_STATUSES_SQL, REFUND_OR_FAILED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
@@ -118,11 +119,14 @@ export async function insertCommissionAccruals(
  *
  *   - `released` не считается никогда — баллы уже вернули (системный откат
  *     несостоявшегося счёта или решение оператора);
- *   - `reserved` под заказом в `expired`/`cancelled` не считается тоже: это
- *     состояния «денег не приходило», и резерв обязан рассосаться сам. Точек
- *     захоронения заказа много (крон, отмена клиентом, гейт фиксации цены), и
- *     забытая означала бы молча сожжённые баллы клиента. Тот же приём, что у
- *     `vcc_fund_reservations`.
+ *   - `reserved` под заказом в `expired`/`cancelled` не считается тоже — но
+ *     только пока по заказу нет УСПЕШНОГО платежа: это и есть «денег не
+ *     приходило», и такой резерв обязан рассосаться сам. Точек захоронения
+ *     заказа много (крон, отмена клиентом, гейт фиксации цены), и забытая
+ *     означала бы молча сожжённые баллы клиента. Тот же приём, что у
+ *     `vcc_fund_reservations`. Само условие — общий `liveRedemptionSql`: его же
+ *     применяют витрины панели и сторож, чтобы «что показывает экран» и «что
+ *     считает баланс» не разъехались.
  *
  * ⚠️ `failed`/`refunded` в автоправило НЕ входят, и это не пропуск. `failed` не
  * синоним «деньги вернули» — туда же попадают недоплата и отвергнутый счёт, а
@@ -145,8 +149,7 @@ export function balanceExpr(userId: SQL | string) {
     - COALESCE((SELECT SUM(r.amount_usd_cents) FROM referral_redemptions r
                 JOIN orders o ON o.id = r.order_id
                 WHERE r.user_id = ${userId}
-                  AND r.status <> 'released'
-                  AND NOT (r.status = 'reserved' AND o.status IN ('expired', 'cancelled'))), 0)
+                  AND ${liveRedemptionSql(sql`r`, sql`o`)}), 0)
   )`;
 }
 

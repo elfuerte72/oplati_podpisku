@@ -133,6 +133,28 @@ export async function accrueReferralForPayment(params: {
     const commissionUsdCents = Math.max(0, grossCommissionUsdCents - bonusSpentUsdCents);
     const totalAccrual = rows.reduce((sum, r) => sum + r.amountUsdCents, 0);
     if (totalAccrual > commissionUsdCents) {
+      // ⚠️ Два РАЗНЫХ события с одинаковым исходом «не начисляем».
+      //
+      // Если остаток комиссии съели баллы покупателя — это НОРМА, а не
+      // аномалия: потолок списания равен всей комиссии заказа, поэтому клиент,
+      // погасивший её баллами, штатно не оставляет рефереру ничего (решение
+      // спеки §6). Ошибочный алёрт здесь означал бы `error` в Sentry на
+      // обычной покупке — то есть способ, которым денежные алёрты перестают
+      // читать.
+      //
+      // Если баллов не было вовсе, а начисление всё равно больше комиссии —
+      // это мисконфиг ставок, и он обязан кричать.
+      const explainedByBonus = bonusSpentUsdCents > 0 && totalAccrual <= grossCommissionUsdCents;
+      if (explainedByBonus) {
+        log.info({
+          event: 'referral.accrue.commission_spent_on_bonus',
+          orderId,
+          totalAccrual,
+          commissionUsdCents,
+          bonusSpentUsdCents,
+        });
+        return; // маржа ушла клиенту скидкой — рефереру платить не из чего
+      }
       log.error({
         event: 'referral.accrue.exceeds_commission',
         orderId,

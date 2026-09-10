@@ -80,6 +80,9 @@ export const referralSnapshotSchema = z.object({
   earnedTotalUsdCents: z.number(),
   balanceUsdCents: z.number(),
   minPayoutUsdCents: z.number(),
+  // `.optional()`: старый WebView-бандл обязан пережить снапшот деплоя, где
+  // поля ещё нет, и наоборот.
+  bonusSpendAvailable: z.boolean().optional(),
   canPayout: z.boolean(),
   progress: progressViewSchema,
   sprint: sprintViewSchema,

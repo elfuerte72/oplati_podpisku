@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { getDb, getOrderDetailForPanel } from '@oplati/db';
+import { getDb, getOrderDetailForPanel, isBonusAwaitingDecision } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
 import { BonusRefund } from '@/components/panel/BonusRefund';
@@ -215,13 +215,18 @@ export default async function PanelOrderPage({
       </div>
 
       {/* Возврат баллов (трек referral-balance-spend, тикет 08). Кнопка живёт
-          только там, где решение осмысленно: заказ провалился, а часть суммы
-          клиент погасил баллами и они всё ещё у нас. Возврат при `failed` —
-          решение человека, а не правило: `failed` не значит «деньги вернули». */}
+          только там, где решение осмысленно, и это же условие поднимает сторож
+          в кроне (`isBonusAwaitingDecision` — одна функция на оба места):
+          провалившийся заказ либо похороненный заказ с успешным платежом.
+          Возврат при `failed` — решение человека, а не правило: `failed` не
+          значит «деньги вернули». */}
       {canAccess(access.actor.role, 'fulfillment') &&
-      order.status === 'failed' &&
       detail.bonus &&
-      detail.bonus.status !== 'released' ? (
+      detail.bonus.status !== 'released' &&
+      isBonusAwaitingDecision({
+        orderStatus: order.status,
+        hasSucceededPayment: detail.hasSucceededPayment,
+      }) ? (
         <section className="panel-card" style={{ marginTop: 16 }}>
           <h2 className="panel-title">{PANEL_BONUS_TEXT.refundTitle}</h2>
           <p className="panel-muted">{PANEL_BONUS_TEXT.refundHint}</p>

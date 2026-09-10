@@ -9,7 +9,6 @@ import {
   ilike,
   lt,
   max,
-  ne,
   or,
   sql,
   type SQL,
@@ -40,6 +39,7 @@ import {
 } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
+import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import { transitionConversationMode } from './support.ts';
@@ -152,12 +152,14 @@ export type PanelOrderSort = 'newest' | 'oldest' | 'amount_desc' | 'amount_asc';
  * ⚠️ Число, которое отсюда приходит, — СКИДКА, а не сумма к оплате.
  * `orders.amount_rub` остаётся полной ценой заказа, и складывать их нельзя:
  * к оплате идёт разность.
+ *
+ * ⚠️ «Живо» определяет ОБЩИЙ `liveRedemptionSql` — тот же, по которому считается
+ * баланс партнёра. Своё условие здесь означало бы, что панель показывает
+ * «−286 ₽ баллами» по заказу, чьи баллы клиенту уже вернули, и это же число
+ * уезжает в колонку CSV, которую складывают.
  */
 const liveRedemptionJoin = () =>
-  and(
-    eq(referralRedemptions.orderId, orders.id),
-    ne(referralRedemptions.status, 'released'),
-  );
+  and(eq(referralRedemptions.orderId, orders.id), liveRedemptionSql());
 
 export type PanelClientRef = {
   id: string;

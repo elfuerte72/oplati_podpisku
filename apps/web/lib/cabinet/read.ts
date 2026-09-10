@@ -35,7 +35,7 @@ import { childLogger } from '../logger.ts';
 import { phoneRequirementRub } from '../contacts/phone-gate.ts';
 import { buyerFeePercentForOrder } from '../payments/gateway.ts';
 import { bonusValueKopecks } from '../referral/spend-math.ts';
-import { isBonusSpendEnabled, loadBonusSpendState } from '../referral/spend.ts';
+import { isBonusSpendEnabled, loadBonusSpendStateSafe } from '../referral/spend.ts';
 import { withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
@@ -319,9 +319,17 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
 
   // Баланс баллов в профиле — только когда фича включена: иначе цифра, которую
   // некуда потратить, читается как обещание.
-  const bonusBalanceUsdCents = isBonusSpendEnabled()
-    ? await getReferralBalanceUsdCents(db, userId)
-    : null;
+  //
+  // Never-throw: снапшот кабинета — главный экран продукта, и падать целиком
+  // из-за справочной цифры он не должен.
+  let bonusBalanceUsdCents: number | null = null;
+  if (isBonusSpendEnabled()) {
+    try {
+      bonusBalanceUsdCents = await getReferralBalanceUsdCents(db, userId);
+    } catch (err) {
+      log.warn({ event: 'cabinet.read.bonus_balance_failed', err });
+    }
+  }
 
   const profile: CabinetProfile = {
     displayName: profileRow?.displayName ?? null,
@@ -364,7 +372,7 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
  */
 async function buildOrderBonusView(order: OrderRow): Promise<OrderBonusView | null> {
   if (!isPayableStatus(order.status)) return null;
-  const state = await loadBonusSpendState(order);
+  const state = await loadBonusSpendStateSafe(order);
   if (state === null) return null;
   return {
     balanceUsdCents: state.balanceUsdCents,
