@@ -46,6 +46,12 @@ vi.mock('@oplati/db', () => {
     findPaymentByProviderRef: vi.fn(async () => state.payment),
     // Атомарный claim: возвращает строку только если платёж был pending и claim
     // не форсирован в null (моделирует проигрыш гонки другому вызову).
+    // Списание баллов (трек referral-balance-spend): по умолчанию списания нет.
+    // Его собственные гарантии проверяет PGlite-сьют `packages/db`; здесь важно
+    // только, что claim зовётся ВНУТРИ той же транзакции.
+    claimBonusSpent: vi.fn(async () => null),
+    appendOrderEvent: vi.fn(async () => {}),
+    BONUS_SPENT_EVENT: 'bonus_spent',
     claimPaymentSucceeded: vi.fn(async () => {
       if (state.forceClaimNull) return null;
       if (state.payment && state.payment.status === 'pending') {

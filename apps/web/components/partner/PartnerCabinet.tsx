@@ -388,7 +388,14 @@ function Dashboard({
               <Stat label="Заработано в этом месяце" value={formatUsd(snap.earnedThisMonthUsdCents)} />
               <Stat label="Баланс к выводу" value={formatUsd(snap.balanceUsdCents)} valueColor="var(--success)">
                 <span className="font-body text-[11px] text-[var(--text-muted)]">
-                  мин. вывод {formatUsd(snap.minPayoutUsdCents)}
+                  мин. вывод {formatUsd(snap.minPayoutUsdCents)} (примерно от 1000 ₽)
+                </span>
+                {/* Второй способ потратить баланс, и он без минимума вывода:
+                    списание автоматическое и не стоит нам ничего, а заявка на
+                    вывод — ручная работа и комиссия платёжного канала. Отсюда
+                    и разрыв порогов. */}
+                <span className="font-body text-[11px] text-[var(--text-muted)]">
+                  или спиши баллы при оплате своего заказа
                 </span>
               </Stat>
             </div>
@@ -463,7 +470,7 @@ function Stat({
       <div className="font-display text-[24px] font-bold leading-none" style={valueColor ? { color: valueColor } : undefined}>
         {value}
       </div>
-      {children && <div className="mt-1">{children}</div>}
+      {children && <div className="mt-1 flex flex-col gap-0.5">{children}</div>}
     </div>
   );
 }

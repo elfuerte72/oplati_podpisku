@@ -274,6 +274,19 @@ export const VAT_VPN_HINT =
  * Без user-input — статический текст + `formatUsd` (только `$`/цифры),
  * экранирование не требуется.
  */
+/**
+ * Строка «часть суммы погашена баллами» рядом со ссылкой на оплату
+ * (трек referral-balance-spend). `null` — списания не было, строки нет.
+ *
+ * Нужна там же, где надбавка платёжной системы, и по той же причине: клиент
+ * видит на странице оплаты сумму, отличную от цены заказа, и должен понимать
+ * почему — до перехода, а не после.
+ */
+export function buildBonusAppliedLine(discountKopecks: number): string | null {
+  if (discountKopecks <= 0) return null;
+  return `Часть суммы погашена баллами: −${formatRub(discountKopecks)}.`;
+}
+
 export function paymentRulesHtml(priceUsdCents: number): string {
   return [
     `<b>Оплатить строго по цене ${formatUsd(priceUsdCents)}</b> — это цена сервиса в США.`,

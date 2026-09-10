@@ -55,6 +55,12 @@ vi.mock('@oplati/db', () => {
     }),
     findPaymentByProviderRef: vi.fn(async () => state.byRef),
     findPaymentByProviderInvoiceNumber: vi.fn(async () => state.byInvoiceNumber),
+    // Списание баллов (трек referral-balance-spend): по умолчанию списания нет.
+    // Его собственные гарантии проверяет PGlite-сьют `packages/db`; здесь важно
+    // только, что claim зовётся ВНУТРИ той же транзакции.
+    claimBonusSpent: vi.fn(async () => null),
+    appendOrderEvent: vi.fn(async () => {}),
+    BONUS_SPENT_EVENT: 'bonus_spent',
     claimPaymentSucceeded: vi.fn(async () => {
       if (state.forceClaimNull) return null;
       const p = state.byRef ?? state.byInvoiceNumber;

@@ -5,11 +5,17 @@ import {
   getOrderById,
   getOrdersByUserId,
   getOrderEventsByOrderId,
+  getReferralBalanceUsdCents,
   getServiceById,
   getServicesByIds,
   getUserProfileById,
   findCardsByUserIdForCabinet,
   findPaymentsByOrderId,
+  findRedemptionByOrderId,
+  findRedemptionsByOrderIds,
+  BONUS_RELEASED_EVENT,
+  BONUS_RESERVED_EVENT,
+  BONUS_SPENT_EVENT,
   PAYMENT_BLOCKED_CAPACITY_EVENT,
   PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_REMINDER_SENT_EVENT,
@@ -18,6 +24,7 @@ import {
   type OrderEventRow,
   type OrderRow,
   type PaymentRow,
+  type RedemptionRow,
 } from '@oplati/db';
 import {
   servicePaymentInstructions,
@@ -27,6 +34,8 @@ import {
 import { childLogger } from '../logger.ts';
 import { phoneRequirementRub } from '../contacts/phone-gate.ts';
 import { buyerFeePercentForOrder } from '../payments/gateway.ts';
+import { bonusValueKopecks } from '../referral/spend-math.ts';
+import { isBonusSpendEnabled, loadBonusSpendState } from '../referral/spend.ts';
 import { withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
@@ -38,8 +47,10 @@ import {
   type CabinetProfile,
   type CabinetSnapshot,
   type CardView,
+  type OrderBonusView,
   type OrderDetail,
   type OrderEventView,
+  type OrderRedemptionView,
   type OrderSummary,
   type PaymentView,
 } from './types.ts';
@@ -71,6 +82,11 @@ const INTERNAL_EVENT_TYPES = new Set<string>([
   // НАШУ казну (трек vcc-preflight). Клиент свой текст уже получил в ответ на
   // кнопку; строка в истории заказа добавила бы к ней только тревогу.
   PAYMENT_BLOCKED_CAPACITY_EVENT,
+  // Учёт баллов — наш, а не судьба заказа клиента: он видит скидку прямо в
+  // сумме на экране, и «bonus_reserved» в истории добавило бы только вопросы.
+  BONUS_RESERVED_EVENT,
+  BONUS_SPENT_EVENT,
+  BONUS_RELEASED_EVENT,
   'renewal_reminder_sent',
 ]);
 
@@ -92,7 +108,21 @@ function toIso(value: Date | string | null | undefined): string | null {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-function mapOrderSummary(order: OrderRow, serviceName: string | null): OrderSummary {
+/** Живое списание (не возвращённое) в форму витрины; `null` — показывать нечего. */
+function mapRedemption(row: RedemptionRow | null | undefined): OrderRedemptionView | null {
+  if (!row || row.status === 'released') return null;
+  return {
+    discountKopecks: row.discountKopecks,
+    spendUsdCents: row.amountUsdCents,
+    status: row.status,
+  };
+}
+
+function mapOrderSummary(
+  order: OrderRow,
+  serviceName: string | null,
+  bonus: OrderRedemptionView | null = null,
+): OrderSummary {
   return {
     orderId: order.id,
     shortId: order.shortId,
@@ -103,6 +133,7 @@ function mapOrderSummary(order: OrderRow, serviceName: string | null): OrderSumm
     createdAt: order.createdAt.toISOString(),
     expiresAt: toIso(order.expiresAt),
     payable: isPayableStatus(order.status),
+    bonus,
   };
 }
 
@@ -250,8 +281,21 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
     services.map((s) => [s.id, parseInstructions(s.paymentInstructions)]),
   );
 
+  // Списания пачкой (трек referral-balance-spend): строка «−286 ₽ баллами»
+  // нужна в блоке «Ждут оплаты», а запрос на заказ превратил бы снапшот в
+  // N+1. Выключенная фича базу не трогает вовсе, но уже занятые баллы
+  // продолжают показываться — гасить фичу не значит скрыть чужие деньги.
+  const redemptions = await findRedemptionsByOrderIds(
+    db,
+    orders.map((o) => o.id),
+  );
+
   const orderSummaries = orders.map((o) =>
-    mapOrderSummary(o, o.serviceId ? serviceNameById.get(o.serviceId) ?? null : null),
+    mapOrderSummary(
+      o,
+      o.serviceId ? serviceNameById.get(o.serviceId) ?? null : null,
+      mapRedemption(redemptions.get(o.id)),
+    ),
   );
 
   // «Для оплаты: …» на карте — сервис самого свежего заказа этой карты.
@@ -273,6 +317,12 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
   const purchased = orders.filter((o) => PURCHASED_STATUSES.includes(o.status));
   const totalSpentKopecks = purchased.reduce((sum, o) => sum + (o.amountRub ?? 0), 0);
 
+  // Баланс баллов в профиле — только когда фича включена: иначе цифра, которую
+  // некуда потратить, читается как обещание.
+  const bonusBalanceUsdCents = isBonusSpendEnabled()
+    ? await getReferralBalanceUsdCents(db, userId)
+    : null;
+
   const profile: CabinetProfile = {
     displayName: profileRow?.displayName ?? null,
     phone: profileRow?.phone ?? null,
@@ -282,6 +332,9 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
     memberSince: (profileRow?.createdAt ?? new Date()).toISOString(),
     ordersCount: purchased.length,
     totalSpentKopecks,
+    bonusBalanceUsdCents: bonusBalanceUsdCents !== null && bonusBalanceUsdCents > 0
+      ? bonusBalanceUsdCents
+      : null,
   };
 
   return {
@@ -289,6 +342,36 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
     orders: orderSummaries,
     cards: cardsWithLiveBalance.map((c) => mapCard(c, purposeForCard(c.id))),
     phoneRequiredFromRub: phoneRequirementRub(),
+  };
+}
+
+/**
+ * Что показать в блоке баллов на экране заказа. `null` — блока нет.
+ *
+ * Три состояния различает уже UI, и все три выводятся отсюда (§8 спеки):
+ * «есть что списать» (`offer !== null`), «баланс больше потолка»
+ * (`balanceKopecks > capKopecks`) и «баллы копятся» (`offer === null` при
+ * положительном балансе). Числа считает одна и та же математика, что и
+ * `payments/create`, — иначе экран обещал бы одну скидку, а счёт уходил бы на
+ * другую сумму.
+ *
+ * ⚠️ Заказ с уже выставленным счётом предложением ВОСПОЛЬЗОВАТЬСЯ не может:
+ * переставить сумму инвойса мы не умеем (API правки нет ни у Freekassa, ни у
+ * L&P), а второй счёт на заказ запрещён частичным UNIQUE. Блок для него всё
+ * равно считается — но только ради подсказки «отмени заказ и оформи заново»:
+ * без неё она показывалась бы КАЖДОМУ клиенту со счётом, включая тех, у кого
+ * баллов нет вовсе. Скрывать переключатель в этом состоянии — дело экрана.
+ */
+async function buildOrderBonusView(order: OrderRow): Promise<OrderBonusView | null> {
+  if (!isPayableStatus(order.status)) return null;
+  const state = await loadBonusSpendState(order);
+  if (state === null) return null;
+  return {
+    balanceUsdCents: state.balanceUsdCents,
+    balanceKopecks: bonusValueKopecks(state.balanceUsdCents, order.usdtRubRateKopecks ?? 0),
+    capKopecks: state.capKopecks,
+    offer: state.offer,
+    minSpendUsdCents: state.minSpendUsdCents,
   };
 }
 
@@ -302,10 +385,11 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
   const order = await getOrderById(db, orderId);
   if (!order || order.userId !== userId) return null;
 
-  const [events, payments, cards] = await Promise.all([
+  const [events, payments, cards, redemption] = await Promise.all([
     getOrderEventsByOrderId(db, orderId),
     findPaymentsByOrderId(db, orderId),
     findCardsByUserIdForCabinet(db, userId),
+    findRedemptionByOrderId(db, orderId),
   ]);
 
   const service = order.serviceId ? await getServiceById(db, order.serviceId) : null;
@@ -320,7 +404,8 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
   };
 
   return {
-    ...mapOrderSummary(order, serviceName),
+    ...mapOrderSummary(order, serviceName, mapRedemption(redemption)),
+    bonusOffer: await buildOrderBonusView(order),
     originalAmount: order.originalAmount,
     originalCurrency: order.originalCurrency,
     commissionPercent: order.commissionPercent,

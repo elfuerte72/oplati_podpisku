@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation';
 import { getDb, getOrderDetailForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
+import { BonusRefund } from '@/components/panel/BonusRefund';
 import { ManualFulfillment } from '@/components/panel/ManualFulfillment';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
@@ -29,7 +30,12 @@ import {
   isStartedManually,
 } from '@/lib/panel/fulfillment';
 import { panelPageAccess } from '@/lib/panel/guard';
-import { CELL_TEXT, COLUMN_TITLES, SECTION_TITLES } from '@/lib/panel/labels';
+import {
+  CELL_TEXT,
+  COLUMN_TITLES,
+  PANEL_BONUS_TEXT,
+  SECTION_TITLES,
+} from '@/lib/panel/labels';
 import { canAccess } from '@/lib/panel/permissions';
 import { orderShortIdSchema } from '@/lib/panel/order-filters';
 
@@ -142,6 +148,32 @@ export default async function PanelOrderPage({
             <dd>
               <strong>{price.total}</strong>
             </dd>
+            {/* Три числа, которые оператор сверяет с поступлением шлюза:
+                полная цена заказа, погашенное баллами и то, что реально
+                просили у клиента. Без средней строки разница между чеком и
+                поступлением выглядит недоплатой. */}
+            {detail.bonus && detail.bonus.status !== 'released' ? (
+              <>
+                <dt>{PANEL_BONUS_TEXT.redeemed}</dt>
+                <dd>−{formatKopecks(detail.bonus.discountKopecks)}</dd>
+                <dt>{PANEL_BONUS_TEXT.invoiced}</dt>
+                <dd>
+                  <strong>
+                    {formatKopecks(
+                      (order.amountRubKopecks ?? 0) - detail.bonus.discountKopecks,
+                    )}
+                  </strong>
+                </dd>
+              </>
+            ) : null}
+            {detail.bonus && detail.bonus.status === 'released' ? (
+              <>
+                <dt>{PANEL_BONUS_TEXT.redeemed}</dt>
+                <dd className="panel-muted">
+                  {PANEL_BONUS_TEXT.returned(formatKopecks(detail.bonus.discountKopecks))}
+                </dd>
+              </>
+            ) : null}
             {price.note ? (
               <>
                 <dt>Внимание</dt>
@@ -181,6 +213,29 @@ export default async function PanelOrderPage({
           )}
         </section>
       </div>
+
+      {/* Возврат баллов (трек referral-balance-spend, тикет 08). Кнопка живёт
+          только там, где решение осмысленно: заказ провалился, а часть суммы
+          клиент погасил баллами и они всё ещё у нас. Возврат при `failed` —
+          решение человека, а не правило: `failed` не значит «деньги вернули». */}
+      {canAccess(access.actor.role, 'fulfillment') &&
+      order.status === 'failed' &&
+      detail.bonus &&
+      detail.bonus.status !== 'released' ? (
+        <section className="panel-card" style={{ marginTop: 16 }}>
+          <h2 className="panel-title">{PANEL_BONUS_TEXT.refundTitle}</h2>
+          <p className="panel-muted">{PANEL_BONUS_TEXT.refundHint}</p>
+          <dl className="panel-dl">
+            <dt>{PANEL_BONUS_TEXT.redeemed}</dt>
+            <dd>{formatKopecks(detail.bonus.discountKopecks)}</dd>
+            <dt>{PANEL_BONUS_TEXT.spentAt}</dt>
+            <dd>
+              <LocalTime iso={detail.bonus.reservedAt.toISOString()} />
+            </dd>
+          </dl>
+          <BonusRefund shortId={order.shortId} />
+        </section>
+      ) : null}
 
       {/* Ручное исполнение (тикет 06). Кнопка появляется ТОЛЬКО в подходящем
           статусе: разметка действия, которое сервер всё равно отвергнет, лишь

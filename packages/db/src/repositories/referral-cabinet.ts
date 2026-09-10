@@ -10,6 +10,7 @@ import {
 
 import type { DB } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
+import { balanceExpr } from './referral-accruals.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
 /**
@@ -321,8 +322,14 @@ export type CreateReferralPayoutOptions = {
  * Раньше баланс читался отдельным запросом ПЕРЕД вставкой — две параллельные
  * заявки могли обе пройти проверку до коммита друг друга и обе вставиться
  * (перевывод/порча ledger'а). Теперь вторая заявка ждёт коммита первой, видит её
- * `requested`-строку в балансе и корректно отклоняется. Баланс считается тем же
- * выражением, что `getReferralBalanceUsdCents` (канон), но внутри транзакции.
+ * `requested`-строку в балансе и корректно отклоняется.
+ *
+ * ⚠️ Баланс считается ОБЩИМ `balanceExpr` — не копией формулы. Копия здесь жила
+ * до трека referral-balance-spend и была бы прямой дырой в нём: списание баллов
+ * под заказ вычитается только в `balanceExpr`, и заявка на вывод по старой
+ * формуле не видела бы занятых центов — партнёр занял бы их под заказ и подал
+ * ТЕ ЖЕ деньги на вывод. Лок здесь и в `reserveBonusForOrder` — один и тот же
+ * ключ (`hashtext(userId)`), поэтому вывод и списание сериализуются между собой.
  * `amount_usd_cents` — брутто (вычитается из баланса); net = amount − fee уходит
  * партнёру. CHECK `amount > 0` в схеме — последний рубеж.
  */
@@ -337,20 +344,7 @@ export async function createReferralPayout(
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId})::bigint)`);
 
     const balRows = await tx.execute<{ balance: string | number }>(sql`
-      SELECT (
-        COALESCE((
-          SELECT SUM(amount_usd_cents) FROM referral_accruals
-          WHERE beneficiary_user_id = ${userId} AND status = 'accrued'
-        ), 0)
-        - COALESCE((
-          SELECT SUM(amount_usd_cents) FROM referral_accruals
-          WHERE beneficiary_user_id = ${userId} AND status = 'reversed'
-        ), 0)
-        - COALESCE((
-          SELECT SUM(amount_usd_cents) FROM referral_payouts
-          WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')
-        ), 0)
-      )::bigint AS balance
+      SELECT ${balanceExpr(userId)}::bigint AS balance
     `);
     const balanceUsdCents = Number(balRows[0]?.balance ?? 0);
     if (amountUsdCents > balanceUsdCents) {

@@ -10,6 +10,9 @@ vi.mock('../logger.ts', () => ({
 vi.mock('@sentry/nextjs', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 vi.mock('../alerts/notify-ops.ts', () => ({ notifyOps: vi.fn(async () => {}) }));
+vi.mock('../alerts/notify-staff.ts', () => ({
+  notifyStaff: vi.fn(async () => ({ delivered: 1, failed: 0, deduped: false })),
+}));
 
 type Missing = { orderId: string; paymentId: string };
 const dbState = vi.hoisted(() => ({
@@ -17,6 +20,14 @@ const dbState = vi.hoisted(() => ({
   unreversed: [] as { orderId: string; status: string }[],
   negative: [] as { userId: string; balanceUsdCents: number }[],
   underpaid: [] as { orderId: string; status: string }[],
+  staleBonus: [] as {
+    orderId: string;
+    shortId: string;
+    userId: string;
+    amountUsdCents: number;
+    discountKopecks: number;
+    reservedAt: Date;
+  }[],
   throwOnStaleSelect: false,
 }));
 const reverseState = vi.hoisted(() => ({ throwOn: new Set<string>() }));
@@ -29,6 +40,7 @@ vi.mock('@oplati/db', () => ({
   }),
   findPurchasedOrdersWithReversedAccruals: vi.fn(async () => dbState.underpaid),
   findNegativeReferralBalances: vi.fn(async () => dbState.negative),
+  findFailedOrdersWithLiveBonus: vi.fn(async () => dbState.staleBonus),
   // Репозиторий зовётся напрямую: он БРОСАЕТ при сбое БД, и крон обязан это
   // увидеть (graceful-обёртка вернула бы 0 и спрятала аварию).
   reverseAccrualsForOrder: vi.fn(async (_db: unknown, orderId: string) => {
@@ -51,6 +63,7 @@ import {
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 import * as db from '@oplati/db';
 import { notifyOps } from '../alerts/notify-ops.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 
 describe('recoverReferralAccruals', () => {
   beforeEach(() => {
@@ -60,6 +73,7 @@ describe('recoverReferralAccruals', () => {
     dbState.unreversed = [];
     dbState.negative = [];
     dbState.underpaid = [];
+    dbState.staleBonus = [];
     dbState.throwOnStaleSelect = false;
     accrueState.throwOn = new Set();
     reverseState.throwOn = new Set();
@@ -246,5 +260,53 @@ describe('recoverReferralAccruals', () => {
 
     expect(res.errors).toBe(1);
     expect(res.reversed).toBe(1);
+  });
+});
+
+/**
+ * Сторож зависших списаний (решения Q10/Q17). Возврат баллов при `failed` —
+ * решение оператора, и оно может потеряться: крон о нём напоминает.
+ */
+describe('сторож списанных баллов на провалившихся заказах', () => {
+  const stale = {
+    orderId: 'o-bonus',
+    shortId: 'ORD-B1',
+    userId: 'u1',
+    amountUsdCents: 354,
+    discountKopecks: 28_600,
+    reservedAt: new Date('2026-09-01T00:00:00Z'),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.missing = [];
+    dbState.unreversed = [];
+    dbState.negative = [];
+    dbState.underpaid = [];
+    dbState.staleBonus = [];
+    resetReferralRecoveryAlertDedupForTests();
+  });
+
+  it('напоминает персоналу один раз в сутки на заказ', async () => {
+    dbState.staleBonus = [stale];
+
+    await recoverReferralAccruals();
+    await recoverReferralAccruals();
+
+    expect(notifyStaff).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(notifyStaff).mock.calls[0]?.[1]).toMatchObject({ capability: 'orders' });
+  });
+
+  it('нет зависших списаний — нет ни одного уведомления', async () => {
+    await recoverReferralAccruals();
+    expect(notifyStaff).not.toHaveBeenCalled();
+  });
+
+  it('сбой сторожа не роняет прогон и считается ошибкой', async () => {
+    vi.mocked(db.findFailedOrdersWithLiveBonus).mockRejectedValueOnce(new Error('boom'));
+
+    const result = await recoverReferralAccruals();
+
+    expect(result.errors).toBe(1);
   });
 });

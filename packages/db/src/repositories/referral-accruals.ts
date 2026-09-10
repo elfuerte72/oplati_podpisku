@@ -102,7 +102,8 @@ export async function insertCommissionAccruals(
 
 /**
  * Формула доступного баланса партнёра одним SQL-фрагментом:
- *   начислено − отменено − выводы (`requested|processing|paid`).
+ *   начислено − отменено − выводы (`requested|processing|paid`) − списания в
+ *   счёт своих заказов (трек referral-balance-spend).
  *
  * Единственное определение на весь код: до этого та же арифметика жила в
  * `getReferralBalanceUsdCents` и дважды внутри выборки отрицательных балансов —
@@ -112,6 +113,26 @@ export async function insertCommissionAccruals(
  * `sql\`p.user_id\`` для ссылки на колонку внешнего запроса. Тип сужен с
  * `unknown` (находка ревью): `unknown` не проверял ничего и позволял передать
  * в денежный фрагмент что угодно.
+ *
+ * ⚠️ Списания вычитаются ПРАВИЛОМ, а не отдельным вызовом отмены:
+ *
+ *   - `released` не считается никогда — баллы уже вернули (системный откат
+ *     несостоявшегося счёта или решение оператора);
+ *   - `reserved` под заказом в `expired`/`cancelled` не считается тоже: это
+ *     состояния «денег не приходило», и резерв обязан рассосаться сам. Точек
+ *     захоронения заказа много (крон, отмена клиентом, гейт фиксации цены), и
+ *     забытая означала бы молча сожжённые баллы клиента. Тот же приём, что у
+ *     `vcc_fund_reservations`.
+ *
+ * ⚠️ `failed`/`refunded` в автоправило НЕ входят, и это не пропуск. `failed` не
+ * синоним «деньги вернули» — туда же попадают недоплата и отвергнутый счёт, а
+ * дальше человек решает: вернуть деньги или выдать карту руками
+ * (`failed → in_fulfillment → completed`). Автовозврат оттуда — единственный
+ * путь к ОТРИЦАТЕЛЬНОМУ балансу: ручная выдача списала бы баллы повторно, а
+ * клиент успел бы потратить их на другом заказе. `refunded` не подходит по
+ * другой причине: этот статус в проде не ставит никто (ни одна операция панели,
+ * только интеграционный тест), то есть «вернём при refunded» означало бы «не
+ * вернём никогда». Возврат при `failed` — кнопка оператора.
  */
 export function balanceExpr(userId: SQL | string) {
   return sql`(
@@ -121,12 +142,18 @@ export function balanceExpr(userId: SQL | string) {
                 WHERE beneficiary_user_id = ${userId} AND status = 'reversed'), 0)
     - COALESCE((SELECT SUM(amount_usd_cents) FROM referral_payouts
                 WHERE user_id = ${userId} AND status IN ('requested', 'processing', 'paid')), 0)
+    - COALESCE((SELECT SUM(r.amount_usd_cents) FROM referral_redemptions r
+                JOIN orders o ON o.id = r.order_id
+                WHERE r.user_id = ${userId}
+                  AND r.status <> 'released'
+                  AND NOT (r.status = 'reserved' AND o.status IN ('expired', 'cancelled'))), 0)
   )`;
 }
 
 /**
  * Доступный к выводу баланс партнёра (USD-центы):
- *   начислено (accrued) − реверснуто (reversed) − выводы (requested|processing|paid).
+ *   начислено (accrued) − реверснуто (reversed) − выводы (requested|processing|paid)
+ *   − живые списания в счёт своих заказов.
  *
  * - `reversed` вычитается (находка ревью): reversal по контракту — НОВАЯ строка
  *   status='reversed' той же суммы (append-only, исходная остаётся 'accrued'),

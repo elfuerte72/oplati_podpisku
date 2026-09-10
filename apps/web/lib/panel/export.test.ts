@@ -12,6 +12,7 @@ const order = {
   shortId: 'ORD-WX7S4',
   status: 'completed' as const,
   amountRubKopecks: 367200,
+  bonusDiscountKopecks: 0,
   createdAt: new Date('2026-09-02T14:34:00Z'),
   expiresAt: null,
   serviceName: 'HeyGen',
@@ -39,7 +40,21 @@ describe('exportOrderRow', () => {
   it('время — ISO, а не местное', () => {
     // Файл читают в разных местах: «02.09.26, 14:34» без зоны означает разное
     // время у разных людей.
-    expect(exportOrderRow(order)[7]).toBe('2026-09-02T14:34:00.000Z');
+    expect(exportOrderRow(order)[8]).toBe('2026-09-02T14:34:00.000Z');
+  });
+
+  it('погашение баллами — отдельная колонка, а не вычет из суммы', () => {
+    // В таблице складывают обе колонки: выручка деньгами должна считаться без
+    // ручной арифметики, а «сколько отдали баллами» — видеться отдельно.
+    const row = exportOrderRow({ ...order, bonusDiscountKopecks: 28_600 });
+
+    expect(row[3]).toBe('3672,00');
+    expect(row[4]).toBe('286,00');
+  });
+
+  it('заказ без списания оставляет колонку пустой, а не «0,00»', () => {
+    // Ноль в колонке денег читается как факт списания на ноль.
+    expect(exportOrderRow(order)[4]).toBe('');
   });
 
   it('пустые поля остаются пустыми, а не превращаются в слова', () => {
@@ -53,8 +68,8 @@ describe('exportOrderRow', () => {
 
     expect(row[2]).toBe('');
     expect(row[3]).toBe('');
-    expect(row[4]).toBe('');
-    expect(row[8]).toBe('');
+    expect(row[5]).toBe('');
+    expect(row[9]).toBe('');
   });
 });
 

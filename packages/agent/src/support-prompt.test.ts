@@ -21,6 +21,7 @@ const facts: SupportFacts = {
   invoiceTtlHours: 1,
   operatorHours: { fromHour: 10, toHour: 22, tzLabel: 'МСК' },
   phoneRequiredFromRub: 10000,
+  bonusSpend: { minSpendUsdCents: 100, minPayoutUsdCents: 1300 },
 };
 
 describe('buildSupportSystemPrompt — динамические факты', () => {
@@ -122,5 +123,39 @@ describe('buildSupportSystemPrompt — правила разговора', () =>
 
   it('статус заказа — только по инструменту', () => {
     expect(text).toContain('ТОЛЬКО по результату\nинструмента');
+  });
+});
+
+/**
+ * Списание реферальных баллов (трек referral-balance-spend). Помощник обязан
+ * объяснить ПРАВИЛА — где кнопка, почему списалось меньше, почему нельзя после
+ * счёта, — и ни при каких обстоятельствах не назвать потолок: он равен нашей
+ * комиссии по заказу, а комиссия в денилисте §5.
+ */
+describe('buildSupportKnowledgeBase — списание баллов', () => {
+  it('включённая фича объясняет кнопку, минимум и правило «до счёта»', () => {
+    const text = buildSupportKnowledgeBase(facts);
+
+    expect(text).toContain('Списать баллы');
+    expect(text).toContain('$1');
+    expect(text).toContain('отменя');
+  });
+
+  it('минимум ВЫВОДА берётся из фактов и отличается от минимума списания', () => {
+    const text = buildSupportKnowledgeBase({
+      ...facts,
+      bonusSpend: { minSpendUsdCents: 100, minPayoutUsdCents: 1300 },
+    });
+    expect(text).toContain('$13');
+  });
+
+  it('выключенная фича не упоминается вовсе — объяснять кнопку, которой нет, нельзя', () => {
+    const text = buildSupportKnowledgeBase({ ...facts, bonusSpend: null });
+    expect(text).not.toContain('Списать баллы');
+  });
+
+  it('потолок скидки не раскрывается: это наша комиссия', () => {
+    const text = buildSupportKnowledgeBase(facts);
+    expect(text).not.toContain('комисси');
   });
 });

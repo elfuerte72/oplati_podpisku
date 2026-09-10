@@ -67,7 +67,7 @@ letsencrypt`, и только потом публиковать.
 
 Выдано `SELECT` на: `orders`, `order_events`, `services`, `ai_usage_daily`,
 `cards`, `conversations`, `referral_accruals`, `referral_monthly_stats`,
-`referral_partners`, `vpn_subscriptions`, `staff`; на `payments` — без
+`referral_partners`, `referral_redemptions`, `vpn_subscriptions`, `staff`; на `payments` — без
 `raw_payload`; на `users` — только `id`, `language`, `created_at`, `updated_at`,
 `referred_by`, `referral_code`, `referred_by_set_at`; на `referral_payouts` — без
 `destination`.

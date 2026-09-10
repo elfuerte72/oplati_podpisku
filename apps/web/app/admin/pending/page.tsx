@@ -108,6 +108,11 @@ export default async function PanelPendingPage({
                     <td data-label={COLUMN_TITLES.service}>{item.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(item.amountRubKopecks)}
+                      {item.bonusDiscountKopecks > 0 && (
+                        <div className="panel-muted">
+                          −{formatKopecks(item.bonusDiscountKopecks)} {CELL_TEXT.bonusPaid}
+                        </div>
+                      )}
                     </td>
                     <td data-label={COLUMN_TITLES.status}>
                       <span className={STATUS_TONE_CLASS[orderStatusTone(item.status)]}>

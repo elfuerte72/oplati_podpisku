@@ -24,6 +24,21 @@ const orderSummarySchema = z.object({
   createdAt: z.string(),
   expiresAt: z.string().nullable(),
   payable: z.boolean(),
+  /**
+   * Списание реферальных баллов по заказу; null — списания нет.
+   *
+   * ⚠️ `amountKopecks` остаётся ПОЛНОЙ ценой; к оплате идёт разница. Поле
+   * необязательное: старый WebView-бандл о нём не знает, а новый обязан
+   * пережить снапшот деплоя, где фичи ещё нет.
+   */
+  bonus: z
+    .object({
+      discountKopecks: z.number().int().positive(),
+      spendUsdCents: z.number().int().positive(),
+      status: z.string(),
+    })
+    .nullable()
+    .optional(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */
@@ -67,6 +82,8 @@ const profileSchema = z.object({
   memberSince: z.string(),
   ordersCount: z.number(),
   totalSpentKopecks: z.number(),
+  /** Баланс реферальных баллов, USD-центы; null — фича клиента не касается. */
+  bonusBalanceUsdCents: z.number().int().nullable().optional(),
 });
 
 const snapshotSchema = z.object({
@@ -98,6 +115,26 @@ const orderDetailSchema = orderSummarySchema.extend({
   events: z.array(eventViewSchema),
   payments: z.array(paymentViewSchema),
   card: cardViewSchema.nullable(),
+  /**
+   * Что предложить списать баллами на этом экране; null — блока нет.
+   * `.optional()` по той же причине, что у `bonus`: бандл переживает снапшот
+   * деплоя без фичи.
+   */
+  bonusOffer: z
+    .object({
+      balanceUsdCents: z.number().int(),
+      balanceKopecks: z.number().int(),
+      capKopecks: z.number().int(),
+      offer: z
+        .object({
+          discountKopecks: z.number().int().positive(),
+          spendUsdCents: z.number().int().positive(),
+        })
+        .nullable(),
+      minSpendUsdCents: z.number().int().positive(),
+    })
+    .nullable()
+    .optional(),
 });
 
 const orderDetailResponseSchema = z.object({ ok: z.literal(true), order: orderDetailSchema });
@@ -233,15 +270,19 @@ export async function doPay(
   initData: string,
   orderId: string,
   contacts?: { email?: string; phone?: string },
+  opts?: { useBonus?: boolean },
 ): Promise<PayResult> {
   // Контакты — из плашки (тикеты 02/05): сервер сохранит их в профиль ДО
   // выставления счёта (гейты email_required/phone_required читают профиль).
+  // `useBonus` — только «да/нет»: сколько именно списать, решает сервер той же
+  // математикой, что посчитала предложение на экране.
   const resp = await callCabinet({
     action: 'pay',
     initData,
     orderId,
     ...(contacts?.email !== undefined ? { email: contacts.email } : {}),
     ...(contacts?.phone !== undefined ? { phone: contacts.phone } : {}),
+    ...(opts?.useBonus ? { useBonus: true } : {}),
   });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return withMessage(parsed.data);

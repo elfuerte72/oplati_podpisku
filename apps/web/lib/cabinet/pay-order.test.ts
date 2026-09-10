@@ -135,3 +135,50 @@ describe('payOrder — карту выпустить нечем (тикет 02 v
     expect(message).not.toMatch(/баланс|фонд|PaySpace/i);
   });
 });
+
+/**
+ * Списание баллов (трек referral-balance-spend): кабинет передаёт только
+ * «да/нет», а сколько именно списать решает сервер той же математикой, что
+ * посчитала предложение на экране.
+ */
+describe('payOrder — списание баллов', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.state.order = { id: 'o1', userId: 'u1', status: 'ready_for_payment' };
+    h.state.pendingPayment = null;
+    h.confirmOrderMock.mockResolvedValue({
+      paymentUrl: 'https://pay.example/new',
+      qrPayload: null,
+      expiresAt: '2026-07-20T00:00:00.000Z',
+    });
+  });
+
+  it('переключатель включён — флаг доезжает до confirm_order', async () => {
+    await payOrder('u1', 'o1', { useBonus: true });
+
+    expect(h.confirmOrderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: 'o1', useBonus: true }),
+    );
+  });
+
+  it('переключатель выключен — флага в запросе нет вовсе', async () => {
+    await payOrder('u1', 'o1');
+
+    expect(h.confirmOrderMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ useBonus: expect.anything() }),
+    );
+  });
+
+  it('баллы занять не удалось — понятный текст и НЕТ платёжной ссылки', async () => {
+    // Счёт не выставлен намеренно: полный вместо обещанного со скидкой был бы
+    // обманом. Экран должен позвать обновиться, а не «попробовать ещё раз».
+    const { BonusUnavailableError } = await import('../tool-handlers/confirm-order.ts');
+    h.confirmOrderMock.mockRejectedValue(new BonusUnavailableError(12));
+
+    const res = await payOrder('u1', 'o1', { useBonus: true });
+
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.error).toBe('bonus_unavailable');
+    expect(!res.ok && res.message).toContain('Обнови экран');
+  });
+});

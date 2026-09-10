@@ -3,6 +3,9 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  appendOrderEvent,
+  BONUS_SPENT_EVENT,
+  claimBonusSpent,
   claimPaymentSucceeded,
   claimPaymentTerminal,
   findPaymentByProviderRef,
@@ -224,6 +227,25 @@ export async function processInvoicePaid(input: InvoicePaidInput): Promise<Handl
         extra: { orderId: payment.orderId, invoiceId: data.id, invoiceNumber: data.invoiceNumber },
       });
       return { claimed: true, paidOk: false };
+    }
+
+    // Списание реферальных баллов: `reserved → spent` В ЭТОЙ ЖЕ транзакции
+    // (трек referral-balance-spend, §6). Отдельным вызовом после неё появилось
+    // бы окно «заказ оплачен, а списание всё ещё выглядит возвращаемым» — и
+    // клиент успел бы отменить заказ, вернув баллы за оплаченную покупку.
+    // Ноль строк — идемпотентный повтор вебхука, эффектов нет.
+    const bonus = await claimBonusSpent(tx, payment.orderId);
+    if (bonus) {
+      await appendOrderEvent(tx, {
+        orderId: payment.orderId,
+        eventType: BONUS_SPENT_EVENT,
+        actorType: 'payment_provider',
+        payload: {
+          spendUsdCents: bonus.amountUsdCents,
+          discountKopecks: bonus.discountKopecks,
+          paymentId: payment.id,
+        },
+      });
     }
     return { claimed: true, paidOk: true };
   });

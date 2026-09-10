@@ -89,6 +89,16 @@ import {
   findReferralPayoutForPanel,
   transitionReferralPayout,
 } from './repositories/referral-cabinet.ts';
+import {
+  claimBonusSpent,
+  findFailedOrdersWithLiveBonus,
+  findRedemptionByOrderId,
+  findRedemptionsByOrderIds,
+  findSelfReferralSignals,
+  releaseBonusReservation,
+  reserveBonusForOrder,
+  sumBonusRedeemedKopecks,
+} from './repositories/referral-redemptions.ts';
 import { getMonthlyRollupInput } from './repositories/referral-progression.ts';
 import {
   findActiveByUserId,
@@ -5583,5 +5593,408 @@ describe('lockOrderForUpdate (отмена заказа клиентом, рев
     );
 
     expect(missing).toBeNull();
+  });
+});
+
+describe('referral_redemptions (списание баллов в счёт заказа)', () => {
+  /** Партнёр с начислением на `amountUsdCents` и его собственный заказ к оплате. */
+  async function makePartnerWithBalance(amountUsdCents = 1000) {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+    await claimPaymentSucceeded(db, { paymentId: payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: buyer.id,
+      orderId: order.id,
+      paymentId: payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents }],
+    });
+    return partner;
+  }
+
+  /** Собственный заказ партнёра, готовый к оплате. */
+  async function makePayableOrder(userId: string, amountRub = 200_800) {
+    return createDraftOrder(db, {
+      userId,
+      status: 'ready_for_payment',
+      customServiceDescription: 'bonus-spend order',
+      amountRub,
+      originalAmount: 1599,
+      originalCurrency: 'USD',
+      usdtRubRateKopecks: 810_000,
+      cardIssueFeeKopecks: 32_400,
+    });
+  }
+
+  const RESERVE = { spendUsdCents: 354, discountKopecks: 28_600, rateKopecks: 810_000 };
+
+  it('резерв уменьшает баланс, а его возврат — восстанавливает', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+    const res = await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    expect(res).toEqual({ ok: true, balanceUsdCents: 646 });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(646);
+
+    const released = await releaseBonusReservation(db, { orderId: order.id });
+    expect(released.applied).toBe(true);
+    expect(released.redemption?.amountUsdCents).toBe(354);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+
+    // Повторный возврат идемпотентен — не «вернуть дважды», а «уже вернули».
+    expect((await releaseBonusReservation(db, { orderId: order.id })).applied).toBe(false);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+  });
+
+  it('баллы возвращаются САМИ при expired и cancelled — и только при них', async () => {
+    // Правило спеки §2: автоматика там, где денег не было. Точек захоронения
+    // заказа много, и забытая означала бы молча сожжённые баллы клиента.
+    for (const status of ['expired', 'cancelled']) {
+      const partner = await makePartnerWithBalance(1000);
+      const order = await makePayableOrder(partner.id);
+      await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+      expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(646);
+
+      await db.execute(sql`UPDATE orders SET status = ${status} WHERE id = ${order.id}`);
+      expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+    }
+  });
+
+  it('при failed / refund_requested / paid / in_fulfillment баллы НЕ возвращаются', async () => {
+    // `failed` не синоним «деньги вернули»: туда же попадают недоплата и
+    // отвергнутый счёт. Автовозврат оттуда — единственный путь к
+    // отрицательному балансу (ручная выдача списала бы баллы повторно).
+    for (const status of ['failed', 'refund_requested', 'paid', 'in_fulfillment']) {
+      const partner = await makePartnerWithBalance(1000);
+      const order = await makePayableOrder(partner.id);
+      await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+
+      await db.execute(sql`UPDATE orders SET status = ${status} WHERE id = ${order.id}`);
+      expect(await getReferralBalanceUsdCents(db, partner.id), status).toBe(646);
+    }
+  });
+
+  it('claim reserved→spent срабатывает ровно один раз', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+
+    const first = await claimBonusSpent(db, order.id);
+    expect(first?.status).toBe('spent');
+    expect(first?.settledAt).toBeInstanceOf(Date);
+    // Повтор вебхука — ноль строк, эффектов нет.
+    expect(await claimBonusSpent(db, order.id)).toBeNull();
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(646);
+  });
+
+  it('оплаченное списание тоже возвращается кнопкой оператора, с автором', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    await claimBonusSpent(db, order.id);
+    const operator = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-bonus-${++seq}`,
+      email: `staff-bonus-${seq}@example.com`,
+      displayName: 'Оператор',
+      role: 'operator',
+    });
+
+    const released = await releaseBonusReservation(db, {
+      orderId: order.id,
+      releasedBy: operator.id,
+    });
+    expect(released.applied).toBe(true);
+    expect(released.redemption?.releasedBy).toBe(operator.id);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+  });
+
+  it('после возврата оператором ручная выдача НЕ списывает баллы повторно', async () => {
+    // Списание живёт только на пути оплаты. Автовозврат из `failed` был бы
+    // единственным путём к отрицательному балансу ровно из-за этого сценария:
+    // оператор вернул баллы, потом довёл заказ до выдачи руками.
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    await claimBonusSpent(db, order.id);
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${order.id}`);
+
+    const operator = await upsertStaffByTelegramId(db, {
+      telegramId: `staff-manual-${++seq}`,
+      email: `staff-manual-${seq}@example.com`,
+      displayName: 'Оператор',
+      role: 'operator',
+    });
+    await releaseBonusReservation(db, { orderId: order.id, releasedBy: operator.id });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+
+    // Ручная выдача: `failed → in_fulfillment → completed`.
+    await db.execute(sql`UPDATE orders SET status = 'in_fulfillment' WHERE id = ${order.id}`);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+    await db.execute(sql`UPDATE orders SET status = 'completed' WHERE id = ${order.id}`);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(1000);
+
+    // Возвращённая строка обратно в `spent` сама не уходит.
+    expect((await findRedemptionByOrderId(db, order.id))?.status).toBe('released');
+    expect(await claimBonusSpent(db, order.id)).toBeNull();
+  });
+
+  it('повторное занятие того же заказа не создаёт вторую строку', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+
+    expect((await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE })).ok).toBe(true);
+    const again = await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    expect(again.ok).toBe(false);
+    // Отдаём ИМЕННО занятую строку: вызывающий обязан выставить счёт на ту
+    // сумму, которая реально занята, а не на свежепосчитанную.
+    expect(again).toMatchObject({
+      reason: 'already_reserved',
+      balanceUsdCents: 646,
+      existing: { amountUsdCents: 354, discountKopecks: 28_600, status: 'reserved' },
+    });
+
+    const rows = await db.execute<{ count: string | number }>(
+      sql`SELECT COUNT(*)::int AS count FROM referral_redemptions WHERE order_id = ${order.id}`,
+    );
+    expect(Number(rows[0]?.count)).toBe(1);
+  });
+
+  it('снятое системой занятие воскрешается — повторная оплата не теряет право на скидку', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    // Сбой шлюза: payments/create снял занятие в catch.
+    await releaseBonusReservation(db, { orderId: order.id });
+
+    const retry = await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+    expect(retry).toEqual({ ok: true, balanceUsdCents: 646 });
+    const row = await findRedemptionByOrderId(db, order.id);
+    expect(row?.status).toBe('reserved');
+    expect(row?.releasedBy).toBeNull();
+    expect(row?.settledAt).toBeNull();
+  });
+
+  it('занятие сверх баланса отклоняется с АКТУАЛЬНЫМ балансом', async () => {
+    const partner = await makePartnerWithBalance(200);
+    const order = await makePayableOrder(partner.id);
+
+    const res = await reserveBonusForOrder(db, {
+      orderId: order.id,
+      userId: partner.id,
+      spendUsdCents: 354,
+      discountKopecks: 28_600,
+      rateKopecks: 810_000,
+    });
+    expect(res).toEqual({ ok: false, reason: 'insufficient_balance', balanceUsdCents: 200 });
+    expect(await findRedemptionByOrderId(db, order.id)).toBeNull();
+  });
+
+  it('два занятия на РАЗНЫЕ заказы одного партнёра суммарно не превышают баланс', async () => {
+    const partner = await makePartnerWithBalance(500);
+    const [a, b] = await Promise.all([makePayableOrder(partner.id), makePayableOrder(partner.id)]);
+
+    const results = await Promise.all([
+      reserveBonusForOrder(db, {
+        orderId: a.id,
+        userId: partner.id,
+        spendUsdCents: 400,
+        discountKopecks: 32_400,
+        rateKopecks: 810_000,
+      }),
+      reserveBonusForOrder(db, {
+        orderId: b.id,
+        userId: partner.id,
+        spendUsdCents: 400,
+        discountKopecks: 32_400,
+        rateKopecks: 810_000,
+      }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(100);
+  });
+
+  it('занятие и заявка на вывод сериализуются одним локом — вместе не превышают баланс', async () => {
+    // Тот же ключ `hashtext(userId)`, что в createReferralPayout. Без общего
+    // лока (и без общего balanceExpr) партнёр занял бы центы под заказ и подал
+    // ТЕ ЖЕ деньги на вывод.
+    const partner = await makePartnerWithBalance(500);
+    const order = await makePayableOrder(partner.id);
+
+    const [reserve, payout] = await Promise.all([
+      reserveBonusForOrder(db, {
+        orderId: order.id,
+        userId: partner.id,
+        spendUsdCents: 400,
+        discountKopecks: 32_400,
+        rateKopecks: 810_000,
+      }),
+      createReferralPayout(db, { userId: partner.id, amountUsdCents: 400 }),
+    ]);
+    expect([reserve.ok, payout.ok].filter(Boolean)).toHaveLength(1);
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(100);
+  });
+
+  it('заявка на вывод видит занятые под заказ центы', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: order.id, userId: partner.id, ...RESERVE });
+
+    const payout = await createReferralPayout(db, { userId: partner.id, amountUsdCents: 1000 });
+    expect(payout).toEqual({ ok: false, reason: 'insufficient_balance', balanceUsdCents: 646 });
+  });
+
+  it('отрицательный баланс ловится тем же выражением — новый источник вычитания в нём', async () => {
+    const partner = await makePartnerWithBalance(500);
+    const order = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, {
+      orderId: order.id,
+      userId: partner.id,
+      spendUsdCents: 500,
+      discountKopecks: 40_500,
+      rateKopecks: 810_000,
+    });
+    // Заказ реферала провалился — начисление гасится, а списание остаётся.
+    const accrualOrder = await db.execute<{ order_id: string }>(
+      sql`SELECT order_id FROM referral_accruals WHERE beneficiary_user_id = ${partner.id} LIMIT 1`,
+    );
+    const accrualOrderId = firstOf(accrualOrder, 'accrual order').order_id;
+    await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${accrualOrderId}`);
+    await reverseAccrualsForOrder(db, accrualOrderId);
+
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(-500);
+    const negatives = await findNegativeReferralBalances(db, 50);
+    expect(negatives.map((n) => n.userId)).toContain(partner.id);
+  });
+
+  it('сторож видит failed-заказ с живым списанием и не видит возвращённое', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const stale = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: stale.id, userId: partner.id, ...RESERVE });
+    await claimBonusSpent(db, stale.id);
+    await db.execute(sql`
+      UPDATE orders SET status = 'failed' WHERE id = ${stale.id}
+    `);
+    await db.execute(sql`
+      UPDATE referral_redemptions SET reserved_at = now() - interval '5 days' WHERE order_id = ${stale.id}
+    `);
+
+    const found = await findFailedOrdersWithLiveBonus(db, {
+      olderThanMs: 3 * 24 * 60 * 60 * 1000,
+      limit: 50,
+    });
+    expect(found.map((f) => f.orderId)).toContain(stale.id);
+
+    await releaseBonusReservation(db, { orderId: stale.id, releasedBy: null });
+    const after = await findFailedOrdersWithLiveBonus(db, {
+      olderThanMs: 3 * 24 * 60 * 60 * 1000,
+      limit: 50,
+    });
+    expect(after.map((f) => f.orderId)).not.toContain(stale.id);
+  });
+
+  it('погашено баллами за период считает только spent и по моменту оплаты', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const paidOrder = await makePayableOrder(partner.id);
+    const reservedOrder = await makePayableOrder(partner.id);
+    await reserveBonusForOrder(db, { orderId: paidOrder.id, userId: partner.id, ...RESERVE });
+    await reserveBonusForOrder(db, {
+      orderId: reservedOrder.id,
+      userId: partner.id,
+      spendUsdCents: 100,
+      discountKopecks: 8_100,
+      rateKopecks: 810_000,
+    });
+    await claimBonusSpent(db, paidOrder.id);
+
+    const since = new Date(Date.now() - 60 * 60 * 1000);
+    const until = new Date(Date.now() + 60 * 60 * 1000);
+    const sum = await sumBonusRedeemedKopecks(db, { since, until });
+    expect(sum.discountKopecks).toBeGreaterThanOrEqual(28_600);
+    expect(sum.orders).toBeGreaterThanOrEqual(1);
+
+    // Окно полуоткрытое: период до сегодняшнего дня погашения не видит.
+    const past = await sumBonusRedeemedKopecks(db, {
+      since: new Date(Date.now() - 48 * 60 * 60 * 1000),
+      until: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    });
+    expect(past).toEqual({ discountKopecks: 0, orders: 0 });
+  });
+
+  it('пачка списаний по списку заказов — один запрос', async () => {
+    const partner = await makePartnerWithBalance(1000);
+    const [a, b] = await Promise.all([makePayableOrder(partner.id), makePayableOrder(partner.id)]);
+    await reserveBonusForOrder(db, {
+      orderId: a.id,
+      userId: partner.id,
+      spendUsdCents: 100,
+      discountKopecks: 8_100,
+      rateKopecks: 810_000,
+    });
+
+    const map = await findRedemptionsByOrderIds(db, [a.id, b.id]);
+    expect(map.get(a.id)?.amountUsdCents).toBe(100);
+    expect(map.has(b.id)).toBe(false);
+    expect(await findRedemptionsByOrderIds(db, [])).toEqual(new Map());
+  });
+});
+
+describe('findSelfReferralSignals (эвристика самореферала, E3-lite)', () => {
+  it('совпадение по КАЖДОМУ из трёх признаков даёт сигнал', async () => {
+    for (const [signal, fields] of [
+      ['email', { email: 'same@example.com' }],
+      ['phone', { phone: '+79001234567' }],
+      ['ip', { lastSeenIp: '203.0.113.7' }],
+    ] as const) {
+      const partner = await makeUser(fields);
+      await makeUser({ ...fields, referredBy: partner.id, referredBySetAt: new Date() });
+
+      const found = await findSelfReferralSignals(db, partner.id);
+      expect(found.map((f) => f.signal), signal).toContain(signal);
+    }
+  });
+
+  it('телефон сверяется по ЦИФРАМ, а не по строке', async () => {
+    // Приложение хранит номер уже нормализованным (`+7…`), но легаси-строка с
+    // разделителями возможна — и по `=` она не совпала бы сама с собой.
+    const partner = await makeUser({ phone: '+7 (900) 123-45-67' });
+    await makeUser({
+      phone: '+79001234567',
+      referredBy: partner.id,
+      referredBySetAt: new Date(),
+    });
+
+    expect((await findSelfReferralSignals(db, partner.id)).map((f) => f.signal)).toContain('phone');
+  });
+
+  it('разные контакты сигнала не дают', async () => {
+    const partner = await makeUser({
+      email: 'partner@example.com',
+      phone: '+79001111111',
+      lastSeenIp: '203.0.113.1',
+    });
+    await makeUser({
+      email: 'friend@example.com',
+      phone: '+79002222222',
+      lastSeenIp: '203.0.113.2',
+      referredBy: partner.id,
+      referredBySetAt: new Date(),
+    });
+
+    expect(await findSelfReferralSignals(db, partner.id)).toEqual([]);
+  });
+
+  it('NULL совпадением не считается — два клиента без телефона это не один человек', async () => {
+    const partner = await makeUser();
+    await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+
+    expect(await findSelfReferralSignals(db, partner.id)).toEqual([]);
+  });
+
+  it('совпадение с ЧУЖИМ клиентом (не своим рефералом) сигналом не считается', async () => {
+    const partner = await makeUser({ email: 'shared@example.com' });
+    await makeUser({ email: 'shared@example.com' }); // не приглашён этим партнёром
+
+    expect(await findSelfReferralSignals(db, partner.id)).toEqual([]);
   });
 });
