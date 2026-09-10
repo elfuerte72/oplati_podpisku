@@ -60,7 +60,7 @@
 | Файл | Что внутри |
 |---|---|
 | [`reference/payment-gateways.md`](reference/payment-gateways.md) | приём рублей целиком: Love&Pay и Freekassa, кто выставляет счёт, вебхуки, потолки, поведение при отказе шлюза |
-| [`reference/referral-program.md`](reference/referral-program.md) | партнёрская программа: захват реферера, ledger начислений, прогрессия статусов, выплаты (реальных денег ещё нет) |
+| [`reference/referral-program.md`](reference/referral-program.md) | партнёрская программа: захват реферера, ledger начислений, прогрессия статусов, **списание баллов в счёт своего заказа** (работает с 2026-09-10), выплаты (реальных денег ещё нет) |
 | [`reference/client-path.md`](reference/client-path.md) | путь клиента от первого экрана до оплаченной подписки + Mini App-кабинет |
 | [`reference/analytics.md`](reference/analytics.md) | поведенческая аналитика: словарь событий, приём, что НЕЛЬЗЯ дублировать телеметрией |
 | [`reference/testing.md`](reference/testing.md) | тестовый ландшафт: что покрыто и какой инцидент породил каждый регресс |
