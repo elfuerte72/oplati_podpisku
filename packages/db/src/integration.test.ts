@@ -6040,3 +6040,173 @@ describe('findSelfReferralSignals (эвристика самореферала, 
     expect(await findSelfReferralSignals(db, partner.id)).toEqual([]);
   });
 });
+
+describe('баланс партнёра — одно число во всех витринах', () => {
+  /**
+   * Критерий приёмки тикета 01. Баланс читают ПЯТЬ мест: кабинет партнёра,
+   * заявка на вывод, занятие баллов, список партнёров в панели и экран заявок.
+   * Все они обязаны звать общий `balanceExpr` — своя копия формулы где-нибудь
+   * из них означала бы, что партнёр видит одну цифру, а получает другую (ровно
+   * та дыра, которую этот трек и закрыл в `createReferralPayout`).
+   *
+   * Набор данных нарочно задействует ВСЕ слагаемые формулы: начисление, отмену,
+   * заявку на вывод и живое списание под заказом.
+   */
+  it('кабинет, панель, экран заявок и занятие видят одинаковый баланс', async () => {
+    const partner = await makeUser();
+    const buyer = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+
+    // 1000 ¢ начислено двумя заказами (800 + 200), 200 ¢ отменено.
+    for (const [amount, fail] of [
+      [800, false],
+      [200, true],
+    ] as const) {
+      const { order, payment } = await makeOrderWithPendingPayment({ userId: buyer.id });
+      await claimPaymentSucceeded(db, { paymentId: payment.id });
+      await insertCommissionAccruals(db, {
+        sourceUserId: buyer.id,
+        orderId: order.id,
+        paymentId: payment.id,
+        rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: amount }],
+      });
+      if (fail) {
+        await db.execute(sql`UPDATE orders SET status = 'failed' WHERE id = ${order.id}`);
+        expect(await reverseAccrualsForOrder(db, order.id)).toBe(1);
+      }
+    }
+    // 100 ¢ подано на вывод и 300 ¢ занято под собственный заказ.
+    await createReferralPayout(db, { userId: partner.id, amountUsdCents: 100 });
+    const own = await createDraftOrder(db, {
+      userId: partner.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'balance-parity order',
+      amountRub: 200_800,
+      originalAmount: 1599,
+      originalCurrency: 'USD',
+      usdtRubRateKopecks: 810_000,
+      cardIssueFeeKopecks: 32_400,
+    });
+    await reserveBonusForOrder(db, {
+      orderId: own.id,
+      userId: partner.id,
+      spendUsdCents: 300,
+      discountKopecks: 24_300,
+      rateKopecks: 810_000,
+    });
+
+    // 1000 начислено − 200 отменено − 100 на выводе − 300 занято = 400.
+    const expected = 400;
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(expected);
+
+    const partners = await listReferralPartnersForPanel(db, { limit: 50 });
+    expect(partners.items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(expected);
+
+    const payouts = await listReferralPayoutsForPanel(db, { limit: 50, onlyOpen: false });
+    expect(payouts.items.find((p) => p.userId === partner.id)?.balanceUsdCents).toBe(expected);
+
+    // Занятие видит его же: заявка ровно на баланс проходит, на цент больше — нет.
+    const tooMuch = await createReferralPayout(db, {
+      userId: partner.id,
+      amountUsdCents: expected + 1,
+    });
+    expect(tooMuch).toEqual({
+      ok: false,
+      reason: 'insufficient_balance',
+      balanceUsdCents: expected,
+    });
+  });
+});
+
+describe('сквозной сценарий списания баллов (worked example спеки)', () => {
+  /**
+   * QA-проход по всему денежному пути на РЕАЛЬНОМ Postgres: заказ → занятие →
+   * счёт со скидкой → оплата → фиксация → потолок начисления рефереру.
+   *
+   * Отдельные шаги проверены выше по одному; здесь важно, что они сходятся в
+   * ОДНИ ЧИСЛА — те самые, что стоят в спеке. Разъедься любая пара, тест
+   * покажет ровно, где именно.
+   */
+  it('Netflix $15.99: 354 ¢ гасят 286 ₽, счёт 1722 ₽, баланс и ledger сходятся', async () => {
+    // Партнёр заработал $3.54 с чужой покупки.
+    const partner = await makeUser();
+    const friend = await makeUser({ referredBy: partner.id, referredBySetAt: new Date() });
+    const friendOrder = await makeOrderWithPendingPayment({ userId: friend.id });
+    await claimPaymentSucceeded(db, { paymentId: friendOrder.payment.id });
+    await insertCommissionAccruals(db, {
+      sourceUserId: friend.id,
+      orderId: friendOrder.order.id,
+      paymentId: friendOrder.payment.id,
+      rows: [{ beneficiaryUserId: partner.id, level: 1, rateBps: 400, amountUsdCents: 354 }],
+    });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(354);
+
+    // Свой заказ: 1684 ₽ подписка + 324 ₽ выпуск карты = 2008 ₽.
+    const own = await createDraftOrder(db, {
+      userId: partner.id,
+      status: 'ready_for_payment',
+      customServiceDescription: 'Netflix',
+      amountRub: 200_800,
+      originalAmount: 1599,
+      originalCurrency: 'USD',
+      usdtRubRateKopecks: 810_000,
+      cardIssueFeeKopecks: 32_400,
+      commissionPercent: 30,
+    });
+
+    // Занятие: весь баланс уходит в скидку 286 ₽ (потолок комиссии 388 ₽ выше).
+    const reserved = await reserveBonusForOrder(db, {
+      orderId: own.id,
+      userId: partner.id,
+      spendUsdCents: 354,
+      discountKopecks: 28_600,
+      rateKopecks: 810_000,
+    });
+    expect(reserved).toEqual({ ok: true, balanceUsdCents: 0 });
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+
+    // Счёт выставляется на РАЗНОСТЬ, заказ хранит ПОЛНУЮ цену.
+    const invoiceKopecks = 200_800 - 28_600;
+    expect(invoiceKopecks).toBe(172_200);
+    const { payment } = await upsertPaymentByProviderRef(db, {
+      orderId: own.id,
+      provider: 'freekassa',
+      providerRef: `e2e-${++seq}`,
+      amountRub: invoiceKopecks,
+    });
+    await db.execute(sql`UPDATE orders SET status = 'pending_payment' WHERE id = ${own.id}`);
+    const orderRow = await getOrderById(db, own.id);
+    expect(orderRow?.amountRub).toBe(200_800);
+
+    // Оплата: claim платежа и фиксация списания в ОДНОЙ транзакции.
+    const spent = await db.transaction(async (tx) => {
+      await claimPaymentSucceeded(tx, { paymentId: payment.id });
+      await transitionOrder(tx, {
+        orderId: own.id,
+        toStatus: 'paid',
+        actorType: 'payment_provider',
+        eventType: 'payment_succeeded',
+      });
+      return claimBonusSpent(tx, own.id);
+    });
+    expect(spent?.status).toBe('spent');
+    expect(spent?.discountKopecks).toBe(28_600);
+
+    // Баллы потрачены и обратно не возвращаются.
+    expect(await getReferralBalanceUsdCents(db, partner.id)).toBe(0);
+    // Повтор вебхука ничего не меняет.
+    expect(await claimBonusSpent(db, own.id)).toBeNull();
+
+    // Отчёт видит погашение как отдельную строку.
+    const redeemed = await sumBonusRedeemedKopecks(db, {
+      since: new Date(Date.now() - 60 * 60 * 1000),
+      until: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    expect(redeemed.discountKopecks).toBeGreaterThanOrEqual(28_600);
+
+    // Панель показывает полную цену и скидку рядом, а не разность.
+    const list = await listOrdersForPanel(db, { limit: 50 });
+    const row = list.items.find((i) => i.id === own.id);
+    expect(row?.amountRubKopecks).toBe(200_800);
+    expect(row?.bonusDiscountKopecks).toBe(28_600);
+  });
+});

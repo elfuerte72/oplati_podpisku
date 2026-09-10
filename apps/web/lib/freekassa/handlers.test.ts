@@ -31,6 +31,13 @@ type Pay = {
   amountRub: number;
 };
 
+/**
+ * Сентинел транзакции: по нему видно, что claim списания баллов идёт ВНУТРИ той
+ * же транзакции, что claim платежа и перевод заказа в `paid`, а не отдельным
+ * вызовом после неё (трек referral-balance-spend, §6).
+ */
+const TX_SENTINEL = { __tag: 'tx' } as object;
+
 vi.mock('@oplati/db', () => {
   const state: {
     byRef: Pay | null;
@@ -51,7 +58,7 @@ vi.mock('@oplati/db', () => {
     // claim + transition обёрнуты в db.transaction: мок исполняет callback с
     // пустым tx (rollback-семантику проверяет PGlite-сьют packages/db).
     getDb: () => ({
-      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
+      transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL),
     }),
     findPaymentByProviderRef: vi.fn(async () => state.byRef),
     findPaymentByProviderInvoiceNumber: vi.fn(async () => state.byInvoiceNumber),
@@ -509,5 +516,67 @@ describe('processFreekassaTerminal (добор: провайдер сказал 
 
     expect((await processFreekassaTerminal(terminalInput())).kind).toBe('not_found');
     expect(db.claimPaymentTerminal).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Списание реферальных баллов (трек referral-balance-spend, §6 спеки).
+ *
+ * Claim `reserved → spent` обязан идти В ТОЙ ЖЕ транзакции, что claim платежа и
+ * перевод заказа в `paid`. Отдельным вызовом после неё появилось бы окно
+ * «заказ оплачен, а списание всё ещё выглядит возвращаемым» — и клиент успел бы
+ * отменить заказ, вернув баллы за оплаченную покупку.
+ */
+describe('processFreekassaPaid — списание баллов', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (db as unknown as MockedDb).__setPayment({ ...PAYMENT });
+  });
+
+  it('claim списания идёт ВНУТРИ транзакции оплаты и пишет событие туда же', async () => {
+    vi.mocked(db.claimBonusSpent).mockResolvedValue({
+      orderId: 'order-1',
+      userId: 'user-1',
+      amountUsdCents: 354,
+      discountKopecks: 28_600,
+      rateKopecks: 810_000,
+      status: 'spent',
+      releasedBy: null,
+      reservedAt: new Date(),
+      settledAt: new Date(),
+    });
+
+    await processFreekassaPaid(paidInput());
+
+    expect(db.claimBonusSpent).toHaveBeenCalledWith(TX_SENTINEL, 'order-1');
+    expect(db.appendOrderEvent).toHaveBeenCalledWith(
+      TX_SENTINEL,
+      expect.objectContaining({
+        orderId: 'order-1',
+        eventType: 'bonus_spent',
+        payload: expect.objectContaining({ spendUsdCents: 354, discountKopecks: 28_600 }),
+      }),
+    );
+  });
+
+  it('повтор вебхука ничего не списывает и события не пишет', async () => {
+    // Ноль строк у условного UPDATE — идемпотентный повтор, эффектов нет.
+    vi.mocked(db.claimBonusSpent).mockResolvedValue(null);
+
+    await processFreekassaPaid(paidInput());
+
+    expect(db.appendOrderEvent).not.toHaveBeenCalled();
+  });
+
+  it('заказ, не переведённый в paid, списание НЕ фиксирует', async () => {
+    // Оплата мёртвого счёта: деньги приняты, но заказ терминален. Списывать
+    // баллы под заказ, который не поедет, нельзя — их вернёт человек.
+    vi.mocked(db.transitionOrder).mockRejectedValueOnce(
+      new OrderTransitionError('order-1', 'expired', 'paid'),
+    );
+
+    await processFreekassaPaid(paidInput());
+
+    expect(db.claimBonusSpent).not.toHaveBeenCalled();
   });
 });

@@ -42,6 +42,15 @@ describe('orderCommissionKopecks', () => {
   it('отрицательной комиссии не бывает — сломанный снимок даёт ноль', () => {
     expect(orderCommissionKopecks({ ...NETFLIX, amountRub: 10_000 })).toBe(0);
   });
+
+  it('заказ не в USD потолка не даёт: база трактуется как USD-центы', () => {
+    // Тот же guard, что в `accrue.ts`. Сегодня каталог всегда USD, но заказ в
+    // другой валюте дал бы скидку из чужой маржи.
+    expect(orderCommissionKopecks({ ...NETFLIX, originalCurrency: 'EUR' })).toBe(0);
+    // NULL — это USD: так пишут все нынешние пути.
+    expect(orderCommissionKopecks({ ...NETFLIX, originalCurrency: null })).toBe(38_881);
+    expect(orderCommissionKopecks({ ...NETFLIX, originalCurrency: 'USD' })).toBe(38_881);
+  });
 });
 
 describe('bonusValueKopecks', () => {
@@ -184,6 +193,18 @@ describe('planBonusSpend', () => {
     }
   });
 
+  it('заказ не в USD предложения не даёт', () => {
+    expect(
+      planBonusSpend({
+        order: { ...NETFLIX, originalCurrency: 'EUR' },
+        balanceUsdCents: 10_000,
+        minInvoiceKopecks: MIN_INVOICE,
+        minSpendUsdCents: 100,
+        bonusPercent: 0,
+      }),
+    ).toBeNull();
+  });
+
   it('заказ без снимка курса предложения не даёт', () => {
     expect(
       planBonusSpend({
@@ -240,5 +261,72 @@ describe('bonusSpendCapKopecks', () => {
       usdtRubRateKopecks: 810_000,
     };
     expect(bonusSpendCapKopecks({ order: cheap, minInvoiceKopecks: MIN_INVOICE })).toBe(10_000);
+  });
+});
+
+/**
+ * Главный экономический инвариант трека: **баллы платятся из маржи заказа,
+ * никогда из карточного фонда** (user story 12).
+ *
+ * Практически это значит, что счёт после скидки обязан покрывать
+ * СЕБЕСТОИМОСТЬ заказа — цену подписки по курсу плюс надбавку за выпуск карты.
+ * Иначе рублей на карту не хватит, и заказ уйдёт в `failed` уже после приёма
+ * денег: ровно тот сценарий, ради которого стоит preflight карточного фонда.
+ *
+ * Проверяется НЕ на одном примере, а перебором: любая правка потолка или
+ * округления, роняющая счёт ниже себестоимости, обязана уронить и этот тест.
+ */
+describe('счёт после скидки покрывает себестоимость заказа', () => {
+  /** Себестоимость: подписка по курсу заказа + надбавка за выпуск карты. */
+  function costKopecks(order: BonusSpendOrder): number {
+    const subtotal = Math.round((order.originalAmount! * order.usdtRubRateKopecks!) / 10_000);
+    return subtotal + (order.cardIssueFeeKopecks ?? 0);
+  }
+
+  const rates = [700_000, 810_000, 950_000];
+  const prices = [500, 999, 1599, 4999, 12_000];
+  const balances = [100, 354, 1000, 5000, 100_000];
+  const premiums = [0, 20, 100];
+
+  it('при любом сочетании цены, курса, баланса и премии', () => {
+    for (const rate of rates) {
+      for (const priceUsdCents of prices) {
+        // Цена собирается ровно так же, как её фиксирует `propose_order`:
+        // подписка вверх до рубля, надбавка отдельной строкой.
+        const subtotal = Math.round((priceUsdCents * rate) / 10_000);
+        const commission = Math.round((subtotal * 30) / 100);
+        const subscription = Math.ceil((subtotal + commission) / 100) * 100;
+        const fee = Math.ceil(Math.round(400 * (rate / 10_000)) / 100) * 100;
+        const order: BonusSpendOrder = {
+          amountRub: subscription + fee,
+          originalAmount: priceUsdCents,
+          originalCurrency: 'USD',
+          cardIssueFeeKopecks: fee,
+          usdtRubRateKopecks: rate,
+        };
+
+        for (const balanceUsdCents of balances) {
+          for (const bonusPercent of premiums) {
+            const plan = planBonusSpend({
+              order,
+              balanceUsdCents,
+              minInvoiceKopecks: 50_000,
+              minSpendUsdCents: 100,
+              bonusPercent,
+            });
+            if (!plan) continue;
+            const invoice = order.amountRub! - plan.discountKopecks;
+            const label = `цена ${priceUsdCents}¢, курс ${rate}, баланс ${balanceUsdCents}¢, премия ${bonusPercent}%`;
+
+            // Себестоимость покрыта — карту будет на что выпустить.
+            expect(invoice, label).toBeGreaterThanOrEqual(costKopecks(order));
+            // Минимум шлюза не пробит.
+            expect(invoice, label).toBeGreaterThanOrEqual(50_000);
+            // Списано не больше, чем есть на балансе.
+            expect(plan.spendUsdCents, label).toBeLessThanOrEqual(balanceUsdCents);
+          }
+        }
+      }
+    }
   });
 });

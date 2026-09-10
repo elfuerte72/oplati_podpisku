@@ -26,6 +26,11 @@ export type BonusSpendOrder = {
   amountRub: number | null;
   /** База в USD-центах (`orders.original_amount`). */
   originalAmount: number | null;
+  /**
+   * Валюта базы (`orders.original_currency`). NULL считаем USD — так пишут все
+   * нынешние пути.
+   */
+  originalCurrency?: string | null;
   /** Снимок надбавки за выпуск карты, RUB-копейки; NULL — заказ до фичи. */
   cardIssueFeeKopecks: number | null;
   /** Курс USDT→RUB × 10000 (`orders.usdt_rub_rate_kopecks`). */
@@ -57,13 +62,18 @@ const RATE_SCALE = 10_000;
  *
  * Неполный снимок (заказ без курса или без USD-базы) → 0: скидки не будет.
  * Отрицательный результат (сломанный снимок) тоже 0 — потолок не бывает
- * отрицательным.
+ * отрицательным. Заказ не в USD → тоже 0 (см. guard внутри).
  */
 export function orderCommissionKopecks(order: BonusSpendOrder): number {
   const { amountRub, originalAmount, usdtRubRateKopecks, cardIssueFeeKopecks } = order;
   if (!amountRub || amountRub <= 0) return 0;
   if (!originalAmount || originalAmount <= 0) return 0;
   if (!usdtRubRateKopecks || usdtRubRateKopecks <= 0) return 0;
+  // Guard от дрейфа валют — тот же, что стоит в `accrue.ts`: `original_amount`
+  // трактуется как USD-центы, и заказ в другой валюте дал бы неверный потолок,
+  // то есть скидку из чужой маржи. Сегодня каталог всегда USD, проверка
+  // защитная. NULL считаем USD (так пишут все нынешние пути).
+  if ((order.originalCurrency ?? 'USD') !== 'USD') return 0;
   const subtotalKopecks = Math.round((originalAmount * usdtRubRateKopecks) / RATE_SCALE);
   const commission = amountRub - (cardIssueFeeKopecks ?? 0) - subtotalKopecks;
   return commission > 0 ? commission : 0;
