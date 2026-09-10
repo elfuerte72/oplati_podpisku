@@ -693,6 +693,70 @@ export const referralPayouts = pgTable(
   }),
 ).enableRLS();
 
+// Списание реферальных баллов в счёт заказа (трек referral-balance-spend).
+//
+// Состояние, а не журнал (по образцу `payments`): одна строка на заказ, статус
+// движется `reserved → spent | released`. Отдельная таблица, а НЕ строка в
+// `referral_accruals`: тот ledger append-only и с `CHECK amount >= 0`, то есть
+// «списание отрицательной строкой» невозможно by design, а строка нового `kind`
+// испортила бы витрины дохода (они суммируют по статусу, не по знаку).
+//
+// `order_id` первичным ключом даёт «не более одного списания на заказ»
+// бесплатно и делает занятие идемпотентным (`ON CONFLICT DO NOTHING`).
+// Аудит-след пишется отдельно строками `order_events` (append-only), поэтому
+// история не теряется при смене статуса этой строки.
+//
+// ⚠️ Возврат баллов разделён по признаку «приходили ли деньги»: `expired` и
+// `cancelled` возвращают резерв ПРАВИЛОМ (см. `balanceExpr`) — точек
+// захоронения заказа много, и забытая означала бы молча сожжённые баллы
+// клиента; `failed` возвращает ОПЕРАТОР кнопкой (там деньги уже приняты, и
+// автовозврат был бы единственным путём к отрицательному балансу).
+export const referralRedemptionStatusEnum = pgEnum('referral_redemption_status', [
+  'reserved',
+  'spent',
+  'released',
+]);
+
+export const referralRedemptions = pgTable(
+  'referral_redemptions',
+  {
+    orderId: uuid('order_id')
+      .primaryKey()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // Сколько центов баланса списано (USD-центы, как весь ledger начислений).
+    amountUsdCents: integer('amount_usd_cents').notNull(),
+    // Во сколько рублей-копеек это превратилось в счёте — снимок, а не расчёт:
+    // курс заказа может быть переписан только вместе с заказом.
+    discountKopecks: integer('discount_kopecks').notNull(),
+    // Курс USDT→RUB × 10000 на момент конверсии (снимок `orders`).
+    rateKopecks: integer('rate_kopecks').notNull(),
+    status: referralRedemptionStatusEnum('status').default('reserved').notNull(),
+    // Кто вернул баллы руками; NULL — системный откат (сбой выставления счёта).
+    releasedBy: uuid('released_by').references(() => staff.id),
+    reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // По нему считается баланс партнёра — то есть запрос на КАЖДУЮ витрину
+    // кабинета и на каждое занятие под локом.
+    userIdx: index('referral_redemptions_user_idx').on(t.userId),
+    // Покрытие FK released_by: ON DELETE у staff нет, но join панели по автору
+    // возврата без индекса сканирует таблицу целиком.
+    releasedByIdx: index('referral_redemptions_released_by_idx').on(t.releasedBy),
+    // Деньги строго положительны: строка существует только там, где реально
+    // списали. «Нулевое списание» отличалось бы от отсутствия строки ничем,
+    // кроме лишней записи в балансовой выборке.
+    amountPositive: check('referral_redemptions_amount_positive', sql`${t.amountUsdCents} > 0`),
+    discountPositive: check(
+      'referral_redemptions_discount_positive',
+      sql`${t.discountKopecks} > 0`,
+    ),
+  }),
+).enableRLS();
+
 // Помесячные агрегаты прогрессии (Этап C) — пишет крон `referral-rollup` один раз
 // на партнёра за месяц. PK(user_id, month) даёт естественную идемпотентность
 // (повторный запуск месяца — ON CONFLICT DO NOTHING). `month` — первое число

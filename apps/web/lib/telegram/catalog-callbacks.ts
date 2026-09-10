@@ -44,9 +44,11 @@ import {
   catalogTierButtonLabel,
   catalogTierPrompt,
   buildBuyerFeeLine,
+  buildBonusAppliedLine,
   orderCardText,
   PAYMENT_PENDING_HINT,
 } from './templates';
+import { invoicedAmountForOrder } from '../referral/spend.ts';
 
 /**
  * Кнопочный каталог в чате бота (список сервисов → тарифы/сумма → карточка
@@ -445,6 +447,13 @@ export async function handleOrderActionCallback(
     if (confirmResult.qrPayload) {
       replyParts.push('Или отсканируй QR-код в приложении банка по СБП.');
     }
+    // Счёт мог быть выставлен со списанием баллов (кнопка Mini App, а сюда
+    // клиент пришёл за той же ссылкой): сумма на странице оплаты меньше цены
+    // заказа, и объяснить это надо ДО перехода, а не после.
+    const bonusLine = buildBonusAppliedLine(
+      (await invoicedAmountForOrder({ id: orderId, amountRub: null })).discountKopecks,
+    );
+    if (bonusLine) replyParts.push(bonusLine);
     // Надбавку платёжной системы клиент увидит на её странице — предупреждаем
     // здесь, вместе со ссылкой, а не постфактум.
     const feeLine = buildBuyerFeeLine(currentBuyerFeePercent());

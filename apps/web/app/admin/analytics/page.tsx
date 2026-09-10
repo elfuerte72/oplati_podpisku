@@ -111,6 +111,15 @@ export default async function PanelAnalyticsPage({
             <Stat label={ANALYTICS_TEXT.revenue} value={formatKopecks(summary.amountKopecks)} />
             <Stat label={ANALYTICS_TEXT.paidOrders} value={formatCount(summary.paidOrders)} />
             <Stat label={ANALYTICS_TEXT.averageCheck} value={formatKopecks(summary.averageKopecks)} />
+            {/* Показываем только когда баллами реально платили: нулевая плашка
+                в разделе «Деньги» отвечала бы на вопрос, которого никто не
+                задавал, пока фича выключена. */}
+            {summary.bonusRedeemedKopecks > 0 ? (
+              <Stat
+                label={ANALYTICS_TEXT.bonusRedeemed}
+                value={formatKopecks(summary.bonusRedeemedKopecks)}
+              />
+            ) : null}
           </div>
           {hasMoney ? (
             <>

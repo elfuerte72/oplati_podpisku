@@ -233,6 +233,26 @@ export const PANEL_AI_SCHEMA: readonly SchemaEntry[] = [
     ],
   },
   {
+    table: 'referral_redemptions',
+    kind: 'table',
+    purpose:
+      'Списания реферальных баллов в счёт СВОЕГО заказа: одна строка на заказ. ' +
+      'Не журнал, а состояние: reserved — занято под выставленный счёт, spent — ' +
+      'заказ оплачен со скидкой, released — баллы вернули. Резерв под заказом в ' +
+      'expired/cancelled баланс не уменьшает (правило, а не строка).',
+    columns: [
+      { name: 'order_id', meaning: 'заказ (он же первичный ключ)' },
+      { name: 'user_id', meaning: 'кто списал баллы' },
+      { name: 'amount_usd_cents', meaning: money('списано баллов в центах USD') },
+      { name: 'discount_kopecks', meaning: money('на сколько уменьшен счёт, в копейках RUB') },
+      { name: 'rate_kopecks', meaning: 'курс USDT→RUB × 10000 на момент конверсии' },
+      { name: 'status', meaning: 'reserved | spent | released' },
+      { name: 'released_by', meaning: 'кто вернул баллы руками (NULL — автоматика)' },
+      { name: 'reserved_at', meaning: 'занято' },
+      { name: 'settled_at', meaning: 'закрыто (потрачено или возвращено)' },
+    ],
+  },
+  {
     table: 'referral_payouts',
     kind: 'table',
     purpose: 'Заявки партнёров на выплату (реквизиты роли не выданы).',

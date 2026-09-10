@@ -46,7 +46,8 @@ export type PanelLiveSection = MenuBadgeSection | 'orders';
  * Таблица → разделы. Заказ виден на столе, в списках «Все заказы», «Ждут
  * оплаты» и «Проверка платежей»; платёж — в «Ждут оплаты» (счёт) и в
  * «Проверке платежей» (холд); разговор и сообщения — в «Поддержке»; ответы на
- * опросы — в «Обратной связи».
+ * опросы — в «Обратной связи»; списание баллов — там же, где показывается его
+ * сумма: в списке заказов, «Ждут оплаты» и «Проверке платежей».
  */
 export const PANEL_LIVE_SECTIONS_BY_TABLE: Record<DbChangeTable, readonly PanelLiveSection[]> = {
   orders: ['orders', 'pending', 'holds'],
@@ -54,6 +55,7 @@ export const PANEL_LIVE_SECTIONS_BY_TABLE: Record<DbChangeTable, readonly PanelL
   conversations: ['support'],
   messages: ['support'],
   client_feedback: ['feedback'],
+  referral_redemptions: ['orders', 'pending', 'holds'],
 };
 
 export type PanelLiveEvent = { sections: readonly PanelLiveSection[] };

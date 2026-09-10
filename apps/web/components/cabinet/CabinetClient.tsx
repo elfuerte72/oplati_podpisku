@@ -299,11 +299,14 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return res;
   }, [detail, reloadSnapshot]);
 
-  const onPay = useCallback(async (contactsToSend: { email?: string; phone?: string }) => {
+  const onPay = useCallback(async (
+    contactsToSend: { email?: string; phone?: string },
+    useBonus: boolean,
+  ) => {
     if (!detail) return;
     setBusy('pay');
     setActionMsg(null);
-    const res = await doPay(initDataRef.current, detail.orderId, contactsToSend);
+    const res = await doPay(initDataRef.current, detail.orderId, contactsToSend, { useBonus });
     setBusy(null);
     if (res.ok) {
       setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
@@ -321,6 +324,13 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       void reloadSnapshot();
     } else {
       setActionMsg({ tone: 'err', text: res.message });
+      // Баланс баллов изменился, пока клиент думал: экран обязан показать
+      // актуальное состояние, иначе он нажмёт ту же кнопку и получит тот же
+      // отказ. Перечитываем и заказ, и снапшот — баланс живёт в обоих.
+      if (res.error === 'bonus_unavailable') {
+        void refreshDetail(detail.orderId);
+        void reloadSnapshot();
+      }
     }
   }, [detail, refreshDetail, reloadSnapshot]);
 

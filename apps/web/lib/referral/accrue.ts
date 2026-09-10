@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  findRedemptionByOrderId,
   getDb,
   getOrderById,
   getPartnerProfile,
@@ -112,20 +113,59 @@ export async function accrueReferralForPayment(params: {
     // Инвариант «начисление ≤ маржа»: выплата не должна превышать комиссию
     // заказа. С базовыми ставками (макс. 7%) и комиссией 30% не срабатывает;
     // защита от будущих модификаторов/мисконфига.
+    //
+    // ⚠️ С треком referral-balance-spend инвариант стал строже:
+    // **начисления + СПИСАННЫЕ БАЛЛЫ ≤ комиссия заказа**. Баллы платятся из той
+    // же маржи, и без этого вычета покупатель гасил бы комиссию баллами, а его
+    // реферер получал бы процент из уже потраченной маржи — то есть заказ
+    // уходил бы в кассовый минус вторым путём.
+    //
+    // Списание читается по заказу и считается только ЖИВОЕ (`reserved`/`spent`):
+    // возвращённое (`released`) маржу не тратило. Резерв учитывается наравне со
+    // списанным намеренно — на этом пути заказ уже оплачен, и `claimBonusSpent`
+    // в той же транзакции перевёл строку в `spent`; увидеть здесь `reserved`
+    // можно только на редком recovery-пути, где деньги всё равно уйдут.
     const commissionPercent = order.commissionPercent ?? serverEnv.COMMISSION_PERCENT;
-    const commissionUsdCents = Math.floor((baseUsdCents * commissionPercent) / 100);
+    const grossCommissionUsdCents = Math.floor((baseUsdCents * commissionPercent) / 100);
+    const redemption = await findRedemptionByOrderId(db, orderId);
+    const bonusSpentUsdCents =
+      redemption && redemption.status !== 'released' ? redemption.amountUsdCents : 0;
+    const commissionUsdCents = Math.max(0, grossCommissionUsdCents - bonusSpentUsdCents);
     const totalAccrual = rows.reduce((sum, r) => sum + r.amountUsdCents, 0);
     if (totalAccrual > commissionUsdCents) {
+      // ⚠️ Два РАЗНЫХ события с одинаковым исходом «не начисляем».
+      //
+      // Если остаток комиссии съели баллы покупателя — это НОРМА, а не
+      // аномалия: потолок списания равен всей комиссии заказа, поэтому клиент,
+      // погасивший её баллами, штатно не оставляет рефереру ничего (решение
+      // спеки §6). Ошибочный алёрт здесь означал бы `error` в Sentry на
+      // обычной покупке — то есть способ, которым денежные алёрты перестают
+      // читать.
+      //
+      // Если баллов не было вовсе, а начисление всё равно больше комиссии —
+      // это мисконфиг ставок, и он обязан кричать.
+      const explainedByBonus = bonusSpentUsdCents > 0 && totalAccrual <= grossCommissionUsdCents;
+      if (explainedByBonus) {
+        log.info({
+          event: 'referral.accrue.commission_spent_on_bonus',
+          orderId,
+          totalAccrual,
+          commissionUsdCents,
+          bonusSpentUsdCents,
+        });
+        return; // маржа ушла клиенту скидкой — рефереру платить не из чего
+      }
       log.error({
         event: 'referral.accrue.exceeds_commission',
         orderId,
         totalAccrual,
         commissionUsdCents,
+        bonusSpentUsdCents,
       });
       Sentry.captureMessage('referral accrual exceeds commission', {
         level: 'error',
         tags: { source: 'referral.accrue', alert: 'exceeds_commission' },
-        extra: { orderId, totalAccrual, commissionUsdCents },
+        extra: { orderId, totalAccrual, commissionUsdCents, bonusSpentUsdCents },
       });
       return; // не начисляем сверх маржи
     }

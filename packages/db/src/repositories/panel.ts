@@ -32,12 +32,15 @@ import {
   orderEvents,
   orders,
   payments,
+  referralRedemptions,
   services,
   staff,
   users,
 } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
+import { liveRedemptionSql } from './referral-redemption-sql.ts';
+import type { RedemptionStatus } from './referral-redemptions.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import { transitionConversationMode } from './support.ts';
 import {
@@ -137,6 +140,27 @@ export type PanelOrderListFilters = {
 /** Порядок списка. Живёт в адресе экрана — ссылку можно переслать коллеге. */
 export type PanelOrderSort = 'newest' | 'oldest' | 'amount_desc' | 'amount_asc';
 
+/**
+ * Живое списание баллов по заказу (трек referral-balance-spend): `reserved` или
+ * `spent`, но не `released`.
+ *
+ * Соединение, а не отдельная выборка пачкой: `referral_redemptions.order_id` —
+ * первичный ключ, поэтому LEFT JOIN не размножает строки, а лишний обход базы
+ * на каждый список панели (который перечитывается раз в 25 секунд на каждую
+ * открытую вкладку) обходится дороже одного соединения.
+ *
+ * ⚠️ Число, которое отсюда приходит, — СКИДКА, а не сумма к оплате.
+ * `orders.amount_rub` остаётся полной ценой заказа, и складывать их нельзя:
+ * к оплате идёт разность.
+ *
+ * ⚠️ «Живо» определяет ОБЩИЙ `liveRedemptionSql` — тот же, по которому считается
+ * баланс партнёра. Своё условие здесь означало бы, что панель показывает
+ * «−286 ₽ баллами» по заказу, чьи баллы клиенту уже вернули, и это же число
+ * уезжает в колонку CSV, которую складывают.
+ */
+const liveRedemptionJoin = () =>
+  and(eq(referralRedemptions.orderId, orders.id), liveRedemptionSql());
+
 export type PanelClientRef = {
   id: string;
   displayName: string | null;
@@ -148,8 +172,10 @@ export type PanelOrderListItem = {
   id: string;
   shortId: string;
   status: OrderStatus;
-  /** Копейки — как и везде в проекте (инвариант 3). */
+  /** Копейки — как и везде в проекте (инвариант 3). ПОЛНАЯ цена заказа. */
   amountRubKopecks: number | null;
+  /** Сколько из этой суммы погашено баллами; 0 — списания не было. */
+  bonusDiscountKopecks: number;
   createdAt: Date;
   expiresAt: Date | null;
   /** Каталожное имя либо свободное описание — строка таблицы не бывает пустой. */
@@ -217,11 +243,13 @@ export async function listOrdersForPanel(
       clientTelegramId: users.telegramId,
       clientEmail: users.email,
       operatorName: staff.displayName,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(staff, eq(orders.assignedOperatorId, staff.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     // Вторым ключом — id: без тай-брейкера строки с одинаковым `created_at`
     // (пачка заказов в одну миллисекунду) на границе страниц дублируются или
@@ -238,6 +266,7 @@ export async function listOrdersForPanel(
     shortId: row.shortId,
     status: row.status,
     amountRubKopecks: row.amountRub,
+    bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,
@@ -333,6 +362,25 @@ export type PanelOrderDetail = {
   events: PanelOrderEvent[];
   payments: PanelOrderPayment[];
   card: PanelOrderCard | null;
+  /**
+   * Списание реферальных баллов по заказу; `null` — списания не было вовсе.
+   *
+   * Возвращается В ЛЮБОМ статусе, включая `released`: кнопка возврата обязана
+   * отличать «баллы ещё у нас» от «баллы уже вернули», а вторая ветка иначе
+   * была бы неотличима от «списания не было» — и оператор вернул бы их дважды
+   * (точнее, получил бы непонятный отказ и пошёл спрашивать).
+   */
+  bonus: PanelOrderBonus | null;
+};
+
+export type PanelOrderBonus = {
+  amountUsdCents: number;
+  discountKopecks: number;
+  status: RedemptionStatus;
+  reservedAt: Date;
+  settledAt: Date | null;
+  /** Кто вернул баллы руками; `null` — автоматика или ещё не возвращали. */
+  releasedByName: string | null;
 };
 
 export async function getOrderDetailForPanel(
@@ -366,7 +414,7 @@ export async function getOrderDetailForPanel(
   const head = headRows[0];
   if (!head) return null;
 
-  const [eventRows, paymentRows, cardRows] = await Promise.all([
+  const [eventRows, paymentRows, cardRows, bonusRows] = await Promise.all([
     // Берём СВЕЖИЕ и разворачиваем в памяти. `ASC LIMIT 100` у заказа с сотней
     // событий показал бы самые старые и молча отрезал последние — ровно те,
     // ради которых карточку и открывают.
@@ -409,9 +457,23 @@ export async function getOrderDetailForPanel(
     head.order.cardId
       ? db.select().from(cards).where(eq(cards.id, head.order.cardId)).limit(1)
       : Promise.resolve([]),
+    db
+      .select({
+        amountUsdCents: referralRedemptions.amountUsdCents,
+        discountKopecks: referralRedemptions.discountKopecks,
+        status: referralRedemptions.status,
+        reservedAt: referralRedemptions.reservedAt,
+        settledAt: referralRedemptions.settledAt,
+        releasedByName: staff.displayName,
+      })
+      .from(referralRedemptions)
+      .leftJoin(staff, eq(referralRedemptions.releasedBy, staff.id))
+      .where(eq(referralRedemptions.orderId, head.order.id))
+      .limit(1),
   ]);
 
   const card = cardRows[0];
+  const bonusRow = bonusRows[0];
 
   return {
     hasSucceededPayment: paymentRows.some((p) => p.status === 'succeeded'),
@@ -462,6 +524,16 @@ export async function getOrderDetailForPanel(
       completedAt: p.completedAt,
       expiresAt: p.expiresAt,
     })),
+    bonus: bonusRow
+      ? {
+          amountUsdCents: bonusRow.amountUsdCents,
+          discountKopecks: bonusRow.discountKopecks,
+          status: bonusRow.status,
+          reservedAt: bonusRow.reservedAt,
+          settledAt: bonusRow.settledAt,
+          releasedByName: bonusRow.releasedByName,
+        }
+      : null,
     // Явное перечисление полей, а не `...card`: строка карты не должна утекать
     // целиком, если в неё когда-нибудь добавят чувствительное поле.
     card: card
@@ -789,7 +861,9 @@ export type PanelHoldRow = {
   orderId: string;
   shortId: string;
   orderStatus: OrderStatus;
+  /** ПОЛНАЯ цена заказа; сколько из неё погашено баллами — ниже. */
   amountRubKopecks: number | null;
+  bonusDiscountKopecks: number;
   orderCreatedAt: Date;
   /**
    * Что клиент покупал. Каталожное название или свободное описание — то же
@@ -902,11 +976,13 @@ export async function listHoldsForPanel(
       providerRef: payments.providerRef,
       lastProviderStatus: payments.lastProviderStatus,
       lastProviderStatusAt: payments.lastProviderStatusAt,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(payments, eq(payments.orderId, orders.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
     .where(holdsCondition())
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
     // ним и выбирается строка ниже.
@@ -935,6 +1011,7 @@ export async function listHoldsForPanel(
       shortId: row.shortId,
       orderStatus: row.orderStatus,
       amountRubKopecks: row.amountRub,
+      bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
       orderCreatedAt: row.orderCreatedAt,
       serviceName: row.serviceName ?? row.customServiceDescription,
       client: {
@@ -1024,7 +1101,9 @@ export type PanelPendingOrder = {
   orderId: string;
   shortId: string;
   status: OrderStatus;
+  /** ПОЛНАЯ цена заказа; напоминание об оплате называет сумму СЧЁТА. */
   amountRubKopecks: number | null;
+  bonusDiscountKopecks: number;
   createdAt: Date;
   /** Срок ЗАКАЗА (фиксация цены либо срок счёта — их выравнивает payments). */
   expiresAt: Date | null;
@@ -1113,10 +1192,12 @@ export async function listPendingOrdersForPanel(
       paymentUrl: sql<
         string | null
       >`${payments.rawPayload} -> 'invoice' ->> 'paymentLink'`,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
     // Только ЖИВОЙ счёт: терминальные платежи прошлых попыток к напоминанию
     // отношения не имеют, а частичный UNIQUE гарантирует, что живой один.
     .leftJoin(payments, and(eq(payments.orderId, orders.id), eq(payments.status, 'pending')))
@@ -1132,6 +1213,7 @@ export async function listPendingOrdersForPanel(
     shortId: row.shortId,
     status: row.status,
     amountRubKopecks: row.amountRub,
+    bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,

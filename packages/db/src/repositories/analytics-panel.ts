@@ -130,6 +130,16 @@ export type RevenueSummary = {
    * оплаченном, но провалившемся заказе.
    */
   averageKopecks: number;
+  /**
+   * Сколько выручки за период погашено реферальными баллами, копейки
+   * (решение Q8). ОТДЕЛЬНОЙ строкой рядом с деньгами, а не внутри них: сама
+   * выручка остаётся деньгами (`payments` `succeeded`), но без этой строки
+   * просадка денежной выручки читается как падение продаж.
+   *
+   * Считается по моменту оплаты (`settled_at` строки `spent`) — тому же
+   * событию, которым платёж попадает в `amountKopecks`.
+   */
+  bonusRedeemedKopecks: number;
 };
 
 /** Итог за период — те же два источника, что у ряда по дням. */
@@ -138,6 +148,7 @@ export async function revenueSummary(db: DB, range: AnalyticsRange): Promise<Rev
     amount: string | number | null;
     orders: string | number | null;
     purchased: string | number | null;
+    bonus: string | number | null;
   }>(sql`
     SELECT
       (SELECT COALESCE(sum(amount_rub), 0) FROM payments
@@ -145,7 +156,9 @@ export async function revenueSummary(db: DB, range: AnalyticsRange): Promise<Rev
       (SELECT count(*) FROM orders
         WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS orders,
       (SELECT COALESCE(sum(amount_rub), 0) FROM orders
-        WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS purchased
+        WHERE status IN ${PURCHASED_STATUSES_SQL} AND ${withinRange(sql.raw('paid_at'), range)}) AS purchased,
+      (SELECT COALESCE(sum(discount_kopecks), 0) FROM referral_redemptions
+        WHERE status = 'spent' AND ${withinRange(sql.raw('settled_at'), range)}) AS bonus
   `);
   const amountKopecks = toInt(rows[0]?.amount);
   const paidOrders = toInt(rows[0]?.orders);
@@ -154,6 +167,7 @@ export async function revenueSummary(db: DB, range: AnalyticsRange): Promise<Rev
     amountKopecks,
     paidOrders,
     averageKopecks: paidOrders > 0 ? Math.round(purchasedKopecks / paidOrders) : 0,
+    bonusRedeemedKopecks: toInt(rows[0]?.bonus),
   };
 }
 

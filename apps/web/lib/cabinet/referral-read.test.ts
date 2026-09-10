@@ -80,6 +80,7 @@ const ctx = (over: Partial<ReferralSnapshotContext> = {}): ReferralSnapshotConte
   botUsername: 'mybot',
   miniAppShortName: null,
   minPayoutUsdCents: 1000,
+  bonusSpendAvailable: false,
   ...over,
 });
 

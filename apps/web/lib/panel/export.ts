@@ -43,6 +43,9 @@ export function exportOrderRow(order: PanelOrderListItem): string[] {
     orderStatusLabel(order.status),
     order.serviceName ?? '',
     formatRublesForCsv(order.amountRubKopecks),
+    // Пустая ячейка, а не «0,00», когда списания не было: ноль в колонке денег
+    // читается как «списали ноль», то есть как факт, которого не происходило.
+    order.bonusDiscountKopecks > 0 ? formatRublesForCsv(order.bonusDiscountKopecks) : '',
     order.client.displayName ?? '',
     order.client.telegramId ?? '',
     order.client.email ?? '',

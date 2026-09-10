@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  findOrdersWithStuckBonus,
   findNegativeReferralBalances,
   findOrdersMissingReferralAccruals,
   findOrdersWithUnreversedAccruals,
@@ -14,7 +15,9 @@ import {
 
 import { serverEnv } from '../env.ts';
 import { childLogger } from '../logger.ts';
+import { DedupWindow } from '../alerts/dedup-window.ts';
 import { notifyOps } from '../alerts/notify-ops.ts';
+import { notifyStaff } from '../alerts/notify-staff.ts';
 import { accrueReferralForPayment } from '../referral/accrue.ts';
 
 const log = childLogger('cron.referral-recovery');
@@ -31,11 +34,69 @@ let lastStaleDmAt = 0;
 let lastNegativeDmAt = 0;
 let lastUnderpaidDmAt = 0;
 
+/**
+ * Сторож зависших списаний (трек referral-balance-spend, решения Q10/Q17).
+ *
+ * Возврат баллов при `failed` — РЕШЕНИЕ ОПЕРАТОРА, а не автоматика: `failed` не
+ * синоним «деньги вернули», и автовозврат оттуда был бы единственным путём к
+ * отрицательному балансу клиента. Решение может потеряться, поэтому о нём
+ * напоминают.
+ *
+ * Порог короче, чем 7 дней у сторожа холдов банка: там мы ждём внешнюю систему,
+ * здесь — только себя.
+ */
+const STALE_BONUS_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Дедуп напоминания — сутки НА ЗАКАЗ: разбор занимает не час. */
+const staleBonusDedup = new DedupWindow(24 * 60 * 60 * 1000);
+
 /** Только для unit-тестов — сбрасывает окна дедупа DM. */
 export function resetReferralRecoveryAlertDedupForTests(): void {
   lastStaleDmAt = 0;
   lastNegativeDmAt = 0;
   lastUnderpaidDmAt = 0;
+  staleBonusDedup.resetForTests();
+}
+
+/**
+ * Заказы со списанными баллами, ждущими решения человека, старше трёх дней →
+ * напоминание персоналу. Только сигнал: возвращать баллы автоматически нельзя
+ * (см. выше). Какие заказы сюда попадают — решает `isBonusAwaitingDecision`,
+ * та же функция, что зажигает кнопку возврата в панели.
+ *
+ * Never-throw: сторож не должен ронять прогон крона, у которого есть ещё три
+ * денежные сверки.
+ */
+async function remindAboutStaleBonuses(db: ReturnType<typeof getDb>): Promise<void> {
+  const stale = await findOrdersWithStuckBonus(db, {
+    olderThanMs: STALE_BONUS_AGE_MS,
+    limit: RECOVERY_LIMIT,
+  });
+  if (stale.length === 0) return;
+  log.warn({ event: 'cron.referral_recovery.stale_bonus', orders: stale.length });
+
+  for (const item of stale) {
+    // Окно занимаем ПО ФАКТУ отправки: занять до попытки значит получить сутки
+    // молчания при недоставленном уведомлении.
+    if (!staleBonusDedup.isFree(item.orderId)) continue;
+    await notifyStaff(
+      'Заказ завершился ошибкой, а часть суммы клиент погасил баллами. ' +
+        'Решение о баллах — то же, что о деньгах по заказу: вернуть их кнопкой ' +
+        'или довести выдачу вручную.',
+      {
+        capability: 'orders',
+        title: 'Баллы клиента ждут решения',
+        facts: [
+          { label: 'Заказ', value: item.shortId },
+          { label: 'Списано', value: `${Math.round(item.discountKopecks / 100)} ₽` },
+        ],
+        action: { text: 'разобрать заказ', path: `/admin/orders/${item.shortId}` },
+        dedupKey: `stale-bonus:${item.orderId}`,
+        dedupWindowMs: 24 * 60 * 60 * 1000,
+      },
+    );
+    staleBonusDedup.record(item.orderId);
+  }
 }
 
 /**
@@ -222,6 +283,16 @@ export async function recoverReferralAccruals(): Promise<{
   } catch (err) {
     errors++;
     log.error({ event: 'cron.referral_recovery.negative_check_error', err });
+    Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
+  }
+
+  // Сторож зависших списаний баллов — своим перехватом: его сбой не должен
+  // гасить денежные сверки выше, как и наоборот.
+  try {
+    await remindAboutStaleBonuses(db);
+  } catch (err) {
+    errors++;
+    log.error({ event: 'cron.referral_recovery.stale_bonus_error', err });
     Sentry.captureException(err, { tags: { source: 'cron.referral-recovery' } });
   }
 

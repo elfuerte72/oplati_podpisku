@@ -183,7 +183,41 @@ describe('деньги: выручка по дням и сводка', () => {
       paidOrders: 2,
       // Средний чек — из ОДНОГО множества состоявшихся покупок: (100 + 250) / 2.
       averageKopecks: 175_00,
+      // Баллами в этом периоде не платили — строка нулевая, а не отсутствует:
+      // отчёт обязан отличать «не платили» от «не считали».
+      bonusRedeemedKopecks: 0,
     });
+  });
+
+  it('погашение баллами — ОТДЕЛЬНАЯ строка, выручка остаётся деньгами', async () => {
+    // Решение Q8: без этой строки просадка денежной выручки читается как
+    // падение продаж. Считается по моменту оплаты — тому же, по которому в
+    // выручку попадает сам платёж.
+    // Списание вешаем на УЖЕ существующий оплаченный заказ фикстуры: новый
+    // заказ сдвинул бы счётчики соседних сьютов, которые делят эту базу.
+    const existing = await db.execute<{ id: string; user_id: string }>(
+      sql`SELECT id, user_id FROM orders WHERE paid_at IS NOT NULL ORDER BY paid_at LIMIT 1`,
+    );
+    const target = existing[0];
+    if (!target) throw new Error('нужен оплаченный заказ фикстуры');
+    await db.execute(sql`
+      INSERT INTO referral_redemptions
+        (order_id, user_id, amount_usd_cents, discount_kopecks, rate_kopecks, status, settled_at)
+      VALUES (${target.id}, ${target.user_id}, 354, 28600, 810000, 'spent',
+              '2026-03-02T10:00:00.000Z'::timestamptz)
+    `);
+
+    const summary = await revenueSummary(db, RANGE);
+    expect(summary.bonusRedeemedKopecks).toBe(28_600);
+    // Деньги считаются по `payments`, а платёж фикстуры выставлен на полную
+    // сумму заказа: списание её не уменьшает задним числом.
+    expect(summary.amountKopecks).toBeGreaterThan(0);
+
+    // Резерв (ещё не оплачено) в строку не попадает.
+    await db.execute(
+      sql`UPDATE referral_redemptions SET status = 'reserved' WHERE order_id = ${target.id}`,
+    );
+    expect((await revenueSummary(db, RANGE)).bonusRedeemedKopecks).toBe(0);
   });
 
   it('пустой период — нули, средний чек 0 (не деление на ноль)', async () => {
@@ -191,6 +225,7 @@ describe('деньги: выручка по дням и сводка', () => {
       amountKopecks: 0,
       paidOrders: 0,
       averageKopecks: 0,
+      bonusRedeemedKopecks: 0,
     });
     const rows = await revenueByDay(db, EMPTY_RANGE);
     expect(rows).toHaveLength(3);

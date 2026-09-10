@@ -12,6 +12,7 @@ import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { resolveReferralRequester } from '@/lib/cabinet/referral-auth';
 import { buildReferralSnapshot, type ReferralSnapshotContext } from '@/lib/cabinet/referral-read';
 import { requestReferralPayout } from '@/lib/cabinet/referral-actions';
+import { isBonusSpendAvailableForUser } from '@/lib/referral/spend';
 
 /**
  * POST /api/cabinet/referral — бэкенд партнёрского кабинета. Обслуживает обе
@@ -97,6 +98,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       botUsername: null,
       miniAppShortName: null,
       minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
+      bonusSpendAvailable: false,
     };
     const snapshot = await buildReferralSnapshot('', ctx);
     return NextResponse.json({ ok: true, snapshot }, { status: 200 });
@@ -128,6 +130,10 @@ export async function POST(req: Request): Promise<NextResponse> {
           botUsername: await resolveBotUsername(),
           miniAppShortName: referralMiniAppShortName(),
           minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
+          // Про списание рассказываем только тому, у кого переключатель
+          // реально есть: флаг выключен по умолчанию, а на смоуке allowlist
+          // сужен до владельца.
+          bonusSpendAvailable: await isBonusSpendAvailableForUser(userId),
         };
         const snapshot = await buildReferralSnapshot(userId, ctx);
         return NextResponse.json({ ok: true, snapshot }, { status: 200 });

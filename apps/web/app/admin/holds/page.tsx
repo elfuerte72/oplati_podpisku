@@ -123,6 +123,11 @@ export default async function PanelHoldsPage({
                     <td data-label={COLUMN_TITLES.service}>{hold.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(hold.amountRubKopecks)}
+                      {hold.bonusDiscountKopecks > 0 && (
+                        <div className="panel-muted">
+                          −{formatKopecks(hold.bonusDiscountKopecks)} {CELL_TEXT.bonusPaid}
+                        </div>
+                      )}
                     </td>
                     <td data-label={COLUMN_TITLES.orderStatus}>
                       <span className={STATUS_TONE_CLASS[orderStatusTone(hold.orderStatus)]}>

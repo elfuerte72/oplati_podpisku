@@ -6,6 +6,7 @@ import type { SupportFacts } from '@oplati/agent';
 import { serverEnv } from '@/lib/env.server';
 import { currentInvoiceTtlHours } from '@/lib/payments/gateway';
 import { PRICE_LOCK_TTL_HOURS } from '@/lib/pricing';
+import { isBonusSpendEnabled } from '@/lib/referral/spend';
 import { OPERATOR_HOURS } from '@/lib/telegram/templates';
 
 /**
@@ -28,5 +29,13 @@ export function collectSupportFacts(): SupportFacts {
       tzLabel: OPERATOR_HOURS.tzLabel,
     },
     phoneRequiredFromRub: serverEnv.PHONE_REQUIRED_FROM_RUB ?? null,
+    // Про списание баллов помощник рассказывает, только когда фича включена:
+    // объяснять кнопку, которой у клиента нет, — способ получить обращение.
+    bonusSpend: isBonusSpendEnabled()
+      ? {
+          minSpendUsdCents: serverEnv.REFERRAL_SPEND_MIN_USD_CENTS,
+          minPayoutUsdCents: serverEnv.REFERRAL_MIN_PAYOUT_USD_CENTS,
+        }
+      : null,
   };
 }

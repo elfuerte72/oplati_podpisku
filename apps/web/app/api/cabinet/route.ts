@@ -73,6 +73,9 @@ const requestSchema = z.discriminatedUnion('action', [
     action: z.literal('pay'),
     email: z.string().max(320).optional(),
     phone: z.string().max(32).optional(),
+    // Переключатель «списать баллы» на экране заказа (трек referral-balance-spend).
+    // Сколько именно списать, решает сервер — клиент шлёт только «да/нет».
+    useBonus: z.boolean().optional(),
   }),
   // Экран «Профиль» (тикет 08): правка контактов вне заказа. Авторизация
   // initData и per-identity лимит бакета `cabinet` покрывают его как остальные.
@@ -292,7 +295,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         // email_required/phone_required в payments/create читают профиль.
         const saved = await saveContactsFromBody(userId, body.email, body.phone);
         if (!saved.ok) return NextResponse.json(saved, { status: 200 });
-        const result = await payOrder(userId, body.orderId);
+        const result = await payOrder(userId, body.orderId, {
+          useBonus: body.useBonus === true,
+        });
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
       }

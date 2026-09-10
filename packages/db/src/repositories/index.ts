@@ -106,6 +106,24 @@ export {
 } from './referral-accruals.ts';
 
 export {
+  claimBonusSpent,
+  findOrdersWithStuckBonus,
+  findRedemptionByOrderId,
+  findRedemptionsByOrderIds,
+  findSelfReferralSignals,
+  releaseBonusReservation,
+  releaseUnusedBonusReservation,
+  reserveBonusForOrder,
+  sumBonusRedeemedKopecks,
+  isBonusAwaitingDecision,
+  type RedemptionRow,
+  type StuckBonusOrder,
+  type RedemptionStatus,
+  type ReserveBonusResult,
+  type SelfReferralMatch,
+} from './referral-redemptions.ts';
+
+export {
   getReferralNetwork,
   getReferralIncome,
   getReferralEarnings,
@@ -174,6 +192,9 @@ export {
   PAYMENT_REMINDER_SENT_EVENT,
   PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_BLOCKED_CAPACITY_EVENT,
+  BONUS_RESERVED_EVENT,
+  BONUS_SPENT_EVENT,
+  BONUS_RELEASED_EVENT,
   claimPaymentReminder,
   claimRenewalReminder,
   hasRecentOrderEvent,
@@ -274,6 +295,7 @@ export {
   listReferralPartnersForPanel,
   listPartnerReferralsForPanel,
   listReferralPayoutsForPanel,
+  type PanelOrderBonus,
   type PanelPartner,
   type PanelPartnerReferral,
   type PanelPayoutRequest,
