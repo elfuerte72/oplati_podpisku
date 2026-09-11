@@ -84,9 +84,10 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 После нового гранта — в Metabase «Admin → Databases → Sync database schema»,
 иначе таблица не появится.
 
-⏳ **Ждут выдачи после миграции 0047** (трек promo-codes): `promo_codes` и
-`promo_redemptions`. Секретов в них нет, а «сколько стоила акция» — обычный
-вопрос к BI:
+✅ **Промокоды выданы 2026-09-11** (трек promo-codes, вместе с миграцией 0047):
+`promo_codes` и `promo_redemptions` доступны обеим ролям. Секретов в них нет, а
+«сколько стоила акция» — обычный вопрос к BI. Команда, если понадобится повторить
+на другом контуре:
 
 ```bash
 ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
