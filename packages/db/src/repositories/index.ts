@@ -124,6 +124,25 @@ export {
 } from './referral-redemptions.ts';
 
 export {
+  claimPromoSpent,
+  countPromoRedemptions,
+  findPromoCodeByCode,
+  findPromoRedemptionByOrderId,
+  findPromoRedemptionsByOrderIds,
+  listPromoCodes,
+  releasePromoRedemption,
+  releaseUnusedPromoReservation,
+  reservePromoForOrder,
+  setPromoCodeActive,
+  summarizePromoCode,
+  upsertPromoCode,
+  type PromoCodeRow,
+  type PromoRedemptionRow,
+  type PromoRedemptionStatus,
+  type ReservePromoResult,
+} from './promo-codes.ts';
+
+export {
   getReferralNetwork,
   getReferralIncome,
   getReferralEarnings,
@@ -195,6 +214,9 @@ export {
   BONUS_RESERVED_EVENT,
   BONUS_SPENT_EVENT,
   BONUS_RELEASED_EVENT,
+  PROMO_RESERVED_EVENT,
+  PROMO_SPENT_EVENT,
+  PROMO_RELEASED_EVENT,
   claimPaymentReminder,
   claimRenewalReminder,
   hasRecentOrderEvent,

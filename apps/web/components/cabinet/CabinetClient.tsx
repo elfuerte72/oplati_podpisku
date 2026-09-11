@@ -24,6 +24,7 @@ import { copyToClipboard } from '@/lib/clipboard';
 import {
   doCancelOrder,
   doMarkSubscriptionPaid,
+  checkPromo,
   doPay,
   doReportPaymentIssue,
   doReportPaymentProblem,
@@ -32,6 +33,7 @@ import {
   fetchOrderDetail,
   fetchSnapshot,
   type CancelOrderResult,
+  type PromoCheckResult,
   type OrderDetail,
   type Snapshot,
 } from './cabinet-api';
@@ -299,14 +301,30 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return res;
   }, [detail, reloadSnapshot]);
 
+  /**
+   * Проверка промокода (трек promo-codes). Ничего не занимает и не трогает
+   * `busy`: экран остаётся рабочим, а «Проверяю…» показывает само поле.
+   */
+  const onCheckPromo = useCallback(
+    async (code: string): Promise<PromoCheckResult> => {
+      if (!detail) return { ok: false, error: 'not_found' };
+      return await checkPromo(initDataRef.current, detail.orderId, code);
+    },
+    [detail],
+  );
+
   const onPay = useCallback(async (
     contactsToSend: { email?: string; phone?: string },
     useBonus: boolean,
+    promoCode?: string,
   ) => {
     if (!detail) return;
     setBusy('pay');
     setActionMsg(null);
-    const res = await doPay(initDataRef.current, detail.orderId, contactsToSend, { useBonus });
+    const res = await doPay(initDataRef.current, detail.orderId, contactsToSend, {
+      useBonus,
+      ...(promoCode ? { promoCode } : {}),
+    });
     setBusy(null);
     if (res.ok) {
       setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
@@ -434,6 +452,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
           // Факт наличия карты — из снапшота, НЕ из fee=0 заказа (L-22): на
           // dev/preview надбавка отключена env'ом и fee=0 у всех без карты.
           hasActiveCard={snapshot.cards.some((c) => c.status === 'active')}
+          onCheckPromo={onCheckPromo}
           busy={busy}
           message={actionMsg}
           // Prefill плашки контактов (тикеты 02/05) — из profile снапшота.

@@ -3,6 +3,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import {
+  findPromoRedemptionByOrderId,
   findRedemptionByOrderId,
   getDb,
   getOrderById,
@@ -130,7 +131,21 @@ export async function accrueReferralForPayment(params: {
     const redemption = await findRedemptionByOrderId(db, orderId);
     const bonusSpentUsdCents =
       redemption && redemption.status !== 'released' ? redemption.amountUsdCents : 0;
-    const commissionUsdCents = Math.max(0, grossCommissionUsdCents - bonusSpentUsdCents);
+    // ⚠️ Промокод вычитается ТОЙ ЖЕ строкой и по той же причине, что баллы
+    // (трек promo-codes): он тоже платится из маржи заказа. Без этого вычета
+    // заказ с промокодом платил бы ДВАЖДЫ — скидку клиенту и процент рефереру
+    // из маржи, которой уже нет.
+    //
+    // Отличие от баллов: промокод с `capToMargin: false` может съесть БОЛЬШЕ
+    // всей комиссии, поэтому остаток клампится нулём ниже — отрицательная
+    // «комиссия» не имеет смысла, а начислять из неё нечего в любом случае.
+    // Читается тот же признак «живо»: возвращённый промокод маржу не тратил.
+    const promo = await findPromoRedemptionByOrderId(db, orderId);
+    const promoSpentUsdCents = promo && promo.status !== 'released' ? promo.discountUsdCents : 0;
+    const commissionUsdCents = Math.max(
+      0,
+      grossCommissionUsdCents - bonusSpentUsdCents - promoSpentUsdCents,
+    );
     const totalAccrual = rows.reduce((sum, r) => sum + r.amountUsdCents, 0);
     if (totalAccrual > commissionUsdCents) {
       // ⚠️ Два РАЗНЫХ события с одинаковым исходом «не начисляем».
@@ -144,14 +159,23 @@ export async function accrueReferralForPayment(params: {
       //
       // Если баллов не было вовсе, а начисление всё равно больше комиссии —
       // это мисконфиг ставок, и он обязан кричать.
-      const explainedByBonus = bonusSpentUsdCents > 0 && totalAccrual <= grossCommissionUsdCents;
-      if (explainedByBonus) {
+      // ⚠️ Промокод объясняет исчерпанную маржу ТОЧНО ТАК ЖЕ, как баллы, и
+      // должен входить в это условие: заказ с промокодом — обычная покупка, а
+      // `error` в Sentry на обычной покупке это способ, которым денежные алёрты
+      // перестают читать. Более того, промокод с `capToMargin: false` съедает
+      // маржу ЦЕЛИКОМ штатно, поэтому потолком сравнения остаётся валовая
+      // комиссия: начисление больше неё — уже мисконфиг ставок, а не скидка.
+      const discountedUsdCents = bonusSpentUsdCents + promoSpentUsdCents;
+      const explainedByDiscount =
+        discountedUsdCents > 0 && totalAccrual <= grossCommissionUsdCents;
+      if (explainedByDiscount) {
         log.info({
-          event: 'referral.accrue.commission_spent_on_bonus',
+          event: 'referral.accrue.commission_spent_on_discount',
           orderId,
           totalAccrual,
           commissionUsdCents,
           bonusSpentUsdCents,
+          promoSpentUsdCents,
         });
         return; // маржа ушла клиенту скидкой — рефереру платить не из чего
       }
@@ -161,11 +185,18 @@ export async function accrueReferralForPayment(params: {
         totalAccrual,
         commissionUsdCents,
         bonusSpentUsdCents,
+        promoSpentUsdCents,
       });
       Sentry.captureMessage('referral accrual exceeds commission', {
         level: 'error',
         tags: { source: 'referral.accrue', alert: 'exceeds_commission' },
-        extra: { orderId, totalAccrual, commissionUsdCents, bonusSpentUsdCents },
+        extra: {
+          orderId,
+          totalAccrual,
+          commissionUsdCents,
+          bonusSpentUsdCents,
+          promoSpentUsdCents,
+        },
       });
       return; // не начисляем сверх маржи
     }

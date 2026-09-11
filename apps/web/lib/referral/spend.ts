@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import {
   appendOrderEvent,
   BONUS_RELEASED_EVENT,
+  findPromoRedemptionByOrderId,
   findRedemptionByOrderId,
   findSelfReferralSignals,
   getDb,
@@ -113,7 +114,15 @@ export type BonusSpendState = {
  * молча выставленный полный счёт клиенту, который нажал «оплатить со скидкой»
  * (находка ревью). Там сбой обязан стать честным отказом.
  */
-export async function loadBonusSpendState(order: OrderRow): Promise<BonusSpendState | null> {
+export async function loadBonusSpendState(
+  order: OrderRow,
+  /**
+   * Скидка, уже данная промокодом по этому заказу (трек promo-codes).
+   * Порядок «промокод первый, баллы вторые»: потолок баллов считается от
+   * ОСТАВШЕЙСЯ маржи и от уже уменьшенного счёта.
+   */
+  promoDiscountKopecks = 0,
+): Promise<BonusSpendState | null> {
   if (!isBonusSpendEnabled()) return null;
   const db = getDb();
   const allowed = allowlist();
@@ -130,8 +139,17 @@ export async function loadBonusSpendState(order: OrderRow): Promise<BonusSpendSt
   const minInvoice = minInvoiceKopecks();
   return {
     balanceUsdCents,
-    capKopecks: bonusSpendCapKopecks({ order, minInvoiceKopecks: minInvoice }),
-    offer: planBonusSpend({ order, balanceUsdCents, minInvoiceKopecks: minInvoice }),
+    capKopecks: bonusSpendCapKopecks({
+      order,
+      minInvoiceKopecks: minInvoice,
+      promoDiscountKopecks,
+    }),
+    offer: planBonusSpend({
+      order,
+      balanceUsdCents,
+      minInvoiceKopecks: minInvoice,
+      promoDiscountKopecks,
+    }),
     minSpendUsdCents: referralSpendMinUsdCents(),
   };
 }
@@ -142,9 +160,10 @@ export async function loadBonusSpendState(order: OrderRow): Promise<BonusSpendSt
  */
 export async function loadBonusSpendStateSafe(
   order: OrderRow,
+  promoDiscountKopecks = 0,
 ): Promise<BonusSpendState | null> {
   try {
-    return await loadBonusSpendState(order);
+    return await loadBonusSpendState(order, promoDiscountKopecks);
   } catch (err) {
     log.error({ event: 'referral.spend.state_failed', orderId: order.id, err });
     Sentry.captureException(err, { tags: { source: 'referral.spend', step: 'state' } });
@@ -184,10 +203,14 @@ export type BonusClaimResult =
  * ⚠️ Занятие идёт под тем же локом, что заявка на вывод (`hashtext(userId)`), и
  * баланс перепроверяется ВНУТРИ лока — расчёт снаружи мог устареть.
  */
-export async function claimBonusForOrder(order: OrderRow): Promise<BonusClaimResult> {
+export async function claimBonusForOrder(
+  order: OrderRow,
+  /** Скидка промокода по этому заказу — потолок баллов считается от остатка. */
+  promoDiscountKopecks = 0,
+): Promise<BonusClaimResult> {
   let state: BonusSpendState | null;
   try {
-    state = await loadBonusSpendState(order);
+    state = await loadBonusSpendState(order, promoDiscountKopecks);
   } catch (err) {
     // ⚠️ Сбой чтения — это `unavailable`, а НЕ `skipped`. Проглоченная ошибка
     // здесь означала бы счёт на полную сумму клиенту, который нажал «оплатить
@@ -370,9 +393,17 @@ export async function invoicedAmountForOrder(order: {
 }): Promise<{ amountKopecks: number | null; discountKopecks: number }> {
   const full = order.amountRub;
   try {
-    const redemption = await findRedemptionByOrderId(getDb(), order.id);
-    const discountKopecks =
+    const db = getDb();
+    const redemption = await findRedemptionByOrderId(db, order.id);
+    const bonusKopecks =
       redemption && redemption.status !== 'released' ? redemption.discountKopecks : 0;
+    // ⚠️ Скидка по промокоду входит в ту же сумму (трек promo-codes): назвать
+    // клиенту цену без неё значило бы попросить больше, чем просит платёжная
+    // страница. Обе скидки складываются — счёт уменьшен на обе.
+    const promoRow = await findPromoRedemptionByOrderId(db, order.id);
+    const promoKopecks =
+      promoRow && promoRow.status !== 'released' ? promoRow.discountKopecks : 0;
+    const discountKopecks = bonusKopecks + promoKopecks;
     return {
       amountKopecks: full === null ? null : full - discountKopecks,
       discountKopecks,

@@ -39,6 +39,20 @@ const orderSummarySchema = z.object({
     })
     .nullable()
     .optional(),
+  /**
+   * Скидка по промокоду на этом заказе; null — промокода не было.
+   *
+   * Сам код сервер не отдаёт намеренно — экран называет скидку, а не акцию.
+   * `.optional()` по той же причине, что у `bonus`: бандл обязан пережить
+   * снапшот деплоя, где фичи ещё нет.
+   */
+  promo: z
+    .object({
+      discountKopecks: z.number().int().positive(),
+      status: z.string(),
+    })
+    .nullable()
+    .optional(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */
@@ -135,9 +149,29 @@ const orderDetailSchema = orderSummarySchema.extend({
     })
     .nullable()
     .optional(),
+  /** Показывать ли поле ввода промокода. Отсутствует у старого бандла — значит «нет». */
+  promoInputEnabled: z.boolean().optional(),
 });
 
 const orderDetailResponseSchema = z.object({ ok: z.literal(true), order: orderDetailSchema });
+
+/**
+ * Ответ на проверку промокода. Несёт ПЕРЕСЧИТАННОЕ предложение по баллам:
+ * потолок баллов зависит от промокода («промокод первый, баллы вторые»), и
+ * показать одну скидку без второй значило бы назвать клиенту сумму, которой в
+ * счёте не будет.
+ */
+const promoCheckResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    discountKopecks: z.number().int().positive(),
+    capped: z.boolean(),
+    bonusOffer: orderDetailSchema.shape.bonusOffer,
+  }),
+  z.object({ ok: z.literal(false), error: z.string(), message: z.string().optional() }),
+]);
+
+export type PromoCheckResult = z.infer<typeof promoCheckResultSchema>;
 
 const payResultSchema = z.discriminatedUnion('ok', [
   z.object({
@@ -270,7 +304,7 @@ export async function doPay(
   initData: string,
   orderId: string,
   contacts?: { email?: string; phone?: string },
-  opts?: { useBonus?: boolean },
+  opts?: { useBonus?: boolean; promoCode?: string },
 ): Promise<PayResult> {
   // Контакты — из плашки (тикеты 02/05): сервер сохранит их в профиль ДО
   // выставления счёта (гейты email_required/phone_required читают профиль).
@@ -283,9 +317,24 @@ export async function doPay(
     ...(contacts?.email !== undefined ? { email: contacts.email } : {}),
     ...(contacts?.phone !== undefined ? { phone: contacts.phone } : {}),
     ...(opts?.useBonus ? { useBonus: true } : {}),
+    // Промокод уходит тем же запросом: занимает его сервер, в момент создания
+    // счёта и под локами. Проверка на экране была лишь обещанием.
+    ...(opts?.promoCode ? { promoCode: opts.promoCode } : {}),
   });
   const parsed = resp ? payResultSchema.safeParse(resp.json) : null;
   if (parsed?.success) return withMessage(parsed.data);
+  return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
+}
+
+/** Проверить промокод по заказу: «что он даст». Ничего не занимает. */
+export async function checkPromo(
+  initData: string,
+  orderId: string,
+  promoCode: string,
+): Promise<PromoCheckResult> {
+  const resp = await callCabinet({ action: 'promo-check', initData, orderId, promoCode });
+  const parsed = resp ? promoCheckResultSchema.safeParse(resp.json) : null;
+  if (parsed?.success) return parsed.data;
   return { ok: false, error: GENERIC_ERROR, message: NETWORK_ERROR_TEXT };
 }
 

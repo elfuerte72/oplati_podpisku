@@ -27,6 +27,7 @@ import {
   confirmOrder,
   aboveMaxAmountText,
   BonusUnavailableError,
+  PromoUnavailableError,
   EmailRequiredError,
   OrderAboveMaxAmountError,
   PaymentCapacityError,
@@ -78,6 +79,7 @@ export type PayOrderResult =
         | 'email_required'
         | 'phone_required'
         | 'bonus_unavailable'
+        | 'promo_unavailable'
         | 'failed';
       message: string;
       /** Порог гейта телефона в целых рублях (только при phone_required). */
@@ -103,7 +105,7 @@ export function extractInvoiceLink(
 export async function payOrder(
   userId: string,
   orderId: string,
-  opts: { useBonus?: boolean } = {},
+  opts: { useBonus?: boolean; promoCode?: string } = {},
 ): Promise<PayOrderResult> {
   const db = getDb();
   const order = await getOrderById(db, orderId);
@@ -148,6 +150,7 @@ export async function payOrder(
       orderId,
       userId,
       ...(opts.useBonus ? { useBonus: true } : {}),
+      ...(opts.promoCode ? { promoCode: opts.promoCode } : {}),
     });
     return {
       ok: true,
@@ -191,6 +194,17 @@ export async function payOrder(
     if (err instanceof BonusUnavailableError) {
       log.info({ event: 'cabinet.pay.bonus_unavailable', orderId });
       return { ok: false, error: 'bonus_unavailable', message: BONUS_UNAVAILABLE_TEXT };
+    }
+    // Промокод занять не удалось (трек promo-codes) — та же логика, что у
+    // баллов: счёт не выставлен, потому что полный вместо обещанного со скидкой
+    // был бы обманом. Текст берём с сервера: причина у отказа конкретная.
+    if (err instanceof PromoUnavailableError) {
+      log.info({ event: 'cabinet.pay.promo_unavailable', orderId });
+      return {
+        ok: false,
+        error: 'promo_unavailable',
+        message: err.clientText ?? 'Промокод не сработал. Обнови экран и попробуй ещё раз.',
+      };
     }
     // Гейт фиксации цены (H-2): payments/create ответил 409 order_expired —
     // заказ захоронен, «попробуй ещё раз» ввёл бы в заблуждение.

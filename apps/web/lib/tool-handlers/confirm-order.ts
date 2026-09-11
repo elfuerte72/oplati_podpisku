@@ -8,6 +8,7 @@ import { getDb, getOrderById, getUserTelegramId } from '@oplati/db';
 
 import { selfCallBaseUrl } from '../deployment-url.ts';
 import { BONUS_UNAVAILABLE, BONUS_UNAVAILABLE_TEXT } from '../payments/bonus.ts';
+import { PROMO_UNAVAILABLE } from '../payments/promo.ts';
 import { EMAIL_REQUIRED } from '../contacts/email.ts';
 import { PHONE_REQUIRED } from '../contacts/phone.ts';
 import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '../payments/capacity.ts';
@@ -168,6 +169,29 @@ export class BonusUnavailableError extends Error {
 }
 
 /**
+ * Клиент ввёл промокод, экран показал скидку, а занять её не удалось
+ * (трек promo-codes). Счёт НЕ создан: выставить полный вместо обещанного со
+ * скидкой значило бы обмануть.
+ *
+ * Причину несёт готовый текст с сервера, а не свой код: у отказа шесть поводов
+ * («уже использовал», «разобрали», «срок вышел», …), и перечислять их второй
+ * раз здесь означало бы зеркало формулировок про деньги.
+ */
+export class PromoUnavailableError extends Error {
+  /** Текст клиенту от сервера; null — сказать нечего сверх общего. */
+  readonly clientText: string | null;
+  constructor(clientText: string | null) {
+    super(
+      `${PROMO_UNAVAILABLE}: применить промокод к этому заказу не удалось. ` +
+        'Счёт не создан. Передай пользователю ДОСЛОВНО этот текст: ' +
+        `"${clientText ?? 'Промокод не сработал. Обнови экран и попробуй ещё раз.'}".`,
+    );
+    this.name = 'PromoUnavailableError';
+    this.clientText = clientText;
+  }
+}
+
+/**
  * Текст отказа для КЛИЕНТСКИХ каналов (веб, Mini App, бот) — один на все три,
  * чтобы формулировки про деньги не разъезжались. Сообщение самой ошибки выше
  * адресовано AI-агенту и звучит иначе.
@@ -188,6 +212,10 @@ const errorBodySchema = z.object({
   // Целые неотрицательные минуты: дробь отрендерилась бы клиенту как
   // «12.5 минут», а отрицательная — как обещание уже истёкшей цены.
   priceLockMinutesLeft: z.number().int().nonnegative().nullable().optional(),
+  // Готовый текст клиенту (сейчас — отказ промокода, трек promo-codes). Причин
+  // отказа шесть, и перечислять их вторым перечислением здесь означало бы
+  // зеркало формулировок про деньги: текст выбирает сервер.
+  message: z.string().max(500).optional(),
 });
 
 type ErrorBody = z.infer<typeof errorBodySchema>;
@@ -221,6 +249,8 @@ export async function confirmOrder(input: {
   userId?: string;
   /** Клиент попросил списать реферальные баллы (трек referral-balance-spend). */
   useBonus?: boolean;
+  /** Промокод с экрана заказа (трек promo-codes), уже нормализованный. */
+  promoCode?: string;
 }): Promise<ConfirmOrderResult> {
   if (input.userId) {
     const order = await getOrderById(getDb(), input.orderId);
@@ -283,6 +313,7 @@ export async function confirmOrder(input: {
         orderId: input.orderId,
         ...(input.paymentMethod !== undefined ? { paymentMethod: input.paymentMethod } : {}),
         ...(input.useBonus ? { useBonus: true } : {}),
+        ...(input.promoCode ? { promoCode: input.promoCode } : {}),
       }),
       signal: controller.signal,
     });
@@ -305,6 +336,9 @@ export async function confirmOrder(input: {
       }
       if (resp.status === 409 && errorCode === BONUS_UNAVAILABLE) {
         throw new BonusUnavailableError(errorBody?.balanceUsdCents ?? null);
+      }
+      if (resp.status === 409 && errorCode === PROMO_UNAVAILABLE) {
+        throw new PromoUnavailableError(errorBody?.message ?? null);
       }
       if (resp.status === 422 && errorCode === 'above_max_amount') {
         throw new OrderAboveMaxAmountError(errorBody?.maxAmountRub ?? null);
