@@ -8,12 +8,14 @@ import {
   claimBonusSpent,
   claimPaymentSucceeded,
   claimPaymentTerminal,
+  claimPromoSpent,
   findPaymentByProviderInvoiceNumber,
   findPaymentByProviderRef,
   getDb,
   getOrderById,
   getPayerPhoneForOrder,
   getUserTelegramId,
+  PROMO_SPENT_EVENT,
   transitionOrder,
   type PaymentRow,
 } from '@oplati/db';
@@ -406,6 +408,22 @@ export async function processFreekassaPaid(
         payload: {
           spendUsdCents: bonus.amountUsdCents,
           discountKopecks: bonus.discountKopecks,
+          paymentId: payment.id,
+        },
+      });
+    }
+    // Расход промокода — там же и по той же причине: иначе клиент успел бы
+    // отменить оплаченный заказ и вернуть себе активацию (трек promo-codes).
+    const promo = await claimPromoSpent(tx, payment.orderId);
+    if (promo) {
+      await appendOrderEvent(tx, {
+        orderId: payment.orderId,
+        eventType: PROMO_SPENT_EVENT,
+        actorType: 'payment_provider',
+        payload: {
+          promoCodeId: promo.promoCodeId,
+          discountUsdCents: promo.discountUsdCents,
+          discountKopecks: promo.discountKopecks,
           paymentId: payment.id,
         },
       });

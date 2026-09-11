@@ -91,6 +91,19 @@ export type OrderRedemptionView = {
   status: 'reserved' | 'spent' | 'released';
 };
 
+/**
+ * Уже применённый промокод по заказу — для строки «−405 ₽ по промокоду»
+ * (трек promo-codes).
+ *
+ * Сам КОД наружу не отдаём: экран называет скидку, а не чужую акцию. Клиент и
+ * так знает, что ввёл; а поле в снапшоте превращало бы открытый чужой заказ в
+ * способ узнать действующие коды.
+ */
+export type OrderPromoView = {
+  discountKopecks: number;
+  status: 'reserved' | 'spent' | 'released';
+};
+
 export type CabinetProfile = {
   displayName: string | null;
   phone: string | null;
@@ -127,6 +140,8 @@ export type OrderSummary = {
    * другим в UI нельзя — только вычитать.
    */
   bonus: OrderRedemptionView | null;
+  /** Скидка по промокоду на этом заказе; `null` — промокода не было. */
+  promo: OrderPromoView | null;
 };
 
 /**
@@ -210,6 +225,14 @@ export type OrderDetail = OrderSummary & {
   card: CardView | null;
   /** Что предложить списать; `null` — блока баллов на экране нет. */
   bonusOffer: OrderBonusView | null;
+  /**
+   * Показывать ли поле ввода промокода (трек promo-codes). `false` — механика
+   * выключена флагом, поля нет вовсе.
+   *
+   * Флагом, а не наличием кодов: спрашивать «есть ли хоть один активный код»
+   * значило бы подсказывать, что акция идёт, ещё до её объявления.
+   */
+  promoInputEnabled: boolean;
 };
 
 export type CabinetSnapshot = {

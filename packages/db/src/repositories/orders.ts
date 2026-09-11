@@ -737,6 +737,24 @@ export const BONUS_SPENT_EVENT = 'bonus_spent';
 export const BONUS_RELEASED_EVENT = 'bonus_released';
 
 /**
+ * Служебные события промокода (трек promo-codes) — те же три состояния и те же
+ * правила, что у баллов выше.
+ *
+ * `promo_reserved` — код занят под выставленный счёт; `promo_spent` — заказ
+ * оплачен, активация израсходована; `promo_released` — право вернули ЯВНО.
+ *
+ * ⚠️ Автовозврат по правилу «денег не приходило» события НЕ пишет — по той же
+ * причине, что у баллов.
+ *
+ * ⚠️ СЛУЖЕБНЫЕ: в таймлайн клиента не показываются (денилист
+ * `INTERNAL_EVENT_TYPES` в `lib/cabinet/read.ts`). Про скидку клиент узнаёт из
+ * суммы на экране заказа.
+ */
+export const PROMO_RESERVED_EVENT = 'promo_reserved';
+export const PROMO_SPENT_EVENT = 'promo_spent';
+export const PROMO_RELEASED_EVENT = 'promo_released';
+
+/**
  * Атомарно «занять» право напомнить об оплате: не чаще одного раза в
  * `cooldownMs` на заказ.
  *

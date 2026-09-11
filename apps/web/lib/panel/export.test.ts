@@ -13,6 +13,7 @@ const order = {
   status: 'completed' as const,
   amountRubKopecks: 367200,
   bonusDiscountKopecks: 0,
+  promoDiscountKopecks: 0,
   createdAt: new Date('2026-09-02T14:34:00Z'),
   expiresAt: null,
   serviceName: 'HeyGen',
@@ -40,7 +41,7 @@ describe('exportOrderRow', () => {
   it('время — ISO, а не местное', () => {
     // Файл читают в разных местах: «02.09.26, 14:34» без зоны означает разное
     // время у разных людей.
-    expect(exportOrderRow(order)[8]).toBe('2026-09-02T14:34:00.000Z');
+    expect(exportOrderRow(order)[9]).toBe('2026-09-02T14:34:00.000Z');
   });
 
   it('погашение баллами — отдельная колонка, а не вычет из суммы', () => {
@@ -66,10 +67,12 @@ describe('exportOrderRow', () => {
       client: { id: 'u1', displayName: null, telegramId: null, email: null },
     });
 
+    // Индексы после колонки «Промокод, ₽» (трек promo-codes) сдвинулись на
+    // единицу: 5 — клиент, 6 — telegram, 10 — оператор.
     expect(row[2]).toBe('');
     expect(row[3]).toBe('');
-    expect(row[5]).toBe('');
-    expect(row[9]).toBe('');
+    expect(row[6]).toBe('');
+    expect(row[10]).toBe('');
   });
 });
 

@@ -197,6 +197,16 @@ export {
   type PayoutStatus,
 } from './referral-payout.ts';
 
+// ─── Промокоды ────────────────────────────────────────────────────────────
+
+export {
+  PROMO_CODE_MAX_LENGTH,
+  normalizePromoCode,
+  promoCodeInputSchema,
+  promoRejectReason,
+  type PromoRejectReason,
+} from './promo.ts';
+
 // ─── Воронка обратной связи и удержания ───────────────────────────────────
 
 export {

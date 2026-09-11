@@ -122,18 +122,37 @@ export function bonusValueKopecks(
  *
  * Нужен экрану заказа отдельно от плана: клиенту с балансом больше потолка
  * объясняем, ПОЧЕМУ списалось меньше, и число берём из расчёта, а не из текста.
+ *
+ * ⚠️ `promoDiscountKopecks` — скидка, которую УЖЕ дал промокод по этому заказу
+ * (трек promo-codes). Порядок скидок фиксирован: **промокод первый, баллы
+ * вторые**, и живёт это правило здесь, в одном месте. Вычитается дважды и
+ * по-разному:
+ *
+ *  - из комиссии, потому что баллы платятся из МАРЖИ, а промокод её уже
+ *    потратил. Без этого покупатель гасил бы баллами маржу, которой нет, и
+ *    заказ уходил бы в минус вторым путём;
+ *  - из headroom до минимума счёта, потому что счёт уже уменьшен промокодом, и
+ *    считать запас от полной цены значило бы разрешить баллам опустить счёт
+ *    ниже минимума шлюза.
+ *
+ * Промокод с `capToMargin: false` может съесть БОЛЬШЕ всей комиссии — тогда
+ * остаток маржи ноль, и баллы по такому заказу не предлагаются вовсе. Это
+ * правильный ответ, а не дефект: платить скидку ещё и баллами было бы третьим
+ * слоем убытка на одном заказе.
  */
 export function bonusSpendCapKopecks(input: {
   order: BonusSpendOrder;
   minInvoiceKopecks: number;
+  promoDiscountKopecks?: number;
 }): number {
-  const { order, minInvoiceKopecks } = input;
-  const commission = orderCommissionKopecks(order);
+  const { order, minInvoiceKopecks, promoDiscountKopecks = 0 } = input;
+  const promo = Math.max(promoDiscountKopecks, 0);
+  const commission = orderCommissionKopecks(order) - promo;
   if (commission <= 0) return 0;
   const amountRub = order.amountRub ?? 0;
   // Физический предел провайдера: остаток счёта обязан быть не меньше его
-  // минимума, иначе счёт просто не выставится.
-  const invoiceHeadroom = amountRub - Math.max(minInvoiceKopecks, 0);
+  // минимума, иначе счёт просто не выставится. Счёт уже уменьшен промокодом.
+  const invoiceHeadroom = amountRub - promo - Math.max(minInvoiceKopecks, 0);
   return roundDownToWholeRubles(Math.min(commission, invoiceHeadroom));
 }
 
@@ -148,12 +167,18 @@ export function bonusSpendCapKopecks(input: {
  *     ВВЕРХ, в нашу пользу, — но не больше баланса;
  *  5. списание ниже минимума (`$1`) не предлагается вовсе: «сэкономили 12 ₽»
  *     не стоит ни клика клиента, ни строки в его балансе.
+ *
+ * `promoDiscountKopecks` — скидка, уже данная промокодом по этому заказу
+ * (порядок «промокод первый, баллы вторые»); вся арифметика вычета живёт в
+ * `bonusSpendCapKopecks`.
  */
 export function planBonusSpend(input: {
   order: BonusSpendOrder;
   balanceUsdCents: number;
   /** Минимальная сумма счёта у активного шлюза, RUB-копейки (0 — минимума нет). */
   minInvoiceKopecks: number;
+  /** Скидка промокода по этому заказу, RUB-копейки (0 — промокода нет). */
+  promoDiscountKopecks?: number;
   minSpendUsdCents?: number;
   bonusPercent?: number;
 }): BonusSpendPlan | null {
@@ -161,6 +186,7 @@ export function planBonusSpend(input: {
     order,
     balanceUsdCents,
     minInvoiceKopecks,
+    promoDiscountKopecks = 0,
     minSpendUsdCents = referralSpendMinUsdCents(),
     bonusPercent = referralSpendBonusPercent(),
   } = input;
@@ -169,7 +195,7 @@ export function planBonusSpend(input: {
   if (rateKopecks <= 0) return null;
   if (!Number.isFinite(balanceUsdCents) || balanceUsdCents <= 0) return null;
 
-  const cap = bonusSpendCapKopecks({ order, minInvoiceKopecks });
+  const cap = bonusSpendCapKopecks({ order, minInvoiceKopecks, promoDiscountKopecks });
   if (cap <= 0) return null;
 
   const balanceValue = bonusValueKopecks(balanceUsdCents, rateKopecks, bonusPercent);

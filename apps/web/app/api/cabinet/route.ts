@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import { getDb, updateUserContacts } from '@oplati/db';
+import { promoCodeInputSchema } from '@oplati/types';
 
 import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
@@ -24,6 +25,7 @@ import {
 } from '@/lib/cabinet/actions';
 import { PAYMENT_ISSUE_TYPES, PAYMENT_PROBLEM_TYPES } from '@/lib/cabinet/payment-issues';
 import { getCardSecretsForUser } from '@/lib/cabinet/card-secrets';
+import { checkPromoForCabinet } from '@/lib/cabinet/promo-actions';
 // Отмена — общий модуль на все каналы (кабинет и кнопка бота), а не метод
 // кабинета: иначе тесты действий кабинета тянули бы платёжный поллер, а второй
 // канал жил бы со своей копией гейтов.
@@ -76,6 +78,16 @@ const requestSchema = z.discriminatedUnion('action', [
     // Переключатель «списать баллы» на экране заказа (трек referral-balance-spend).
     // Сколько именно списать, решает сервер — клиент шлёт только «да/нет».
     useBonus: z.boolean().optional(),
+    // Промокод с экрана заказа (трек promo-codes). Сколько он даёт, решает
+    // сервер; клиент шлёт написание, а нормализует его схема.
+    promoCode: promoCodeInputSchema.optional(),
+  }),
+  // Проверка промокода ДО оплаты: «что мне даст этот код». Занятия не делает —
+  // клиент, который ввёл код и передумал, не должен оставлять за собой
+  // израсходованную активацию (трек promo-codes).
+  orderAction.extend({
+    action: z.literal('promo-check'),
+    promoCode: promoCodeInputSchema,
   }),
   // Экран «Профиль» (тикет 08): правка контактов вне заказа. Авторизация
   // initData и per-identity лимит бакета `cabinet` покрывают его как остальные.
@@ -248,6 +260,27 @@ export async function POST(req: Request): Promise<NextResponse> {
     return rateLimitedResponse();
   }
 
+  // 2а. Любая попытка ПРИМЕНИТЬ код — ещё и свой бакет (трек promo-codes). Это
+  //     единственное место кабинета, где осмыслен ПОДБОР: действующий код стоит
+  //     денег. Свой кошелёк работает в обе стороны — перебор не выедает клиенту
+  //     лимит на оплату, а листание экранов не оплачивает перебор.
+  //
+  // ⚠️ Считаются ОБА действия, а не только `promo-check`: `pay` принимает тот же
+  // `promoCode` и на неподошедшем отвечает 409 с причиной — то есть сам по себе
+  // годится для перебора, причём по общему бакету кабинета и мимо этого
+  // счётчика (находка ревью). Хуже того, `payments/create` успевает занять
+  // карточный фонд под глобальным advisory-локом ДО проверки кода, и перебор
+  // через `pay` дёргал бы замок платёжного пути живых клиентов.
+  const triesPromoCode =
+    body.action === 'promo-check' || (body.action === 'pay' && body.promoCode !== undefined);
+  if (triesPromoCode) {
+    const promoRl = await checkRateLimit('promo-check', telegramId);
+    if (!promoRl.allowed) {
+      log.warn({ event: 'cabinet.promo.rate_limited', action: body.action });
+      return rateLimitedResponse();
+    }
+  }
+
   // 3. Только теперь — запись: upsert `users` + реферальный захват.
   const auth = await upsertCabinetUser(verified.identity);
   if (!auth.ok) {
@@ -297,6 +330,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         if (!saved.ok) return NextResponse.json(saved, { status: 200 });
         const result = await payOrder(userId, body.orderId, {
           useBonus: body.useBonus === true,
+          ...(body.promoCode ? { promoCode: body.promoCode } : {}),
         });
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
@@ -353,6 +387,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       }
       case 'subscription-paid': {
         const result = await markSubscriptionActivated(userId, body.orderId);
+        const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
+        return NextResponse.json(result, { status });
+      }
+      case 'promo-check': {
+        const result = await checkPromoForCabinet(userId, body.orderId, body.promoCode);
         const status = result.ok ? 200 : result.error === 'not_found' ? 404 : 200;
         return NextResponse.json(result, { status });
       }

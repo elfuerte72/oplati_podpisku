@@ -129,11 +129,15 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // Сумма, которую реально просит платёжная страница: полная цена заказа минус
-  // списанные баллы (трек referral-balance-spend).
+  // ОБЕ скидки — списанные баллы (трек referral-balance-spend) и промокод
+  // (трек promo-codes).
+  //
+  // ⚠️ Забыть вторую значит попросить у клиента больше, чем просит платёжная
+  // страница, — в сообщении, которое отправляет живой оператор кнопкой.
   const invoiceAmountKopecks =
     order.amountRubKopecks === null
       ? null
-      : order.amountRubKopecks - order.bonusDiscountKopecks;
+      : order.amountRubKopecks - order.bonusDiscountKopecks - order.promoDiscountKopecks;
 
   try {
     await bot.api.sendMessage(

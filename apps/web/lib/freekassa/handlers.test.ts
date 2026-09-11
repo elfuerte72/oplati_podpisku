@@ -66,6 +66,8 @@ vi.mock('@oplati/db', () => {
     // Его собственные гарантии проверяет PGlite-сьют `packages/db`; здесь важно
     // только, что claim зовётся ВНУТРИ той же транзакции.
     claimBonusSpent: vi.fn(async () => null),
+    claimPromoSpent: vi.fn(async () => null),
+    PROMO_SPENT_EVENT: 'promo_spent',
     appendOrderEvent: vi.fn(async () => {}),
     BONUS_SPENT_EVENT: 'bonus_spent',
     claimPaymentSucceeded: vi.fn(async () => {

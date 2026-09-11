@@ -29,6 +29,10 @@ type Profile = {
 type Ancestor = { userId: string; level: number };
 type InsertCall = { sourceUserId: string; orderId: string; paymentId: string; rows: unknown[] };
 type Redemption = { amountUsdCents: number; status: 'reserved' | 'spent' | 'released' } | null;
+/** Скидка промокода по заказу (трек promo-codes) — тоже уменьшает базу начисления. */
+type PromoRedemption =
+  | { discountUsdCents: number; status: 'reserved' | 'spent' | 'released' }
+  | null;
 
 vi.mock('@oplati/db', () => {
   const state: {
@@ -37,7 +41,15 @@ vi.mock('@oplati/db', () => {
     profiles: Record<string, Profile | null>;
     insertCalls: InsertCall[];
     redemption: Redemption;
-  } = { order: null, ancestors: [], profiles: {}, insertCalls: [], redemption: null };
+    promoRedemption: PromoRedemption;
+  } = {
+    order: null,
+    ancestors: [],
+    profiles: {},
+    insertCalls: [],
+    redemption: null,
+    promoRedemption: null,
+  };
   return {
     getDb: () => ({}) as unknown,
     getOrderById: vi.fn(async () => state.order),
@@ -48,11 +60,15 @@ vi.mock('@oplati/db', () => {
       return params.rows.length;
     }),
     findRedemptionByOrderId: vi.fn(async () => state.redemption),
+    findPromoRedemptionByOrderId: vi.fn(async () => state.promoRedemption),
     __setOrder(o: Order | null) {
       state.order = o;
     },
     __setRedemption(r: Redemption) {
       state.redemption = r;
+    },
+    __setPromoRedemption(r: PromoRedemption) {
+      state.promoRedemption = r;
     },
     __setAncestors(a: Ancestor[]) {
       state.ancestors = a;
@@ -69,6 +85,7 @@ vi.mock('@oplati/db', () => {
       state.profiles = {};
       state.insertCalls = [];
       state.redemption = null;
+      state.promoRedemption = null;
     },
   };
 });
@@ -81,6 +98,7 @@ type MockedDb = typeof db & {
   __setAncestors: (a: Ancestor[]) => void;
   __setProfile: (id: string, p: Profile | null) => void;
   __setRedemption: (r: Redemption) => void;
+  __setPromoRedemption: (r: PromoRedemption) => void;
   __insertCalls: () => InsertCall[];
   __reset: () => void;
 };
@@ -303,6 +321,89 @@ describe('accrueReferralForPayment', () => {
 
     expect(m.__insertCalls()).toHaveLength(1);
     expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Промокод платится из ТОЙ ЖЕ маржи, что и баллы (трек promo-codes). Без вычета
+ * заказ с промокодом платил бы дважды: скидку клиенту и процент рефереру из
+ * маржи, которой уже нет.
+ */
+describe('accrueReferralForPayment — промокод уменьшает базу', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    m.__reset();
+    hoisted.env.REFERRAL_ENABLED = true;
+    hoisted.env.COMMISSION_PERCENT = 30;
+  });
+
+  it('промокод, съевший всю комиссию, оставляет реферера без начисления', async () => {
+    // База $20 → валовая комиссия $6. Промокод дал $5... хватило бы на $1,
+    // но начисление 4% от $20 = $0.80 ≤ $1 — значит пройдёт. Берём промокод
+    // побольше, чтобы комиссии не осталось совсем.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 400 }));
+    m.__setPromoRedemption({ discountUsdCents: 600, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(0);
+    // ⚠️ Это НОРМА, а не аномалия: алёрта быть не должно, иначе Sentry кричит
+    // на каждой покупке с промокодом.
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('небольшой промокод оставляет место начислению', async () => {
+    // $20 → комиссия $6, промокод $1 → осталось $5; начисление $0.80 проходит.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 400 }));
+    m.__setPromoRedemption({ discountUsdCents: 100, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(1);
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('промокод и баллы вычитаются ВМЕСТЕ, а не по очереди', async () => {
+    // $20 → комиссия $6. Баллы $3 + промокод $3 = вся комиссия, начислять нечего.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 400 }));
+    m.__setRedemption({ amountUsdCents: 300, status: 'spent' });
+    m.__setPromoRedemption({ discountUsdCents: 300, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(0);
+    expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('ВОЗВРАЩЁННЫЙ промокод маржу не тратил — начисление идёт как обычно', async () => {
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 30 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 0, lockedRateL1Bps: 400 }));
+    m.__setPromoRedemption({ discountUsdCents: 600, status: 'released' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(1);
+  });
+
+  it('начисление выше ПОЛНОЙ комиссии даже с промокодом — по-прежнему аномалия', async () => {
+    // Мисконфиг: комиссия заказа 1% при ставке реферера 6%. Промокодом это не
+    // объясняется — начисление выходит за ВАЛОВУЮ комиссию, а не за остаток.
+    m.__setOrder({ id: 'o1', userId: 'src', originalAmount: 2000, commissionPercent: 1 });
+    m.__setAncestors([{ userId: 'l1', level: 1 }]);
+    m.__setProfile('l1', profile({ circle: 2 }));
+    m.__setPromoRedemption({ discountUsdCents: 100, status: 'spent' });
+
+    await accrueReferralForPayment({ orderId: 'o1', paymentId: 'p1' });
+
+    expect(m.__insertCalls()).toHaveLength(0);
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
   });
 });
 

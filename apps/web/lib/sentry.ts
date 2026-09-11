@@ -19,8 +19,12 @@ import type * as SentryTypes from '@sentry/nextjs';
 // запроса, а тело разбирается в `request.data` — то есть перенос поиска на POST
 // закрыл один канал и открыл соседний. Плейсхолдер поля прямо предлагает искать
 // по почте и телефону, поэтому ключ несёт контакт клиента по построению.
+// `promo_code` — не PII, но ДЕЙСТВУЮЩИЙ КОД СКИДКИ: он приходит телом POST и
+// без чистки уехал бы во внешний сервис с любым исключением в `/api/cabinet`
+// или `/api/payments/create` — вместе с ещё не объявленной акцией (трек
+// promo-codes, находка ревью).
 const PII_KEY_RE =
-  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q|http\.query|telegram_?username|chat_?id)$/i;
+  /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q|http\.query|telegram_?username|chat_?id|promo_?code)$/i;
 
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
 function scrubPii(value: unknown, depth = 0): unknown {

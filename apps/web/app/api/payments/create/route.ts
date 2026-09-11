@@ -9,12 +9,13 @@ import {
   getDb,
   getOrderById,
   getUserPayerContact,
+  PROMO_RESERVED_EVENT,
   setOrderExpiresAt,
   transitionOrder,
   upsertPaymentByProviderRef,
   type UpsertResult,
 } from '@oplati/db';
-import { OrderTransitionError } from '@oplati/types';
+import { OrderTransitionError, promoCodeInputSchema } from '@oplati/types';
 
 import { EMAIL_REQUIRED, EMAIL_REQUIRED_TEXT } from '@/lib/contacts/email';
 import { isPhoneRequiredForAmount, PHONE_REQUIRED, phoneRequiredText } from '@/lib/contacts/phone';
@@ -38,6 +39,8 @@ import {
 } from '@/lib/pay-space/preflight';
 import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
 import { BONUS_UNAVAILABLE, BONUS_UNAVAILABLE_TEXT } from '@/lib/payments/bonus';
+import { PROMO_UNAVAILABLE, promoRejectText } from '@/lib/payments/promo';
+import { claimPromoForOrder, precheckPromoForOrder, releasePromoClaim } from '@/lib/promo/apply';
 import { claimBonusForOrder, releaseBonusClaim } from '@/lib/referral/spend';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { LoveAndPayApiError } from '@/lib/loveandpay';
@@ -78,6 +81,13 @@ const requestSchema = z.object({
    * и при выключенной фиче ИГНОРИРУЕТСЯ, а не отвергается.
    */
   useBonus: z.boolean().optional(),
+  /**
+   * Промокод, который клиент ввёл на экране заказа (трек promo-codes).
+   * Нормализуется схемой (`promoCodeInputSchema`), поэтому дальше по роуту
+   * гуляет уже каноническое написание. При выключенной механике ИГНОРИРУЕТСЯ,
+   * а не отвергается — по образцу `useBonus`.
+   */
+  promoCode: promoCodeInputSchema.optional(),
 });
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -110,7 +120,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
-  const { orderId, paymentMethod, useBonus = false } = parsed.data;
+  const { orderId, paymentMethod, useBonus = false, promoCode } = parsed.data;
 
   // Кто принимает деньги прямо сейчас. Читаем ДО try: значение нужно и в
   // обработчике ошибок (healthcheck прокси дёргаем только для L&P).
@@ -126,9 +136,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   // заперты до протухания заказа» — молча и надолго.
   let bonusClaimed = false;
   let bonusPlan: { discountKopecks: number; spendUsdCents: number } | null = null;
+  // Промокод занимается рядом с фондом и баллами и снимается вместе с ними:
+  // три занятия, один жизненный цикл (трек promo-codes).
+  let promoClaimed = false;
+  let promoPlan: { discountKopecks: number; discountUsdCents: number; promoCodeId: string } | null =
+    null;
 
   /**
-   * Снять ОБА занятия. Зовётся и из `catch` (сбой шлюза), и из тех отказов,
+   * Снять ВСЕ занятия. Зовётся и из `catch` (сбой шлюза), и из тех отказов,
    * которые случаются УЖЕ ПОСЛЕ занятия: гейты минимума и потолка шлюза считают
    * по сумме СЧЁТА, то есть могут сработать только когда скидка уже посчитана.
    */
@@ -136,6 +151,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (fundClaimed) {
       fundClaimed = false;
       await releaseOrderFundingClaim(orderId);
+    }
+    if (promoClaimed) {
+      promoClaimed = false;
+      await releasePromoClaim(orderId);
     }
     if (bonusClaimed) {
       bonusClaimed = false;
@@ -244,6 +263,30 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Предпроверка промокода — ДО занятия фонда (трек promo-codes, находка
+    // ревью). Занятие фонда берёт глобальный `pg_advisory_xact_lock` и пишет
+    // строку резерва; без этого шага перебор кодов через кнопку «оплатить»
+    // дёргал бы замок платёжного пути живых клиентов на каждой попытке.
+    //
+    // Здесь только ОТСЕВ заведомо неподходящего: занимает и решает по-прежнему
+    // `claimPromoForOrder` под локами, ниже. Фонд ещё не занят, поэтому выходим
+    // без `releaseClaims()`.
+    if (promoCode) {
+      const precheck = await precheckPromoForOrder({ order, code: promoCode });
+      if (!precheck.ok) {
+        log.info({ event: 'payments.create.promo_rejected_early', orderId, reason: precheck.reason });
+        return NextResponse.json(
+          {
+            ok: false,
+            error: PROMO_UNAVAILABLE,
+            reason: precheck.reason,
+            message: promoRejectText(precheck.reason),
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     // Preflight карточного фонда (трек vcc-preflight, Р1) — ПОСЛЕДНИЙ гейт
     // перед выставлением счёта и единственная его точка на все каналы.
     //
@@ -282,14 +325,56 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    // Занятие ПРОМОКОДА (трек promo-codes) — за фондом и ПЕРЕД баллами.
+    //
+    // ⚠️ Порядок «промокод первый, баллы вторые» — инвариант, а не стиль:
+    // потолок баллов считается от маржи, ОСТАВШЕЙСЯ после промокода
+    // (`bonusSpendCapKopecks`), и обратный порядок дал бы другую сумму счёта
+    // при тех же входных данных.
+    let promoDiscountKopecks = 0;
+    if (promoCode) {
+      const promo = await claimPromoForOrder({ order, code: promoCode });
+      if (promo.kind === 'unavailable') {
+        // Клиент ввёл код, экран показал скидку, а занять не вышло. Полный счёт
+        // молча — обман, поэтому отказ с причиной: экран скажет, что случилось.
+        await releaseClaims();
+        return NextResponse.json(
+          {
+            ok: false,
+            error: PROMO_UNAVAILABLE,
+            reason: promo.reason,
+            message: promoRejectText(promo.reason),
+          },
+          { status: 409 },
+        );
+      }
+      if (promo.kind === 'claimed') {
+        promoDiscountKopecks = promo.plan.discountKopecks;
+        // ⚠️ Снимаем в `catch` и пишем событие ТОЛЬКО за своё занятие. Чужое
+        // (двойной тап, вторая вкладка) принадлежит попытке, которая как раз
+        // выставляет счёт: освободив его, мы оставили бы клиенту скидку, не
+        // израсходовав активацию.
+        if (promo.owned) {
+          promoClaimed = true;
+          promoPlan = {
+            discountKopecks: promo.plan.discountKopecks,
+            discountUsdCents: promo.plan.discountUsdCents,
+            promoCodeId: promo.promoCodeId,
+          };
+        }
+      }
+    }
+
     // Занятие реферальных баллов (трек referral-balance-spend, §5) — СРАЗУ за
     // фондом и ДО гейтов шлюза. Порядок не декоративен: фонд дефицитнее, его
     // отказ вероятнее, и занимать баллы под заказ, который всё равно не поедет,
     // незачем; а гейты минимума и потолка обязаны считать по сумме СЧЁТА,
     // которая известна только после скидки.
-    let discountKopecks = 0;
+    let discountKopecks = promoDiscountKopecks;
     if (useBonus) {
-      const bonus = await claimBonusForOrder(order);
+      // Промокод передаётся ВНУТРЬ: потолок баллов считается от маржи, которая
+      // осталась после него, и от уже уменьшенного счёта.
+      const bonus = await claimBonusForOrder(order, promoDiscountKopecks);
       if (bonus.kind === 'unavailable') {
         // Клиент нажал «оплатить со скидкой», а дать её нечем (параллельная
         // заявка на вывод успела раньше). Полный счёт молча — обман, поэтому
@@ -306,7 +391,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         );
       }
       if (bonus.kind === 'claimed') {
-        discountKopecks = bonus.plan.discountKopecks;
+        // ПРИБАВЛЯЕМ к скидке промокода, а не заменяем её: обе скидки живут на
+        // одном заказе, и присваивание молча вернуло бы клиенту промокод, уже
+        // занятый строкой в `promo_redemptions`.
+        discountKopecks += bonus.plan.discountKopecks;
         // ⚠️ Снимаем в `catch` и пишем событие ТОЛЬКО за своё занятие. Чужое
         // (двойной тап, вторая вкладка) принадлежит попытке, которая как раз
         // выставляет счёт: освободив его, мы оставили бы клиенту скидку, не
@@ -450,6 +538,21 @@ export async function POST(req: Request): Promise<NextResponse> {
               payload: {
                 spendUsdCents: bonusPlan.spendUsdCents,
                 discountKopecks: bonusPlan.discountKopecks,
+                rateKopecks: order.usdtRubRateKopecks ?? null,
+                paymentId: u.payment.id,
+              },
+            });
+          }
+          // Скидка по промокоду — такая же денежная веха, и живёт там же.
+          if (promoPlan) {
+            await appendOrderEvent(tx, {
+              orderId,
+              eventType: PROMO_RESERVED_EVENT,
+              actorType: 'system',
+              payload: {
+                promoCodeId: promoPlan.promoCodeId,
+                discountUsdCents: promoPlan.discountUsdCents,
+                discountKopecks: promoPlan.discountKopecks,
                 rateKopecks: order.usdtRubRateKopecks ?? null,
                 paymentId: u.payment.id,
               },
