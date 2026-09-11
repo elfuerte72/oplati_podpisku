@@ -32,6 +32,7 @@ import {
   orderEvents,
   orders,
   payments,
+  promoRedemptions,
   referralRedemptions,
   services,
   staff,
@@ -39,6 +40,7 @@ import {
 } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
+import { livePromoRedemptionSql } from './promo-redemption-sql.ts';
 import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
@@ -161,6 +163,16 @@ export type PanelOrderSort = 'newest' | 'oldest' | 'amount_desc' | 'amount_asc';
 const liveRedemptionJoin = () =>
   and(eq(referralRedemptions.orderId, orders.id), liveRedemptionSql());
 
+/**
+ * Живая скидка по промокоду того же заказа (трек promo-codes).
+ *
+ * Отдельный join рядом с баллами, а не вместо них: скидки складываются, и
+ * счёт уменьшен на ОБЕ. Панель, знающая только про баллы, называла бы клиенту
+ * сумму больше той, что просит платёжная страница.
+ */
+const livePromoJoin = () =>
+  and(eq(promoRedemptions.orderId, orders.id), livePromoRedemptionSql());
+
 export type PanelClientRef = {
   id: string;
   displayName: string | null;
@@ -176,6 +188,8 @@ export type PanelOrderListItem = {
   amountRubKopecks: number | null;
   /** Сколько из этой суммы погашено баллами; 0 — списания не было. */
   bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   createdAt: Date;
   expiresAt: Date | null;
   /** Каталожное имя либо свободное описание — строка таблицы не бывает пустой. */
@@ -244,12 +258,14 @@ export async function listOrdersForPanel(
       clientEmail: users.email,
       operatorName: staff.displayName,
       bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(staff, eq(orders.assignedOperatorId, staff.id))
     .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     // Вторым ключом — id: без тай-брейкера строки с одинаковым `created_at`
     // (пачка заказов в одну миллисекунду) на границе страниц дублируются или
@@ -267,6 +283,7 @@ export async function listOrdersForPanel(
     status: row.status,
     amountRubKopecks: row.amountRub,
     bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+    promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,
@@ -864,6 +881,8 @@ export type PanelHoldRow = {
   /** ПОЛНАЯ цена заказа; сколько из неё погашено баллами — ниже. */
   amountRubKopecks: number | null;
   bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   orderCreatedAt: Date;
   /**
    * Что клиент покупал. Каталожное название или свободное описание — то же
@@ -977,12 +996,14 @@ export async function listHoldsForPanel(
       lastProviderStatus: payments.lastProviderStatus,
       lastProviderStatusAt: payments.lastProviderStatusAt,
       bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(payments, eq(payments.orderId, orders.id))
     .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     .where(holdsCondition())
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
     // ним и выбирается строка ниже.
@@ -1012,6 +1033,7 @@ export async function listHoldsForPanel(
       orderStatus: row.orderStatus,
       amountRubKopecks: row.amountRub,
       bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+      promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
       orderCreatedAt: row.orderCreatedAt,
       serviceName: row.serviceName ?? row.customServiceDescription,
       client: {
@@ -1104,6 +1126,8 @@ export type PanelPendingOrder = {
   /** ПОЛНАЯ цена заказа; напоминание об оплате называет сумму СЧЁТА. */
   amountRubKopecks: number | null;
   bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   createdAt: Date;
   /** Срок ЗАКАЗА (фиксация цены либо срок счёта — их выравнивает payments). */
   expiresAt: Date | null;
@@ -1193,11 +1217,13 @@ export async function listPendingOrdersForPanel(
         string | null
       >`${payments.rawPayload} -> 'invoice' ->> 'paymentLink'`,
       bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     // Только ЖИВОЙ счёт: терминальные платежи прошлых попыток к напоминанию
     // отношения не имеют, а частичный UNIQUE гарантирует, что живой один.
     .leftJoin(payments, and(eq(payments.orderId, orders.id), eq(payments.status, 'pending')))
@@ -1214,6 +1240,7 @@ export async function listPendingOrdersForPanel(
     status: row.status,
     amountRubKopecks: row.amountRub,
     bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+    promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,

@@ -1,5 +1,5 @@
 {
-  "id": "0d7c86ef-cd49-48c5-b76a-f876af8f1b14",
+  "id": "ff4a094a-f474-48fa-9afb-88ee8f9731fd",
   "prevId": "12b5f0eb-96d7-4650-b530-906991a2b7d8",
   "version": "7",
   "dialect": "postgresql",
@@ -2457,6 +2457,10 @@
         "promo_redemptions_usd_positive": {
           "name": "promo_redemptions_usd_positive",
           "value": "\"promo_redemptions\".\"discount_usd_cents\" > 0"
+        },
+        "promo_redemptions_rate_positive": {
+          "name": "promo_redemptions_rate_positive",
+          "value": "\"promo_redemptions\".\"rate_kopecks\" > 0"
         }
       },
       "isRLSEnabled": true

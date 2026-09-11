@@ -36,7 +36,17 @@ export type PromoRules = {
 export type PromoDiscountPlan = {
   /** На сколько уменьшится счёт, RUB-копейки. Всегда кратно рублю и > 0. */
   discountKopecks: number;
-  /** Снимок номинала, по которому скидка посчитана (USD-центы). */
+  /**
+   * Сколько это в USD-центах — ФАКТИЧЕСКИ выданная скидка, а не номинал кода.
+   *
+   * ⚠️ Разница принципиальна там, где скидку урезали (`capped`): номинал кода
+   * $5, а выдали 300 ₽ ≈ $3.4. Именно это число вычитается из комиссии заказа
+   * в `accrue.ts` — вычитание номинала занижало бы базу реферального начисления
+   * на разницу, и реферер молча недополучал бы процент из маржи, которая на
+   * самом деле осталась (находка ревью). Номинал кода никуда не теряется — он
+   * лежит в `promo_codes.discount_usd_cents`, а строка применения ссылается на
+   * код по `promo_code_id`.
+   */
   discountUsdCents: number;
   /**
    * Урезали ли номинал. Экран обязан сказать об этом вслух: обещали $5, дали
@@ -107,7 +117,15 @@ export function planPromoDiscount(input: {
   // Физический предел провайдера — единственное ограничение, которое действует
   // всегда. Оно же причина, по которой промокод в $5 не работает на заказах
   // дешевле ~905 ₽: там до минимума счёта просто нет 405 рублей запаса.
-  const invoiceHeadroom = amountRub - Math.max(minInvoiceKopecks, 0);
+  //
+  // ⚠️ Нижняя граница — НЕ только минимум шлюза. `FREEKASSA_MIN_AMOUNT_RUB=0`
+  // задокументирован как аварийный выключатель гейта, и тогда `minInvoice`
+  // перестаёт что-либо ограничивать: код с номиналом больше цены заказа дал бы
+  // нулевой или отрицательный счёт прямо в API шлюза (находка ревью). Поэтому
+  // счёту всегда оставляем хотя бы рубль — своей проверки на это нигде ниже
+  // нет, а у баллов такого риска не было: их потолок — комиссия заказа.
+  const floorKopecks = Math.max(minInvoiceKopecks, 100);
+  const invoiceHeadroom = amountRub - floorKopecks;
 
   // Потолок по марже — ОПЦИОНАЛЬНЫЙ, в отличие от баллов. `capToMargin: false`
   // означает «номинал выдаём целиком и принимаем убыток».
@@ -116,12 +134,34 @@ export function planPromoDiscount(input: {
   const discountKopecks = roundDownToWholeRubles(Math.min(nominal, invoiceHeadroom, marginCap));
   if (discountKopecks <= 0) return { ok: false, reason: 'no_headroom' };
 
+  const capped = discountKopecks < roundDownToWholeRubles(nominal);
   return {
     ok: true,
     plan: {
       discountKopecks,
-      discountUsdCents: promo.discountUsdCents,
-      capped: discountKopecks < roundDownToWholeRubles(nominal),
+      // Не урезали — номинал как есть (без обратной конверсии и её округления);
+      // урезали — пересчитываем ФАКТ по курсу заказа.
+      discountUsdCents: capped
+        ? kopecksToUsdCents(discountKopecks, rateKopecks)
+        : promo.discountUsdCents,
+      capped,
     },
   };
+}
+
+/**
+ * Обратная конверсия «рубли скидки → USD-центы» по курсу ЗАКАЗА.
+ *
+ * Нужна ровно в одном месте — когда скидку урезали и надо знать, сколько маржи
+ * она на самом деле съела. Прямая конверсия (`promoNominalKopecks`) округляет
+ * вниз, обратная — ВВЕРХ: обе в нашу пользу. Здесь «в нашу пользу» значит «не
+ * занизить потраченную маржу», иначе рефереру начислится процент из денег,
+ * которых уже нет.
+ *
+ * Минимум 1 цент: скидка существует (проверено выше), и ноль означал бы
+ * «промокода не было».
+ */
+function kopecksToUsdCents(discountKopecks: number, rateKopecks: number): number {
+  if (rateKopecks <= 0) return 0;
+  return Math.max(1, Math.ceil((discountKopecks * RATE_SCALE) / rateKopecks));
 }

@@ -55,6 +55,7 @@ describe('выгрузка заказов называет ПОЛНУЮ цену
     status: 'completed',
     amountRubKopecks: ORDER_KOPECKS,
     bonusDiscountKopecks: DISCOUNT_KOPECKS,
+    promoDiscountKopecks: 0,
     createdAt: new Date('2026-09-02T14:34:00Z'),
     expiresAt: null,
     serviceName: 'Netflix',
@@ -71,5 +72,55 @@ describe('выгрузка заказов называет ПОЛНУЮ цену
   it('колонка «Баллами» — ровно погашенное, и это не разность', () => {
     expect(row[4]).toBe('286,00');
     expect(row[4]).not.toBe('1722,00');
+  });
+
+  it('промокода не было — колонка пустая, а не «0,00»', () => {
+    expect(row[5]).toBe('');
+  });
+});
+
+/**
+ * Та же канарейка для промокода (трек promo-codes). Скидки СКЛАДЫВАЮТСЯ, и
+ * забыть вторую — то же самое враньё о деньгах, что и забыть первую: оператор
+ * нажимает «напомнить», и клиент получает сумму больше той, что просит
+ * платёжная страница.
+ */
+describe('обе скидки вычитаются из суммы напоминания', () => {
+  const PROMO_KOPECKS = 40_500;
+
+  it('в тексте стоит цена минус БАЛЛЫ И ПРОМОКОД', () => {
+    const invoice = ORDER_KOPECKS - DISCOUNT_KOPECKS - PROMO_KOPECKS;
+    const text = buildPaymentReminderText({
+      shortId: 'ORD-WX7S4',
+      amountRubKopecks: invoice,
+      paymentUrl: 'https://pay.example/inv-1',
+      expiresAt: null,
+      now: new Date('2026-09-10T10:00:00Z'),
+    });
+
+    expect(text).toContain(rub(invoice));
+    // Ни полная цена, ни цена «только без баллов» в тексте появиться не должны:
+    // обе больше того, что попросит платёжная страница.
+    expect(text).not.toContain(rub(ORDER_KOPECKS));
+    expect(text).not.toContain(rub(ORDER_KOPECKS - DISCOUNT_KOPECKS));
+  });
+
+  it('в выгрузке скидки стоят РАЗНЫМИ колонками, сумма — полная', () => {
+    const withPromo = exportOrderRow({
+      id: 'o2',
+      shortId: 'ORD-PROMO',
+      status: 'completed',
+      amountRubKopecks: ORDER_KOPECKS,
+      bonusDiscountKopecks: DISCOUNT_KOPECKS,
+      promoDiscountKopecks: PROMO_KOPECKS,
+      createdAt: new Date('2026-09-11T10:00:00Z'),
+      expiresAt: null,
+      serviceName: 'Netflix',
+      client: { id: 'u1', displayName: 'Алинка', telegramId: '77', email: 'a@b.c' },
+      assignedOperatorName: null,
+    });
+    expect(withPromo[3]).toBe('2008,00');
+    expect(withPromo[4]).toBe('286,00');
+    expect(withPromo[5]).toBe('405,00');
   });
 });

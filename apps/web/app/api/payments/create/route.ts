@@ -40,7 +40,7 @@ import {
 import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
 import { BONUS_UNAVAILABLE, BONUS_UNAVAILABLE_TEXT } from '@/lib/payments/bonus';
 import { PROMO_UNAVAILABLE, promoRejectText } from '@/lib/payments/promo';
-import { claimPromoForOrder, releasePromoClaim } from '@/lib/promo/apply';
+import { claimPromoForOrder, precheckPromoForOrder, releasePromoClaim } from '@/lib/promo/apply';
 import { claimBonusForOrder, releaseBonusClaim } from '@/lib/referral/spend';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { LoveAndPayApiError } from '@/lib/loveandpay';
@@ -261,6 +261,30 @@ export async function POST(req: Request): Promise<NextResponse> {
         },
         { status: 422 },
       );
+    }
+
+    // Предпроверка промокода — ДО занятия фонда (трек promo-codes, находка
+    // ревью). Занятие фонда берёт глобальный `pg_advisory_xact_lock` и пишет
+    // строку резерва; без этого шага перебор кодов через кнопку «оплатить»
+    // дёргал бы замок платёжного пути живых клиентов на каждой попытке.
+    //
+    // Здесь только ОТСЕВ заведомо неподходящего: занимает и решает по-прежнему
+    // `claimPromoForOrder` под локами, ниже. Фонд ещё не занят, поэтому выходим
+    // без `releaseClaims()`.
+    if (promoCode) {
+      const precheck = await precheckPromoForOrder({ order, code: promoCode });
+      if (!precheck.ok) {
+        log.info({ event: 'payments.create.promo_rejected_early', orderId, reason: precheck.reason });
+        return NextResponse.json(
+          {
+            ok: false,
+            error: PROMO_UNAVAILABLE,
+            reason: precheck.reason,
+            message: promoRejectText(precheck.reason),
+          },
+          { status: 409 },
+        );
+      }
     }
 
     // Preflight карточного фонда (трек vcc-preflight, Р1) — ПОСЛЕДНИЙ гейт

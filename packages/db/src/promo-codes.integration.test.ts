@@ -306,9 +306,17 @@ describe('reservePromoForOrder — занятие и лимиты', () => {
     expect(result).toEqual({ ok: false, reason: 'exhausted' });
   });
 
-  it('ПАРАЛЛЕЛЬНЫЕ занятия одного клиента не пробивают личный лимит', async () => {
-    // Ровно та гонка, ради которой стоит лок по userId: два заказа стартуют
-    // одновременно и оба видят «применений ноль».
+  it('пачка попыток одного клиента не пробивает личный лимит', async () => {
+    // ⚠️ ЭТО НЕ ПРОВЕРКА ЛОКА. PGlite работает на ОДНОМ соединении, поэтому
+    // `Promise.all` транзакций здесь сериализуется, и настоящей гонки не
+    // возникает: удаление обоих `pg_advisory_xact_lock` оставляет этот файл
+    // полностью зелёным (проверено мутацией на ревью 2026-09-11).
+    //
+    // Тест всё равно ценен — он ловит логику лимита (что второй заказ получает
+    // отказ, а не молча вторую скидку), но за САМИ локи отвечает канарейка
+    // `promo-locks.test.ts`. Настоящая параллельность проверяется только на
+    // живом Postgres — это известная слепая зона PGlite, описанная в
+    // `docs/reference/testing.md`.
     const userId = await createUser();
     const { id: promoCodeId } = await makeCode({ perUserLimit: 1 });
     const orders = [await createOrder(userId), await createOrder(userId), await createOrder(userId)];
@@ -328,9 +336,9 @@ describe('reservePromoForOrder — занятие и лимиты', () => {
     expect(results.filter((r) => r.ok)).toHaveLength(1);
   });
 
-  it('ПАРАЛЛЕЛЬНЫЕ занятия разных клиентов не пробивают общий лимит', async () => {
-    // Гонка, ради которой стоит лок по промокоду: два РАЗНЫХ клиента, и лок по
-    // userId их бы не сериализовал.
+  it('пачка попыток разных клиентов не пробивает общий лимит', async () => {
+    // Та же оговорка, что и выше: на PGlite это проверка ЛОГИКИ общего лимита,
+    // а не лока по промокоду. За лок отвечает `promo-locks.test.ts`.
     const { id: promoCodeId } = await makeCode({ maxRedemptions: 2 });
     const users = await Promise.all([createUser(), createUser(), createUser(), createUser()]);
     const pairs = await Promise.all(

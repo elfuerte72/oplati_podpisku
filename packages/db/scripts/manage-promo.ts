@@ -3,6 +3,7 @@
  *
  * Запуск (грузит `.env` из корня; для другой БД переопределить `DATABASE_URL`):
  *   pnpm --filter @oplati/db db:promo list
+ *   pnpm --filter @oplati/db db:promo show <КОД>
  *   pnpm --filter @oplati/db db:promo add <КОД> <сумма_в_долларах> [опции]
  *   pnpm --filter @oplati/db db:promo disable <КОД>
  *   pnpm --filter @oplati/db db:promo enable <КОД>
@@ -44,6 +45,7 @@ import {
 
 const USAGE = `Использование:
   manage-promo list
+  manage-promo show <КОД>
   manage-promo add <КОД> <сумма_в_долларах> [--cap-to-margin] [--min-order=РУБЛИ]
                    [--per-user=N] [--max=N] [--from=YYYY-MM-DD] [--until=YYYY-MM-DD] [--note=ТЕКСТ]
   manage-promo disable <КОД>

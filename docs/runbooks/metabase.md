@@ -84,6 +84,22 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 После нового гранта — в Metabase «Admin → Databases → Sync database schema»,
 иначе таблица не появится.
 
+⏳ **Ждут выдачи после миграции 0047** (трек promo-codes): `promo_codes` и
+`promo_redemptions`. Секретов в них нет, а «сколько стоила акция» — обычный
+вопрос к BI:
+
+```bash
+ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
+  psql -U oplatishka -d oplatishka -c "
+    GRANT SELECT ON promo_codes, promo_redemptions TO metabase_ro;
+    GRANT SELECT ON promo_codes, promo_redemptions TO panel_ai_ro;
+  "'
+```
+
+⚠️ Считая активации, не берите голый `COUNT(*)`: применение под заказом в
+`expired`/`cancelled` без успешного платежа активацией не считается — право
+вернулось клиенту. Правило живёт в `livePromoRedemptionSql`.
+
 ### Рядом живёт `panel_ai_ro` — роль AI-аналитика панели
 
 С 2026-09-02 у боевой БД вторая read-only роль — `panel_ai_ro` для AI-аналитика

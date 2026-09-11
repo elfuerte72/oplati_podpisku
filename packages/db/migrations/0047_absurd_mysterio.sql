@@ -32,7 +32,8 @@ CREATE TABLE "promo_redemptions" (
 	"reserved_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"settled_at" timestamp with time zone,
 	CONSTRAINT "promo_redemptions_discount_positive" CHECK ("promo_redemptions"."discount_kopecks" > 0),
-	CONSTRAINT "promo_redemptions_usd_positive" CHECK ("promo_redemptions"."discount_usd_cents" > 0)
+	CONSTRAINT "promo_redemptions_usd_positive" CHECK ("promo_redemptions"."discount_usd_cents" > 0),
+	CONSTRAINT "promo_redemptions_rate_positive" CHECK ("promo_redemptions"."rate_kopecks" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "promo_redemptions" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint

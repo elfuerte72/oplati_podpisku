@@ -1243,5 +1243,10 @@ export const promoRedemptions = pgTable(
     // отличалась бы от отсутствия строки лишь записью в подсчёте активаций.
     discountPositive: check('promo_redemptions_discount_positive', sql`${t.discountKopecks} > 0`),
     usdPositive: check('promo_redemptions_usd_positive', sql`${t.discountUsdCents} > 0`),
+    // Курс — такой же денежный снимок, как обе суммы, и ноль в нём делает
+    // пересчёт «рубли ↔ центы» бессмысленным. Вызывающий подставляет
+    // `?? 0` из заказа без курса, и до этой строки такой заказ доходить не
+    // должен — но защищает пусть база, а не только гейт выше по стеку.
+    ratePositive: check('promo_redemptions_rate_positive', sql`${t.rateKopecks} > 0`),
   }),
 ).enableRLS();

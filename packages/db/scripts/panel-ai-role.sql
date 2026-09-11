@@ -63,6 +63,10 @@ GRANT SELECT ON referral_accruals TO panel_ai_ro;
 GRANT SELECT ON referral_monthly_stats TO panel_ai_ro;
 GRANT SELECT ON referral_partners TO panel_ai_ro;
 GRANT SELECT ON referral_redemptions TO panel_ai_ro;
+-- Промокоды (трек promo-codes): «сколько стоила акция» — вопрос к аналитику, а
+-- секретов в этих таблицах нет (код акции не тайна после её запуска).
+GRANT SELECT ON promo_codes TO panel_ai_ro;
+GRANT SELECT ON promo_redemptions TO panel_ai_ro;
 GRANT SELECT ON client_feedback TO panel_ai_ro;
 GRANT SELECT ON funnel_sends TO panel_ai_ro;
 GRANT SELECT ON analytics_event_types TO panel_ai_ro;

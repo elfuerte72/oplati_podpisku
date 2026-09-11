@@ -4,7 +4,6 @@ import * as Sentry from '@sentry/nextjs';
 
 import {
   appendOrderEvent,
-  claimPromoSpent,
   countPromoRedemptions,
   findPromoCodeByCode,
   findPromoRedemptionByOrderId,
@@ -79,13 +78,22 @@ export async function checkPromoForOrder(input: {
   // Выключенный код и несуществующий отвечают ОДИНАКОВО: иначе перебор кодов
   // сообщал бы, какие из них существуют, и выключенная акция утекала бы раньше
   // своего запуска.
+  //
+  // ⚠️ Введённую строку в лог НЕ пишем: при переборе она управляется атакующим
+  // и заливает Loki, а на выключенном коде это ещё и утечка не запущенной акции
+  // в логовый бэкенд (находка ревью). Факта достаточно — разобрать жалобу
+  // «код не работает» помогает `promo.claim.*`, где код уже НАШ и найденный.
   if (!promo || !promo.isActive) {
-    log.info({ event: 'promo.check.not_found', code, exists: promo !== null });
+    log.info({ event: 'promo.check.not_found', known: promo !== null });
     return { ok: false, reason: 'not_found' };
   }
 
   const now = new Date();
-  if (promo.startsAt && now < promo.startsAt) return { ok: false, reason: 'expired' };
+  // ⚠️ Ещё НЕ НАЧАВШАЯСЯ акция отвечает «нет такого кода», а не «срок истёк»:
+  // иначе перебор находил бы код до объявления кампании и подтверждал, что он
+  // существует (находка ревью). Истёкший код скрывать незачем — он уже был
+  // публичным, и клиенту важно понять, почему не сработал.
+  if (promo.startsAt && now < promo.startsAt) return { ok: false, reason: 'not_found' };
   if (promo.expiresAt && now >= promo.expiresAt) return { ok: false, reason: 'expired' };
 
   const counts = await countPromoRedemptions(db, {
@@ -117,6 +125,38 @@ export async function checkPromoForOrder(input: {
   if (!planned.ok) return { ok: false, reason: planned.reason };
 
   return { ok: true, plan: planned.plan, promo };
+}
+
+/**
+ * Дешёвая предпроверка кода ДО дорогих операций платёжного пути.
+ *
+ * Зовётся из `payments/create` ПЕРЕД занятием карточного фонда. Причина не в
+ * оптимизации: занятие фонда берёт глобальный `pg_advisory_xact_lock` и пишет
+ * строку резерва, поэтому перебор кодов через кнопку «оплатить» дёргал бы замок
+ * платёжного пути ЖИВЫХ клиентов — на каждой попытке (находка ревью). Отсекая
+ * неподошедший код раньше, мы оставляем перебору только чтение.
+ *
+ * Настоящий барьер по-прежнему `claimPromoForOrder` под локами: здесь лимиты
+ * читаются без лока и годятся лишь как «заведомо нельзя».
+ *
+ * Never-throw: сбой чтения НЕ отказ на этом шаге — решение примет `claim`,
+ * который обязан ответить `unavailable`, а не пропустить полный счёт молча.
+ */
+export async function precheckPromoForOrder(input: {
+  order: OrderRow;
+  code: string;
+}): Promise<{ ok: true } | { ok: false; reason: PromoRejectReason }> {
+  if (!isPromoEnabled()) return { ok: true };
+  try {
+    const checked = await checkPromoForOrder(input);
+    return checked.ok ? { ok: true } : { ok: false, reason: checked.reason };
+  } catch (err) {
+    log.error({ event: 'promo.precheck.failed', orderId: input.order.id, err });
+    Sentry.captureException(err, { tags: { source: 'promo', step: 'precheck' } });
+    // Пропускаем дальше: отказать здесь значило бы уронить оплату на сбое
+    // чтения, который `claimPromoForOrder` ниже разберёт сам.
+    return { ok: true };
+  }
 }
 
 /** То же для ВИТРИНЫ: сбой гасит блок промокода, но не ломает экран заказа. */
@@ -204,9 +244,21 @@ export async function claimPromoForOrder(input: {
 
   if (!reserved.ok) {
     if (reserved.reason === 'already_reserved') {
-      // Не отказ: под этот заказ уже занято, просто не нами. Отдать здесь
-      // `unavailable` значило бы ответить «код не сработал» на обычный двойной
-      // тап — при том что счёт со скидкой как раз выставляется.
+      // ⚠️ Сверяем, что занят ИМЕННО ТОТ код, который ввёл клиент. Без сверки
+      // человек, у которого на заказе висит незакрытое занятие кода A, вводил
+      // бы B и получал скидку A — молча и с чужим номиналом (находка ревью).
+      if (reserved.existing.promoCodeId !== checked.promo.id) {
+        log.warn({
+          event: 'promo.claim.other_code_reserved',
+          orderId: input.order.id,
+          requested: checked.promo.id,
+          reserved: reserved.existing.promoCodeId,
+        });
+        return { kind: 'unavailable', reason: 'already_used' };
+      }
+      // Не отказ: под этот заказ уже занято тем же кодом, просто не нами.
+      // Отдать здесь `unavailable` значило бы ответить «код не сработал» на
+      // обычный двойной тап — при том что счёт со скидкой как раз выставляется.
       log.info({
         event: 'promo.claim.already_reserved',
         orderId: input.order.id,
@@ -219,7 +271,9 @@ export async function claimPromoForOrder(input: {
         plan: {
           discountKopecks: reserved.existing.discountKopecks,
           discountUsdCents: reserved.existing.discountUsdCents,
-          capped: false,
+          // Скидка взята из занятой строки: она могла быть урезана, и врать
+          // «номинал выдан целиком» нельзя. Сравниваем с тем, что даёт код.
+          capped: reserved.existing.discountUsdCents < checked.promo.discountUsdCents,
         },
       };
     }
@@ -281,24 +335,12 @@ export async function releasePromoClaim(orderId: string): Promise<void> {
   }
 }
 
-/**
- * Зафиксировать расход промокода при оплате. Зовётся ВНУТРИ транзакции
- * `processInvoicePaid`, рядом с claim платежа и переходом заказа в `paid`.
- *
- * Возвращает строку, если фиксация состоялась, — вызывающему она нужна для
- * события `order_events` в той же транзакции.
+/*
+ * ⚠️ Обёрток `markPromoSpent`/`promoDiscountForOrder` здесь НЕТ намеренно
+ * (убраны по находке ревью 2026-09-11). Фиксацию расхода при оплате вебхуки
+ * обоих шлюзов делают вызовом `claimPromoSpent` из `@oplati/db` напрямую —
+ * ровно так же, как `claimBonusSpent` для баллов. Обёртка, которую никто не
+ * зовёт, создавала бы ВТОРОЙ вход к одной денежной операции: следующий канал
+ * позвал бы её, вебхук — репозиторий, и правка в одной ветке не доехала бы до
+ * другой.
  */
-export async function markPromoSpent(db: DBLike, orderId: string) {
-  return await claimPromoSpent(db, orderId);
-}
-
-/**
- * Сколько скидки по промокоду РЕАЛЬНО живёт на этом заказе.
- *
- * Нужен и расчёту суммы счёта в текстах, и витрине. `0` — промокода не было или
- * его вернули.
- */
-export async function promoDiscountForOrder(db: DBLike, orderId: string): Promise<number> {
-  const row = await findPromoRedemptionByOrderId(db, orderId);
-  return row && row.status !== 'released' ? row.discountKopecks : 0;
-}

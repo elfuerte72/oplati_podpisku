@@ -97,9 +97,37 @@ describe('planPromoDiscount — ДАРЛИНГ ($5, без потолка мар
       minInvoiceKopecks: MIN_INVOICE,
     });
     expect(result).toEqual({
+      // `discountUsdCents` — ФАКТ (300 ₽ по курсу 81 ≈ $3.71), а не номинал:
+      // из него считается потраченная маржа. Подробнее — тест ниже.
       ok: true,
-      plan: { discountKopecks: 300_00, discountUsdCents: 500, capped: true },
+      plan: { discountKopecks: 300_00, discountUsdCents: 371, capped: true },
     });
+  });
+
+  it('⚠️ у УРЕЗАННОЙ скидки в центах лежит ФАКТ, а не номинал', () => {
+    // Из этого числа `accrue.ts` вычитает потраченную маржу. Номинал ($5) там,
+    // где выдали 300 ₽ (≈$3.7), занизил бы базу начисления — реферер молча
+    // недополучил бы процент из маржи, которая на самом деле осталась.
+    const result = planPromoDiscount({
+      order: { ...order(1000), amountRub: 800_00 },
+      promo: DARLING,
+      minInvoiceKopecks: MIN_INVOICE,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.plan.discountKopecks).toBe(300_00);
+    // 300 ₽ по курсу 81 = $3.70..., вверх до цента = 371.
+    expect(result.plan.discountUsdCents).toBe(371);
+    expect(result.plan.discountUsdCents).toBeLessThan(DARLING.discountUsdCents);
+  });
+
+  it('у НЕурезанной скидки в центах ровно номинал — без хвостов конверсии', () => {
+    const result = planPromoDiscount({
+      order: order(2000),
+      promo: DARLING,
+      minInvoiceKopecks: MIN_INVOICE,
+    });
+    expect(result.ok && result.plan.discountUsdCents).toBe(500);
   });
 
   it('на заказе ровно в минимум шлюза скидки нет вовсе', () => {
@@ -170,6 +198,33 @@ describe('planPromoDiscount — порог суммы заказа', () => {
       minInvoiceKopecks: MIN_INVOICE,
     });
     expect(result.ok && result.plan.discountKopecks).toBe(405_00);
+  });
+});
+
+describe('planPromoDiscount — нижняя граница счёта', () => {
+  it('⚠️ при выключенном гейте шлюза счёт всё равно не падает до нуля', () => {
+    // `FREEKASSA_MIN_AMOUNT_RUB=0` — задокументированный аварийный выключатель.
+    // Без своей нижней границы код с номиналом больше цены заказа отправил бы
+    // шлюзу нулевой (или отрицательный) счёт.
+    const o = { ...order(1000), amountRub: 300_00 };
+    const result = planPromoDiscount({
+      order: o,
+      promo: { ...DARLING, discountUsdCents: 5000 }, // $50 — заведомо больше цены
+      minInvoiceKopecks: 0,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((o.amountRub ?? 0) - result.plan.discountKopecks).toBeGreaterThan(0);
+  });
+
+  it('заказ в один рубль при выключенном гейте скидки не получает', () => {
+    expect(
+      planPromoDiscount({
+        order: { ...order(1000), amountRub: 100 },
+        promo: DARLING,
+        minInvoiceKopecks: 0,
+      }),
+    ).toEqual({ ok: false, reason: 'no_headroom' });
   });
 });
 

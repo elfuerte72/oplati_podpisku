@@ -260,14 +260,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     return rateLimitedResponse();
   }
 
-  // 2а. Проверка промокода — ЕЩЁ и свой бакет (трек promo-codes). Это
-  //     единственное действие кабинета, где осмыслен ПОДБОР: действующий код
-  //     стоит денег. Свой кошелёк работает в обе стороны — перебор не выедает
-  //     клиенту лимит на оплату, а листание экранов не оплачивает перебор.
-  if (body.action === 'promo-check') {
+  // 2а. Любая попытка ПРИМЕНИТЬ код — ещё и свой бакет (трек promo-codes). Это
+  //     единственное место кабинета, где осмыслен ПОДБОР: действующий код стоит
+  //     денег. Свой кошелёк работает в обе стороны — перебор не выедает клиенту
+  //     лимит на оплату, а листание экранов не оплачивает перебор.
+  //
+  // ⚠️ Считаются ОБА действия, а не только `promo-check`: `pay` принимает тот же
+  // `promoCode` и на неподошедшем отвечает 409 с причиной — то есть сам по себе
+  // годится для перебора, причём по общему бакету кабинета и мимо этого
+  // счётчика (находка ревью). Хуже того, `payments/create` успевает занять
+  // карточный фонд под глобальным advisory-локом ДО проверки кода, и перебор
+  // через `pay` дёргал бы замок платёжного пути живых клиентов.
+  const triesPromoCode =
+    body.action === 'promo-check' || (body.action === 'pay' && body.promoCode !== undefined);
+  if (triesPromoCode) {
     const promoRl = await checkRateLimit('promo-check', telegramId);
     if (!promoRl.allowed) {
-      log.warn({ event: 'cabinet.promo_check.rate_limited' });
+      log.warn({ event: 'cabinet.promo.rate_limited', action: body.action });
       return rateLimitedResponse();
     }
   }
