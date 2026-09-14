@@ -343,6 +343,23 @@ export {
   type PanelOrderPayment,
   type PanelOrderSort,
 } from './panel.ts';
+export {
+  PANEL_CLIENT_SEGMENTS,
+  PANEL_CLIENT_SORTS,
+  countClientSegmentsForPanel,
+  getClientActivityForPanel,
+  listClientsForPanel,
+  type PanelClientActivity,
+  type PanelClientActivityEvent,
+  type PanelClientListFilters,
+  type PanelClientListItem,
+  type PanelClientListPage,
+  type PanelClientSegment,
+  type PanelClientSegmentCounts,
+  type PanelClientSort,
+  type PanelClientSupportSummary,
+  type PanelClientVpn,
+} from './panel-clients.ts';
 
 export {
   saveVccBalanceSnapshot,
@@ -369,9 +386,11 @@ export {
   findCompletedOrdersForRating,
   findRatedUsersForReferralNudge,
   listClientFeedbackForPanel,
+  listClientFeedbackByUserForPanel,
   feedbackSummaryForPanel,
   countRecentClientFeedbackForPanel,
   type PanelFeedbackRow,
+  type PanelClientFeedbackRow,
   type PanelFeedbackSummaryRow,
   type FunnelUserState,
   type FunnelWindow,

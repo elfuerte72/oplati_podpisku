@@ -436,3 +436,57 @@ export async function countRecentClientFeedbackForPanel(
   `);
   return Number(rows[0]?.cnt ?? 0);
 }
+
+export type PanelClientFeedbackRow = {
+  id: string;
+  createdAt: Date;
+  kind: FunnelKind;
+  score: number | null;
+  answer: string | null;
+  order: { id: string; shortId: string; serviceName: string | null } | null;
+};
+
+/**
+ * Ответы ОДНОГО клиента на касания воронки — для его карточки в панели, новые
+ * сверху. Потолок общий с панелью: клиент отвечает на считанные касания, и
+ * усечение здесь — теоретическое, но список без потолка в панели не пишется.
+ */
+export async function listClientFeedbackByUserForPanel(
+  db: DB,
+  userId: string,
+  opts: { limit?: number } = {},
+): Promise<PanelClientFeedbackRow[]> {
+  const maxRows = clampPanelLimit(opts.limit);
+  const rows = await db.execute<{
+    id: string;
+    created_at: string | Date;
+    kind: string;
+    score: number | null;
+    answer: string | null;
+    order_id: string | null;
+    short_id: string | null;
+    service_name: string | null;
+    custom_description: string | null;
+  }>(sql`
+    SELECT f.id, f.created_at, f.kind, f.score, f.answer,
+           o.id AS order_id, o.short_id, s.name AS service_name,
+           o.custom_service_description AS custom_description
+    FROM client_feedback f
+    LEFT JOIN orders o ON o.id = f.order_id
+    LEFT JOIN services s ON s.id = o.service_id
+    WHERE f.user_id = ${userId}::uuid
+    ORDER BY f.created_at DESC, f.id DESC
+    LIMIT ${maxRows}
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
+    kind: r.kind as FunnelKind,
+    score: r.score === null ? null : Number(r.score),
+    answer: r.answer,
+    order:
+      r.order_id && r.short_id
+        ? { id: r.order_id, shortId: r.short_id, serviceName: r.service_name ?? r.custom_description }
+        : null,
+  }));
+}

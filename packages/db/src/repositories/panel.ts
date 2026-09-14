@@ -612,6 +612,15 @@ export type PanelClientDetail = {
     phoneSource: string | null;
     language: string;
     createdAt: Date;
+    /**
+     * Последний живой запрос клиента (кабинет, оформление, чат) — пишет
+     * антифрод-трек с троттлингом. Сам IP наружу не отдаётся (см. ниже).
+     */
+    lastSeenAt: Date | null;
+    /** Клиент нажал «Больше не напоминать» — касания воронки к нему не уходят. */
+    funnelOptOutAt: Date | null;
+    /** Партнёрский код — им подписаны его приглашения. */
+    referralCode: string | null;
   };
   orders: PanelClientOrder[];
   /**
@@ -725,6 +734,9 @@ export async function getClientDetailForPanel(
       phoneSource: users.phoneSource,
       language: users.language,
       createdAt: users.createdAt,
+      lastSeenAt: users.lastSeenIpAt,
+      funnelOptOutAt: users.funnelOptOutAt,
+      referralCode: users.referralCode,
       referredBy: users.referredBy,
     })
     .from(users)
@@ -825,6 +837,9 @@ export async function getClientDetailForPanel(
       phoneSource: head.phoneSource,
       language: head.language,
       createdAt: head.createdAt,
+      lastSeenAt: head.lastSeenAt,
+      funnelOptOutAt: head.funnelOptOutAt,
+      referralCode: head.referralCode,
     },
     totals: {
       ordersCount: Number(totalsRows[0]?.orders_count ?? 0),

@@ -6,7 +6,6 @@ import {
   feedbackSummaryForPanel,
   getDb,
   listClientFeedbackForPanel,
-  type PanelFeedbackRow,
 } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
@@ -20,7 +19,8 @@ import {
   periodHref,
   type AnalyticsPeriod,
 } from '@/lib/panel/analytics/period';
-import { formatCount, formatShare, lookupLabel } from '@/lib/panel/format';
+import { feedbackAnswerText, isLowRating } from '@/lib/panel/feedback-text';
+import { formatCount, formatShare } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { parsePanelPage } from '@/lib/panel/paging';
 import {
@@ -28,13 +28,11 @@ import {
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
-  EXPIRED_SURVEY_ANSWER_TITLES,
   FEEDBACK_KIND_LABELS,
   FEEDBACK_TEXT,
   PAGE_HINT,
   PERIOD_TITLES,
   SECTION_TITLES,
-  START_SURVEY_ANSWER_TITLES,
 } from '@/lib/panel/labels';
 
 /**
@@ -55,13 +53,6 @@ const PATH = '/admin/feedback';
 
 function href(period: AnalyticsPeriod, page: number): string {
   return page > 1 ? `${periodHref(PATH, period)}&page=${page}` : periodHref(PATH, period);
-}
-
-/** Ответ строки словами: подпись кнопки для опросов, «N из 5» для оценки. */
-function answerText(row: PanelFeedbackRow): string {
-  if (row.kind === 'order_rating') return row.score === null ? '—' : `${row.score} ${FEEDBACK_TEXT.scoreOf}`;
-  const dict = row.kind === 'expired_survey' ? EXPIRED_SURVEY_ANSWER_TITLES : START_SURVEY_ANSWER_TITLES;
-  return lookupLabel(dict, row.answer ?? undefined) ?? row.answer ?? '—';
 }
 
 export default async function PanelFeedbackPage({
@@ -157,7 +148,7 @@ export default async function PanelFeedbackPage({
             </thead>
             <tbody>
               {feed.items.map((row) => {
-                const low = row.kind === 'order_rating' && row.score !== null && row.score <= 3;
+                const low = isLowRating(row);
                 return (
                   <tr key={row.id}>
                     <td data-label={FEEDBACK_TEXT.when}>
@@ -166,7 +157,7 @@ export default async function PanelFeedbackPage({
                     <td data-label={FEEDBACK_TEXT.kind}>{FEEDBACK_KIND_LABELS[row.kind]}</td>
                     <td data-label={FEEDBACK_TEXT.answer}>
                       <span className={`panel-status ${low ? 'panel-status--danger' : 'panel-status--muted'}`}>
-                        {answerText(row)}
+                        {feedbackAnswerText(row)}
                       </span>
                     </td>
                     <td data-label={COLUMN_TITLES.client}>
