@@ -408,3 +408,15 @@ export {
   type RevenueSummary,
   type TopServiceRow,
 } from './analytics-panel.ts';
+
+export {
+  DAILY_PAID_ORDERS_MAX,
+  dailyAudience,
+  dailyOrderFlow,
+  dailyPaidOrders,
+  dailySupport,
+  type DailyAudience,
+  type DailyOrderFlow,
+  type DailyPaidOrder,
+  type DailySupport,
+} from './daily-report.ts';

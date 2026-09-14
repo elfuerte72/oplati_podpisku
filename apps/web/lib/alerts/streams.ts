@@ -75,6 +75,7 @@ export function opsGroup(): OpsGroup | null {
       support: parseThreadId(serverEnv.OPS_GROUP_THREAD_SUPPORT),
       errors: parseThreadId(serverEnv.OPS_GROUP_THREAD_ERRORS),
       deploy: parseThreadId(serverEnv.OPS_GROUP_THREAD_DEPLOY),
+      reports: parseThreadId(serverEnv.OPS_GROUP_THREAD_REPORTS),
     },
   };
 }
