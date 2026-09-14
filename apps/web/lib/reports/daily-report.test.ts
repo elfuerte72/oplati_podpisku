@@ -78,6 +78,7 @@ function paidOrder(over: Partial<DailyPaidOrder> = {}): DailyPaidOrder {
     paidAt: new Date('2026-09-14T07:09:00.000Z'), // 10:09 МСК
     status: 'completed',
     amountKopecks: 228_000,
+    discountKopecks: 0,
     serviceName: 'ChatGPT',
     tierName: 'Plus',
     customDescription: null,
@@ -102,6 +103,7 @@ function reportData(over: Partial<DailyReportData> = {}): DailyReportData {
     },
     flow: { created: 7, invoiced: 5, expired: 2, cancelled: 1, failed: 0, paymentReview: 1 },
     paid: { items: [paidOrder()], total: 1 },
+    promo: { orders: 0, kopecks: 0 },
     support: { requests: 2, ratings: 3, ratingAverage: 4.7, lowRatings: 1 },
     now: {
       pending: { count: 4, sumKopecks: 912_000 },
@@ -123,6 +125,11 @@ describe('paidOrderLine', () => {
   it('оплата накануне вечером получает дату, чтобы не путаться с сегодняшним временем', () => {
     const line = paidOrderLine(paidOrder({ paidAt: new Date('2026-09-13T17:15:00.000Z') }), '2026-09-14');
     expect(line.startsWith('13.09 20:15 · ')).toBe(true);
+  });
+
+  it('оплата со скидкой — сумма, которую заплатил клиент, и скидка рядом', () => {
+    const line = paidOrderLine(paidOrder({ amountKopecks: 228_500, discountKopecks: 43_900 }), '2026-09-14');
+    expect(line).toContain(`${formatKopecks(184_600)} (скидка ${formatKopecks(43_900)})`);
   });
 
   it('без username — имя, вне каталога — описание; невыполненный получает статус панели', () => {
@@ -158,6 +165,12 @@ describe('formatDailyReport', () => {
     expect(text).toContain('https://admin.oplatishka.com/admin/analytics');
     // Баллов не было — строки нет, а не «0 ₽».
     expect(text).not.toContain('баллами');
+    expect(text).not.toContain('промокодам');
+  });
+
+  it('скидки по промокодам — отдельной строкой, чтобы «получено» ниже покупок не читалось недостачей', () => {
+    const text = formatDailyReport(reportData({ promo: { orders: 1, kopecks: 43_900 } }), null);
+    expect(text).toContain(`Скидки по промокодам: ${formatKopecks(43_900)} (заказов: 1)`);
     expect(text).not.toContain('Сутки ещё не закончились');
   });
 

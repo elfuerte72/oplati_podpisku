@@ -11,6 +11,7 @@ import {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
+  dailyPromoDiscounts,
   dailySupport,
 } from './repositories/daily-report.ts';
 
@@ -243,10 +244,58 @@ describe('dailyPaidOrders', () => {
     expect(items[1]?.paidAt.toISOString()).toBe(LAST_SECOND.toISOString());
   });
 
+  it('скидка оплаты — промокод и баллы, только погашенные (spent)', async () => {
+    const user = await makeUser({ telegramUsername: 'discount_dr' });
+    const order = await makeOrder({ userId: user.id, amountKopecks: 228_500 });
+    const [promo] = await db
+      .insert(schema.promoCodes)
+      .values({ code: `DR${++seq}`, discountUsdCents: 500 })
+      .returning();
+    await db.insert(schema.promoRedemptions).values({
+      orderId: order.id,
+      promoCodeId: promo!.id,
+      userId: user.id,
+      discountUsdCents: 500,
+      discountKopecks: 43_900,
+      rateKopecks: 878_000,
+      status: 'spent',
+      settledAt: INSIDE,
+    });
+    await db.insert(schema.referralRedemptions).values({
+      orderId: order.id,
+      userId: user.id,
+      amountUsdCents: 100,
+      discountKopecks: 8_780,
+      rateKopecks: 878_000,
+      status: 'spent',
+      settledAt: INSIDE,
+    });
+    // Скидка под счётом, который так и не оплатили, — не скидка оплаты.
+    const unpaid = await makeOrder({ userId: user.id });
+    await db.insert(schema.promoRedemptions).values({
+      orderId: unpaid.id,
+      promoCodeId: promo!.id,
+      userId: user.id,
+      discountUsdCents: 500,
+      discountKopecks: 43_900,
+      rateKopecks: 878_000,
+      status: 'reserved',
+    });
+    await markPaid(order.id, 'completed', INSIDE);
+
+    const { items } = await dailyPaidOrders(db, RANGE);
+    const row = items.find((i) => i.shortId === order.shortId);
+
+    expect(row).toMatchObject({ amountKopecks: 228_500, discountKopecks: 43_900 + 8_780 });
+    expect(await dailyPromoDiscounts(db, RANGE)).toEqual({ orders: 1, kopecks: 43_900 });
+    expect(await dailyPromoDiscounts(db, EMPTY_RANGE)).toEqual({ orders: 0, kopecks: 0 });
+  });
+
   it('потолок списка не прячет общее число', async () => {
     const { items, total } = await dailyPaidOrders(db, RANGE, 1);
     expect(items).toHaveLength(1);
-    expect(total).toBe(2);
+    // Три оплаты в окне: две из первого теста и одна со скидкой.
+    expect(total).toBe(3);
     // Запрошенный сверх потолка лимит клампится.
     const wide = await dailyPaidOrders(db, RANGE, 10_000);
     expect(wide.items.length).toBeLessThanOrEqual(DAILY_PAID_ORDERS_MAX);

@@ -150,6 +150,12 @@ export type DailyPaidOrder = {
   status: string;
   /** Полная цена заказа, копейки (`orders.amount_rub`). */
   amountKopecks: number;
+  /**
+   * Скидка, погашенная при оплате (промокод + баллы, строки `spent`), копейки.
+   * Клиент заплатил `amountKopecks - discountKopecks`: без этого поля строка
+   * «2 285 ₽» спорила бы с «Получено денег: 1 846 ₽» над ней.
+   */
+  discountKopecks: number;
   /** Имя сервиса из каталога; `null` — заказ вне каталога. */
   serviceName: string | null;
   tierName: string | null;
@@ -181,6 +187,7 @@ export async function dailyPaidOrders(
       paid_at: string | Date;
       status: string;
       amount_rub: string | number | null;
+      discount: string | number | null;
       service_name: string | null;
       tier_name: string | null;
       custom_description: string | null;
@@ -188,6 +195,10 @@ export async function dailyPaidOrders(
       display_name: string | null;
     }>(sql`
       SELECT o.short_id, o.paid_at, o.status::text AS status, o.amount_rub,
+             COALESCE((SELECT sum(pr.discount_kopecks) FROM promo_redemptions pr
+                        WHERE pr.order_id = o.id AND pr.status = 'spent'), 0)
+             + COALESCE((SELECT sum(rr.discount_kopecks) FROM referral_redemptions rr
+                        WHERE rr.order_id = o.id AND rr.status = 'spent'), 0) AS discount,
              s.name AS service_name,
              o.parameters ->> 'tierName' AS tier_name,
              o.custom_service_description AS custom_description,
@@ -210,6 +221,7 @@ export async function dailyPaidOrders(
       paidAt: new Date(r.paid_at),
       status: r.status,
       amountKopecks: toInt(r.amount_rub),
+      discountKopecks: toInt(r.discount),
       serviceName: r.service_name,
       tierName: r.tier_name,
       customDescription: r.custom_description,
@@ -218,6 +230,28 @@ export async function dailyPaidOrders(
     })),
     total: toInt(totals[0]?.total),
   };
+}
+
+export type DailyPromoDiscounts = {
+  /** Заказов, оплаченных со скидкой по промокоду. */
+  orders: number;
+  /** Сумма скидок по промокодам, копейки. */
+  kopecks: number;
+};
+
+/**
+ * Скидки по промокодам, погашенные за сутки — по моменту оплаты (`settled_at`
+ * строки `spent`), тем же событием, которым платёж попадает в выручку. Пара к
+ * `bonusRedeemedKopecks` из `revenueSummary`: без неё «Получено денег» ниже
+ * суммы покупок читалось бы как недостача.
+ */
+export async function dailyPromoDiscounts(db: DB, range: AnalyticsRange): Promise<DailyPromoDiscounts> {
+  const rows = await db.execute<{ orders: string | number; kopecks: string | number | null }>(sql`
+    SELECT count(DISTINCT order_id) AS orders, COALESCE(sum(discount_kopecks), 0) AS kopecks
+    FROM promo_redemptions
+    WHERE status = 'spent' AND ${withinRange(sql.raw('settled_at'), range)}
+  `);
+  return { orders: toInt(rows[0]?.orders), kopecks: toInt(rows[0]?.kopecks) };
 }
 
 // ─── Поддержка и обратная связь ───────────────────────────────────────────

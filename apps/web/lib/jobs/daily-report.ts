@@ -9,6 +9,7 @@ import {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
+  dailyPromoDiscounts,
   dailySupport,
   getDb,
   getVccBalanceSnapshot,
@@ -51,17 +52,18 @@ export async function runDailyReport(input: {
   const db = getDb();
   const { day, range, partial } = input;
 
-  const [revenue, audience, flow, paid, support, now] = await Promise.all([
+  const [revenue, audience, flow, paid, promo, support, now] = await Promise.all([
     revenueSummary(db, range),
     dailyAudience(db, range),
     dailyOrderFlow(db, range),
     dailyPaidOrders(db, range),
+    dailyPromoDiscounts(db, range),
     dailySupport(db, range),
     readNow(),
   ]);
 
   const text = formatDailyReport(
-    { day, partial, revenue, audience, flow, paid, support, now },
+    { day, partial, revenue, audience, flow, paid, promo, support, now },
     serverEnv.PANEL_HOST,
   );
   const sent = await notifyStream('reports', text);

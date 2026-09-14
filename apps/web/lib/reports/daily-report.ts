@@ -3,6 +3,7 @@ import type {
   DailyAudience,
   DailyOrderFlow,
   DailyPaidOrder,
+  DailyPromoDiscounts,
   DailySupport,
   RevenueSummary,
 } from '@oplati/db';
@@ -107,6 +108,7 @@ export type DailyReportData = {
   audience: DailyAudience;
   flow: DailyOrderFlow;
   paid: { items: DailyPaidOrder[]; total: number };
+  promo: DailyPromoDiscounts;
   support: DailySupport;
   now: DailyReportNow;
 };
@@ -176,7 +178,11 @@ export function paidOrderLine(order: DailyPaidOrder, day: string): string {
     when,
     clientLabel(order),
     serviceLabel(order),
-    formatKopecks(order.amountKopecks),
+    // Сумма — то, что клиент заплатил: она складывается в «Получено денег».
+    // Скидка названа рядом, иначе сумма расходилась бы с ценой заказа в панели.
+    order.discountKopecks > 0
+      ? `${formatKopecks(order.amountKopecks - order.discountKopecks)} (скидка ${formatKopecks(order.discountKopecks)})`
+      : formatKopecks(order.amountKopecks),
     order.shortId,
   ];
   if (order.status !== 'completed') {
@@ -217,6 +223,9 @@ function buildBody(data: DailyReportData, paidShown: number, panelHost: string |
     `Покупок: ${revenue.paidOrders}` +
       (revenue.paidOrders > 0 ? ` · средний чек ${formatKopecks(revenue.averageKopecks)}` : ''),
   ];
+  if (data.promo.kopecks > 0) {
+    orders.push(`Скидки по промокодам: ${formatKopecks(data.promo.kopecks)} (заказов: ${data.promo.orders})`);
+  }
   if (revenue.bonusRedeemedKopecks > 0) {
     orders.push(`Оплачено баллами: ${formatKopecks(revenue.bonusRedeemedKopecks)}`);
   }
