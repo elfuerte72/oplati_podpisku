@@ -8,60 +8,67 @@ import {
   type DailyReportData,
   formatDailyReport,
   formatReportDate,
-  mskDayRange,
+  formatReportPeriod,
+  lastClosedReportDay,
   paidOrderLine,
-  previousMskDay,
+  reportWindow,
   resolveReportDay,
   TELEGRAM_MESSAGE_LIMIT,
 } from './daily-report.ts';
 
 /**
- * Дневной отчёт: границы московских суток и текст. Что держится:
- *   - крон в 00:05 МСК (21:05 UTC) отчитывается за ТОЛЬКО ЧТО закончившиеся сутки;
- *   - окно — ровно [00:00, 24:00) по Москве;
+ * Дневной отчёт: окно и текст. Что держится:
+ *   - крон в 18:00 МСК (15:00 UTC) отчитывается за ТОЛЬКО ЧТО закрывшиеся сутки;
+ *   - окно — ровно [вчера 18:00, сегодня 18:00) по Москве: отчёты идут встык,
+ *     вечер после 18:00 попадает в следующий, а не теряется;
  *   - в списке оплат статус виден только у невыполненных заказов;
  *   - текст всегда влезает в одно сообщение Telegram и не врёт о числе оплат.
  */
 
-const NOW_AFTER_MIDNIGHT_MSK = new Date('2026-09-14T21:05:00.000Z'); // 15.09 00:05 МСК
+const AT_CRON = new Date('2026-09-14T15:00:00.000Z'); // 14.09 18:00 МСК
 
-describe('границы суток по Москве', () => {
-  it('после полуночи МСК «прошедшие сутки» — вчерашний московский день', () => {
-    expect(previousMskDay(NOW_AFTER_MIDNIGHT_MSK)).toBe('2026-09-14');
+describe('окно отчёта', () => {
+  it('в 18:00 МСК закрылось сегодняшнее окно', () => {
+    expect(lastClosedReportDay(AT_CRON)).toBe('2026-09-14');
   });
 
-  it('ночью по Москве, когда в UTC ещё прошлая дата, «прошедшие сутки» считаются по Москве', () => {
-    // 14.09 02:00 МСК = 13.09 23:00 UTC → прошедшие сутки — 13.09.
-    expect(previousMskDay(new Date('2026-09-13T23:00:00.000Z'))).toBe('2026-09-13');
+  it('до 18:00 МСК последнее закрытое окно — вчерашнее, в том числе ночью, когда в UTC ещё прошлая дата', () => {
+    expect(lastClosedReportDay(new Date('2026-09-14T14:59:59.000Z'))).toBe('2026-09-13');
+    // 14.09 01:00 МСК = 13.09 22:00 UTC → закрыто окно 13.09.
+    expect(lastClosedReportDay(new Date('2026-09-13T22:00:00.000Z'))).toBe('2026-09-13');
   });
 
-  it('окно московского дня в UTC', () => {
-    expect(mskDayRange('2026-09-14')).toEqual({
-      since: '2026-09-13T21:00:00.000Z',
-      until: '2026-09-14T21:00:00.000Z',
+  it('окно дня — сутки до 18:00 по Москве, в UTC', () => {
+    expect(reportWindow('2026-09-14')).toEqual({
+      since: '2026-09-13T15:00:00.000Z',
+      until: '2026-09-14T15:00:00.000Z',
     });
+  });
+
+  it('период словами — обе даты и время', () => {
+    expect(formatReportPeriod('2026-09-14')).toBe('С 18:00 13 сентября до 18:00 14 сентября (МСК)');
   });
 });
 
 describe('resolveReportDay', () => {
-  it('без параметра — прошедшие сутки, полные', () => {
-    expect(resolveReportDay(null, NOW_AFTER_MIDNIGHT_MSK)).toEqual({
+  it('без параметра — только что закрытое окно, полное', () => {
+    expect(resolveReportDay(null, AT_CRON)).toEqual({
       ok: true,
       day: '2026-09-14',
-      range: { since: '2026-09-13T21:00:00.000Z', until: '2026-09-14T21:00:00.000Z' },
+      range: { since: '2026-09-13T15:00:00.000Z', until: '2026-09-14T15:00:00.000Z' },
       partial: false,
     });
   });
 
-  it('сегодняшний день разрешён и помечен неполным', () => {
-    const res = resolveReportDay('2026-09-15', NOW_AFTER_MIDNIGHT_MSK);
+  it('окно, которое ещё идёт, разрешено и помечено неполным', () => {
+    const res = resolveReportDay('2026-09-15', AT_CRON);
     expect(res).toMatchObject({ ok: true, day: '2026-09-15', partial: true });
   });
 
-  it('завтрашний день и мусор — отказ', () => {
-    expect(resolveReportDay('2026-09-16', NOW_AFTER_MIDNIGHT_MSK)).toEqual({ ok: false, reason: 'future_day' });
-    expect(resolveReportDay('14.09.2026', NOW_AFTER_MIDNIGHT_MSK)).toEqual({ ok: false, reason: 'invalid_day' });
-    expect(resolveReportDay('2026-02-30', NOW_AFTER_MIDNIGHT_MSK)).toEqual({ ok: false, reason: 'invalid_day' });
+  it('ещё не начавшееся окно и мусор — отказ', () => {
+    expect(resolveReportDay('2026-09-16', AT_CRON)).toEqual({ ok: false, reason: 'future_day' });
+    expect(resolveReportDay('14.09.2026', AT_CRON)).toEqual({ ok: false, reason: 'invalid_day' });
+    expect(resolveReportDay('2026-02-30', AT_CRON)).toEqual({ ok: false, reason: 'invalid_day' });
   });
 });
 
@@ -108,9 +115,14 @@ function reportData(over: Partial<DailyReportData> = {}): DailyReportData {
 
 describe('paidOrderLine', () => {
   it('время МСК, @username, сервис с тарифом, сумма, номер; у выполненного статуса нет', () => {
-    expect(paidOrderLine(paidOrder())).toBe(
+    expect(paidOrderLine(paidOrder(), '2026-09-14')).toBe(
       `10:09 · @arthur_test · ChatGPT Plus · ${formatKopecks(228_000)} · ORD-4DYS6`,
     );
+  });
+
+  it('оплата накануне вечером получает дату, чтобы не путаться с сегодняшним временем', () => {
+    const line = paidOrderLine(paidOrder({ paidAt: new Date('2026-09-13T17:15:00.000Z') }), '2026-09-14');
+    expect(line.startsWith('13.09 20:15 · ')).toBe(true);
   });
 
   it('без username — имя, вне каталога — описание; невыполненный получает статус панели', () => {
@@ -123,6 +135,7 @@ describe('paidOrderLine', () => {
         customDescription: 'Midjourney Standard',
         status: 'failed',
       }),
+      '2026-09-14',
     );
     expect(line).toContain('Боб');
     expect(line).toContain('Midjourney Standard');
@@ -134,7 +147,8 @@ describe('formatDailyReport', () => {
   it('заголовок с маркером темы и датой, ключевые цифры и ссылка на раздел отчётов', () => {
     const text = formatDailyReport(reportData(), 'admin.oplatishka.com');
 
-    expect(text.startsWith(`📊 Отчёт за ${formatReportDate('2026-09-14')}`)).toBe(true);
+    expect(text.startsWith(`📊 Отчёт за сутки: ${formatReportDate('2026-09-14')}`)).toBe(true);
+    expect(text).toContain('С 18:00 13 сентября до 18:00 14 сентября (МСК)');
     expect(text).toContain('В бот и кабинет: 23 чел.');
     expect(text).toContain('Новых клиентов: 5 · по реф-ссылке: 2');
     expect(text).toContain('Покупок: 3');
@@ -144,7 +158,7 @@ describe('formatDailyReport', () => {
     expect(text).toContain('https://admin.oplatishka.com/admin/analytics');
     // Баллов не было — строки нет, а не «0 ₽».
     expect(text).not.toContain('баллами');
-    expect(text).not.toContain('День ещё не закончился');
+    expect(text).not.toContain('Сутки ещё не закончились');
   });
 
   it('пустой день — честные нули и «Оплат не было», непрочитанный пункт — без выдуманного числа', () => {
@@ -164,7 +178,7 @@ describe('formatDailyReport', () => {
     expect(text).toContain('Оценок не было.');
     expect(text).toContain('Оплаты: не удалось прочитать');
     expect(text).toContain('Карточный счёт: не удалось прочитать');
-    expect(text).toContain('День ещё не закончился');
+    expect(text).toContain('Сутки ещё не закончились');
     // Без хоста панели — путь, а не мёртвая ссылка.
     expect(text).toContain('\n/admin/analytics');
   });

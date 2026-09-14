@@ -12,12 +12,16 @@ import { formatKopecks, formatUsdCents } from '../panel/format.ts';
 import { ORDER_STATUS_LABELS } from '../panel/labels.ts';
 
 /**
- * Дневной отчёт в тему «Отчёты» ops-группы: границы суток и текст. Чистые
- * функции без env и БД — данные собирает `lib/jobs/daily-report.ts`.
+ * Дневной отчёт в тему «Отчёты» ops-группы: окно и текст. Чистые функции без
+ * env и БД — данные собирает `lib/jobs/daily-report.ts`.
  *
- * Сутки — московские: владелец и клиенты живут по Москве, и «вчера» в UTC
- * резало бы вечер на два отчёта. Смещение фиксированное (+03:00): переход на
- * летнее время в России отменён в 2014 году, а `Intl` для границ окна не нужен.
+ * Окно — сутки, закончившиеся в `REPORT_HOUR_MSK` по Москве (решение владельца
+ * 2026-09-14: отчёт в 18:00, а не после полуночи). Именно скользящие сутки
+ * «вчера 18:00 — сегодня 18:00», а не «сегодня с полуночи до 18:00»: иначе вечер
+ * с 18:00 до полуночи не попадал бы ни в один отчёт, а оплаты вечером — обычное дело.
+ *
+ * Время московское: владелец и клиенты живут по Москве. Смещение
+ * фиксированное (+03:00): переход на летнее время в России отменён в 2014 году.
  *
  * Текст — plain text, как у всех уведомлений персоналу (`alerts/format.ts`):
  * имена клиентов приходят из Telegram, и экранировать их под разметку в одной
@@ -29,21 +33,37 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MSK_OFFSET_MS = 3 * 60 * 60 * 1000;
 const TIME_ZONE = 'Europe/Moscow';
 
+/**
+ * Час по Москве, которым заканчивается окно отчёта. Зеркало (инвариант 10):
+ * время запуска крона в `infra/crontab.example` (`0 15 * * *` — 15:00 UTC).
+ * Переносишь отчёт — правь обе стороны, иначе крон пришлёт неполные сутки.
+ */
+export const REPORT_HOUR_MSK = 18;
+
 /** Лимит длины сообщения Telegram. */
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
 
-/** День `YYYY-MM-DD` по Москве, закончившийся последним к моменту `now`. */
-export function previousMskDay(now: Date): string {
-  const mskNow = new Date(now.getTime() + MSK_OFFSET_MS);
-  return new Date(mskNow.getTime() - DAY_MS).toISOString().slice(0, 10);
+function mskDate(date: Date): string {
+  return new Date(date.getTime() + MSK_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** Окно `[00:00, 24:00)` московского дня — в UTC, ISO-строками. */
-export function mskDayRange(day: string): AnalyticsRange {
-  const since = new Date(`${day}T00:00:00${MSK_OFFSET}`);
+/**
+ * Дата (`YYYY-MM-DD` по Москве) окна, закрывшегося последним к моменту `now`:
+ * в 18:00 и позже — сегодняшнее, раньше — вчерашнее.
+ */
+export function lastClosedReportDay(now: Date): string {
+  const mskHour = new Date(now.getTime() + MSK_OFFSET_MS).getUTCHours();
+  const today = mskDate(now);
+  return mskHour >= REPORT_HOUR_MSK ? today : mskDate(new Date(now.getTime() - DAY_MS));
+}
+
+/** Окно отчёта за день `D`: `[D-1 18:00, D 18:00)` по Москве — в UTC, ISO-строками. */
+export function reportWindow(day: string): AnalyticsRange {
+  const hour = String(REPORT_HOUR_MSK).padStart(2, '0');
+  const until = new Date(`${day}T${hour}:00:00${MSK_OFFSET}`);
   return {
-    since: since.toISOString(),
-    until: new Date(since.getTime() + DAY_MS).toISOString(),
+    since: new Date(until.getTime() - DAY_MS).toISOString(),
+    until: until.toISOString(),
   };
 }
 
@@ -52,22 +72,22 @@ export type ReportDayResult =
   | { ok: false; reason: 'invalid_day' | 'future_day' };
 
 /**
- * День отчёта из параметра запроса. Без параметра — прошедшие сутки (так зовёт
- * крон). С параметром — ручная переотправка за нужную дату; сегодняшний день
- * разрешён и помечается как неполный, завтрашний — нет: отчёт о будущем был бы
- * набором нулей, неотличимым от пустого дня.
+ * День отчёта из параметра запроса. Без параметра — последнее закрытое окно
+ * (так зовёт крон). С параметром — ручная переотправка за нужную дату; окно,
+ * которое ещё идёт, разрешено и помечается неполным, ещё не начавшееся — нет:
+ * отчёт о будущем был бы набором нулей, неотличимым от пустого дня.
  */
 export function resolveReportDay(raw: string | null | undefined, now: Date): ReportDayResult {
-  const day = raw?.trim() ? raw.trim() : previousMskDay(now);
+  const day = raw?.trim() ? raw.trim() : lastClosedReportDay(now);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, reason: 'invalid_day' };
-  const range = mskDayRange(day);
-  const since = new Date(range.since);
+  const range = reportWindow(day);
+  const until = new Date(range.until);
   // 2026-02-30 разбирается в 2 марта: сверяем, что дата не «переехала».
-  if (Number.isNaN(since.getTime()) || new Date(since.getTime() + MSK_OFFSET_MS).toISOString().slice(0, 10) !== day) {
+  if (Number.isNaN(until.getTime()) || mskDate(until) !== day) {
     return { ok: false, reason: 'invalid_day' };
   }
-  if (since.getTime() > now.getTime()) return { ok: false, reason: 'future_day' };
-  return { ok: true, day, range, partial: new Date(range.until).getTime() > now.getTime() };
+  if (new Date(range.since).getTime() > now.getTime()) return { ok: false, reason: 'future_day' };
+  return { ok: true, day, range, partial: until.getTime() > now.getTime() };
 }
 
 /** Срез «что ждёт сейчас»: `null` у пункта — прочитать не удалось. */
@@ -79,8 +99,9 @@ export type DailyReportNow = {
 };
 
 export type DailyReportData = {
+  /** День окна `D`: сутки `[D-1 18:00, D 18:00)` по Москве. */
   day: string;
-  /** День ещё не закончился (ручной запуск за сегодня). */
+  /** Окно ещё не закрылось (ручной запуск до 18:00). */
   partial: boolean;
   revenue: RevenueSummary;
   audience: DailyAudience;
@@ -100,8 +121,21 @@ export function formatReportDate(day: string): string {
   });
 }
 
+/** «13 сентября». */
+function formatDayMonth(date: Date): string {
+  return date.toLocaleDateString('ru-RU', { timeZone: TIME_ZONE, day: 'numeric', month: 'long' });
+}
+
 function formatMskTime(date: Date): string {
   return date.toLocaleTimeString('ru-RU', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit' });
+}
+
+/** «С 18:00 13 сентября до 18:00 14 сентября (МСК)». */
+export function formatReportPeriod(day: string): string {
+  const range = reportWindow(day);
+  const since = new Date(range.since);
+  const until = new Date(range.until);
+  return `С ${formatMskTime(since)} ${formatDayMonth(since)} до ${formatMskTime(until)} ${formatDayMonth(until)} (МСК)`;
 }
 
 function truncate(text: string, max: number): string {
@@ -127,10 +161,19 @@ function serviceLabel(order: DailyPaidOrder): string {
 /**
  * Строка оплаты. Статус дописывается, только если заказ НЕ выполнен: список
  * читают ради «всё ли дошло», и десять «Выполнен» подряд утопили бы одну «Ошибку».
+ *
+ * Окно захватывает две даты, поэтому оплата накануне вечером получает дату
+ * («13.09 20:15»), а сегодняшняя — только время: иначе «20:15» над «10:09»
+ * читалось бы как сбитая сортировка.
  */
-export function paidOrderLine(order: DailyPaidOrder): string {
+export function paidOrderLine(order: DailyPaidOrder, day: string): string {
+  const time = formatMskTime(order.paidAt);
+  const when =
+    mskDate(order.paidAt) === day
+      ? time
+      : `${order.paidAt.toLocaleDateString('ru-RU', { timeZone: TIME_ZONE, day: '2-digit', month: '2-digit' })} ${time}`;
   const parts = [
-    formatMskTime(order.paidAt),
+    when,
     clientLabel(order),
     serviceLabel(order),
     formatKopecks(order.amountKopecks),
@@ -151,7 +194,11 @@ function buildBody(data: DailyReportData, paidShown: number, panelHost: string |
   const { audience, flow, revenue, paid, support, now } = data;
   const sections: string[] = [];
 
-  if (data.partial) sections.push('День ещё не закончился — цифры на момент отправки.');
+  sections.push(
+    data.partial
+      ? `${formatReportPeriod(data.day)}\nСутки ещё не закончились — цифры на момент отправки.`
+      : formatReportPeriod(data.day),
+  );
 
   sections.push(
     [
@@ -181,7 +228,7 @@ function buildBody(data: DailyReportData, paidShown: number, panelHost: string |
   if (paid.total === 0) {
     payers.push('Оплат не было.');
   } else {
-    for (const order of paid.items.slice(0, paidShown)) payers.push(paidOrderLine(order));
+    for (const order of paid.items.slice(0, paidShown)) payers.push(paidOrderLine(order, data.day));
     const hidden = paid.total - Math.min(paidShown, paid.items.length);
     if (hidden > 0) payers.push(`…и ещё ${hidden} — список в разделе «Все заказы»`);
   }
@@ -223,7 +270,7 @@ function buildBody(data: DailyReportData, paidShown: number, panelHost: string |
  * «и ещё N» — обрезать сообщение посреди строки или разбивать на два хуже.
  */
 export function formatDailyReport(data: DailyReportData, panelHost: string | null | undefined): string {
-  const title = `Отчёт за ${formatReportDate(data.day)}`;
+  const title = `Отчёт за сутки: ${formatReportDate(data.day)}`;
   let shown = data.paid.items.length;
   for (;;) {
     const text = formatOpsMessage(
