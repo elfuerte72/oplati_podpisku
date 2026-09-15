@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import {
   PANEL_DEFAULT_ROWS,
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
   countClientSegmentsForPanel,
   getDb,
   listClientsForPanel,
@@ -19,7 +20,6 @@ import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import {
   CLIENT_SEGMENT_OPTIONS,
   CLIENT_SORT_OPTIONS,
-  clientKind,
   clientsHref,
   parseClientsQuery,
 } from '@/lib/panel/client-filters';
@@ -27,6 +27,7 @@ import { formatCount, formatKopecks } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
   ACTION_TITLES,
+  ADDRESS_ERROR_TEXT,
   CELL_TEXT,
   CLIENTS_FILTER_TEXT,
   CLIENT_KIND_LABELS,
@@ -121,7 +122,7 @@ export default async function PanelClientsPage({
               className="panel-input"
               placeholder={CLIENTS_FILTER_TEXT.searchPlaceholder}
               defaultValue={filters.query}
-              maxLength={100}
+              maxLength={PANEL_SEARCH_QUERY_MAX_LENGTH}
             />
             <button type="submit" className="panel-button">
               {ACTION_TITLES.search}
@@ -175,8 +176,7 @@ export default async function PanelClientsPage({
           // Молча проигнорированный параметр — это ссылка, которая у коллеги
           // означает не то же самое, что у отправителя.
           <p className="panel-error" style={{ marginTop: 8 }}>
-            Не удалось разобрать параметры адреса: {filters.ignored.join(', ')}. Показана
-            выборка по умолчанию.
+            {ADDRESS_ERROR_TEXT.ignored} {filters.ignored.join(', ')}. {ADDRESS_ERROR_TEXT.fallback}
           </p>
         ) : null}
       </PanelPageHeader>
@@ -213,7 +213,9 @@ export default async function PanelClientsPage({
               </thead>
               <tbody>
                 {clients.map((client) => {
-                  const kind = clientKind(client);
+                  // Исход приходит из репозитория тем же предикатом, что
+                  // считает сегменты: пилюля и счётчик над ней не разъедутся.
+                  const kind = client.kind;
                   const contacts = [
                     client.hasEmail ? CELL_TEXT.contactEmail : null,
                     client.hasPhone ? CELL_TEXT.contactPhone : null,

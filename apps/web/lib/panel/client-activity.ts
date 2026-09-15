@@ -1,7 +1,9 @@
+import 'server-only';
+
 import { ANALYTICS_EVENTS, ANALYTICS_MILESTONES } from '@oplati/types';
 
 import { formatKopecks, formatUsdCents } from './format';
-import { ACTIVITY_CHANNEL_LABELS } from './labels';
+import { ACTIVITY_CHANNEL_LABELS, ACTIVITY_TEXT } from './labels';
 
 /**
  * Лента действий клиента в его карточке: подписи и детали строки.
@@ -12,8 +14,9 @@ import { ACTIVITY_CHANNEL_LABELS } from './labels';
  * говорит то же про воронку): подпись, разошедшаяся с отчётом, путала бы
  * человека, который смотрит на клиента и на воронку по очереди.
  *
- * ⚠️ Серверный модуль: словарь аналитики тянет `zod`, в клиентский бандл
- * панели ему нельзя. Страница карточки — серверный компонент, ей можно.
+ * ⚠️ Серверный модуль (`server-only` бросит при импорте из клиентского
+ * компонента): словарь аналитики тянет `zod`, в клиентский бандл панели ему
+ * нельзя. Страница карточки — серверный компонент, ей можно.
  */
 
 const EVENT_TITLES: Record<string, string> = Object.fromEntries([
@@ -26,9 +29,15 @@ export function activityTitle(name: string): string {
   return EVENT_TITLES[name] ?? name;
 }
 
-/** Канал события; у вех из денежных таблиц (`derived`) канала нет. */
+/**
+ * Канал события; у вех из денежных таблиц (`derived`) канала нет. Значение
+ * приходит из базы строкой, поэтому проверяется вхождение в словарь, а не
+ * доверяется тип.
+ */
 export function activityChannelLabel(channel: string): string | null {
-  return ACTIVITY_CHANNEL_LABELS[channel] ?? null;
+  return Object.hasOwn(ACTIVITY_CHANNEL_LABELS, channel)
+    ? ACTIVITY_CHANNEL_LABELS[channel as keyof typeof ACTIVITY_CHANNEL_LABELS]
+    : null;
 }
 
 /**
@@ -56,7 +65,7 @@ export function activityDetails(props: Record<string, unknown> | null): string |
   const path = text('path');
   if (path) parts.push(path);
   const src = text('src') ?? text('utm_source');
-  if (src) parts.push(`из ${src}`);
+  if (src) parts.push(`${ACTIVITY_TEXT.from} ${src}`);
   const kopecks = number('amount_kopecks');
   if (kopecks !== null) {
     parts.push(formatKopecks(kopecks));

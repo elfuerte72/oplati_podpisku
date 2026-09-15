@@ -29,7 +29,13 @@
 последнего разговора; VPN без `subscriptionUrl`; отзывы клиента с заказом-триггером. Unit —
 `client-filters.test.ts` (умолчания, непонятый параметр по имени, повтор параметра, потолок
 страницы, адрес без умолчаний), `client-activity.test.ts` (подпись у КАЖДОГО события и вехи
-словаря, неизвестное имя как есть, детали только из известных ключей — UTM не печатается).
+словаря, неизвестное имя как есть, детали только из известных ключей — UTM не печатается),
+`feedback-text.test.ts` (ответ словами, граница низкой оценки 3/4). После ревью добавлено:
+`kind` строки совпадает с сегментом, счётчики уважают период, `orders_desc`, «оплата без
+выдачи» на `refund_requested` да / на `refunded` нет, след карточки равен следу списка.
+⚠️ Урок флаки-теста: у PGlite `now()` — миллисекунды, два подряд INSERT получают одинаковый
+`created_at`, и порядок «новые сверху» с тай-брейкером по случайному uuid красный через раз —
+время фикстур ставить явно `UPDATE … SET created_at`.
 
 **Состав.** Vitest в `apps/web` (loveandpay: client/sign/handlers; rapira: live-rate/fallback; pay-space: client/sign/format; ai: бюджет/роутер; chat: toolCards; ratelimit; security/timing-safe; jobs/issue-card + recycle-cards + referral-rollup + referral-accrual-recovery; cabinet/referral: снапшот/auth/payout; referral/payout-executor + accrue; orders/propose rate-limit; telegram/init-data: `start_param` из подписанного initData), `packages/types` (state machine, схемы L&P/Rapira, referral: ставки + прогрессия + выплаты) и `packages/db` (**интеграционные на PGlite** — реальный Postgres + реальные миграции: атомарный claim и его откат в транзакции, идемпотентность webhook, append-only-триггер, guard оплаченного заказа в expire, merge пользователей, идемпотентность+reversal ledger'а, машина статусов выплат, реферальный захват `getOrCreateUserByTelegramId` ставит `referred_by`+`referred_by_set_at`). Всего **web 2445, types 201, db 470, agent 73** (2026-09-11 — промокоды: нормализация кода
 (гомоглифы, разделители, идемпотентность, длина ПОСЛЕ нормализации, свойство «любое написание

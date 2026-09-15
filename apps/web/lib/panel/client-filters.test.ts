@@ -4,7 +4,6 @@ import { CLIENT_SEGMENT_TITLES, CLIENT_SORT_TITLES } from './labels';
 import {
   CLIENT_SEGMENT_OPTIONS,
   CLIENT_SORT_OPTIONS,
-  clientKind,
   clientsHref,
   parseClientsQuery,
 } from './client-filters';
@@ -93,13 +92,5 @@ describe('варианты фильтров', () => {
       expect(option.title).toBe(CLIENT_SORT_TITLES[option.key]);
     }
     expect(CLIENT_SEGMENT_OPTIONS[0]?.key).toBe('all');
-  });
-});
-
-describe('clientKind', () => {
-  it('исход по заказам — то же деление, что у сегментов', () => {
-    expect(clientKind({ ordersCount: 3, purchasedCount: 1 })).toBe('buyer');
-    expect(clientKind({ ordersCount: 2, purchasedCount: 0 })).toBe('tried');
-    expect(clientKind({ ordersCount: 0, purchasedCount: 0 })).toBe('lurker');
   });
 });

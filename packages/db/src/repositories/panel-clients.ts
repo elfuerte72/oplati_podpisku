@@ -3,6 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { ConversationMode } from '@oplati/types';
 
 import type { DB } from '../index.ts';
+import { clientSearchCondition } from './client-search-sql.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import { clampPanelLimit, clampPanelOffset } from './panel.ts';
 
@@ -22,7 +23,15 @@ import { clampPanelLimit, clampPanelOffset } from './panel.ts';
  *
  * «Покупка состоялась» — общий `PURCHASED_STATUSES_SQL`: тот же список, по
  * которому карточка клиента считает «Оплачено» и раздел «Отчёты» — оплаченные
- * заказы. Своя копия здесь разъехалась бы молча.
+ * заказы. Своя копия здесь разъехалась бы молча. ⚠️ «Оплачено» здесь и в
+ * карточке — ЦЕНА состоявшихся заказов (`orders.amount_rub`), а не поступление
+ * на счёт: промокод и баллы уменьшают счёт (`payments.amount_rub`), и клиент с
+ * ДАРЛИНГ на заказе за 2 000 ₽ показан как «2 000 ₽», заплатив ~1 595 ₽.
+ * Поступления считает раздел «Отчёты» по платежам.
+ *
+ * Поиск клиента по тексту — общий `clientSearchCondition` с быстрым поиском
+ * ⌘K; таблица `users` в raw-SQL поэтому идёт БЕЗ алиаса — фрагмент ссылается
+ * на колонки как `"users"."…"`.
  */
 
 /**
@@ -36,9 +45,14 @@ import { clampPanelLimit, clampPanelOffset } from './panel.ts';
  *   - `lurkers`     — зашёл и ничего не оформил.
  * Два — сквозные признаки поверх исхода:
  *   - `unreachable` — без Telegram: написать некуда (оформлял на сайте и не привязал);
- *   - `stuck`       — деньги приняты, а заказ в «Ошибке»: клиент заплатил и не
- *                     получил — это долг, а не статистика. Такой клиент по исходу
- *                     «пробовал» (покупки нет), и строка несёт отдельную пометку.
+ *   - `stuck`       — деньги приняты (платёж `succeeded`), а покупка не
+ *                     состоялась и возврата не было: клиент заплатил и не
+ *                     получил — это долг, а не статистика. Такой клиент по
+ *                     исходу «пробовал», и строка несёт отдельную пометку.
+ *                     ⚠️ Признак живёт только там, где факт оплаты есть в
+ *                     `payments`: оплата по уже захороненному счёту
+ *                     (`paid_after_terminal`) платёж не переводит и сюда не
+ *                     попадает — её ловит ops-алёрт, а не список.
  */
 export const PANEL_CLIENT_SEGMENTS = [
   'all',
@@ -50,6 +64,15 @@ export const PANEL_CLIENT_SEGMENTS = [
 ] as const;
 
 export type PanelClientSegment = (typeof PANEL_CLIENT_SEGMENTS)[number];
+
+/**
+ * Исход клиента по заказам — то же деление, что у трёх первых сегментов.
+ * Считается В БАЗЕ тем же предикатом (`segmentCondition`), а не второй
+ * формулой в JS: пилюля строки и счётчик над ней обязаны говорить одно.
+ */
+export const PANEL_CLIENT_KINDS = ['buyer', 'tried', 'lurker'] as const;
+
+export type PanelClientKind = (typeof PANEL_CLIENT_KINDS)[number];
 
 /** Порядок списка. Живёт в адресе экрана (`?sort=`). */
 export const PANEL_CLIENT_SORTS = ['newest', 'active', 'purchased_desc', 'orders_desc'] as const;
@@ -80,19 +103,17 @@ export type PanelClientListItem = {
   createdAt: Date;
   /** Кто привёл (id) — сама ссылка на партнёра живёт в карточке. */
   referredById: string | null;
+  /** Исход по заказам — тем же предикатом, что сегменты. */
+  kind: PanelClientKind;
   ordersCount: number;
   purchasedCount: number;
-  /** Сумма состоявшихся покупок, копейки. */
+  /** Цена состоявшихся покупок, копейки (см. оговорку в заголовке модуля). */
   purchasedRubKopecks: number;
   lastPaidAt: Date | null;
   lastOrderAt: Date | null;
-  /**
-   * Последний след клиента: живой запрос (кабинет, оформление, чат — пишет
-   * антифрод-трек), заказ или сообщение боту — что позже. `null` — след
-   * старше колонки `last_seen_ip_at` и без заказов и сообщений.
-   */
+  /** Последний след клиента — см. `lastActivitySql`. */
   lastActivityAt: Date | null;
-  /** Деньги приняты, заказ в «Ошибке» — клиент заплатил и не получил. */
+  /** Деньги приняты, покупка не состоялась — см. сегмент `stuck`. */
   moneyStuck: boolean;
 };
 
@@ -105,14 +126,24 @@ export type PanelClientListPage = {
 export type PanelClientSegmentCounts = Record<PanelClientSegment, number>;
 
 /**
- * Потолок длины поискового запроса — тот же, что у заказов: строка любой
- * длины гоняла бы несколько ILIKE с ведущим `%` в процессе, принимающем деньги.
+ * Последний след клиента: живой запрос (кабинет, оформление, чат — пишет
+ * антифрод-трек с троттлингом в `last_seen_ip_at`), созданный заказ или
+ * сообщение САМОГО клиента боту — что позже. `GREATEST` в Postgres NULL
+ * пропускает, поэтому `NULL` здесь означает «ни одного следа»: колонка
+ * `last_seen_ip_at` пишется с середины августа, и у старого клиента без
+ * заказов и сообщений следа нет.
+ *
+ * ОДНО выражение на список и карточку: под одним ярлыком два разных
+ * определения показывали бы «2 ч назад» в списке и «следов нет» в карточке.
  */
-const MAX_QUERY_LENGTH = 100;
-
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
+const lastActivitySql = sql`GREATEST(
+  users.last_seen_ip_at,
+  (SELECT MAX(o.created_at) FROM orders o WHERE o.user_id = users.id),
+  (SELECT MAX(m.created_at)
+     FROM conversations c
+     JOIN messages m ON m.conversation_id = c.id AND m.role = 'user'
+    WHERE c.user_id = users.id)
+)`;
 
 /**
  * Итоги по заказам клиента — один LATERAL на строку `users`. Считается в базе,
@@ -128,25 +159,15 @@ const ORDER_TOTALS_LATERAL = sql`
              AS purchased_sum,
            MAX(o.paid_at) FILTER (WHERE o.status IN ${PURCHASED_STATUSES_SQL}) AS last_paid_at,
            MAX(o.created_at) AS last_order_at,
-           bool_or(o.status = 'failed' AND EXISTS (
-             SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.status = 'succeeded'
-           )) AS money_stuck
+           bool_or(
+             o.status NOT IN ${PURCHASED_STATUSES_SQL}
+             AND o.status <> 'refunded'
+             AND EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.status = 'succeeded')
+           ) AS money_stuck
     FROM orders o
-    WHERE o.user_id = u.id
+    WHERE o.user_id = users.id
   ) t ON true
 `;
-
-/** Последнее сообщение САМОГО клиента боту — его, а не наши ответы. */
-const LAST_MESSAGE_LATERAL = sql`
-  LEFT JOIN LATERAL (
-    SELECT MAX(m.created_at) AS last_message_at
-    FROM conversations c
-    JOIN messages m ON m.conversation_id = c.id AND m.role = 'user'
-    WHERE c.user_id = u.id
-  ) msg ON true
-`;
-
-const LAST_ACTIVITY_SQL = sql`GREATEST(u.last_seen_ip_at, t.last_order_at, msg.last_message_at)`;
 
 function segmentCondition(segment: PanelClientSegment): SQL {
   switch (segment) {
@@ -157,7 +178,7 @@ function segmentCondition(segment: PanelClientSegment): SQL {
     case 'lurkers':
       return sql`t.orders_count = 0`;
     case 'unreachable':
-      return sql`u.telegram_id IS NULL`;
+      return sql`users.telegram_id IS NULL`;
     case 'stuck':
       return sql`COALESCE(t.money_stuck, false)`;
     case 'all':
@@ -165,6 +186,13 @@ function segmentCondition(segment: PanelClientSegment): SQL {
       return sql`true`;
   }
 }
+
+/** Исход по заказам — ТЕМИ ЖЕ предикатами, что сегменты (см. `PANEL_CLIENT_KINDS`). */
+const KIND_SQL = sql`CASE
+  WHEN ${segmentCondition('buyers')} THEN 'buyer'
+  WHEN ${segmentCondition('tried')} THEN 'tried'
+  ELSE 'lurker'
+END`;
 
 /**
  * Условия поиска и периода — общие для списка и для счётчиков сегментов:
@@ -174,29 +202,15 @@ function segmentCondition(segment: PanelClientSegment): SQL {
 function baseConditions(filters: PanelClientListFilters): SQL[] {
   const conditions: SQL[] = [];
 
-  const query = filters.query?.trim().slice(0, MAX_QUERY_LENGTH);
-  if (query) {
-    const like = `%${escapeLikePattern(query)}%`;
-    const alternatives: SQL[] = [
-      sql`u.display_name ILIKE ${like}`,
-      sql`u.telegram_id ILIKE ${like}`,
-      sql`u.telegram_username ILIKE ${like}`,
-      sql`u.email ILIKE ${like}`,
-    ];
-    // Телефон — по цифрам с обеих сторон, как в быстром поиске: в базе он
-    // `+7999…`, а спрашивают с восьмёркой и скобками. Меньше четырёх цифр —
-    // перебор половины базы, а не поиск.
-    const digits = query.replace(/\D/g, '');
-    if (digits.length >= 4) {
-      alternatives.push(sql`regexp_replace(u.phone, '\\D', '', 'g') LIKE ${`%${digits}%`}`);
-    }
-    conditions.push(sql`(${sql.join(alternatives, sql` OR `)})`);
-  }
+  const search = clientSearchCondition(filters.query ?? '');
+  if (search) conditions.push(search);
 
   // Границы — ISO-строки, не `Date`: raw-`sql` Drizzle роняет postgres-js на
   // `Date`, а PGlite молчит (инцидент 2026-08-15).
-  if (filters.createdFrom) conditions.push(sql`u.created_at >= ${filters.createdFrom}::timestamptz`);
-  if (filters.createdTo) conditions.push(sql`u.created_at < ${filters.createdTo}::timestamptz`);
+  if (filters.createdFrom) {
+    conditions.push(sql`users.created_at >= ${filters.createdFrom}::timestamptz`);
+  }
+  if (filters.createdTo) conditions.push(sql`users.created_at < ${filters.createdTo}::timestamptz`);
 
   return conditions;
 }
@@ -213,20 +227,28 @@ function whereClause(conditions: SQL[]): SQL {
 function orderBy(sort: PanelClientSort): SQL {
   switch (sort) {
     case 'active':
-      return sql`ORDER BY ${LAST_ACTIVITY_SQL} DESC NULLS LAST, u.created_at DESC, u.id DESC`;
+      return sql`ORDER BY ${lastActivitySql} DESC NULLS LAST, users.created_at DESC, users.id DESC`;
     case 'purchased_desc':
-      return sql`ORDER BY t.purchased_sum DESC, t.purchased_count DESC, u.created_at DESC, u.id DESC`;
+      return sql`ORDER BY t.purchased_sum DESC, t.purchased_count DESC, users.created_at DESC, users.id DESC`;
     case 'orders_desc':
-      return sql`ORDER BY t.orders_count DESC, u.created_at DESC, u.id DESC`;
+      return sql`ORDER BY t.orders_count DESC, users.created_at DESC, users.id DESC`;
     case 'newest':
     default:
-      return sql`ORDER BY u.created_at DESC, u.id DESC`;
+      return sql`ORDER BY users.created_at DESC, users.id DESC`;
   }
 }
 
 function toDate(value: string | Date | null | undefined): Date | null {
   if (value === null || value === undefined) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function toKind(value: string): PanelClientKind {
+  // Значение рождается в `KIND_SQL` из трёх литералов; чужое здесь — разъезд
+  // SQL и типа, и его честнее показать как «только зашёл», чем ронять экран.
+  return (PANEL_CLIENT_KINDS as readonly string[]).includes(value)
+    ? (value as PanelClientKind)
+    : 'lurker';
 }
 
 export async function listClientsForPanel(
@@ -247,6 +269,7 @@ export async function listClientsForPanel(
     has_phone: boolean;
     created_at: string | Date;
     referred_by: string | null;
+    kind: string;
     orders_count: number | string;
     purchased_count: number | string;
     purchased_sum: number | string;
@@ -255,17 +278,17 @@ export async function listClientsForPanel(
     last_activity_at: string | Date | null;
     money_stuck: boolean | null;
   }>(sql`
-    SELECT u.id, u.display_name, u.telegram_id, u.telegram_username,
-           (u.web_session_id IS NOT NULL) AS has_web_session,
-           (u.email IS NOT NULL) AS has_email,
-           (u.phone IS NOT NULL) AS has_phone,
-           u.created_at, u.referred_by,
+    SELECT users.id, users.display_name, users.telegram_id, users.telegram_username,
+           (users.web_session_id IS NOT NULL) AS has_web_session,
+           (users.email IS NOT NULL) AS has_email,
+           (users.phone IS NOT NULL) AS has_phone,
+           users.created_at, users.referred_by,
+           ${KIND_SQL} AS kind,
            t.orders_count, t.purchased_count, t.purchased_sum, t.last_paid_at, t.last_order_at,
-           ${LAST_ACTIVITY_SQL} AS last_activity_at,
+           ${lastActivitySql} AS last_activity_at,
            t.money_stuck
-    FROM users u
+    FROM users
     ${ORDER_TOTALS_LATERAL}
-    ${LAST_MESSAGE_LATERAL}
     ${whereClause(conditions)}
     ${orderBy(filters.sort ?? 'newest')}
     LIMIT ${limit + 1} OFFSET ${offset}
@@ -282,6 +305,7 @@ export async function listClientsForPanel(
     hasPhone: r.has_phone,
     createdAt: toDate(r.created_at) ?? new Date(0),
     referredById: r.referred_by,
+    kind: toKind(r.kind),
     ordersCount: Number(r.orders_count ?? 0),
     purchasedCount: Number(r.purchased_count ?? 0),
     purchasedRubKopecks: Number(r.purchased_sum ?? 0),
@@ -309,7 +333,7 @@ export async function countClientSegmentsForPanel(
            count(*) FILTER (WHERE ${segmentCondition('lurkers')})::int AS lurkers,
            count(*) FILTER (WHERE ${segmentCondition('unreachable')})::int AS unreachable,
            count(*) FILTER (WHERE ${segmentCondition('stuck')})::int AS stuck
-    FROM users u
+    FROM users
     ${ORDER_TOTALS_LATERAL}
     ${whereClause(baseConditions(filters))}
   `);
@@ -333,6 +357,7 @@ export type PanelClientActivityEvent = {
   name: string;
   /** `event` — телеметрия, `milestone` — веха из денежных таблиц. */
   kind: string;
+  /** Канал телеметрии (`web`/`miniapp`/`bot`) либо `derived` у вехи. */
   channel: string;
   orderShortId: string | null;
   props: Record<string, unknown> | null;
@@ -354,6 +379,8 @@ export type PanelClientVpn = {
 };
 
 export type PanelClientActivity = {
+  /** Последний след — тем же выражением, что колонка списка. */
+  lastActivityAt: Date | null;
   /** Лента — новые сверху, потолок общий с панелью. */
   events: PanelClientActivityEvent[];
   /** За потолком остались ещё события — экран говорит об этом вслух. */
@@ -369,11 +396,13 @@ export type PanelClientActivity = {
  * «событие клиента» панель не заводит: телеметрия сайта и кабинета, денежные
  * вехи из `order_events`, привязка Telegram и выдача VPN приходят одной лентой.
  *
- * Фильтр по `user_id` вьюхи — по столбцу, который она вычисляет, поэтому
- * Postgres не сведёт запрос к индексу и пройдёт события целиком. На нынешнем
- * объёме (около одного заказа в день) это доли секунды; при росте — заменить
- * на прямой запрос к `analytics_events` по индексам telegram/сессии, сохранив
- * ту же форму строки.
+ * ⚠️ Цена: `user_id` вьюха ВЫЧИСЛЯЕТ (LATERAL в `users` на каждую строку
+ * `analytics_events`), поэтому фильтр по нему к индексу не сводится и первая
+ * ветка вьюхи читает `analytics_events` целиком. Таблица растёт от визитов
+ * сайта (`page_view` на каждый заход), а не от заказов. Сегодня это доли
+ * секунды; когда карточка начнёт открываться медленно — заменить на прямой
+ * запрос к `analytics_events` по индексам `telegram_id`/`web_session_id` плюс
+ * `order_events` по заказам клиента, сохранив ту же форму строки.
  */
 export async function getClientActivityForPanel(
   db: DB,
@@ -382,7 +411,12 @@ export async function getClientActivityForPanel(
 ): Promise<PanelClientActivity> {
   const limit = clampPanelLimit(opts.limit);
 
-  const [eventRows, supportRows, vpnRows] = await Promise.all([
+  const [activityRows, eventRows, supportRows, vpnRows] = await Promise.all([
+    db.execute<{ last_activity_at: string | Date | null }>(sql`
+      SELECT ${lastActivitySql} AS last_activity_at
+      FROM users
+      WHERE users.id = ${userId}::uuid
+    `),
     db.execute<{
       occurred_at: string | Date;
       name: string;
@@ -440,6 +474,7 @@ export async function getClientActivityForPanel(
   const vpn = vpnRows[0];
 
   return {
+    lastActivityAt: toDate(activityRows[0]?.last_activity_at),
     events,
     hasMoreEvents,
     support: {

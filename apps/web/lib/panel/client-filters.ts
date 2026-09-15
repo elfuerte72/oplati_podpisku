@@ -3,12 +3,14 @@ import { z } from 'zod';
 import {
   PANEL_CLIENT_SEGMENTS,
   PANEL_CLIENT_SORTS,
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
   type PanelClientSegment,
   type PanelClientSort,
 } from '@oplati/db';
 
-import { ANALYTICS_PERIODS, type AnalyticsPeriod } from './analytics/period';
+import { parseOptionalPeriod, type AnalyticsPeriod } from './analytics/period';
 import { CLIENT_SEGMENT_TITLES, CLIENT_SORT_TITLES } from './labels';
+import { firstParam, panelPageSchema } from './paging';
 
 /**
  * Разбор адреса экрана клиентов. Параметры адреса — граница (инвариант 5),
@@ -18,6 +20,8 @@ import { CLIENT_SEGMENT_TITLES, CLIENT_SORT_TITLES } from './labels';
  *
  * Списки сегментов и сортировок берутся ИЗ репозитория, а не переписываются:
  * значение, которого репозиторий не знает, не должно доходить до запроса.
+ * Исход клиента (`kind`) тоже приходит из репозитория — тем же предикатом,
+ * что считает сегменты; второй формулы в JS здесь нет намеренно.
  */
 
 const segmentSchema = z.enum(PANEL_CLIENT_SEGMENTS);
@@ -28,15 +32,6 @@ export const CLIENT_SEGMENT_OPTIONS: ReadonlyArray<{ key: PanelClientSegment; ti
 
 export const CLIENT_SORT_OPTIONS: ReadonlyArray<{ key: PanelClientSort; title: string }> =
   PANEL_CLIENT_SORTS.map((key) => ({ key, title: CLIENT_SORT_TITLES[key] }));
-
-/** Потолок поиска — тот же, что в репозитории. */
-const MAX_QUERY_LENGTH = 100;
-
-function parsePeriodDays(raw: string | undefined): AnalyticsPeriod | null {
-  if (raw === undefined) return null;
-  const days = Number(raw);
-  return ANALYTICS_PERIODS.find((allowed) => allowed === days) ?? null;
-}
 
 export type PanelClientsQuery = {
   query: string;
@@ -49,31 +44,28 @@ export type PanelClientsQuery = {
   ignored: string[];
 };
 
-function firstValue(raw: string | string[] | undefined): string | undefined {
-  return Array.isArray(raw) ? raw[0] : raw;
-}
-
 export function parseClientsQuery(
   params: Record<string, string | string[] | undefined>,
 ): PanelClientsQuery {
   const ignored: string[] = [];
 
-  const query = (firstValue(params.q)?.trim() ?? '').slice(0, MAX_QUERY_LENGTH);
+  // Потолок поиска — тот же, что в репозитории (`@oplati/db`).
+  const query = (firstParam(params.q)?.trim() ?? '').slice(0, PANEL_SEARCH_QUERY_MAX_LENGTH);
 
-  const rawSegment = firstValue(params.seg);
+  const rawSegment = firstParam(params.seg);
   const parsedSegment = rawSegment ? segmentSchema.safeParse(rawSegment) : null;
   if (rawSegment && !parsedSegment?.success) ignored.push('seg');
 
-  const rawSort = firstValue(params.sort);
+  const rawSort = firstParam(params.sort);
   const parsedSort = rawSort ? sortSchema.safeParse(rawSort) : null;
   if (rawSort && !parsedSort?.success) ignored.push('sort');
 
-  const rawPeriod = firstValue(params.period);
-  const period = parsePeriodDays(rawPeriod);
+  const rawPeriod = firstParam(params.period);
+  const period = parseOptionalPeriod(rawPeriod);
   if (rawPeriod && period === null) ignored.push('period');
 
-  const rawPage = firstValue(params.page);
-  const parsedPage = rawPage ? z.coerce.number().int().min(1).max(1000).safeParse(rawPage) : null;
+  const rawPage = firstParam(params.page);
+  const parsedPage = rawPage ? panelPageSchema.safeParse(rawPage) : null;
   if (rawPage && !parsedPage?.success) ignored.push('page');
 
   return {
@@ -97,17 +89,4 @@ export function clientsHref(
   if (state.period) query.period = String(state.period);
   if (state.page && state.page > 1) query.page = String(state.page);
   return { pathname: '/admin/clients', query };
-}
-
-/**
- * Исход клиента по заказам — то же деление, что у сегментов списка: строка
- * несёт пилюлю, а экран — счётчики, и они обязаны говорить одно и то же.
- */
-export function clientKind(row: {
-  ordersCount: number;
-  purchasedCount: number;
-}): 'buyer' | 'tried' | 'lurker' {
-  if (row.purchasedCount > 0) return 'buyer';
-  if (row.ordersCount > 0) return 'tried';
-  return 'lurker';
 }

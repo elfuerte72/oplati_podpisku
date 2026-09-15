@@ -46,7 +46,15 @@ async function makeUser(over: Partial<typeof schema.users.$inferInsert> = {}): P
 
 async function makeOrder(
   userId: string,
-  status: 'draft' | 'ready_for_payment' | 'pending_payment' | 'completed' | 'failed' | 'expired',
+  status:
+    | 'draft'
+    | 'ready_for_payment'
+    | 'pending_payment'
+    | 'completed'
+    | 'failed'
+    | 'expired'
+    | 'refund_requested'
+    | 'refunded',
   amountRub: number,
   paidAt: Date | null = null,
 ): Promise<{ id: string; shortId: string }> {
@@ -126,6 +134,18 @@ describe('listClientsForPanel', () => {
     expect(row?.moneyStuck).toBe(false);
   });
 
+  it('исход строки считается тем же предикатом, что сегменты', async () => {
+    // Пилюля в строке и счётчик над ней обязаны говорить одно: `kind` рождается
+    // в SQL из тех же условий, что и сегменты, а не второй формулой в JS.
+    const { items } = await listClientsForPanel(db, { query: NAME });
+
+    expect(byName(items, 'покупатель')?.kind).toBe('buyer');
+    expect(byName(items, 'пробовал')?.kind).toBe('tried');
+    expect(byName(items, 'застрял')?.kind).toBe('tried');
+    expect(byName(items, 'только зашёл')?.kind).toBe('lurker');
+    expect(byName(items, 'сайт')?.kind).toBe('lurker');
+  });
+
   it('сегменты режут базу по факту покупки, заказа и связи', async () => {
     const seg = async (segment: 'buyers' | 'tried' | 'lurkers' | 'unreachable' | 'stuck') =>
       (await listClientsForPanel(db, { query: NAME, segment })).items.map((i) => i.id);
@@ -143,6 +163,23 @@ describe('listClientsForPanel', () => {
     expect(await seg('buyers')).not.toContain(stuck);
   });
 
+  it('«оплата без выдачи» держится, пока деньги у нас: возврат запрошен — да, возвращён — нет', async () => {
+    // `failed → refund_requested` — разрешённый переход, деньги остаются до
+    // `refunded`; признак не должен гаснуть на первом же шаге возврата.
+    const requested = await makeUser({ displayName: 'Возврат запрошен' });
+    const requestedOrder = await makeOrder(requested.id, 'refund_requested', 40_000);
+    await succeededPayment(requestedOrder.id, 40_000);
+
+    const refunded = await makeUser({ displayName: 'Возврат сделан' });
+    const refundedOrder = await makeOrder(refunded.id, 'refunded', 40_000);
+    await succeededPayment(refundedOrder.id, 40_000);
+
+    const rows = (await listClientsForPanel(db, { segment: 'stuck' })).items.map((i) => i.id);
+
+    expect(rows).toContain(requested.id);
+    expect(rows).not.toContain(refunded.id);
+  });
+
   it('счётчики сегментов считаются при том же поиске, что и список', async () => {
     const counts = await countClientSegmentsForPanel(db, { query: NAME });
 
@@ -150,6 +187,19 @@ describe('listClientsForPanel', () => {
     // Исход заказов делит базу без остатка — это свойство, на которое
     // опирается экран, показывая счётчики рядом.
     expect(counts.buyers + counts.tried + counts.lurkers).toBe(counts.all);
+  });
+
+  it('счётчики уважают и период регистрации — те же условия, что у списка', async () => {
+    const stamp = '2020-01-01T00:00:00.000Z';
+    const old = await makeUser({ displayName: 'Давний клиент' });
+    await db.execute(sql`UPDATE users SET created_at = ${stamp}::timestamptz WHERE id = ${old.id}`);
+
+    const before = await countClientSegmentsForPanel(db, { query: 'Давний', createdTo: stamp });
+    const from = await countClientSegmentsForPanel(db, { query: 'Давний', createdFrom: stamp });
+
+    expect(before.all).toBe(0);
+    expect(from.all).toBe(1);
+    expect(from.lurkers).toBe(1);
   });
 
   it('ищет по имени, telegram, @username, почте и цифрам телефона', async () => {
@@ -160,7 +210,9 @@ describe('listClientsForPanel', () => {
     // Три цифры — перебор половины базы, а не поиск.
     expect(await ids('999')).not.toContain(lurker);
 
-    const withUsername = await makeUser({ displayName: `${NAME} с ником`, telegramUsername: 'clients_nick' });
+    // Другой префикс имени: клиенты этого блока считаются под `NAME`, и лишняя
+    // строка сдвигала бы счётчики соседних тестов.
+    const withUsername = await makeUser({ displayName: 'Ник для поиска', telegramUsername: 'clients_nick' });
     expect(await ids('clients_nick')).toEqual([withUsername.id]);
     expect(await ids(withUsername.telegramId ?? '')).toEqual([withUsername.id]);
   });
@@ -169,9 +221,13 @@ describe('listClientsForPanel', () => {
     expect((await listClientsForPanel(db, { query: '%%%' })).items).toEqual([]);
   });
 
-  it('сортировка «оплачено: больше» ставит покупателя первым, «по активности» — свежий след', async () => {
+  it('сортировки: «оплачено: больше» и «заказов: больше» ставят нужного первым, «по активности» — свежий след', async () => {
     const byMoney = await listClientsForPanel(db, { query: NAME, sort: 'purchased_desc' });
     expect(byMoney.items[0]?.id).toBe(buyer);
+
+    const byOrders = await listClientsForPanel(db, { query: NAME, sort: 'orders_desc' });
+    expect(byOrders.items[0]?.id).toBe(buyer);
+    expect(byOrders.items.map((i) => i.ordersCount)).toEqual([...byOrders.items.map((i) => i.ordersCount)].sort((a, b) => b - a));
 
     // Сообщение боту — тоже след: клиент без заказов, но написавший только
     // что, идёт первым.
@@ -182,6 +238,11 @@ describe('listClientsForPanel', () => {
     expect(byActivity.items[0]?.lastActivityAt).not.toBeNull();
     // У клиента без единого следа — прочерк, а не эпоха Unix.
     expect(byName(byActivity.items, 'сайт')?.lastActivityAt).toBeNull();
+
+    // Карточка считает след ТЕМ ЖЕ выражением: под одним ярлыком список и
+    // карточка обязаны показывать одно время.
+    const card = await getClientActivityForPanel(db, lurker);
+    expect(card.lastActivityAt?.toISOString()).toBe(byActivity.items[0]?.lastActivityAt?.toISOString());
   });
 
   it('листается смещением с признаком «есть ещё» по строке сверх потолка', async () => {
@@ -201,11 +262,12 @@ describe('listClientsForPanel', () => {
 
   it('окно регистрации полуоткрытое: левая граница внутри, правая — снаружи', async () => {
     const stamp = new Date('2026-05-05T12:00:00Z');
-    const user = await makeUser({ displayName: `${NAME} по дате` });
+    // Свой префикс — см. тест поиска: `NAME` считают соседние тесты.
+    const user = await makeUser({ displayName: 'Датированный клиент' });
     await db.execute(sql`UPDATE users SET created_at = ${stamp.toISOString()}::timestamptz WHERE id = ${user.id}`);
 
-    const inside = await listClientsForPanel(db, { query: NAME, createdFrom: stamp.toISOString() });
-    const outside = await listClientsForPanel(db, { query: NAME, createdTo: stamp.toISOString() });
+    const inside = await listClientsForPanel(db, { query: 'Датированный', createdFrom: stamp.toISOString() });
+    const outside = await listClientsForPanel(db, { query: 'Датированный', createdTo: stamp.toISOString() });
 
     expect(inside.items.map((i) => i.id)).toContain(user.id);
     expect(outside.items.map((i) => i.id)).not.toContain(user.id);
@@ -356,6 +418,13 @@ describe('listClientFeedbackByUserForPanel', () => {
     const user = await makeUser({ displayName: 'Клиент с отзывами' });
     const order = await makeOrder(user.id, 'completed', 90_000, new Date());
     await recordClientFeedback(db, { userId: user.id, kind: 'start_survey', answer: 'thinking' });
+    // Время первого ответа ставится явно: у PGlite `now()` — миллисекунды, и
+    // два подряд INSERT получают одинаковый `created_at`, а тай-брейкер по
+    // случайному uuid делал тест красным через раз.
+    await db.execute(sql`
+      UPDATE client_feedback SET created_at = ${'2026-09-01T10:00:00.000Z'}::timestamptz
+      WHERE user_id = ${user.id} AND kind = 'start_survey'
+    `);
     await recordClientFeedback(db, { userId: user.id, kind: 'order_rating', orderId: order.id, score: 5 });
 
     const rows = await listClientFeedbackByUserForPanel(db, user.id);

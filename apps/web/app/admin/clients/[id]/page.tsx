@@ -134,11 +134,13 @@ export default async function PanelClientPage({
         <p className="panel-muted">
           {client.telegramId ? `Telegram ${client.telegramId}` : client.hasWebSession ? 'Только сайт' : 'Без канала связи'} · с{' '}
           <LocalTime iso={client.createdAt.toISOString()} />
-          {client.lastSeenAt ? (
+          {activity.lastActivityAt ? (
+            // Тем же выражением, что колонка «Последний след» списка: под одним
+            // ярлыком список и карточка обязаны показывать одно время.
             <>
               {' '}
-              · {CLIENT_CARD_TEXT.lastSeen.toLowerCase()}{' '}
-              <LocalAge iso={client.lastSeenAt.toISOString()} />
+              · {CLIENT_CARD_TEXT.lastSeenInline}{' '}
+              <LocalAge iso={activity.lastActivityAt.toISOString()} />
             </>
           ) : null}
         </p>

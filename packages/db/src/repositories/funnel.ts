@@ -320,6 +320,16 @@ export async function findRatedUsersForReferralNudge(
 // на `Date`, PGlite молчит — инцидент 2026-08-15). Потолок страницы — общий
 // `clampPanelLimit` панели: экран читают глазами, не выгружают.
 
+/**
+ * Вид касания из строки `client_feedback.kind` — колонка `text` без CHECK, и
+ * граница базы разбирается схемой (инвариант 5), а не `as`: чужое значение
+ * (ручная правка, будущий вид) бросает с текстом Zod, а не даёт `undefined`
+ * в подписи экрана.
+ */
+function parseFeedbackKind(raw: string): FunnelKind {
+  return funnelKind.parse(raw);
+}
+
 export type PanelFeedbackRow = {
   id: string;
   createdAt: Date;
@@ -371,7 +381,7 @@ export async function listClientFeedbackForPanel(
   const items = rows.slice(0, maxRows).map((r) => ({
     id: r.id,
     createdAt: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
-    kind: r.kind as FunnelKind,
+    kind: parseFeedbackKind(r.kind),
     score: r.score === null ? null : Number(r.score),
     answer: r.answer,
     client: { id: r.user_id, displayName: r.display_name, telegramId: r.telegram_id },
@@ -481,7 +491,7 @@ export async function listClientFeedbackByUserForPanel(
   return rows.map((r) => ({
     id: r.id,
     createdAt: r.created_at instanceof Date ? r.created_at : new Date(r.created_at),
-    kind: r.kind as FunnelKind,
+    kind: parseFeedbackKind(r.kind),
     score: r.score === null ? null : Number(r.score),
     answer: r.answer,
     order:

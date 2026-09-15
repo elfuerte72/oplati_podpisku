@@ -19,6 +19,7 @@ import {
   periodHref,
   type AnalyticsPeriod,
 } from '@/lib/panel/analytics/period';
+import { STATUS_TONE_CLASS } from '@/lib/panel/class-names';
 import { feedbackAnswerText, isLowRating } from '@/lib/panel/feedback-text';
 import { formatCount, formatShare } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
@@ -156,7 +157,7 @@ export default async function PanelFeedbackPage({
                     </td>
                     <td data-label={FEEDBACK_TEXT.kind}>{FEEDBACK_KIND_LABELS[row.kind]}</td>
                     <td data-label={FEEDBACK_TEXT.answer}>
-                      <span className={`panel-status ${low ? 'panel-status--danger' : 'panel-status--muted'}`}>
+                      <span className={low ? STATUS_TONE_CLASS.danger : STATUS_TONE_CLASS.muted}>
                         {feedbackAnswerText(row)}
                       </span>
                     </td>

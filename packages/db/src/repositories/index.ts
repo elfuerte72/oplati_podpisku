@@ -344,6 +344,13 @@ export {
   type PanelOrderSort,
 } from './panel.ts';
 export {
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
+  clientSearchCondition,
+  escapeLikePattern,
+  normalizeSearchQuery,
+} from './client-search-sql.ts';
+export {
+  PANEL_CLIENT_KINDS,
   PANEL_CLIENT_SEGMENTS,
   PANEL_CLIENT_SORTS,
   countClientSegmentsForPanel,
@@ -351,6 +358,7 @@ export {
   listClientsForPanel,
   type PanelClientActivity,
   type PanelClientActivityEvent,
+  type PanelClientKind,
   type PanelClientListFilters,
   type PanelClientListItem,
   type PanelClientListPage,
