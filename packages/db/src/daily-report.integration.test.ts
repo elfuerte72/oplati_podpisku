@@ -239,6 +239,8 @@ describe('dailyPaidOrders', () => {
       amountKopecks: 228_000,
       serviceName: 'ChatGPT',
       tierName: 'Plus',
+      originalAmount: 1000,
+      originalCurrency: 'USD',
       telegramUsername: 'alice_dr',
     });
     expect(items[1]?.paidAt.toISOString()).toBe(LAST_SECOND.toISOString());

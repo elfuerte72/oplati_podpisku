@@ -78,6 +78,8 @@ function paidOrder(over: Partial<DailyPaidOrder> = {}): DailyPaidOrder {
     discountKopecks: 0,
     serviceName: 'ChatGPT',
     tierName: 'Plus',
+    originalAmount: 2000,
+    originalCurrency: 'USD',
     customDescription: null,
     telegramUsername: 'arthur_test',
     displayName: 'Артур',
@@ -117,6 +119,14 @@ describe('paidOrderLine', () => {
     expect(paidOrderLine(paidOrder())).toBe(
       `10:09 · @arthur_test · ChatGPT Plus · ${formatKopecks(228_000)} · ORD-4DYS6`,
     );
+  });
+
+  it('тариф не сохранён (заказ из кабинета) — рядом цена сервиса, чтобы тарифы различались', () => {
+    expect(paidOrderLine(paidOrder({ tierName: null }))).toContain(' · ChatGPT ($20) · ');
+    expect(paidOrderLine(paidOrder({ tierName: null, originalAmount: 1299, originalCurrency: 'EUR' }))).toContain(
+      ' · ChatGPT (12.99 EUR) · ',
+    );
+    expect(paidOrderLine(paidOrder({ tierName: null, originalAmount: null }))).toContain(' · ChatGPT · ');
   });
 
   it('оплата со скидкой — сумма, которую заплатил клиент, и скидка рядом', () => {

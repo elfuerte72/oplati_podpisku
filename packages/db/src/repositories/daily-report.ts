@@ -159,6 +159,9 @@ export type DailyPaidOrder = {
   /** Имя сервиса из каталога; `null` — заказ вне каталога. */
   serviceName: string | null;
   tierName: string | null;
+  /** Цена сервиса в его валюте (минимальные единицы) — различает тарифы, когда `tierName` не сохранён. */
+  originalAmount: number | null;
+  originalCurrency: string | null;
   customDescription: string | null;
   telegramUsername: string | null;
   displayName: string | null;
@@ -190,6 +193,8 @@ export async function dailyPaidOrders(
       discount: string | number | null;
       service_name: string | null;
       tier_name: string | null;
+      original_amount: string | number | null;
+      original_currency: string | null;
       custom_description: string | null;
       telegram_username: string | null;
       display_name: string | null;
@@ -201,6 +206,7 @@ export async function dailyPaidOrders(
                         WHERE rr.order_id = o.id AND rr.status = 'spent'), 0) AS discount,
              s.name AS service_name,
              o.parameters ->> 'tierName' AS tier_name,
+             o.original_amount, o.original_currency,
              o.custom_service_description AS custom_description,
              u.telegram_username, u.display_name
       FROM orders o
@@ -224,6 +230,8 @@ export async function dailyPaidOrders(
       discountKopecks: toInt(r.discount),
       serviceName: r.service_name,
       tierName: r.tier_name,
+      originalAmount: r.original_amount == null ? null : toInt(r.original_amount),
+      originalCurrency: r.original_currency,
       customDescription: r.custom_description,
       telegramUsername: r.telegram_username,
       displayName: r.display_name,

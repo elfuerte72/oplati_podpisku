@@ -46,6 +46,8 @@ vi.mock('@oplati/db', () => ({
         discountKopecks: 0,
         serviceName: 'ChatGPT',
         tierName: 'Plus',
+        originalAmount: 2000,
+        originalCurrency: 'USD',
         customDescription: null,
         telegramUsername: 'client_one',
         displayName: null,

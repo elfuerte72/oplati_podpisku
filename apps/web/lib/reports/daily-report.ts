@@ -131,9 +131,16 @@ function clientLabel(order: DailyPaidOrder): string {
   return name ? truncate(name, 24) : 'без имени';
 }
 
+/**
+ * Сервис и тариф. Заказы из кабинета тариф в `parameters` не сохраняют — тогда
+ * рядом цена в валюте сервиса («ChatGPT ($20)»): без неё Plus и Go одного
+ * сервиса в списке неразличимы.
+ */
 function serviceLabel(order: DailyPaidOrder): string {
   if (order.serviceName) {
-    return truncate(order.tierName ? `${order.serviceName} ${order.tierName}` : order.serviceName, 36);
+    if (order.tierName) return truncate(`${order.serviceName} ${order.tierName}`, 36);
+    const price = servicePrice(order);
+    return price ? `${truncate(order.serviceName, 28)} (${price})` : truncate(order.serviceName, 36);
   }
   return order.customDescription ? truncate(order.customDescription, 36) : 'сервис не указан';
 }
@@ -160,6 +167,14 @@ export function paidOrderLine(order: DailyPaidOrder): string {
     parts.push(label ?? order.status);
   }
   return parts.join(' · ');
+}
+
+function servicePrice(order: DailyPaidOrder): string | null {
+  if (order.originalAmount === null || order.originalAmount <= 0) return null;
+  const value = order.originalAmount / 100;
+  const text = Number.isInteger(value) ? String(value) : value.toFixed(2);
+  const currency = order.originalCurrency?.toUpperCase() ?? 'USD';
+  return currency === 'USD' ? `$${text}` : `${text} ${currency}`;
 }
 
 function countOrDash(value: number | null): string {
