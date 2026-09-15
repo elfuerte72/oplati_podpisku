@@ -151,8 +151,14 @@ describe('groupedSectionsFor', () => {
     const orders = groups.find((g) => g.group === 'orders');
     expect(orders?.sections.map((s) => s.href)).toEqual(['/admin/orders', '/admin/pending', '/admin/holds']);
 
+    // Группа «Клиенты» открывается полным списком, а поддержка и обратная
+    // связь стоят под ним как его срезы — та же логика, что у заказов.
     const clients = groups.find((g) => g.group === 'clients');
-    expect(clients?.sections.map((s) => s.href)).toEqual(['/admin/support', '/admin/feedback']);
+    expect(clients?.sections.map((s) => s.href)).toEqual([
+      '/admin/clients',
+      '/admin/support',
+      '/admin/feedback',
+    ]);
   });
 
   it('каждая группа названа сущностью и не повторяет название своего пункта', () => {

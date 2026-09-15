@@ -1,7 +1,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
-import { PANEL_DEFAULT_ROWS, getDb, listOrdersForPanel } from '@oplati/db';
+import {
+  PANEL_DEFAULT_ROWS,
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
+  getDb,
+  listOrdersForPanel,
+} from '@oplati/db';
 
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelFilterSelect } from '@/components/panel/PanelFilterSelect';
@@ -14,6 +19,7 @@ import { formatKopecks, orderStatusLabel, orderStatusTone } from '@/lib/panel/fo
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
   ACTION_TITLES,
+  ADDRESS_ERROR_TEXT,
   CELL_TEXT,
   COLUMN_TITLES,
   EMPTY_TEXT,
@@ -125,7 +131,7 @@ export default async function PanelOrdersPage({
               className="panel-input"
               placeholder="Номер заказа, telegram, email, имя"
               defaultValue={filters.query}
-              maxLength={100}
+              maxLength={PANEL_SEARCH_QUERY_MAX_LENGTH}
             />
             <button type="submit" className="panel-button">
               {ACTION_TITLES.search}
@@ -193,8 +199,7 @@ export default async function PanelOrdersPage({
           // Молча проигнорированный параметр — это ссылка, которая у коллеги
           // означает не то же самое, что у отправителя.
           <p className="panel-error" style={{ marginTop: 8 }}>
-            Не удалось разобрать параметры адреса: {filters.ignored.join(', ')}. Показана
-            выборка по умолчанию.
+            {ADDRESS_ERROR_TEXT.ignored} {filters.ignored.join(', ')}. {ADDRESS_ERROR_TEXT.fallback}
           </p>
         ) : null}
       </PanelPageHeader>

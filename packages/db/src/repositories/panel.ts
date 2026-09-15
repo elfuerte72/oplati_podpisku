@@ -40,6 +40,11 @@ import {
 } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
+import {
+  clientSearchCondition,
+  escapeLikePattern,
+  normalizeSearchQuery,
+} from './client-search-sql.ts';
 import { livePromoRedemptionSql } from './promo-redemption-sql.ts';
 import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
@@ -102,22 +107,6 @@ export function clampPanelLimit(requested: number | undefined): number {
 export function clampPanelOffset(requested: number | undefined): number {
   if (requested === undefined || !Number.isFinite(requested)) return 0;
   return Math.max(Math.floor(requested), 0);
-}
-
-/**
- * Потолок длины поискового запроса. Без него строка любой длины гоняет четыре
- * ILIKE с ведущим `%` в том же процессе, что принимает вебхуки.
- */
-const MAX_QUERY_LENGTH = 100;
-
-/**
- * Экранирование спецсимволов LIKE. Без него оператор, ищущий `100%` или
- * `ivan_petrov@…`, получает подстановочный знак вместо литерала и недоумевает,
- * почему выдача не та. Инъекции здесь нет (параметр связан), это корректность.
- * Обратный слэш — экранирующий символ LIKE по умолчанию в Postgres.
- */
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 export type PanelOrderListFilters = {
@@ -229,7 +218,7 @@ export async function listOrdersForPanel(
   if (filters.createdFrom) conditions.push(gte(orders.createdAt, filters.createdFrom));
   if (filters.createdTo) conditions.push(lt(orders.createdAt, filters.createdTo));
 
-  const query = filters.query?.trim().slice(0, MAX_QUERY_LENGTH);
+  const query = normalizeSearchQuery(filters.query);
   if (query) {
     const like = `%${escapeLikePattern(query)}%`;
     conditions.push(
@@ -612,6 +601,10 @@ export type PanelClientDetail = {
     phoneSource: string | null;
     language: string;
     createdAt: Date;
+    /** Клиент нажал «Больше не напоминать» — касания воронки к нему не уходят. */
+    funnelOptOutAt: Date | null;
+    /** Партнёрский код — им подписаны его приглашения. */
+    referralCode: string | null;
   };
   orders: PanelClientOrder[];
   /**
@@ -672,22 +665,15 @@ export async function searchClientsForPanel(
   db: DB,
   input: { query: string; limit?: number },
 ): Promise<PanelClientSearchItem[]> {
-  const query = input.query.trim().slice(0, MAX_QUERY_LENGTH);
+  const query = normalizeSearchQuery(input.query);
   if (query.length < 2) return [];
 
   const limit = clampPanelLimit(input.limit);
-  const like = `%${escapeLikePattern(query)}%`;
-  const digits = query.replace(/\D/g, '');
-
-  const conditions = [
-    ilike(users.displayName, like),
-    ilike(users.telegramId, like),
-    ilike(users.email, like),
-  ];
-  // Три цифры совпадут у половины базы — это не поиск, а перебор.
-  if (digits.length >= 4) {
-    conditions.push(sql`regexp_replace(${users.phone}, '\\D', '', 'g') LIKE ${`%${digits}%`}`);
-  }
+  // Условие — ОБЩЕЕ со списком клиентов (`client-search-sql.ts`): второе
+  // определение «найти клиента» разъезжалось бы молча (оно и разошлось на
+  // `@username`, пока условий было два).
+  const condition = clientSearchCondition(query);
+  if (!condition) return [];
 
   const rows = await db
     .select({
@@ -700,7 +686,7 @@ export async function searchClientsForPanel(
       // лишняя PII в логе, в ответе и в следующей правке.
     })
     .from(users)
-    .where(or(...conditions))
+    .where(condition)
     // Свежие первыми: ищут обычно того, кто написал только что.
     .orderBy(desc(users.createdAt), asc(users.id))
     .limit(limit);
@@ -725,6 +711,8 @@ export async function getClientDetailForPanel(
       phoneSource: users.phoneSource,
       language: users.language,
       createdAt: users.createdAt,
+      funnelOptOutAt: users.funnelOptOutAt,
+      referralCode: users.referralCode,
       referredBy: users.referredBy,
     })
     .from(users)
@@ -825,6 +813,8 @@ export async function getClientDetailForPanel(
       phoneSource: head.phoneSource,
       language: head.language,
       createdAt: head.createdAt,
+      funnelOptOutAt: head.funnelOptOutAt,
+      referralCode: head.referralCode,
     },
     totals: {
       ordersCount: Number(totalsRows[0]?.orders_count ?? 0),
