@@ -307,5 +307,10 @@ function classifyStartPayload(payload: string): string {
   if (lower.startsWith('link_')) return 'link';
   if (lower.startsWith('ref_')) return 'ref';
   if (lower.startsWith('cabinet')) return 'cabinet';
+  // Кнопка «Оплатить подписку» под каждым постом канала @ooplatishka ведёт сюда с меткой
+  // `?start=channel`. Своей ветки обработки у неё нет и не нужно: человек попадает в обычное
+  // меню. Метка существует ради телеметрии — иначе переходы из канала неотличимы от прочих,
+  // и единственный способ понять, работает ли канал, теряется.
+  if (lower === 'channel') return 'channel';
   return 'other';
 }
