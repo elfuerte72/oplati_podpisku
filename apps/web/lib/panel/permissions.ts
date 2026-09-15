@@ -23,7 +23,7 @@ export const PANEL_CAPABILITIES = [
   'desk',
   /** Список заказов и карточка заказа. */
   'orders',
-  /** Карточка клиента. */
+  /** Список клиентов и карточка клиента. */
   'clients',
   /** Антифрод-холды Freekassa и баланс карточного счёта. */
   'holds',
@@ -127,6 +127,7 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/orders', capability: 'orders', group: 'orders' },
   { href: '/admin/pending', capability: 'pending', group: 'orders' },
   { href: '/admin/holds', capability: 'holds', group: 'orders' },
+  { href: '/admin/clients', capability: 'clients', group: 'clients' },
   { href: '/admin/support', capability: 'support', group: 'clients' },
   { href: '/admin/feedback', capability: 'feedback', group: 'clients' },
   { href: '/admin/analytics', capability: 'analytics', group: 'analytics' },

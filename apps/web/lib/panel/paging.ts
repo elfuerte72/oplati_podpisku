@@ -20,7 +20,16 @@ export const PAGE_PARAM = 'page';
  * уезжает в `OFFSET` и заставляет базу отматывать миллиард строк в том же
  * процессе, который принимает вебхуки.
  */
-const pageSchema = z.coerce.number().int().min(1).max(1000);
+export const panelPageSchema = z.coerce.number().int().min(1).max(1000);
+
+/**
+ * Первое значение параметра адреса: Next отдаёт массив, когда ключ повторён
+ * (`?page=2&page=3`). Берём первое — так же, как это делает любой разбор
+ * адреса в панели; второй экземпляр этой функции на каждом экране уже был.
+ */
+export function firstParam(raw: string | string[] | undefined): string | undefined {
+  return Array.isArray(raw) ? raw[0] : raw;
+}
 
 /**
  * Номер страницы из адреса. Мусор — первая страница, а не ошибка: настройка
@@ -29,9 +38,9 @@ const pageSchema = z.coerce.number().int().min(1).max(1000);
  * означало бы «ссылка коллеге показывает не то».
  */
 export function parsePanelPage(value: string | string[] | undefined): number {
-  const raw = Array.isArray(value) ? value[0] : value;
+  const raw = firstParam(value);
   if (!raw) return 1;
-  const parsed = pageSchema.safeParse(raw);
+  const parsed = panelPageSchema.safeParse(raw);
   return parsed.success ? parsed.data : 1;
 }
 
