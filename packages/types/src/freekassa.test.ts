@@ -308,7 +308,9 @@ describe('баланс магазина и выплаты (панель, раз�
   it('способы вывода кассы — только собственный FKWallet.io (снято живым вызовом)', () => {
     // Вывод на карту или внешний крипто-адрес через API кассы невозможен: это
     // факт, на котором держится вся схема пополнения карточного фонда.
-    expect(Object.values(FREEKASSA_WITHDRAWAL_METHODS).every((name) => name.startsWith('FKWallet.io'))).toBe(
+    // Точная форма «FKWallet.io <ВАЛЮТА>», а не startsWith: CodeQL читает
+    // проверку подстроки с точкой в имени как небезопасную проверку хоста.
+    expect(Object.values(FREEKASSA_WITHDRAWAL_METHODS).every((name) => /^FKWallet\.io [A-Z]{3,4}$/.test(name))).toBe(
       true,
     );
     expect(FREEKASSA_WITHDRAWAL_METHODS[11]).toBe('FKWallet.io RUB');
