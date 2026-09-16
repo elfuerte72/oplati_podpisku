@@ -469,6 +469,43 @@ shasum -a 256 packages/db/migrations/00XX_*.sql
 Запись в журнал обязательна: без неё следующий `db:migrate` попробует применить
 миграцию повторно.
 
+## Аварийный выкат мимо GitHub (блокировка аккаунта)
+
+Пайплайн `deploy.yml` живёт на GitHub, и при блокировке аккаунта (11.09 и 16.09.2026 —
+`docs/history` и память агента) прод остаётся без способа выката. Обход — собрать образ
+на VPS ТЕМ ЖЕ Dockerfile и обновить сервис так же, как это делает Dokploy. Применён
+2026-09-16 по прямой команде владельца для PR #227. ⚠️ Это временный обход, а не второй
+путь: он пропускает гейт CI и не оставляет следа в Dokploy, поэтому **та же ветка обязана
+уехать в `main` до следующего деплоя из `main`** — иначе Dokploy пересоберёт прод из
+`main` без неё, и изменение молча исчезнет.
+
+1. **Кандидат = `origin/main` + всё, что уже на проде, + выкатываемая ветка.** Проверить
+   `git log origin/main..HEAD` — в нём не должно быть ничего, чего нет и не будет в `main`;
+   `pnpm typecheck` и тесты — локально, CI не будет.
+2. **Архив без `.git`:** `git archive --format=tar.gz --prefix=src/ -o oplatishka-<sha>.tar.gz HEAD`,
+   `scp` в `/root/build/` на VPS (каталог создать заранее), распаковать в
+   `/root/build/oplatishka-<sha>/`.
+3. **Единственный build-аргумент — `NEXT_PUBLIC_SENTRY_DSN`**, он запекается в клиентский
+   бандл. Значение — из живого образа, а не из панели: `docker exec <web> grep -rhoE
+   "https://[0-9a-f]{20,}@[a-z0-9.-]*sentry\.io/[0-9]+" apps/web/.next/static | head -1`.
+   Runtime-env трогать не нужно — `service update --image` сохраняет спек сервиса.
+4. **Пометить откат:** `docker tag $(docker images -q oplatishka-web-wwrt50:latest)
+   oplatishka-web-wwrt50:rollback-<дата>`.
+5. **Сборка и обновление — одним скриптом под `nohup setsid`** (ssh к VPS рвётся, а
+   оборванная сборка оставила бы сервис на полпути):
+   ```bash
+   docker build --build-arg NEXT_PUBLIC_SENTRY_DSN="$DSN" -t oplatishka-web-wwrt50:latest -f Dockerfile .
+   docker service update --image oplatishka-web-wwrt50:latest --force --update-order start-first --detach=false oplatishka-web-wwrt50
+   ```
+   Сборка с тёплым кэшем — полторы минуты, обновление — секунды.
+6. **Проверка — как после обычного деплоя** (раздел ниже) плюс: `startedAt` в `/api/health`
+   моложе момента `service update`, DSN в `report-uri` есть, новый код виден в бандле
+   (`docker exec <web> grep -rl <маркер> apps/web/.next/server`).
+7. **Откат:** `docker service update --image oplatishka-web-wwrt50:rollback-<дата> --force
+   oplatishka-web-wwrt50`.
+8. **После снятия блокировки:** запушить ветку, дождаться CI, смержить — и только потом
+   разрешать себе следующий деплой из `main`.
+
 ## Проверка после деплоя
 
 ```bash
