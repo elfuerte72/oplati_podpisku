@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-09-16 — Metabase выведен из контура
+
+### Removed
+
+**Metabase** (стоял рядом с боевой БД с 2026-07-28, домен `metabase.oplatishka.com` с
+31.07) удалён с VPS по решению владельца. Его собственная БД показала: последний вход и
+последний запрос — 2026-07-31, 122 запуска запросов за всё время и все в неделю
+развёртывания. За это время панель получила «Отчёты», AI-аналитика и «Обратную связь»
+(02.09), «Клиентов» с лентой действий из той же `analytics_timeline` и дневной отчёт в
+Telegram (15.09). Гранты `metabase_ro` и `panel_ai_ro` на проде совпадали — AI-аналитик
+видит ровно то, что видел бы Metabase.
+
+Что снято: compose-сервис Dokploy с томом, образ (1 ГБ), роутер Traefik `metabase.yml` с
+basic-auth, роль `metabase_ro` (`DROP OWNED BY` + `DROP ROLE`; объектов не владела, сессий
+не было, у `panel_ai_ro` до и после — те же 18 таблиц и 226 колоночных грантов). Память
+на VPS: 3149 → 2436 МБ занято, диск 11 → 9,8 ГБ. Архив тома app-БД, compose и роутера —
+`/root/archive/metabase-2026-09-16/` на VPS (README внутри описывает возврат); SQL
+вопросов дашборда — [`history/metabase.md`](history/metabase.md). A-запись `metabase` в
+Cloudflare удаляет владелец.
+
+**Правило с этого дня — одна read-only роль `panel_ai_ro`:** новая таблица для отчётов =
+грант ей + строка в словаре схемы аналитика. Второго BI-инструмента не заводится:
+повторяющийся вопрос становится карточкой панели через PR, разовый задаётся `/admin/ai`.
+Хвосты, жившие только в Metabase (график баланса фонда, гейт привязки Telegram, «бот
+промолчал»), — в `BACKLOG.md`.
+
+Попутно: комментарий у `db:init-roles` в `CLAUDE.md` приписывал скрипту создание
+`metabase_ro` (он создаёт роли Supabase-паритета); в рунбук восстановления добавлен шаг
+«прогнать `panel-ai-role.sql`» — дамп снимается с `--no-acl`, и гранты read-only роли в
+него не попадают.
+
+---
+
 ## 2026-09-14 — Дневной отчёт в тему «Отчёты» ops-группы
 
 Бот входа `@oplatishkaasupport_bot` раз в сутки, в 09:00 МСК, пишет в тему «📊 Отчёты»
@@ -4387,7 +4420,7 @@ best-effort через `after()` и неизбежно разошлась бы �
 неизменяемости + вьюхи `analytics_timeline` / `analytics_user_path` /
 `analytics_funnel`). ⚠️ Применить на прод-БД вручную после мержа, затем выдать
 `metabase_ro` гранты на вьюхи — порядок в
-[`docs/runbooks/metabase.md`](runbooks/metabase.md).
+[`docs/history/metabase.md`](history/metabase.md).
 
 ---
 
@@ -4788,7 +4821,7 @@ health. Пайплайн миграции по-прежнему не приме�
 
 **Metabase** развёрнут шаблоном Dokploy в проекте `oplatishka` (окружение
 `production`) — вопросы к боевой БД без `psql`. Рунбук —
-[`docs/runbooks/metabase.md`](runbooks/metabase.md).
+[`docs/history/metabase.md`](history/metabase.md).
 
 Доступ к данным — отдельная роль Postgres `metabase_ro`: только `SELECT` по
 белому списку таблиц, `default_transaction_read_only = on`,

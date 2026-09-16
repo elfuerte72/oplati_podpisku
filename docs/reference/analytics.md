@@ -1,10 +1,13 @@
 # Поведенческая аналитика
 
-Своя таблица `analytics_events` + вьюхи + Metabase. Словарь событий — единственный источник
+Своя таблица `analytics_events` + вьюхи + разделы панели («Отчёты», лента действий клиента,
+AI-аналитик). Metabase, который читал те же вьюхи, выведен 2026-09-16 —
+[`../history/metabase.md`](../history/metabase.md). Словарь событий — единственный источник
 правды, живёт в коде (`packages/types/src/analytics.ts`).
 
-Выделено из `CLAUDE.md` 2026-08-14. Отчёты и выдача доступа роли `metabase_ro` —
-[`../runbooks/metabase.md`](../runbooks/metabase.md).
+Выделено из `CLAUDE.md` 2026-08-14. Read-only роль для чтения аналитики одна — `panel_ai_ro`
+(`packages/db/scripts/panel-ai-role.sql`, ADR 0003); SQL готовых вопросов прежнего дашборда —
+в [`../history/metabase.md`](../history/metabase.md).
 
 ## Почему своя таблица, а не готовый продукт
 
@@ -60,5 +63,6 @@ backfill'ом в append-only таблице. Сейчас хвост подпи�
   дублировать событие телеметрией НЕЛЬЗЯ по общему правилу денежных вех. Считать такие отказы
   за неделю — прямым запросом к `order_events`.
 
-Отчёты и гранты `metabase_ro` выдаются через вьюхи, а не через колонки `users` —
-[`../runbooks/metabase.md`](../runbooks/metabase.md).
+Гранты read-only роли на путь клиента выдаются через вьюхи, а не через колонки `users`
+(обычная вью исполняется с правами владельца) — комментарий в миграции
+`0029_analytics_views.sql` и разбор в [`../history/metabase.md`](../history/metabase.md).
