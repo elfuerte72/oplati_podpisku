@@ -102,3 +102,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # expire-payments и support-housekeeping). За флагом RETENTION_FUNNEL_ENABLED;
 # тихие часы и бюджет держит привратник в коде, не расписание.
 11-59/15 * * * * root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/funnel 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err
+
+# Дневной отчёт в тему «Отчёты» ops-группы за ВЧЕРАШНИЙ календарный день по Москве
+# (06:00 UTC = 09:00 МСК). Окно от времени запуска не зависит — без параметра всегда
+# «вчера 00:00–24:00», так что час можно менять свободно. Переотправка за дату вручную:
+#   curl --config /etc/oplatishka/cron.conf '__BASE_URL__/api/cron/daily-report?day=2026-09-14'
+0 6 * * *    root  curl -fsS -m 290 --config /etc/oplatishka/cron.conf __BASE_URL__/api/cron/daily-report 2>&1 >/dev/null | logger -t oplatishka-cron -p cron.err

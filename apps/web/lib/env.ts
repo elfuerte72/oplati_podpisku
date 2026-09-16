@@ -629,6 +629,8 @@ const serverEnvSchema = z.object({
   OPS_GROUP_THREAD_SUPPORT: optionalEnvString(threadIdSchema),
   OPS_GROUP_THREAD_ERRORS: optionalEnvString(threadIdSchema),
   OPS_GROUP_THREAD_DEPLOY: optionalEnvString(threadIdSchema),
+  // Тема «Отчёты» — дневная сводка (`lib/jobs/daily-report.ts`).
+  OPS_GROUP_THREAD_REPORTS: optionalEnvString(threadIdSchema),
 
   // Rate limit (per-identity, мера B1). Backend — Upstash Redis (HTTP REST).
   // Не заданы URL/TOKEN → limiter выключен (fail-open). Аварийный выключатель —

@@ -154,6 +154,11 @@ rm -f /tmp/restore.sql.gz
      'GRANT SELECT ON TABLE services TO anon, authenticated'"
    ```
 
+7. **Вернуть гранты read-only роли аналитика.** По той же причине (`--no-acl`) в дамп не
+   попадают гранты `panel_ai_ro`, а без них `/admin/ai` отвечает «permission denied» на
+   каждый вопрос. Роль и гранты идемпотентно восстанавливает
+   `packages/db/scripts/panel-ai-role.sql` (пароль подставить свой, см. ADR 0003).
+
 ---
 
 ## Резервная копия эпохи Supabase

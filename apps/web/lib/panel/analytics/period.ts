@@ -25,6 +25,22 @@ function firstValue(raw: string | string[] | undefined): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
 }
 
+/**
+ * Необязательный период списков (заказы, клиенты): `undefined` — «всё время»,
+ * мусор — тоже `null`, но вызывающий видит, что параметр БЫЛ, и говорит об
+ * этом вслух. Свой, а не `parsePeriod`: там период обязателен и откатывается
+ * к тридцати дням, здесь «всё время» — законное состояние.
+ *
+ * Без приведений: список допустимых значений один (`ANALYTICS_PERIODS`), а
+ * проверка вхождения сама сужает тип — так смена состава периодов не пройдёт
+ * мимо типов.
+ */
+export function parseOptionalPeriod(raw: string | undefined): AnalyticsPeriod | null {
+  if (raw === undefined) return null;
+  const days = Number(raw);
+  return ANALYTICS_PERIODS.find((allowed) => allowed === days) ?? null;
+}
+
 /** `?period=` из адреса; мусор и пустота → период по умолчанию. */
 export function parsePeriod(
   params: Record<string, string | string[] | undefined>,

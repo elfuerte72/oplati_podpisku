@@ -1,10 +1,13 @@
 # Поведенческая аналитика
 
-Своя таблица `analytics_events` + вьюхи + Metabase. Словарь событий — единственный источник
+Своя таблица `analytics_events` + вьюхи + разделы панели («Отчёты», лента действий клиента,
+AI-аналитик). Metabase, который читал те же вьюхи, выведен 2026-09-16 —
+[`../history/metabase.md`](../history/metabase.md). Словарь событий — единственный источник
 правды, живёт в коде (`packages/types/src/analytics.ts`).
 
-Выделено из `CLAUDE.md` 2026-08-14. Отчёты и выдача доступа роли `metabase_ro` —
-[`../runbooks/metabase.md`](../runbooks/metabase.md).
+Выделено из `CLAUDE.md` 2026-08-14. Read-only роль для чтения аналитики одна — `panel_ai_ro`
+(`packages/db/scripts/panel-ai-role.sql`, ADR 0003); SQL готовых вопросов прежнего дашборда —
+в [`../history/metabase.md`](../history/metabase.md).
 
 ## Почему своя таблица, а не готовый продукт
 
@@ -60,5 +63,26 @@ backfill'ом в append-only таблице. Сейчас хвост подпи�
   дублировать событие телеметрией НЕЛЬЗЯ по общему правилу денежных вех. Считать такие отказы
   за неделю — прямым запросом к `order_events`.
 
-Отчёты и гранты `metabase_ro` выдаются через вьюхи, а не через колонки `users` —
-[`../runbooks/metabase.md`](../runbooks/metabase.md).
+## Выдать роли аналитика новую таблицу
+
+Read-only роль одна — `panel_ai_ro`. `ALTER DEFAULT PRIVILEGES` не стоит намеренно: новая
+таблица в отчёты сама не попадает, грант выдаётся осознанно. Порядок:
+
+1. Добавить `GRANT SELECT ON <таблица> TO panel_ai_ro` (колоночный грант, если в таблице есть
+   PII) в `packages/db/scripts/panel-ai-role.sql` — файл идемпотентен и остаётся единственным
+   источником состава грантов.
+2. Описать таблицу в словаре схемы `apps/web/lib/panel/ai/schema-dictionary.ts` — тест
+   `schema-dictionary.test.ts` сверяет словарь с грант-файлом.
+3. Применить на прод-БД тем же путём, что миграции (ssh — скилл `deploy-and-migrations`):
+
+   ```bash
+   ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
+     psql -U oplatishka -d oplatishka -c "GRANT SELECT ON <таблица> TO panel_ai_ro"'
+   ```
+
+Гранты на путь клиента идут через вьюхи `analytics_*`, а не через колонки `users`: обычная
+вью в Postgres исполняется с правами своего владельца, поэтому грант на вьюху отдаёт роли
+`telegram_id` и хэш веб-сессии, не открывая ей саму таблицу `users` — `web_session_id`
+(фактически пароль веб-сессии) наружу не выходит никогда. Меняете тип или имя колонки, от
+которой зависит вьюха, — сначала `DROP VIEW`, затем `ALTER`, затем пересоздать вьюхи из
+`0029_analytics_views.sql`: drizzle-kit о вьюхах не знает.

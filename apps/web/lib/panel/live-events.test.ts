@@ -33,7 +33,8 @@ describe('живые события панели: таблица → разде�
       emitDbChange('messages');
       expect(seen).toEqual([]);
       vi.advanceTimersByTime(PANEL_LIVE_COALESCE_MS);
-      expect(seen).toEqual([{ sections: ['support'] }]);
+      // Сообщение клиента — ещё и его «последний след» в списке клиентов.
+      expect(seen).toEqual([{ sections: ['clients', 'support'] }]);
     } finally {
       off();
     }
@@ -47,7 +48,7 @@ describe('живые события панели: таблица → разде�
       emitDbChange('payments');
       emitDbChange('orders');
       vi.advanceTimersByTime(PANEL_LIVE_COALESCE_MS);
-      expect(seen).toEqual([{ sections: ['holds', 'orders', 'pending'] }]);
+      expect(seen).toEqual([{ sections: ['clients', 'holds', 'orders', 'pending'] }]);
     } finally {
       off();
     }

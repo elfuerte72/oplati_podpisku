@@ -343,6 +343,31 @@ export {
   type PanelOrderPayment,
   type PanelOrderSort,
 } from './panel.ts';
+export {
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
+  clientSearchCondition,
+  escapeLikePattern,
+  normalizeSearchQuery,
+} from './client-search-sql.ts';
+export {
+  PANEL_CLIENT_KINDS,
+  PANEL_CLIENT_SEGMENTS,
+  PANEL_CLIENT_SORTS,
+  countClientSegmentsForPanel,
+  getClientActivityForPanel,
+  listClientsForPanel,
+  type PanelClientActivity,
+  type PanelClientActivityEvent,
+  type PanelClientKind,
+  type PanelClientListFilters,
+  type PanelClientListItem,
+  type PanelClientListPage,
+  type PanelClientSegment,
+  type PanelClientSegmentCounts,
+  type PanelClientSort,
+  type PanelClientSupportSummary,
+  type PanelClientVpn,
+} from './panel-clients.ts';
 
 export {
   saveVccBalanceSnapshot,
@@ -369,9 +394,11 @@ export {
   findCompletedOrdersForRating,
   findRatedUsersForReferralNudge,
   listClientFeedbackForPanel,
+  listClientFeedbackByUserForPanel,
   feedbackSummaryForPanel,
   countRecentClientFeedbackForPanel,
   type PanelFeedbackRow,
+  type PanelClientFeedbackRow,
   type PanelFeedbackSummaryRow,
   type FunnelUserState,
   type FunnelWindow,
@@ -408,3 +435,17 @@ export {
   type RevenueSummary,
   type TopServiceRow,
 } from './analytics-panel.ts';
+
+export {
+  DAILY_PAID_ORDERS_MAX,
+  dailyAudience,
+  dailyOrderFlow,
+  dailyPaidOrders,
+  dailyPromoDiscounts,
+  dailySupport,
+  type DailyAudience,
+  type DailyOrderFlow,
+  type DailyPaidOrder,
+  type DailyPromoDiscounts,
+  type DailySupport,
+} from './daily-report.ts';

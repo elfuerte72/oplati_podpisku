@@ -40,7 +40,7 @@ const log = childLogger('panel.live');
 export const PANEL_LIVE_COALESCE_MS = 300;
 
 /** Разделы, о которых панель хочет знать «что-то изменилось». */
-export type PanelLiveSection = MenuBadgeSection | 'orders';
+export type PanelLiveSection = MenuBadgeSection | 'orders' | 'clients';
 
 /**
  * Таблица → разделы. Заказ виден на столе, в списках «Все заказы», «Ждут
@@ -50,11 +50,14 @@ export type PanelLiveSection = MenuBadgeSection | 'orders';
  * сумма: в списке заказов, «Ждут оплаты» и «Проверке платежей».
  */
 export const PANEL_LIVE_SECTIONS_BY_TABLE: Record<DbChangeTable, readonly PanelLiveSection[]> = {
-  orders: ['orders', 'pending', 'holds'],
+  // Заказ меняет и строку клиента: покупки, сумму, последний след. Сама
+  // регистрация (`users`) в ленту не сообщает — новый клиент доезжает до
+  // списка опросом раз в 25 секунд, этого достаточно.
+  orders: ['orders', 'pending', 'holds', 'clients'],
   payments: ['pending', 'holds'],
   conversations: ['support'],
-  messages: ['support'],
-  client_feedback: ['feedback'],
+  messages: ['support', 'clients'],
+  client_feedback: ['feedback', 'clients'],
   referral_redemptions: ['orders', 'pending', 'holds'],
 };
 
