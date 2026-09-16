@@ -305,6 +305,32 @@ describe('beforeSend: свободный текст message и exception', () =>
     expect(beforeSend(event)).toBeNull();
   });
 
+  it('мост Android WebView («Java object is gone») отбрасывается', () => {
+    // Ошибка Android WebView: страница уничтожена, Java-объект моста
+    // освобождён, а инжектированный in-app браузером скрипт (Telegram, VK,
+    // Instagram) продолжает слать postMessage. На `/` SDK Telegram мы не
+    // грузим вовсе — значит мост чужой, и клиент к этому моменту уже ушёл.
+    const event = makeEvent({
+      exception: {
+        values: [{ type: 'Error', value: 'Error invoking postMessage: Java object is gone' }],
+      },
+    });
+
+    expect(beforeSend(event)).toBeNull();
+  });
+
+  it('наши ошибки со словом postMessage доезжают — глушится только мост', () => {
+    // Денилист сработал бы слишком широко, если бы ловил «postMessage»:
+    // собственная ошибка обмена с iframe должна доходить.
+    const event = makeEvent({
+      exception: {
+        values: [{ type: 'Error', value: 'postMessage failed: target origin mismatch' }],
+      },
+    });
+
+    expect(beforeSend(event)).not.toBeNull();
+  });
+
   it('другая TypeError по-прежнему доезжает', () => {
     // Глушить весь класс TypeError нельзя: так пропадут наши настоящие падения.
     const event = makeEvent({
