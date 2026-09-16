@@ -71,7 +71,8 @@
 | [`reference/freekassa-api.md`](reference/freekassa-api.md) | контракт Freekassa — **подтверждён живым платежом 2026-07-28** (ORD-ZPP17), хронология прогона внутри |
 | [`reference/env-vars.md`](reference/env-vars.md) | **все переменные окружения**: что делает каждая, обязательна ли, что будет если не задать |
 | [`reference/ai-cost-protection.md`](reference/ai-cost-protection.md) | слои защиты AI-расходов: WAF, токен-бюджет, Haiku-роутер, границы заказов |
-| [`reference/smm-agent.md`](reference/smm-agent.md) | SMM-агент канала @ooplatishka (Гилфойл): где живёт, как выходит пост, инварианты публикации, обложки через Higgsfield, грабли |
+| [`reference/smm-agent.md`](reference/smm-agent.md) | SMM-агент канала @ooplatishka и Threads (Гилфойл): где живёт, как выходит пост в канал (`/posttg`) и в Threads (`/postthreads`, публикует владелец), инварианты, картинки, грабли |
+| [`reference/smm-threads.md`](reference/smm-threads.md) | Threads для агента: ресерч площадки 15.09.2026 (лимиты, алгоритм, формат, русскоязычная аудитория, Web Intent, API, закон) и что из него зашито в линт |
 | [`reference/database.html`](reference/database.html) | как работает БД. ⚠️ написано в эпоху Supabase (2026-06), общая часть верна, инфраструктурная — нет |
 
 ## [`history/`](history/) — архив
