@@ -66,6 +66,21 @@ const samples: Sample[] = [
     action: { text: 'проверить шлюз; при необходимости переключить PAYMENT_PRIMARY_PROVIDER на резервный и сделать redeploy' },
   },
   {
+    label: 'payment: accepted',
+    stream: 'payments',
+    title: 'Оплата принята',
+    facts: [
+      { label: 'Заказ', value: 'ORD-7F3K2' },
+      { label: 'Клиент', value: 'Мария (@maria_pays)' },
+      { label: 'Покупка', value: '3-я, клиент с 01.08.2026' },
+      { label: 'Что', value: 'Netflix · Standard (15.99 USD)' },
+      { label: 'Сумма', value: '1 595 ₽ (цена 2 000 ₽, баллы −405 ₽)' },
+      { label: 'Провайдер', value: 'Freekassa, вебхук' },
+    ],
+    body: 'Деньги приняты, заказ ушёл в выпуск карты.',
+    action: { text: 'открыть заказ', path: '/admin/orders/ORD-7F3K2' },
+  },
+  {
     label: 'freekassa: underpayment',
     stream: 'payments',
     title: 'Недоплата (Freekassa)',

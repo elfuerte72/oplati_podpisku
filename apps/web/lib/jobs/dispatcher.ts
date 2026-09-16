@@ -6,6 +6,7 @@ import * as Sentry from '@sentry/nextjs';
 import { childLogger } from '../logger.ts';
 import { issueCard } from './issue-card.ts';
 import { notifyPaymentConfirmed } from './notify-payment.ts';
+import { notifyPaymentOps } from './notify-payment-ops.ts';
 
 /**
  * Диспатч background-job'ов после ответа webhook'а/cron'а.
@@ -43,16 +44,33 @@ export function dispatchIssueCard(orderId: string): void {
   });
 }
 
+/**
+ * Побочные уведомления об оплате: клиенту — «Оплата получена», персоналу — «Оплата
+ * принята» в тему «Платежи» (2026-09-16). Зовётся ТОЛЬКО из ветки
+ * `outcome.paidOk` обработчиков, то есть у победителя `claimPaymentSucceeded`:
+ * это и есть гарантия «ровно одно сообщение на платёж» — повтор вебхука и
+ * опрос крона сюда не доходят. Два уведомления независимы: сбой одного не
+ * отменяет второе, каждое ловит свою ошибку.
+ */
 export function dispatchPaymentConfirmed(orderId: string): void {
   log.info({ event: 'jobs.dispatch.payment_confirmed', orderId });
   after(async () => {
-    // notifyPaymentConfirmed сам не бросает, но try/catch на всякий случай.
+    // Обе функции сами не бросают, но try/catch на всякий случай.
     try {
       await notifyPaymentConfirmed(orderId);
     } catch (err) {
       log.error({ event: 'jobs.dispatch.payment_confirmed.failed', orderId, err });
       Sentry.captureException(err, {
         tags: { source: 'jobs.dispatcher', job: 'payment_confirmed' },
+        extra: { orderId },
+      });
+    }
+    try {
+      await notifyPaymentOps(orderId);
+    } catch (err) {
+      log.error({ event: 'jobs.dispatch.payment_ops.failed', orderId, err });
+      Sentry.captureException(err, {
+        tags: { source: 'jobs.dispatcher', job: 'payment_ops' },
         extra: { orderId },
       });
     }
