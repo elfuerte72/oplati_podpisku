@@ -71,6 +71,16 @@ export {
 } from './freekassa.ts';
 
 export {
+  FKWALLET_API_BASE_URL,
+  fkWalletBalanceEntrySchema,
+  type FkWalletBalanceEntry,
+  fkWalletBalanceResponseSchema,
+  type FkWalletBalanceResponse,
+  fkWalletErrorResponseSchema,
+  type FkWalletErrorResponse,
+} from './fkwallet.ts';
+
+export {
   rapiraMarketRateSchema,
   type RapiraMarketRate,
   rapiraMarketRatesResponseSchema,

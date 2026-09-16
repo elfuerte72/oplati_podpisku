@@ -48,7 +48,28 @@ const h = vi.hoisted(() => ({
     reservedUsdCents: 1200,
     safetyReserveUsdCents: 0,
   })),
+  fkwalletConfigured: true,
+  fkGetBalance: vi.fn(async () => [
+    { currency_code: 'RUB', value: '15000.00' },
+    { currency_code: 'USDT', value: '0' },
+  ]),
+  resolveRate: vi.fn(async () => 81),
   captureException: vi.fn(),
+}));
+
+vi.mock('@/lib/env.server', () => ({
+  serverEnv: { PAYSPACE_VCC_TOPUP_FEE_PERCENT: 3 },
+}));
+
+vi.mock('@/lib/fkwallet', () => ({
+  isFkWalletConfigured: () => h.fkwalletConfigured,
+  getFkWalletClient: () => ({ getBalance: h.fkGetBalance }),
+  isFkWalletUnavailable: (err: unknown) =>
+    typeof err === 'object' && err !== null && (err as { httpStatus?: number }).httpStatus === 503,
+}));
+
+vi.mock('@/lib/rapira/rates', () => ({
+  resolveUsdtRubRate: h.resolveRate,
 }));
 
 vi.mock('@oplati/db', () => ({ getDb: () => ({}) }));
@@ -96,11 +117,26 @@ describe('readTreasuryForPanel', () => {
   beforeEach(() => {
     h.payspaceConfigured = true;
     h.freekassaConfigured = true;
+    h.fkwalletConfigured = true;
     // mockClear, а не только mockImplementation: `clearMocks` в конфиге выключен,
     // и без сброса истории ассерт по `mock.calls` читал бы вызов соседнего теста.
-    for (const fn of [h.getBalances, h.getBalance, h.listWithdrawals, h.readVccBalance, h.summarizeFundCommitments, h.captureException]) {
+    for (const fn of [
+      h.getBalances,
+      h.getBalance,
+      h.listWithdrawals,
+      h.readVccBalance,
+      h.summarizeFundCommitments,
+      h.fkGetBalance,
+      h.resolveRate,
+      h.captureException,
+    ]) {
       fn.mockClear();
     }
+    h.fkGetBalance.mockImplementation(async () => [
+      { currency_code: 'RUB', value: '15000.00' },
+      { currency_code: 'USDT', value: '0' },
+    ]);
+    h.resolveRate.mockImplementation(async () => 81);
     h.getBalances.mockImplementation(async () => ({
       balances: [
         { id: '748', code: 'USDT-TRC20', chain: 'Tron', amount: '3.5985', fiatUsdCents: 360, isActive: true },
@@ -169,6 +205,90 @@ describe('readTreasuryForPanel', () => {
     expect(h.getBalances).toHaveBeenCalledWith({ timeoutMs: 3000, attempts: 1 });
     expect(h.getBalance).toHaveBeenCalledWith({ timeoutMs: 3000, queueWaitMs: 5000 });
     expect(h.listWithdrawals).toHaveBeenCalledWith({ timeoutMs: 3000, queueWaitMs: 5000 });
+    expect(h.fkGetBalance).toHaveBeenCalledWith({ timeoutMs: 3000 });
+  });
+
+  it('кошелёк FKWallet: рубли в копейках, USDT сырой строкой', async () => {
+    const report = await readTreasuryForPanel(NOW);
+
+    expect(report.fkwallet).toMatchObject({ state: 'ok', readAt: NOW });
+    if (report.fkwallet.state !== 'ok') throw new Error('ожидали ok');
+    expect(report.fkwallet.data.balances).toEqual([
+      { currency: 'RUB', raw: '15000.00', amountKopecks: 1_500_000 },
+      { currency: 'USDT', raw: '0', amountKopecks: null },
+    ]);
+  });
+
+  it('FKWallet не настроен — «не настроено», к нему не ходят, остальное живо', async () => {
+    h.fkwalletConfigured = false;
+
+    const report = await readTreasuryForPanel(NOW);
+
+    expect(report.fkwallet).toEqual({ state: 'not_configured' });
+    expect(h.fkGetBalance).not.toHaveBeenCalled();
+    expect(report.freekassa.state).toBe('ok');
+  });
+
+  it('лежащий FKWallet (503) после удачного чтения — прежнее число с пометкой, без Sentry', async () => {
+    await readTreasuryForPanel(NOW);
+    h.fkGetBalance.mockRejectedValueOnce(Object.assign(new Error('down'), { httpStatus: 503 }));
+
+    const report = await readTreasuryForPanel(later(5 * 60_000));
+
+    expect(report.fkwallet).toMatchObject({ state: 'stale', readAt: NOW });
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('план пополнения: свободного ниже нормы — зачислить до $900, отправить с комиссией, рубли по курсу', async () => {
+    const report = await readTreasuryForPanel(NOW);
+
+    // Свободно 246.84 − 60 − 12 = $174.84 → зачислить $725.16; при 3 %
+    // отправить 72516·100/97 = 74758.76 → 74759 центов; по 81 ₽ — 60554.79 → 60555 ₽.
+    expect(report.topUp).toEqual({
+      state: 'refill',
+      freeUsdCents: 17_484,
+      targetUsdCents: 90_000,
+      creditUsdCents: 72_516,
+      sendUsdCents: 74_759,
+      feePercent: 3,
+      rubKopecks: 6_055_500,
+      usdtRubRate: 81,
+    });
+    expect(h.resolveRate).toHaveBeenCalledTimes(1);
+
+    // Курс держится минуту вместе с остатками.
+    await readTreasuryForPanel(later(30_000));
+    expect(h.resolveRate).toHaveBeenCalledTimes(1);
+  });
+
+  it('свободного хватает — «пополнять не нужно», и к Rapira не ходим', async () => {
+    h.readVccBalance.mockResolvedValueOnce({
+      state: 'ok',
+      balanceUsdCents: 100_000,
+      pendingUsdCents: 0,
+      thresholdUsdCents: 12_400,
+      low: false,
+      readAt: NOW,
+    });
+
+    const report = await readTreasuryForPanel(NOW);
+
+    expect(report.topUp).toEqual({
+      state: 'enough',
+      freeUsdCents: 100_000 - 7200,
+      refillBelowUsdCents: 40_000,
+    });
+    expect(h.resolveRate).not.toHaveBeenCalled();
+  });
+
+  it('свободное неизвестно — плана нет', async () => {
+    h.summarizeFundCommitments.mockRejectedValueOnce(new Error('connection refused'));
+
+    const report = await readTreasuryForPanel(NOW);
+
+    expect(report.freeUsdCents).toBeNull();
+    expect(report.topUp).toBeNull();
+    expect(h.resolveRate).not.toHaveBeenCalled();
   });
 
   it('держит прочитанное минуту: второй рендер провайдеров не дёргает', async () => {

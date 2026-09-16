@@ -9,6 +9,7 @@ import { formatKopecks, formatUsdCents } from '@/lib/panel/format';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { CELL_TEXT, HELP_TEXT, PAGE_HINT, SECTION_TITLES, TREASURY_TEXT } from '@/lib/panel/labels';
 import type { AccountBalanceEntry } from '@/lib/pay-space/client';
+import type { FundTopUpPlan } from '@/lib/pay-space/fund-plan';
 import {
   hasFunds,
   readTreasuryForPanel,
@@ -57,6 +58,7 @@ export default async function PanelTreasuryPage() {
       <div className="panel-grid">
         <VccCard report={report} />
         <CryptoCard reading={report.payspace} />
+        <FkWalletCard reading={report.fkwallet} />
         <FreekassaCard reading={report.freekassa} />
       </div>
 
@@ -132,6 +134,7 @@ function VccCard({ report }: { report: TreasuryReport }) {
             </p>
           ) : null}
           <p className="panel-muted">{TREASURY_TEXT.freeNote}</p>
+          <TopUpAdvice plan={report.topUp} />
         </>
       ) : vcc.state === 'unavailable' ? (
         <p className="panel-muted">{CELL_TEXT.balanceUnavailable}</p>
@@ -184,6 +187,75 @@ function WalletRow({ wallet }: { wallet: AccountBalanceEntry }) {
         {wallet.amount} <span className="panel-muted">≈ {formatUsdCents(wallet.fiatUsdCents)}</span>
       </dd>
     </>
+  );
+}
+
+/**
+ * «Сколько пополнить» — по норме рунбука. Числа приходят из расчёта, экран их
+ * только подписывает; при достаточном остатке одна строка вместо таблицы.
+ */
+function TopUpAdvice({ plan }: { plan: FundTopUpPlan | null }) {
+  if (plan === null) return null;
+  if (plan.state === 'enough') {
+    return (
+      <p className="panel-muted">
+        {TREASURY_TEXT.topUpEnough} {formatUsdCents(plan.refillBelowUsdCents)}.
+      </p>
+    );
+  }
+  return (
+    <>
+      <p>
+        <span className="panel-status panel-status--warn">
+          {TREASURY_TEXT.topUpTitle}: {TREASURY_TEXT.topUpNeeded} {formatUsdCents(plan.targetUsdCents)}
+        </span>
+      </p>
+      <dl className="panel-dl">
+        <dt>{TREASURY_TEXT.topUpCredit}</dt>
+        <dd>{formatUsdCents(plan.creditUsdCents)}</dd>
+        <dt>
+          {TREASURY_TEXT.topUpSend} {plan.feePercent}%
+        </dt>
+        <dd>{formatUsdCents(plan.sendUsdCents)}</dd>
+        <dt>
+          {TREASURY_TEXT.topUpRub} {plan.usdtRubRate}
+        </dt>
+        <dd>{formatKopecks(plan.rubKopecks)}</dd>
+      </dl>
+      <p className="panel-muted">{TREASURY_TEXT.topUpNote}</p>
+    </>
+  );
+}
+
+/** Кошелёк FKWallet: рубли крупно, USDT и прочее — если на них что-то есть. */
+function FkWalletCard({ reading }: { reading: TreasuryReport['fkwallet'] }) {
+  return (
+    <section className="panel-card">
+      <h2 className="panel-title">{TREASURY_TEXT.fkwalletTitle}</h2>
+      {reading.state === 'ok' || reading.state === 'stale' ? (
+        <>
+          {reading.data.balances
+            .filter((row) => row.currency === 'RUB' || Number(row.raw) > 0)
+            .map((row) => (
+              <p key={row.currency}>
+                {row.currency === 'RUB' && row.amountKopecks !== null ? (
+                  <span className="panel-status panel-status--ok panel-status--lg">
+                    {formatKopecks(row.amountKopecks)}
+                  </span>
+                ) : (
+                  <span className="panel-status panel-status--muted panel-status--lg">
+                    {row.raw} {row.currency}
+                  </span>
+                )}{' '}
+                <span className="panel-muted">{TREASURY_TEXT.balance}</span>
+              </p>
+            ))}
+          <ReadingNote reading={reading} />
+        </>
+      ) : (
+        <ProviderFallback reading={reading} />
+      )}
+    </section>
   );
 }
 

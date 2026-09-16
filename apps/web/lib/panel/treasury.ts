@@ -5,11 +5,20 @@ import * as Sentry from '@sentry/nextjs';
 import { getDb } from '@oplati/db';
 import { FREEKASSA_WITHDRAWAL_METHODS, parseRubleAmountToKopecks } from '@oplati/types';
 
+import { serverEnv } from '@/lib/env.server';
+import { getFkWalletClient, isFkWalletConfigured, isFkWalletUnavailable } from '@/lib/fkwallet';
 import { getFreekassaClient, isFreekassaConfigured, isFreekassaUnavailable } from '@/lib/freekassa';
 import { childLogger } from '@/lib/logger';
 import { getPaySpaceClient, isPaySpaceConfigured } from '@/lib/pay-space';
 import type { AccountBalanceEntry } from '@/lib/pay-space/client';
+import {
+  FUND_REFILL_BELOW_USD_CENTS,
+  fundTopUpPlan,
+  needsRefill,
+  type FundTopUpPlan,
+} from '@/lib/pay-space/fund-plan';
 import { summarizeFundCommitments, type FundCommitments } from '@/lib/pay-space/preflight';
+import { resolveUsdtRubRate } from '@/lib/rapira/rates';
 
 import { isSlowProviderError, readVccBalanceForPanel, type PanelVccBalance } from './vcc-balance';
 
@@ -86,6 +95,17 @@ export type PaySpaceCryptoTreasury = {
   totalUsdCents: number;
 };
 
+export type FkWalletBalanceRow = {
+  currency: string;
+  /** Копейки — только у RUB; USDT и прочее показываются сырой строкой. */
+  amountKopecks: number | null;
+  raw: string;
+};
+
+export type FkWalletTreasury = {
+  balances: FkWalletBalanceRow[];
+};
+
 export type TreasuryReport = {
   vcc: PanelVccBalance;
   fund: ({ state: 'ok' } & FundCommitments) | { state: 'unavailable' };
@@ -95,8 +115,14 @@ export type TreasuryReport = {
    * целиком надо показать. `null` — остаток или обязательства не прочитаны.
    */
   freeUsdCents: number | null;
+  /**
+   * «Сколько пополнить» по норме рунбука. `null` — свободное неизвестно или
+   * план не посчитался (сломанная комиссия в env).
+   */
+  topUp: FundTopUpPlan | null;
   payspace: ProviderReading<PaySpaceCryptoTreasury>;
   freekassa: ProviderReading<FreekassaTreasury>;
+  fkwallet: ProviderReading<FkWalletTreasury>;
 };
 
 /** Есть ли на кошельке что-то, кроме нулей. Пустые кошельки экран прячет. */
@@ -111,7 +137,7 @@ export function hasFunds(entry: Pick<AccountBalanceEntry, 'amount' | 'fiatUsdCen
 class CachedProviderReading<T> {
   private cached: { data: T; readAt: number } | null = null;
 
-  constructor(private readonly provider: 'payspace' | 'freekassa') {}
+  constructor(private readonly provider: 'payspace' | 'freekassa' | 'fkwallet') {}
 
   reset(): void {
     this.cached = null;
@@ -137,7 +163,7 @@ class CachedProviderReading<T> {
       // Медленный или лежащий провайдер — обычное дело и не повод для Sentry
       // с каждой открытой вкладки; дрейф контракта и отказ по существу —
       // повод (та же развилка, что у остатка на рабочем столе).
-      if (isSlowProviderError(err) || isFreekassaUnavailable(err)) {
+      if (isSlowProviderError(err) || isFreekassaUnavailable(err) || isFkWalletUnavailable(err)) {
         log.warn({ event: 'panel.treasury.slow', provider: this.provider, timeoutMs: READ_TIMEOUT_MS });
       } else {
         log.warn({ event: 'panel.treasury.unavailable', provider: this.provider, err });
@@ -155,11 +181,65 @@ class CachedProviderReading<T> {
 
 const paySpaceReading = new CachedProviderReading<PaySpaceCryptoTreasury>('payspace');
 const freekassaReading = new CachedProviderReading<FreekassaTreasury>('freekassa');
+const fkWalletReading = new CachedProviderReading<FkWalletTreasury>('fkwallet');
+
+/**
+ * Курс USDT→RUB для оценки пополнения в рублях. `resolveUsdtRubRate` сама
+ * никогда не бросает (внутри fallback из env), но ходит к Rapira на каждый
+ * вызов — держим минуту, как и остатки.
+ */
+let rateCache: { rate: number; readAt: number } | null = null;
 
 /** Только для тестов: сбросить кэши между сценариями. */
 export function resetTreasuryCacheForTests(): void {
   paySpaceReading.reset();
   freekassaReading.reset();
+  fkWalletReading.reset();
+  rateCache = null;
+}
+
+async function readUsdtRubRate(now: Date): Promise<number> {
+  const nowMs = now.getTime();
+  if (rateCache && nowMs - rateCache.readAt < CACHE_TTL_MS) return rateCache.rate;
+  const rate = await resolveUsdtRubRate();
+  rateCache = { rate, readAt: nowMs };
+  return rate;
+}
+
+async function fetchFkWallet(): Promise<FkWalletTreasury> {
+  const rows = await getFkWalletClient().getBalance({ timeoutMs: READ_TIMEOUT_MS });
+  return {
+    balances: rows.map((row) => ({
+      currency: row.currency_code,
+      raw: row.value,
+      amountKopecks: row.currency_code === 'RUB' ? parseRubleAmountToKopecks(row.value) : null,
+    })),
+  };
+}
+
+/**
+ * План пополнения. К Rapira ходим только когда пополнять пора: при достаточном
+ * остатке курс не нужен, и лишний запрос наружу на каждый рендер ни к чему.
+ *
+ * Никогда не бросает: сломанная комиссия в env — повод для Sentry, а не для
+ * пятисотки вместо экрана с остатками.
+ */
+async function readTopUpPlan(freeUsdCents: number, now: Date): Promise<FundTopUpPlan | null> {
+  try {
+    if (!needsRefill(freeUsdCents)) {
+      return { state: 'enough', freeUsdCents, refillBelowUsdCents: FUND_REFILL_BELOW_USD_CENTS };
+    }
+    const usdtRubRate = await readUsdtRubRate(now);
+    return fundTopUpPlan({
+      freeUsdCents,
+      usdtRubRate,
+      feePercent: serverEnv.PAYSPACE_VCC_TOPUP_FEE_PERCENT,
+    });
+  } catch (err) {
+    log.warn({ event: 'panel.treasury.topup_plan_failed', err });
+    Sentry.captureException(err, { tags: { source: 'panel.treasury', step: 'topup_plan' } });
+    return null;
+  }
 }
 
 async function fetchPaySpaceCrypto(): Promise<PaySpaceCryptoTreasury> {
@@ -218,11 +298,12 @@ async function readFund(now: Date): Promise<TreasuryReport['fund']> {
 }
 
 export async function readTreasuryForPanel(now: Date = new Date()): Promise<TreasuryReport> {
-  const [vcc, fund, payspace, freekassa] = await Promise.all([
+  const [vcc, fund, payspace, freekassa, fkwallet] = await Promise.all([
     readVccBalanceForPanel(now),
     readFund(now),
     paySpaceReading.read(isPaySpaceConfigured(), fetchPaySpaceCrypto, now),
     freekassaReading.read(isFreekassaConfigured(), fetchFreekassa, now),
+    fkWalletReading.read(isFkWalletConfigured(), fetchFkWallet, now),
   ]);
 
   const freeUsdCents =
@@ -233,5 +314,7 @@ export async function readTreasuryForPanel(now: Date = new Date()): Promise<Trea
         fund.safetyReserveUsdCents
       : null;
 
-  return { vcc, fund, freeUsdCents, payspace, freekassa };
+  const topUp = freeUsdCents === null ? null : await readTopUpPlan(freeUsdCents, now);
+
+  return { vcc, fund, freeUsdCents, topUp, payspace, freekassa, fkwallet };
 }

@@ -779,7 +779,19 @@ export const TREASURY_TEXT = {
   vccTitle: 'Карточный счёт PaySpace',
   cryptoTitle: 'Крипто-кошельки PaySpace',
   freekassaTitle: 'Касса Freekassa',
+  fkwalletTitle: 'Кошелёк FKWallet',
   withdrawalsTitle: 'Выводы с кассы',
+  // Строка «сколько пополнить»: цифры называет расчёт по норме рунбука, текст
+  // только подписывает их. Комиссии FKWallet и сети провайдеры не публикуют,
+  // и подсказка честно говорит, чего в ней нет.
+  topUpTitle: 'Пополнение',
+  topUpEnough: 'Пополнять не нужно: свободного не меньше',
+  topUpNeeded: 'довести свободное до',
+  topUpCredit: 'Зачислить на карточный счёт',
+  topUpSend: 'Отправить в PaySpace, комиссия',
+  topUpRub: 'В рублях по курсу',
+  topUpNote:
+    'Без комиссий FKWallet и сети: провайдеры их не публикуют, их видно только по факту перевода.',
   balance: 'Остаток',
   pending: 'В пути',
   committed: 'Обещано под заказы',
