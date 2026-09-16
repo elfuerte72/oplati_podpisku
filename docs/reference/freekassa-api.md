@@ -533,7 +533,10 @@ account, date, status }] }`; `account` схема `freekassaWithdrawalSchema`
 
 Обмен RUB→USDT и вывод USDT на внешний адрес — API FKWallet
 (`https://api.fkwallet.io/v1/{public_key}/…`, `Authorization: Bearer
-sha256(JSON тела + приватный ключ)`; обмен `exchange/create` — только PRO-аккаунт;
+sha256(JSON тела + приватный ключ)`; **чтение баланса подтверждено живым вызовом
+2026-09-16**: `GET /balance` → `{ status: 'ok', data: [{ currency_code, value }] }`
+по всем валютам кошелька, `value` числом, без обёртки из схемы доки — панель
+читает его в разделе «Финансы»; обмен `exchange/create` — только PRO-аккаунт;
 вывод `withdrawal` с `idempotence_key` и уведомлением, подписанным sha256 значений
 по ключам через `|` + приватный ключ). Приём на стороне PaySpace — крипто-кошелёк
 (`GET /balance/`), затем `POST /vcc/balance/topup/` (T+1, вебхука нет). Полный
