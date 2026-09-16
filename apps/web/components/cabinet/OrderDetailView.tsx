@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 
+import { PROMO_CODE_MAX_LENGTH } from '@oplati/types';
+
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
 import { ContactCard, useContacts } from '@/components/contacts/ContactCard';
@@ -31,6 +33,7 @@ import type {
   OrderDetail,
   PaymentIssueResult,
   PaymentProblemResult,
+  PromoCheckResult,
   SubscriptionPaidResult,
 } from './cabinet-api';
 
@@ -49,7 +52,14 @@ type Props = {
   /** Порог «телефон обязателен» в целых рублях; null — фича выключена. */
   phoneRequiredFromRub: number | null;
   onBack: () => void;
-  onPay: (contactsToSend: { email?: string; phone?: string }) => void;
+  onPay: (
+    contactsToSend: { email?: string; phone?: string },
+    useBonus: boolean,
+    /** Промокод, применённый на экране; undefined — его нет (трек promo-codes). */
+    promoCode?: string,
+  ) => void;
+  /** Проверить промокод по этому заказу. Ничего не занимает — только считает. */
+  onCheckPromo: (code: string) => Promise<PromoCheckResult>;
   /** «Взять из Telegram» (requestContact SDK); не задан → кнопки нет. */
   onRequestTelegramPhone?: (() => void) | undefined;
   onOpenExternalLink: (url: string) => void;
@@ -170,6 +180,215 @@ function PriceBreakdown({
         hasActiveCard={hasActiveCard}
       />
     </>
+  );
+}
+
+/**
+ * Блок реферальных баллов на экране заказа (трек referral-balance-spend, §8).
+ *
+ * Показывается ВСЕГДА, когда баланс больше нуля, и различает три состояния:
+ *
+ *  1. **есть что списать** — переключатель (выключен по умолчанию: списание
+ *     осознанное) и разбивка «Итого · баллами · к оплате»;
+ *  2. **баланс больше потолка** — то же плюс объяснение, почему списалось
+ *     меньше, чем есть. Число берётся ИЗ РАСЧЁТА, а не зашивается в текст:
+ *     потолок = наша комиссия по этому заказу и у каждого заказа свой;
+ *  3. **баллов меньше минимума** — «баллы копятся», без переключателя. Партнёру
+ *     с маленьким балансом важно видеть, что программа работает (Q16).
+ *
+ * Клиенту это «баллы», в кабинете партнёра доллары остаются — в коде и БД
+ * сущность называется `redemption`/`bonus`.
+ */
+function BonusSpendBlock({
+  bonus,
+  enabled,
+  onToggle,
+  totalKopecks,
+  disabled,
+}: {
+  bonus: NonNullable<OrderDetail['bonusOffer']>;
+  enabled: boolean;
+  onToggle: (next: boolean) => void;
+  totalKopecks: number;
+  disabled: boolean;
+}) {
+  const { offer } = bonus;
+
+  if (!offer) {
+    return (
+      <div className="rounded-[12px] border-2 border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+        <p className="font-body text-xs leading-snug text-[var(--text-muted)]">
+          Баллы копятся: {formatRub(bonus.balanceKopecks)} — списать можно от{' '}
+          {formatUsd(bonus.minSpendUsdCents)}.
+        </p>
+      </div>
+    );
+  }
+
+  const balanceAboveCap = bonus.balanceKopecks > offer.discountKopecks;
+
+  return (
+    <div className="rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+      <label className="flex cursor-pointer items-start gap-2.5">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={disabled}
+          onChange={(e) => onToggle(e.currentTarget.checked)}
+          className="mt-0.5 size-4 shrink-0 accent-[var(--color-teal-deep)]"
+        />
+        <span className="font-display text-sm font-bold text-[var(--text)]">
+          Списать баллы — {formatRub(offer.discountKopecks)}
+        </span>
+      </label>
+
+      {enabled && (
+        <dl className="mt-2 space-y-1 border-t-2 border-dashed border-[var(--shadow-ink)] pt-2">
+          <Row label="Итого" value={formatRub(totalKopecks)} />
+          <Row label="Баллами" value={`− ${formatRub(offer.discountKopecks)}`} />
+          <div className="flex justify-between gap-4 font-display text-base font-bold">
+            <dt className="text-[var(--text)]">К оплате</dt>
+            <dd className="text-[var(--text)]">{formatRub(totalKopecks - offer.discountKopecks)}</dd>
+          </div>
+        </dl>
+      )}
+
+      {balanceAboveCap && (
+        <p className="mt-2 font-body text-xs leading-snug text-[var(--text-muted)]">
+          На балансе {formatRub(bonus.balanceKopecks)}, но по этому заказу списываем не больше нашей
+          комиссии — {formatRub(offer.discountKopecks)}. Остальное останется на балансе.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Поле ввода промокода на экране заказа (трек promo-codes).
+ *
+ * Три состояния:
+ *  1. **свёрнуто** — строка-ссылка «Есть промокод?». Поле, развёрнутое всегда,
+ *     подсказывало бы каждому клиенту, что где-то есть скидка, которой у него
+ *     нет, — и отправляло бы его искать код вместо оплаты;
+ *  2. **ввод** — поле + «Применить», под ним текст отказа, если код не подошёл;
+ *  3. **применён** — сумма скидки и кнопка снять.
+ *
+ * ⚠️ Применение здесь — только ОБЕЩАНИЕ. Активацию занимает сервер в момент
+ * оплаты, под локами и с перепроверкой лимитов: клиент, который ввёл код и
+ * передумал платить, не должен уносить с собой израсходованную активацию.
+ * Поэтому же отказ возможен и позже, на кнопке «Оплатить».
+ */
+function PromoCodeBlock({
+  applied,
+  onApply,
+  onClear,
+  busy,
+  disabled,
+}: {
+  applied: { code: string; discountKopecks: number; capped: boolean } | null;
+  onApply: (code: string) => Promise<string | null>;
+  onClear: () => void;
+  busy: boolean;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  if (applied) {
+    return (
+      <div className="rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-display text-sm font-bold text-[var(--text)]">
+              Промокод {applied.code} — {formatRub(applied.discountKopecks)}
+            </p>
+            {applied.capped && (
+              <p className="mt-1 font-body text-xs leading-snug text-[var(--text-muted)]">
+                По этому заказу скидка меньше номинала — больше на него не положить.
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              onClear();
+              setValue('');
+              setError(null);
+              setOpen(false);
+            }}
+            className="shrink-0 font-display text-xs font-bold text-[var(--link)] disabled:opacity-50"
+          >
+            Убрать
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="font-display text-xs font-bold text-[var(--link)]"
+      >
+        Есть промокод?
+      </button>
+    );
+  }
+
+  const submit = async () => {
+    const code = value.trim();
+    if (code.length === 0) return;
+    setError(await onApply(code));
+  };
+
+  return (
+    <div className="rounded-[12px] border-2 border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={value}
+          disabled={disabled || busy}
+          onChange={(e) => {
+            setValue(e.currentTarget.value);
+            setError(null);
+          }}
+          // Enter в поле — привычный способ применить код; без него клиент на
+          // телефоне жмёт «готово» на клавиатуре и не понимает, почему ничего
+          // не произошло.
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+          placeholder="Промокод"
+          autoCapitalize="characters"
+          autoCorrect="off"
+          spellCheck={false}
+          maxLength={PROMO_CODE_MAX_LENGTH}
+          className={[
+            'min-w-0 flex-1 rounded-[8px] border-2 border-[var(--shadow-ink)] bg-[var(--surface)]',
+            'px-2.5 py-1.5 font-body text-sm text-[var(--text)] uppercase',
+            'placeholder:normal-case placeholder:text-[var(--text-muted)]',
+          ].join(' ')}
+        />
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={disabled || busy || value.trim().length === 0}
+          className="shrink-0 font-display text-xs font-bold text-[var(--link)] disabled:opacity-50"
+        >
+          {busy ? 'Проверяю…' : 'Применить'}
+        </button>
+      </div>
+      {error && (
+        <p className="mt-2 font-body text-xs leading-snug text-[var(--text-muted)]">{error}</p>
+      )}
+    </div>
   );
 }
 
@@ -716,6 +935,7 @@ export function OrderDetailView({
   phoneRequiredFromRub,
   onBack,
   onPay,
+  onCheckPromo,
   onOpenExternalLink,
   onReportIssue,
   onReportPaymentProblem,
@@ -728,6 +948,68 @@ export function OrderDetailView({
   // «Оплатить»: сервер сохраняет контакты ДО создания счёта, поэтому даже
   // неудачная оплата их не теряет.
   const contacts = useContacts({ email: savedEmail, phone: savedPhone });
+  // Переключатель списания баллов. ВЫКЛЮЧЕН по умолчанию: тратить баллы —
+  // осознанное решение клиента, а не наше за него (решение Q3).
+  const [useBonus, setUseBonus] = useState(false);
+  // Промокод, который клиент применил на этом экране (трек promo-codes).
+  // Вместе со скидкой держим ПЕРЕСЧИТАННОЕ предложение по баллам: их потолок
+  // зависит от промокода, и показать старое значило бы назвать сумму, которой
+  // в счёте не будет.
+  const [promo, setPromo] = useState<{
+    code: string;
+    discountKopecks: number;
+    capped: boolean;
+    bonusOffer: OrderDetail['bonusOffer'];
+  } | null>(null);
+  const [promoBusy, setPromoBusy] = useState(false);
+  // При применённом промокоде баллы считаются от остатка маржи — берём
+  // предложение из ответа проверки, а не из снапшота заказа.
+  const bonusOffer = (promo ? promo.bonusOffer : order.bonusOffer) ?? null;
+  // Счёт уже выставлен: списывать поздно (сумму инвойса не переставить), но
+  // сказать об этом стоит — и только тому, у кого баллы вообще есть.
+  const invoiceIssued = order.status === 'pending_payment';
+  // Сколько списывается прямо сейчас. У выставленного счёта это ФАКТ (строка
+  // списания привязана к живому инвойсу), у черновика — выбор клиента.
+  // Кнопка обязана назвать ту же сумму, что попросит платёжная страница.
+  const bonusDiscountKopecks = invoiceIssued
+    ? order.bonus?.discountKopecks ?? 0
+    : useBonus
+      ? bonusOffer?.offer?.discountKopecks ?? 0
+      : 0;
+  // Скидка промокода — так же: у выставленного счёта ФАКТ из заказа, у
+  // черновика выбор клиента.
+  const promoDiscountKopecks = invoiceIssued
+    ? order.promo?.discountKopecks ?? 0
+    : promo?.discountKopecks ?? 0;
+  const payableKopecks =
+    order.amountKopecks !== null
+      ? order.amountKopecks - bonusDiscountKopecks - promoDiscountKopecks
+      : null;
+
+  /**
+   * Проверить код на сервере. Возвращает текст ошибки или `null` при успехе —
+   * так поле само решает, что показать под собой.
+   *
+   * ⚠️ Успех сбрасывает выбор баллов: потолок пересчитан, и прежняя галка могла
+   * бы относиться к предложению, которого больше нет.
+   */
+  const applyPromo = async (code: string): Promise<string | null> => {
+    setPromoBusy(true);
+    try {
+      const result = await onCheckPromo(code);
+      if (!result.ok) return result.message ?? 'Промокод не сработал.';
+      setPromo({
+        code,
+        discountKopecks: result.discountKopecks,
+        capped: result.capped,
+        bonusOffer: result.bonusOffer ?? null,
+      });
+      setUseBonus(false);
+      return null;
+    } finally {
+      setPromoBusy(false);
+    }
+  };
   // Сравнение суммы с порогом — общий isPhoneRequiredForAmount (одно место
   // конверсии рубли→копейки на гейт и обе плашки).
   const phoneRequired = isPhoneRequiredForAmount(order.amountKopecks, phoneRequiredFromRub);
@@ -739,7 +1021,13 @@ export function OrderDetailView({
       ...(contacts.phone.toSend !== undefined ? { phone: contacts.phone.toSend } : {}),
     };
     contacts.markSubmitted();
-    onPay(toSend);
+    // Флаг выводим из ФАКТА предложения, а не из одной галки: просьба скидки,
+    // которой нет, получила бы от сервера честный отказ вместо счёта.
+    onPay(
+      toSend,
+      !invoiceIssued && useBonus && bonusOffer?.offer != null,
+      !invoiceIssued && promo ? promo.code : undefined,
+    );
   };
 
   return (
@@ -799,6 +1087,56 @@ export function OrderDetailView({
               phoneSource={phoneSource}
               onRequestTelegramPhone={onRequestTelegramPhone}
             />
+            {/* Промокод ВЫШЕ баллов — в том же порядке, в каком считается
+                скидка: сначала промокод, потом баллы от остатка маржи. */}
+            {order.promoInputEnabled && !invoiceIssued && (
+              <PromoCodeBlock
+                applied={promo}
+                onApply={applyPromo}
+                onClear={() => {
+                  setPromo(null);
+                  setUseBonus(false);
+                }}
+                busy={promoBusy}
+                disabled={busy !== null}
+              />
+            )}
+            {bonusOffer && order.amountKopecks !== null && !invoiceIssued && (
+              <BonusSpendBlock
+                bonus={bonusOffer}
+                enabled={useBonus}
+                onToggle={setUseBonus}
+                totalKopecks={order.amountKopecks - promoDiscountKopecks}
+                disabled={busy !== null}
+              />
+            )}
+            {/* Счёт уже выставлен: переставить его сумму мы не умеем (API
+                правки инвойса нет ни у Freekassa, ни у L&P), а второй счёт на
+                заказ запрещён частичным UNIQUE. Говорим прямо, что делать. */}
+            {invoiceIssued && bonusOffer?.offer && !order.bonus && (
+              <p className="rounded-[10px] border-2 border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
+                Счёт уже выставлен. Чтобы списать баллы, отмени заказ и оформи заново.
+              </p>
+            )}
+            {invoiceIssued && order.bonus && order.amountKopecks !== null && (
+              <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+                Баллами списано {formatRub(order.bonus.discountKopecks)} — счёт выставлен на{' '}
+                {formatRub(order.amountKopecks - order.bonus.discountKopecks)}.
+              </p>
+            )}
+            {/* Промокод по выставленному счёту — ФАКТ. Сумму называем ту, что
+                уже ушла шлюзу: обе скидки вычтены (трек promo-codes). */}
+            {invoiceIssued && order.promo && order.amountKopecks !== null && (
+              <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+                Промокод применён: −{formatRub(order.promo.discountKopecks)}. Счёт выставлен на{' '}
+                {formatRub(
+                  order.amountKopecks -
+                    order.promo.discountKopecks -
+                    (order.bonus?.discountKopecks ?? 0),
+                )}
+                .
+              </p>
+            )}
             <ComicButton
               variant="primary"
               onClick={handlePay}
@@ -806,15 +1144,19 @@ export function OrderDetailView({
             >
               {busy === 'pay'
                 ? 'Готовлю счёт…'
-                : order.amountKopecks !== null
-                  ? `Оплатить ${formatRub(order.amountKopecks)}`
+                : payableKopecks !== null
+                  ? `Оплатить ${formatRub(payableKopecks)}`
                   : 'Оплатить'}
             </ComicButton>
-            {order.amountKopecks !== null &&
-              buyerFeeAmountNote(order.amountKopecks, order.buyerFeePercent, formatRub) !==
-                null && (
+            {/* ⚠️ Надбавка платёжной системы считается от суммы СЧЁТА, а не
+                от цены заказа: провайдер начисляет её на то, что мы у него
+                запросили. С применённой скидкой полная цена обещала бы клиенту
+                неверное число на странице оплаты — ровно то, что исправлено в
+                напоминании об оплате из панели. */}
+            {payableKopecks !== null &&
+              buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub) !== null && (
                 <p className="mt-2 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
-                  {buyerFeeAmountNote(order.amountKopecks, order.buyerFeePercent, formatRub)}
+                  {buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub)}
                 </p>
               )}
             {order.expiresAt && (

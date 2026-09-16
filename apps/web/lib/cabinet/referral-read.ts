@@ -50,6 +50,14 @@ export type ReferralSnapshotContext = {
   miniAppShortName: string | null;
   /** Минимум на вывод (USD-центы), `REFERRAL_MIN_PAYOUT_USD_CENTS`. */
   minPayoutUsdCents: number;
+  /**
+   * Доступно ли ЭТОМУ партнёру списание баллов в счёт заказа.
+   *
+   * Кабинет рассказывает про переключатель только тем, у кого он есть: флаг
+   * выключен по умолчанию, а на время смоука allowlist сужен до владельца —
+   * без гейта каждый партнёр читал бы про кнопку, которой на его экране нет.
+   */
+  bonusSpendAvailable: boolean;
 };
 
 /** Ключи последних N месяцев (`YYYY-MM`, UTC) — под `to_char(date_trunc('month'…))`. */
@@ -85,6 +93,7 @@ function disabledSnapshot(ctx: ReferralSnapshotContext): ReferralSnapshot {
     earnedTotalUsdCents: 0,
     balanceUsdCents: 0,
     minPayoutUsdCents: ctx.minPayoutUsdCents,
+    bonusSpendAvailable: false,
     canPayout: false,
     progress: { networkTurnoverThisMonthUsdCents: 0, nextThresholdUsdCents: null, progressBps: 0 },
     sprint: {
@@ -252,6 +261,7 @@ export async function buildReferralSnapshot(
     earnedTotalUsdCents: earnings.totalUsdCents,
     balanceUsdCents: balance,
     minPayoutUsdCents: ctx.minPayoutUsdCents,
+    bonusSpendAvailable: ctx.bonusSpendAvailable,
     canPayout,
     progress: {
       networkTurnoverThisMonthUsdCents: networkTurnover,

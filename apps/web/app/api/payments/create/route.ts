@@ -3,16 +3,19 @@ import { after, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import {
+  appendOrderEvent,
+  BONUS_RESERVED_EVENT,
   findPendingPaymentByOrderId,
   getDb,
   getOrderById,
   getUserPayerContact,
+  PROMO_RESERVED_EVENT,
   setOrderExpiresAt,
   transitionOrder,
   upsertPaymentByProviderRef,
   type UpsertResult,
 } from '@oplati/db';
-import { OrderTransitionError } from '@oplati/types';
+import { OrderTransitionError, promoCodeInputSchema } from '@oplati/types';
 
 import { EMAIL_REQUIRED, EMAIL_REQUIRED_TEXT } from '@/lib/contacts/email';
 import { isPhoneRequiredForAmount, PHONE_REQUIRED, phoneRequiredText } from '@/lib/contacts/phone';
@@ -35,6 +38,10 @@ import {
   reportFundingCapacityBlocked,
 } from '@/lib/pay-space/preflight';
 import { FULFILLMENT_CAPACITY, fulfillmentCapacityText } from '@/lib/payments/capacity';
+import { BONUS_UNAVAILABLE, BONUS_UNAVAILABLE_TEXT } from '@/lib/payments/bonus';
+import { PROMO_UNAVAILABLE, promoRejectText } from '@/lib/payments/promo';
+import { claimPromoForOrder, precheckPromoForOrder, releasePromoClaim } from '@/lib/promo/apply';
+import { claimBonusForOrder, releaseBonusClaim } from '@/lib/referral/spend';
 import { timingSafeEqualStr } from '@/lib/security/timing-safe';
 import { LoveAndPayApiError } from '@/lib/loveandpay';
 
@@ -68,6 +75,19 @@ const log = childLogger('payments-create');
 const requestSchema = z.object({
   orderId: z.string().uuid(),
   paymentMethod: z.enum(['sbp', 'card']).optional(),
+  /**
+   * Клиент нажал «оплатить со списанием баллов» (трек referral-balance-spend).
+   * Роут внутренний, зовётся из `confirm_order`; флаг проходит гейты `lib/referral/spend`
+   * и при выключенной фиче ИГНОРИРУЕТСЯ, а не отвергается.
+   */
+  useBonus: z.boolean().optional(),
+  /**
+   * Промокод, который клиент ввёл на экране заказа (трек promo-codes).
+   * Нормализуется схемой (`promoCodeInputSchema`), поэтому дальше по роуту
+   * гуляет уже каноническое написание. При выключенной механике ИГНОРИРУЕТСЯ,
+   * а не отвергается — по образцу `useBonus`.
+   */
+  promoCode: promoCodeInputSchema.optional(),
 });
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -100,7 +120,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
-  const { orderId, paymentMethod } = parsed.data;
+  const { orderId, paymentMethod, useBonus = false, promoCode } = parsed.data;
 
   // Кто принимает деньги прямо сейчас. Читаем ДО try: значение нужно и в
   // обработчике ошибок (healthcheck прокси дёргаем только для L&P).
@@ -108,9 +128,39 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   log.info({ event: 'payments.create.start', orderId, paymentMethod, gateway });
 
-  // Объявлено ВНЕ try: занятие фонда происходит внутри, а снимать его нужно из
+  // Объявлено ВНЕ try: занятия происходят внутри, а снимать их нужно из
   // обработчика ошибки — иначе деньги простоят запертыми до срока счёта.
   let fundClaimed = false;
+  // Баллы занимаются рядом с фондом и снимаются вместе с ним: два занятия, один
+  // жизненный цикл. Разъехавшись, они дали бы «фонд свободен, а баллы клиента
+  // заперты до протухания заказа» — молча и надолго.
+  let bonusClaimed = false;
+  let bonusPlan: { discountKopecks: number; spendUsdCents: number } | null = null;
+  // Промокод занимается рядом с фондом и баллами и снимается вместе с ними:
+  // три занятия, один жизненный цикл (трек promo-codes).
+  let promoClaimed = false;
+  let promoPlan: { discountKopecks: number; discountUsdCents: number; promoCodeId: string } | null =
+    null;
+
+  /**
+   * Снять ВСЕ занятия. Зовётся и из `catch` (сбой шлюза), и из тех отказов,
+   * которые случаются УЖЕ ПОСЛЕ занятия: гейты минимума и потолка шлюза считают
+   * по сумме СЧЁТА, то есть могут сработать только когда скидка уже посчитана.
+   */
+  const releaseClaims = async (): Promise<void> => {
+    if (fundClaimed) {
+      fundClaimed = false;
+      await releaseOrderFundingClaim(orderId);
+    }
+    if (promoClaimed) {
+      promoClaimed = false;
+      await releasePromoClaim(orderId);
+    }
+    if (bonusClaimed) {
+      bonusClaimed = false;
+      await releaseBonusClaim(orderId);
+    }
+  };
 
   try {
     const db = getDb();
@@ -176,53 +226,6 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: false, error: 'invalid_amount' }, { status: 400 });
     }
 
-    // Гард минимума шлюза (у L&P терминал KANYON не принимает < 500 ₽). Ловим
-    // ДО вызова провайдера, иначе получим непрозрачное тело ошибки. У Freekassa
-    // минимум не объявлен → по умолчанию гейта нет (см. `minAmountRubFor`).
-    const minAmountRub = minAmountRubFor(gateway);
-    if (minAmountRub > 0 && order.amountRub < minAmountRub * 100) {
-      log.warn({
-        event: 'payments.create.below_min',
-        orderId,
-        gateway,
-        amountRubKopecks: order.amountRub,
-        minAmountRubKopecks: minAmountRub * 100,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'below_min_amount',
-          minAmountRub,
-          message: `Минимальная сумма оплаты — ${minAmountRub} ₽`,
-        },
-        { status: 422 },
-      );
-    }
-
-    // Потолок шлюза (у Freekassa лимит операции 150 000 ₽). Витрина держит
-    // верхний кап в долларах (`HIGH_VALUE_MAX_AMOUNT_USD`), но курс плавает —
-    // страховкой служит именно этот гейт: здесь сумма уже в рублях и известна
-    // точно. Ловим ДО вызова провайдера, иначе клиент получит его текст ошибки.
-    const maxAmountRub = maxAmountRubFor(gateway);
-    if (maxAmountRub > 0 && order.amountRub > maxAmountRub * 100) {
-      log.warn({
-        event: 'payments.create.above_max',
-        orderId,
-        gateway,
-        amountRubKopecks: order.amountRub,
-        maxAmountRubKopecks: maxAmountRub * 100,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          error: 'above_max_amount',
-          maxAmountRub,
-          message: `Максимальная сумма оплаты — ${maxAmountRub} ₽. Напиши в поддержку, оформим заказ частями.`,
-        },
-        { status: 422 },
-      );
-    }
-
     // Гейт email плательщика (антифрод-трек, Р2: почта обязательна при оплате).
     // UI до сюда не доводит — плашка контактов не даёт отправить пустое поле;
     // гейт ловит self-call бота и любые обходы UI. Только НОВЫЕ счета: путь
@@ -258,6 +261,30 @@ export async function POST(req: Request): Promise<NextResponse> {
         },
         { status: 422 },
       );
+    }
+
+    // Предпроверка промокода — ДО занятия фонда (трек promo-codes, находка
+    // ревью). Занятие фонда берёт глобальный `pg_advisory_xact_lock` и пишет
+    // строку резерва; без этого шага перебор кодов через кнопку «оплатить»
+    // дёргал бы замок платёжного пути живых клиентов на каждой попытке.
+    //
+    // Здесь только ОТСЕВ заведомо неподходящего: занимает и решает по-прежнему
+    // `claimPromoForOrder` под локами, ниже. Фонд ещё не занят, поэтому выходим
+    // без `releaseClaims()`.
+    if (promoCode) {
+      const precheck = await precheckPromoForOrder({ order, code: promoCode });
+      if (!precheck.ok) {
+        log.info({ event: 'payments.create.promo_rejected_early', orderId, reason: precheck.reason });
+        return NextResponse.json(
+          {
+            ok: false,
+            error: PROMO_UNAVAILABLE,
+            reason: precheck.reason,
+            message: promoRejectText(precheck.reason),
+          },
+          { status: 409 },
+        );
+      }
     }
 
     // Preflight карточного фонда (трек vcc-preflight, Р1) — ПОСЛЕДНИЙ гейт
@@ -298,13 +325,149 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
-    // Narrowing `order.amountRub` (guard выше) не переживает closure транзакции.
-    const orderAmountKopecks = order.amountRub;
+    // Занятие ПРОМОКОДА (трек promo-codes) — за фондом и ПЕРЕД баллами.
+    //
+    // ⚠️ Порядок «промокод первый, баллы вторые» — инвариант, а не стиль:
+    // потолок баллов считается от маржи, ОСТАВШЕЙСЯ после промокода
+    // (`bonusSpendCapKopecks`), и обратный порядок дал бы другую сумму счёта
+    // при тех же входных данных.
+    let promoDiscountKopecks = 0;
+    if (promoCode) {
+      const promo = await claimPromoForOrder({ order, code: promoCode });
+      if (promo.kind === 'unavailable') {
+        // Клиент ввёл код, экран показал скидку, а занять не вышло. Полный счёт
+        // молча — обман, поэтому отказ с причиной: экран скажет, что случилось.
+        await releaseClaims();
+        return NextResponse.json(
+          {
+            ok: false,
+            error: PROMO_UNAVAILABLE,
+            reason: promo.reason,
+            message: promoRejectText(promo.reason),
+          },
+          { status: 409 },
+        );
+      }
+      if (promo.kind === 'claimed') {
+        promoDiscountKopecks = promo.plan.discountKopecks;
+        // ⚠️ Снимаем в `catch` и пишем событие ТОЛЬКО за своё занятие. Чужое
+        // (двойной тап, вторая вкладка) принадлежит попытке, которая как раз
+        // выставляет счёт: освободив его, мы оставили бы клиенту скидку, не
+        // израсходовав активацию.
+        if (promo.owned) {
+          promoClaimed = true;
+          promoPlan = {
+            discountKopecks: promo.plan.discountKopecks,
+            discountUsdCents: promo.plan.discountUsdCents,
+            promoCodeId: promo.promoCodeId,
+          };
+        }
+      }
+    }
+
+    // Занятие реферальных баллов (трек referral-balance-spend, §5) — СРАЗУ за
+    // фондом и ДО гейтов шлюза. Порядок не декоративен: фонд дефицитнее, его
+    // отказ вероятнее, и занимать баллы под заказ, который всё равно не поедет,
+    // незачем; а гейты минимума и потолка обязаны считать по сумме СЧЁТА,
+    // которая известна только после скидки.
+    let discountKopecks = promoDiscountKopecks;
+    if (useBonus) {
+      // Промокод передаётся ВНУТРЬ: потолок баллов считается от маржи, которая
+      // осталась после него, и от уже уменьшенного счёта.
+      const bonus = await claimBonusForOrder(order, promoDiscountKopecks);
+      if (bonus.kind === 'unavailable') {
+        // Клиент нажал «оплатить со скидкой», а дать её нечем (параллельная
+        // заявка на вывод успела раньше). Полный счёт молча — обман, поэтому
+        // отказ с актуальным балансом: экран предложит обновиться.
+        await releaseClaims();
+        return NextResponse.json(
+          {
+            ok: false,
+            error: BONUS_UNAVAILABLE,
+            balanceUsdCents: bonus.balanceUsdCents,
+            message: BONUS_UNAVAILABLE_TEXT,
+          },
+          { status: 409 },
+        );
+      }
+      if (bonus.kind === 'claimed') {
+        // ПРИБАВЛЯЕМ к скидке промокода, а не заменяем её: обе скидки живут на
+        // одном заказе, и присваивание молча вернуло бы клиенту промокод, уже
+        // занятый строкой в `promo_redemptions`.
+        discountKopecks += bonus.plan.discountKopecks;
+        // ⚠️ Снимаем в `catch` и пишем событие ТОЛЬКО за своё занятие. Чужое
+        // (двойной тап, вторая вкладка) принадлежит попытке, которая как раз
+        // выставляет счёт: освободив его, мы оставили бы клиенту скидку, не
+        // потратив ни одного балла.
+        if (bonus.owned) {
+          bonusClaimed = true;
+          bonusPlan = bonus.plan;
+        }
+      }
+    }
+
+    // Сумма, которая уйдёт в API шлюза и станет `payments.amount_rub`.
+    // `orders.amount_rub` остаётся ПОЛНОЙ ценой — по ней сверяется чек.
+    const invoiceAmountKopecks = order.amountRub - discountKopecks;
+
+    // Гард минимума шлюза (у L&P терминал KANYON не принимает < 500 ₽). Ловим
+    // ДО вызова провайдера, иначе получим непрозрачное тело ошибки. У Freekassa
+    // минимум не объявлен → по умолчанию гейта нет (см. `minAmountRubFor`).
+    //
+    // ⚠️ Считается по сумме СЧЁТА, а не заказа: это физический предел
+    // провайдера, и проверять его нужно на том числе, которое уйдёт в API.
+    // Скидка до этого предела не опускает (`planBonusSpend` усекает её тем же
+    // минимумом), но гейт остаётся последним рубежом.
+    const minAmountRub = minAmountRubFor(gateway);
+    if (minAmountRub > 0 && invoiceAmountKopecks < minAmountRub * 100) {
+      log.warn({
+        event: 'payments.create.below_min',
+        orderId,
+        gateway,
+        amountRubKopecks: invoiceAmountKopecks,
+        minAmountRubKopecks: minAmountRub * 100,
+      });
+      await releaseClaims();
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'below_min_amount',
+          minAmountRub,
+          message: `Минимальная сумма оплаты — ${minAmountRub} ₽`,
+        },
+        { status: 422 },
+      );
+    }
+
+    // Потолок шлюза (у Freekassa лимит операции 150 000 ₽). Витрина держит
+    // верхний кап в долларах (`HIGH_VALUE_MAX_AMOUNT_USD`), но курс плавает —
+    // страховкой служит именно этот гейт: здесь сумма уже в рублях и известна
+    // точно. Ловим ДО вызова провайдера, иначе клиент получит его текст ошибки.
+    const maxAmountRub = maxAmountRubFor(gateway);
+    if (maxAmountRub > 0 && invoiceAmountKopecks > maxAmountRub * 100) {
+      log.warn({
+        event: 'payments.create.above_max',
+        orderId,
+        gateway,
+        amountRubKopecks: invoiceAmountKopecks,
+        maxAmountRubKopecks: maxAmountRub * 100,
+      });
+      await releaseClaims();
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'above_max_amount',
+          maxAmountRub,
+          message: `Максимальная сумма оплаты — ${maxAmountRub} ₽. Напиши в поддержку, оформим заказ частями.`,
+        },
+        { status: 422 },
+      );
+    }
 
     const invoice = await createGatewayInvoice({
       gateway,
       order,
-      amountKopecks: orderAmountKopecks,
+      amountKopecks: invoiceAmountKopecks,
       paymentMethod,
       payerContact,
     });
@@ -315,7 +478,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       gateway: invoice.provider,
       providerRef: invoice.providerRef,
       invoiceNumber: invoice.providerInvoiceNumber,
-      amountRub: orderAmountKopecks,
+      amountRub: invoiceAmountKopecks,
+      discountKopecks,
     });
 
     const invoiceExpiresAt = invoice.expiresAt;
@@ -338,7 +502,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           provider: invoice.provider,
           providerRef: invoice.providerRef,
           providerInvoiceNumber: invoice.providerInvoiceNumber,
-          amountRub: orderAmountKopecks,
+          amountRub: invoiceAmountKopecks,
           status: 'pending',
           expiresAt: invoiceExpiresAt,
           rawPayload: invoice.rawPayload,
@@ -362,6 +526,38 @@ export async function POST(req: Request): Promise<NextResponse> {
           // expire-payments мог похоронить заказ при ещё живом инвойсе (оплата
           // после экспайра = деньги приняты, фулфилмента нет).
           await setOrderExpiresAt(tx, orderId, invoiceExpiresAt);
+          // Списание баллов — такая же денежная веха, как выставленный счёт, и
+          // живёт там же: в `order_events`, в ОДНОЙ транзакции с платежом.
+          // Телеметрию `track()` здесь не зовём намеренно (инвариант аналитики:
+          // денежные вехи не дублируются best-effort записью).
+          if (bonusPlan) {
+            await appendOrderEvent(tx, {
+              orderId,
+              eventType: BONUS_RESERVED_EVENT,
+              actorType: 'system',
+              payload: {
+                spendUsdCents: bonusPlan.spendUsdCents,
+                discountKopecks: bonusPlan.discountKopecks,
+                rateKopecks: order.usdtRubRateKopecks ?? null,
+                paymentId: u.payment.id,
+              },
+            });
+          }
+          // Скидка по промокоду — такая же денежная веха, и живёт там же.
+          if (promoPlan) {
+            await appendOrderEvent(tx, {
+              orderId,
+              eventType: PROMO_RESERVED_EVENT,
+              actorType: 'system',
+              payload: {
+                promoCodeId: promoPlan.promoCodeId,
+                discountUsdCents: promoPlan.discountUsdCents,
+                discountKopecks: promoPlan.discountKopecks,
+                rateKopecks: order.usdtRubRateKopecks ?? null,
+                paymentId: u.payment.id,
+              },
+            });
+          }
         }
         return u;
       });
@@ -403,7 +599,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   } catch (err) {
     // ⚠️ Освобождаем ДО ответа клиенту и до Sentry: этот путь проходят и
     // таймауты шлюза, после которых заказ живёт дальше и клиент вернётся.
-    if (fundClaimed) await releaseOrderFundingClaim(orderId);
+    await releaseClaims();
     const isApiErr = err instanceof LoveAndPayApiError;
     log.error({
       event: 'payments.create.failed',

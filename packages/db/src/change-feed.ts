@@ -21,6 +21,7 @@ export const DB_CHANGE_TABLES = [
   'conversations',
   'messages',
   'client_feedback',
+  'referral_redemptions',
 ] as const;
 
 export type DbChangeTable = (typeof DB_CHANGE_TABLES)[number];

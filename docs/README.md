@@ -53,14 +53,13 @@
 | [`runbooks/payment-provider-switch.md`](runbooks/payment-provider-switch.md) | переключение платёжного шлюза (Love&Pay ↔ Freekassa): env-блок для прода, порядок включения, откат |
 | [`runbooks/server-migration.md`](runbooks/server-migration.md) | переезд контура на другой VPS (Dokploy → Dokploy): что чем переносится, порядок окна, грабли |
 | [`runbooks/vcc-funding.md`](runbooks/vcc-funding.md) | пополнение карточного фонда PaySpace: сколько держать, по какому сигналу пополнять, что делать при отказе клиенту |
-| [`runbooks/metabase.md`](runbooks/metabase.md) | Metabase на VPS: вход по ssh-туннелю, read-only роль `metabase_ro`, как выдать доступ к новой таблице |
 
 ## Справочники — внешние контракты и подсистемы
 
 | Файл | Что внутри |
 |---|---|
 | [`reference/payment-gateways.md`](reference/payment-gateways.md) | приём рублей целиком: Love&Pay и Freekassa, кто выставляет счёт, вебхуки, потолки, поведение при отказе шлюза |
-| [`reference/referral-program.md`](reference/referral-program.md) | партнёрская программа: захват реферера, ledger начислений, прогрессия статусов, выплаты (реальных денег ещё нет) |
+| [`reference/referral-program.md`](reference/referral-program.md) | партнёрская программа: захват реферера, ledger начислений, прогрессия статусов, **списание баллов в счёт своего заказа** (работает с 2026-09-10), выплаты (реальных денег ещё нет) |
 | [`reference/client-path.md`](reference/client-path.md) | путь клиента от первого экрана до оплаченной подписки + Mini App-кабинет |
 | [`reference/analytics.md`](reference/analytics.md) | поведенческая аналитика: словарь событий, приём, что НЕЛЬЗЯ дублировать телеметрией |
 | [`reference/testing.md`](reference/testing.md) | тестовый ландшафт: что покрыто и какой инцидент породил каждый регресс |
@@ -90,6 +89,10 @@
   код-ревью по 5 осям, все находки со статусами, смоук-чек-лист денежного пути
   (раздел 12 — им ещё пользуются);
 - `dokploy-migration-plan.md` — план того же переезда, фазы 0–5, целевая архитектура;
+- `metabase.md` — Metabase рядом с боевой БД (2026-07-28 → 2026-09-16): выведен, потому что
+  панель покрыла всё, чем он занимался, а открывать его перестали через три дня после
+  запуска. Внутри — SQL готовых вопросов и разбор, почему гранты на путь клиента идут через
+  вьюхи, а не через колонки `users` (это верно и для `panel_ai_ro`);
 - `audit-2026-07-18-fix-plan.md` — ТЗ по находкам полного аудита, закрыто;
 - `spec-2026-06-referral-program.md` + `plan-2026-06-referral-program.md` — спека и
   план рефералки. ⚠️ описывают **трёхуровневую** сеть; программу упростили до

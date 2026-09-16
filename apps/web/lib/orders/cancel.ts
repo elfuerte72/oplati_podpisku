@@ -6,6 +6,7 @@ import {
   claimPaymentTerminal,
   findPaymentsByOrderId,
   findPendingPaymentByOrderId,
+  findRedemptionByOrderId,
   getDb,
   getOrderById,
   lockOrderForUpdate,
@@ -225,7 +226,17 @@ export async function cancelOrderByClient(input: {
           ...(pending ? { paymentId: pending.id } : {}),
         },
       });
-      return { kind: 'cancelled' as const, invoiceClosed: pending !== null };
+      // Списание баллов ОТДЕЛЬНО не снимаем: резерв под заказом в `cancelled`
+      // перестаёт вычитаться из баланса ПРАВИЛОМ (`balanceExpr`). Читаем его
+      // здесь только ради текста — молчаливый возврат клиент прочтёт как
+      // «баллы сгорели» и придёт в поддержку.
+      const redemption = await findRedemptionByOrderId(tx, orderId);
+      return {
+        kind: 'cancelled' as const,
+        invoiceClosed: pending !== null,
+        bonusReturnedKopecks:
+          redemption && redemption.status === 'reserved' ? redemption.discountKopecks : 0,
+      };
     });
 
     if (outcome.kind === 'gone') {
@@ -257,9 +268,13 @@ export async function cancelOrderByClient(input: {
       invoiceClosed: outcome.invoiceClosed,
       // ⚠️ «Счёт закрыт» не обещаем: у шлюза он живёт до конца своего срока, и
       // оплата по старой ссылке придёт на уже захороненный платёж.
-      message: outcome.invoiceClosed
-        ? 'Заказ отменён. По старой ссылке больше не плати — заказ уже закрыт. Оформить новый можно в любой момент.'
-        : 'Заказ отменён. Оформить новый можно в любой момент.',
+      message:
+        (outcome.invoiceClosed
+          ? 'Заказ отменён. По старой ссылке больше не плати — заказ уже закрыт. Оформить новый можно в любой момент.'
+          : 'Заказ отменён. Оформить новый можно в любой момент.') +
+        (outcome.bonusReturnedKopecks > 0
+          ? ` Баллы вернулись на баланс: ${Math.round(outcome.bonusReturnedKopecks / 100)} ₽. Списать их можно на следующем заказе.`
+          : ''),
     };
   } catch (err) {
     // Заказ ушёл в другой статус между локом и переходом — теоретически

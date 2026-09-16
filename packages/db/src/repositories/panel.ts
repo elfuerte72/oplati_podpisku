@@ -32,12 +32,22 @@ import {
   orderEvents,
   orders,
   payments,
+  promoRedemptions,
+  referralRedemptions,
   services,
   staff,
   users,
 } from '../schema.ts';
 import type { DB } from '../index.ts';
 import { balanceExpr } from './referral-accruals.ts';
+import {
+  clientSearchCondition,
+  escapeLikePattern,
+  normalizeSearchQuery,
+} from './client-search-sql.ts';
+import { livePromoRedemptionSql } from './promo-redemption-sql.ts';
+import { liveRedemptionSql } from './referral-redemption-sql.ts';
+import type { RedemptionStatus } from './referral-redemptions.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import { transitionConversationMode } from './support.ts';
 import {
@@ -99,22 +109,6 @@ export function clampPanelOffset(requested: number | undefined): number {
   return Math.max(Math.floor(requested), 0);
 }
 
-/**
- * Потолок длины поискового запроса. Без него строка любой длины гоняет четыре
- * ILIKE с ведущим `%` в том же процессе, что принимает вебхуки.
- */
-const MAX_QUERY_LENGTH = 100;
-
-/**
- * Экранирование спецсимволов LIKE. Без него оператор, ищущий `100%` или
- * `ivan_petrov@…`, получает подстановочный знак вместо литерала и недоумевает,
- * почему выдача не та. Инъекции здесь нет (параметр связан), это корректность.
- * Обратный слэш — экранирующий символ LIKE по умолчанию в Postgres.
- */
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
-
 export type PanelOrderListFilters = {
   statuses?: readonly OrderStatus[];
   /** Номер заказа, telegram_id, email или имя клиента. */
@@ -137,6 +131,37 @@ export type PanelOrderListFilters = {
 /** Порядок списка. Живёт в адресе экрана — ссылку можно переслать коллеге. */
 export type PanelOrderSort = 'newest' | 'oldest' | 'amount_desc' | 'amount_asc';
 
+/**
+ * Живое списание баллов по заказу (трек referral-balance-spend): `reserved` или
+ * `spent`, но не `released`.
+ *
+ * Соединение, а не отдельная выборка пачкой: `referral_redemptions.order_id` —
+ * первичный ключ, поэтому LEFT JOIN не размножает строки, а лишний обход базы
+ * на каждый список панели (который перечитывается раз в 25 секунд на каждую
+ * открытую вкладку) обходится дороже одного соединения.
+ *
+ * ⚠️ Число, которое отсюда приходит, — СКИДКА, а не сумма к оплате.
+ * `orders.amount_rub` остаётся полной ценой заказа, и складывать их нельзя:
+ * к оплате идёт разность.
+ *
+ * ⚠️ «Живо» определяет ОБЩИЙ `liveRedemptionSql` — тот же, по которому считается
+ * баланс партнёра. Своё условие здесь означало бы, что панель показывает
+ * «−286 ₽ баллами» по заказу, чьи баллы клиенту уже вернули, и это же число
+ * уезжает в колонку CSV, которую складывают.
+ */
+const liveRedemptionJoin = () =>
+  and(eq(referralRedemptions.orderId, orders.id), liveRedemptionSql());
+
+/**
+ * Живая скидка по промокоду того же заказа (трек promo-codes).
+ *
+ * Отдельный join рядом с баллами, а не вместо них: скидки складываются, и
+ * счёт уменьшен на ОБЕ. Панель, знающая только про баллы, называла бы клиенту
+ * сумму больше той, что просит платёжная страница.
+ */
+const livePromoJoin = () =>
+  and(eq(promoRedemptions.orderId, orders.id), livePromoRedemptionSql());
+
 export type PanelClientRef = {
   id: string;
   displayName: string | null;
@@ -148,8 +173,12 @@ export type PanelOrderListItem = {
   id: string;
   shortId: string;
   status: OrderStatus;
-  /** Копейки — как и везде в проекте (инвариант 3). */
+  /** Копейки — как и везде в проекте (инвариант 3). ПОЛНАЯ цена заказа. */
   amountRubKopecks: number | null;
+  /** Сколько из этой суммы погашено баллами; 0 — списания не было. */
+  bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   createdAt: Date;
   expiresAt: Date | null;
   /** Каталожное имя либо свободное описание — строка таблицы не бывает пустой. */
@@ -189,7 +218,7 @@ export async function listOrdersForPanel(
   if (filters.createdFrom) conditions.push(gte(orders.createdAt, filters.createdFrom));
   if (filters.createdTo) conditions.push(lt(orders.createdAt, filters.createdTo));
 
-  const query = filters.query?.trim().slice(0, MAX_QUERY_LENGTH);
+  const query = normalizeSearchQuery(filters.query);
   if (query) {
     const like = `%${escapeLikePattern(query)}%`;
     conditions.push(
@@ -217,11 +246,15 @@ export async function listOrdersForPanel(
       clientTelegramId: users.telegramId,
       clientEmail: users.email,
       operatorName: staff.displayName,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(staff, eq(orders.assignedOperatorId, staff.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     // Вторым ключом — id: без тай-брейкера строки с одинаковым `created_at`
     // (пачка заказов в одну миллисекунду) на границе страниц дублируются или
@@ -238,6 +271,8 @@ export async function listOrdersForPanel(
     shortId: row.shortId,
     status: row.status,
     amountRubKopecks: row.amountRub,
+    bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+    promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,
@@ -333,6 +368,25 @@ export type PanelOrderDetail = {
   events: PanelOrderEvent[];
   payments: PanelOrderPayment[];
   card: PanelOrderCard | null;
+  /**
+   * Списание реферальных баллов по заказу; `null` — списания не было вовсе.
+   *
+   * Возвращается В ЛЮБОМ статусе, включая `released`: кнопка возврата обязана
+   * отличать «баллы ещё у нас» от «баллы уже вернули», а вторая ветка иначе
+   * была бы неотличима от «списания не было» — и оператор вернул бы их дважды
+   * (точнее, получил бы непонятный отказ и пошёл спрашивать).
+   */
+  bonus: PanelOrderBonus | null;
+};
+
+export type PanelOrderBonus = {
+  amountUsdCents: number;
+  discountKopecks: number;
+  status: RedemptionStatus;
+  reservedAt: Date;
+  settledAt: Date | null;
+  /** Кто вернул баллы руками; `null` — автоматика или ещё не возвращали. */
+  releasedByName: string | null;
 };
 
 export async function getOrderDetailForPanel(
@@ -366,7 +420,7 @@ export async function getOrderDetailForPanel(
   const head = headRows[0];
   if (!head) return null;
 
-  const [eventRows, paymentRows, cardRows] = await Promise.all([
+  const [eventRows, paymentRows, cardRows, bonusRows] = await Promise.all([
     // Берём СВЕЖИЕ и разворачиваем в памяти. `ASC LIMIT 100` у заказа с сотней
     // событий показал бы самые старые и молча отрезал последние — ровно те,
     // ради которых карточку и открывают.
@@ -409,9 +463,23 @@ export async function getOrderDetailForPanel(
     head.order.cardId
       ? db.select().from(cards).where(eq(cards.id, head.order.cardId)).limit(1)
       : Promise.resolve([]),
+    db
+      .select({
+        amountUsdCents: referralRedemptions.amountUsdCents,
+        discountKopecks: referralRedemptions.discountKopecks,
+        status: referralRedemptions.status,
+        reservedAt: referralRedemptions.reservedAt,
+        settledAt: referralRedemptions.settledAt,
+        releasedByName: staff.displayName,
+      })
+      .from(referralRedemptions)
+      .leftJoin(staff, eq(referralRedemptions.releasedBy, staff.id))
+      .where(eq(referralRedemptions.orderId, head.order.id))
+      .limit(1),
   ]);
 
   const card = cardRows[0];
+  const bonusRow = bonusRows[0];
 
   return {
     hasSucceededPayment: paymentRows.some((p) => p.status === 'succeeded'),
@@ -462,6 +530,16 @@ export async function getOrderDetailForPanel(
       completedAt: p.completedAt,
       expiresAt: p.expiresAt,
     })),
+    bonus: bonusRow
+      ? {
+          amountUsdCents: bonusRow.amountUsdCents,
+          discountKopecks: bonusRow.discountKopecks,
+          status: bonusRow.status,
+          reservedAt: bonusRow.reservedAt,
+          settledAt: bonusRow.settledAt,
+          releasedByName: bonusRow.releasedByName,
+        }
+      : null,
     // Явное перечисление полей, а не `...card`: строка карты не должна утекать
     // целиком, если в неё когда-нибудь добавят чувствительное поле.
     card: card
@@ -523,6 +601,10 @@ export type PanelClientDetail = {
     phoneSource: string | null;
     language: string;
     createdAt: Date;
+    /** Клиент нажал «Больше не напоминать» — касания воронки к нему не уходят. */
+    funnelOptOutAt: Date | null;
+    /** Партнёрский код — им подписаны его приглашения. */
+    referralCode: string | null;
   };
   orders: PanelClientOrder[];
   /**
@@ -583,22 +665,15 @@ export async function searchClientsForPanel(
   db: DB,
   input: { query: string; limit?: number },
 ): Promise<PanelClientSearchItem[]> {
-  const query = input.query.trim().slice(0, MAX_QUERY_LENGTH);
+  const query = normalizeSearchQuery(input.query);
   if (query.length < 2) return [];
 
   const limit = clampPanelLimit(input.limit);
-  const like = `%${escapeLikePattern(query)}%`;
-  const digits = query.replace(/\D/g, '');
-
-  const conditions = [
-    ilike(users.displayName, like),
-    ilike(users.telegramId, like),
-    ilike(users.email, like),
-  ];
-  // Три цифры совпадут у половины базы — это не поиск, а перебор.
-  if (digits.length >= 4) {
-    conditions.push(sql`regexp_replace(${users.phone}, '\\D', '', 'g') LIKE ${`%${digits}%`}`);
-  }
+  // Условие — ОБЩЕЕ со списком клиентов (`client-search-sql.ts`): второе
+  // определение «найти клиента» разъезжалось бы молча (оно и разошлось на
+  // `@username`, пока условий было два).
+  const condition = clientSearchCondition(query);
+  if (!condition) return [];
 
   const rows = await db
     .select({
@@ -611,7 +686,7 @@ export async function searchClientsForPanel(
       // лишняя PII в логе, в ответе и в следующей правке.
     })
     .from(users)
-    .where(or(...conditions))
+    .where(condition)
     // Свежие первыми: ищут обычно того, кто написал только что.
     .orderBy(desc(users.createdAt), asc(users.id))
     .limit(limit);
@@ -636,6 +711,8 @@ export async function getClientDetailForPanel(
       phoneSource: users.phoneSource,
       language: users.language,
       createdAt: users.createdAt,
+      funnelOptOutAt: users.funnelOptOutAt,
+      referralCode: users.referralCode,
       referredBy: users.referredBy,
     })
     .from(users)
@@ -736,6 +813,8 @@ export async function getClientDetailForPanel(
       phoneSource: head.phoneSource,
       language: head.language,
       createdAt: head.createdAt,
+      funnelOptOutAt: head.funnelOptOutAt,
+      referralCode: head.referralCode,
     },
     totals: {
       ordersCount: Number(totalsRows[0]?.orders_count ?? 0),
@@ -789,7 +868,11 @@ export type PanelHoldRow = {
   orderId: string;
   shortId: string;
   orderStatus: OrderStatus;
+  /** ПОЛНАЯ цена заказа; сколько из неё погашено баллами — ниже. */
   amountRubKopecks: number | null;
+  bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   orderCreatedAt: Date;
   /**
    * Что клиент покупал. Каталожное название или свободное описание — то же
@@ -902,11 +985,15 @@ export async function listHoldsForPanel(
       providerRef: payments.providerRef,
       lastProviderStatus: payments.lastProviderStatus,
       lastProviderStatusAt: payments.lastProviderStatusAt,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
     .leftJoin(payments, eq(payments.orderId, orders.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     .where(holdsCondition())
     // Свежие заказы первыми, платежи внутри заказа — тоже свежие первыми: по
     // ним и выбирается строка ниже.
@@ -935,6 +1022,8 @@ export async function listHoldsForPanel(
       shortId: row.shortId,
       orderStatus: row.orderStatus,
       amountRubKopecks: row.amountRub,
+      bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+      promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
       orderCreatedAt: row.orderCreatedAt,
       serviceName: row.serviceName ?? row.customServiceDescription,
       client: {
@@ -1024,7 +1113,11 @@ export type PanelPendingOrder = {
   orderId: string;
   shortId: string;
   status: OrderStatus;
+  /** ПОЛНАЯ цена заказа; напоминание об оплате называет сумму СЧЁТА. */
   amountRubKopecks: number | null;
+  bonusDiscountKopecks: number;
+  /** Живая скидка по промокоду (трек promo-codes) — счёт уменьшен на ОБЕ скидки. */
+  promoDiscountKopecks: number;
   createdAt: Date;
   /** Срок ЗАКАЗА (фиксация цены либо срок счёта — их выравнивает payments). */
   expiresAt: Date | null;
@@ -1113,10 +1206,14 @@ export async function listPendingOrdersForPanel(
       paymentUrl: sql<
         string | null
       >`${payments.rawPayload} -> 'invoice' ->> 'paymentLink'`,
+      bonusDiscountKopecks: referralRedemptions.discountKopecks,
+      promoDiscountKopecks: promoRedemptions.discountKopecks,
     })
     .from(orders)
     .innerJoin(users, eq(orders.userId, users.id))
     .leftJoin(services, eq(orders.serviceId, services.id))
+    .leftJoin(referralRedemptions, liveRedemptionJoin())
+    .leftJoin(promoRedemptions, livePromoJoin())
     // Только ЖИВОЙ счёт: терминальные платежи прошлых попыток к напоминанию
     // отношения не имеют, а частичный UNIQUE гарантирует, что живой один.
     .leftJoin(payments, and(eq(payments.orderId, orders.id), eq(payments.status, 'pending')))
@@ -1132,6 +1229,8 @@ export async function listPendingOrdersForPanel(
     shortId: row.shortId,
     status: row.status,
     amountRubKopecks: row.amountRub,
+    bonusDiscountKopecks: row.bonusDiscountKopecks ?? 0,
+    promoDiscountKopecks: row.promoDiscountKopecks ?? 0,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     serviceName: row.serviceName ?? row.customServiceDescription,

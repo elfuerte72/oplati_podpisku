@@ -63,6 +63,47 @@ export function isPayableStatus(status: OrderStatus): boolean {
  */
 export const PURCHASED_STATUSES: readonly OrderStatus[] = PURCHASED_ORDER_STATUSES;
 
+/**
+ * Состояние реферальных баллов на экране заказа (трек referral-balance-spend).
+ *
+ * `null` в `OrderDetail.bonus` — блока нет вовсе: фича выключена, клиент вне
+ * allowlist, партнёр заблокирован или баланс нулевой. Ненулевой баланс блок
+ * показывает ВСЕГДА (решение Q16), даже когда списывать ещё нечего: партнёру
+ * важно видеть, что программа работает.
+ */
+export type OrderBonusView = {
+  /** Баланс баллов, USD-центы. */
+  balanceUsdCents: number;
+  /** Ценность баланса по курсу заказа, RUB-копейки — «баллы копятся: 40 ₽». */
+  balanceKopecks: number;
+  /** Потолок скидки по этому заказу (наша комиссия), RUB-копейки. */
+  capKopecks: number;
+  /** Что спишется при включённом переключателе; `null` — списывать нечего. */
+  offer: { discountKopecks: number; spendUsdCents: number } | null;
+  /** Минимум одного списания, USD-центы — из него текст «списать можно от $1». */
+  minSpendUsdCents: number;
+};
+
+/** Уже занятое/потраченное списание по заказу — для строки «−286 ₽ баллами». */
+export type OrderRedemptionView = {
+  discountKopecks: number;
+  spendUsdCents: number;
+  status: 'reserved' | 'spent' | 'released';
+};
+
+/**
+ * Уже применённый промокод по заказу — для строки «−405 ₽ по промокоду»
+ * (трек promo-codes).
+ *
+ * Сам КОД наружу не отдаём: экран называет скидку, а не чужую акцию. Клиент и
+ * так знает, что ввёл; а поле в снапшоте превращало бы открытый чужой заказ в
+ * способ узнать действующие коды.
+ */
+export type OrderPromoView = {
+  discountKopecks: number;
+  status: 'reserved' | 'spent' | 'released';
+};
+
 export type CabinetProfile = {
   displayName: string | null;
   phone: string | null;
@@ -73,6 +114,11 @@ export type CabinetProfile = {
   memberSince: string;
   ordersCount: number;
   totalSpentKopecks: number;
+  /**
+   * Баланс реферальных баллов, USD-центы; `null` — фича клиента не касается.
+   * Профиль показывает его, чтобы партнёр видел баллы и вне экрана заказа.
+   */
+  bonusBalanceUsdCents: number | null;
 };
 
 export type OrderSummary = {
@@ -86,6 +132,16 @@ export type OrderSummary = {
   expiresAt: string | null;
   /** Можно ли оплатить заказ из кабинета (кнопка «Оплатить»). */
   payable: boolean;
+  /**
+   * Списание баллов по этому заказу; `null` — списания не было.
+   *
+   * ⚠️ `amountKopecks` остаётся ПОЛНОЙ ценой заказа (по ней сверяется чек), а
+   * к оплате идёт `amountKopecks − bonus.discountKopecks`. Складывать одно с
+   * другим в UI нельзя — только вычитать.
+   */
+  bonus: OrderRedemptionView | null;
+  /** Скидка по промокоду на этом заказе; `null` — промокода не было. */
+  promo: OrderPromoView | null;
 };
 
 /**
@@ -167,6 +223,16 @@ export type OrderDetail = OrderSummary & {
   events: OrderEventView[];
   payments: PaymentView[];
   card: CardView | null;
+  /** Что предложить списать; `null` — блока баллов на экране нет. */
+  bonusOffer: OrderBonusView | null;
+  /**
+   * Показывать ли поле ввода промокода (трек promo-codes). `false` — механика
+   * выключена флагом, поля нет вовсе.
+   *
+   * Флагом, а не наличием кодов: спрашивать «есть ли хоть один активный код»
+   * значило бы подсказывать, что акция идёт, ещё до её объявления.
+   */
+  promoInputEnabled: boolean;
 };
 
 export type CabinetSnapshot = {

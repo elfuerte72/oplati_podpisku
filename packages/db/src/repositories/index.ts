@@ -106,6 +106,43 @@ export {
 } from './referral-accruals.ts';
 
 export {
+  claimBonusSpent,
+  findOrdersWithStuckBonus,
+  findRedemptionByOrderId,
+  findRedemptionsByOrderIds,
+  findSelfReferralSignals,
+  releaseBonusReservation,
+  releaseUnusedBonusReservation,
+  reserveBonusForOrder,
+  sumBonusRedeemedKopecks,
+  isBonusAwaitingDecision,
+  type RedemptionRow,
+  type StuckBonusOrder,
+  type RedemptionStatus,
+  type ReserveBonusResult,
+  type SelfReferralMatch,
+} from './referral-redemptions.ts';
+
+export {
+  claimPromoSpent,
+  countPromoRedemptions,
+  findPromoCodeByCode,
+  findPromoRedemptionByOrderId,
+  findPromoRedemptionsByOrderIds,
+  listPromoCodes,
+  releasePromoRedemption,
+  releaseUnusedPromoReservation,
+  reservePromoForOrder,
+  setPromoCodeActive,
+  summarizePromoCode,
+  upsertPromoCode,
+  type PromoCodeRow,
+  type PromoRedemptionRow,
+  type PromoRedemptionStatus,
+  type ReservePromoResult,
+} from './promo-codes.ts';
+
+export {
   getReferralNetwork,
   getReferralIncome,
   getReferralEarnings,
@@ -174,6 +211,12 @@ export {
   PAYMENT_REMINDER_SENT_EVENT,
   PAYMENT_REMINDER_FAILED_EVENT,
   PAYMENT_BLOCKED_CAPACITY_EVENT,
+  BONUS_RESERVED_EVENT,
+  BONUS_SPENT_EVENT,
+  BONUS_RELEASED_EVENT,
+  PROMO_RESERVED_EVENT,
+  PROMO_SPENT_EVENT,
+  PROMO_RELEASED_EVENT,
   claimPaymentReminder,
   claimRenewalReminder,
   hasRecentOrderEvent,
@@ -274,6 +317,7 @@ export {
   listReferralPartnersForPanel,
   listPartnerReferralsForPanel,
   listReferralPayoutsForPanel,
+  type PanelOrderBonus,
   type PanelPartner,
   type PanelPartnerReferral,
   type PanelPayoutRequest,
@@ -299,6 +343,31 @@ export {
   type PanelOrderPayment,
   type PanelOrderSort,
 } from './panel.ts';
+export {
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
+  clientSearchCondition,
+  escapeLikePattern,
+  normalizeSearchQuery,
+} from './client-search-sql.ts';
+export {
+  PANEL_CLIENT_KINDS,
+  PANEL_CLIENT_SEGMENTS,
+  PANEL_CLIENT_SORTS,
+  countClientSegmentsForPanel,
+  getClientActivityForPanel,
+  listClientsForPanel,
+  type PanelClientActivity,
+  type PanelClientActivityEvent,
+  type PanelClientKind,
+  type PanelClientListFilters,
+  type PanelClientListItem,
+  type PanelClientListPage,
+  type PanelClientSegment,
+  type PanelClientSegmentCounts,
+  type PanelClientSort,
+  type PanelClientSupportSummary,
+  type PanelClientVpn,
+} from './panel-clients.ts';
 
 export {
   saveVccBalanceSnapshot,
@@ -325,9 +394,11 @@ export {
   findCompletedOrdersForRating,
   findRatedUsersForReferralNudge,
   listClientFeedbackForPanel,
+  listClientFeedbackByUserForPanel,
   feedbackSummaryForPanel,
   countRecentClientFeedbackForPanel,
   type PanelFeedbackRow,
+  type PanelClientFeedbackRow,
   type PanelFeedbackSummaryRow,
   type FunnelUserState,
   type FunnelWindow,
@@ -364,3 +435,17 @@ export {
   type RevenueSummary,
   type TopServiceRow,
 } from './analytics-panel.ts';
+
+export {
+  DAILY_PAID_ORDERS_MAX,
+  dailyAudience,
+  dailyOrderFlow,
+  dailyPaidOrders,
+  dailyPromoDiscounts,
+  dailySupport,
+  type DailyAudience,
+  type DailyOrderFlow,
+  type DailyPaidOrder,
+  type DailyPromoDiscounts,
+  type DailySupport,
+} from './daily-report.ts';

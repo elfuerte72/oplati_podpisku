@@ -714,6 +714,47 @@ export const PAYMENT_REMINDER_FAILED_EVENT = 'payment_reminder_failed';
 export const PAYMENT_BLOCKED_CAPACITY_EVENT = 'payment_blocked_capacity';
 
 /**
+ * Денежные вехи списания реферальных баллов (трек referral-balance-spend).
+ *
+ * Живут в `order_events` рядом с остальными деньгами и в одной транзакции с
+ * ними — телеметрией `track()` НЕ дублируются (инвариант аналитики: копия
+ * best-effort разошлась бы с оригиналом в отчёте о выручке).
+ *
+ * `bonus_reserved` — баллы заняты под выставленный счёт; `bonus_spent` — заказ
+ * оплачен, списание зафиксировано; `bonus_released` — баллы вернули ЯВНО
+ * (системный откат несостоявшегося счёта или решение оператора).
+ *
+ * ⚠️ Автовозврат по правилу «денег не приходило» (`expired`/`cancelled`)
+ * события НЕ пишет: события — про НАШИ действия, а там мы ничего не делаем,
+ * резерв просто перестаёт вычитаться из баланса.
+ *
+ * ⚠️ Все три СЛУЖЕБНЫЕ: в таймлайн клиента не показываются (денилист
+ * `INTERNAL_EVENT_TYPES` в `lib/cabinet/read.ts`). Про скидку клиент узнаёт из
+ * суммы на экране заказа, а «bonus_reserved» в истории — это наш учёт.
+ */
+export const BONUS_RESERVED_EVENT = 'bonus_reserved';
+export const BONUS_SPENT_EVENT = 'bonus_spent';
+export const BONUS_RELEASED_EVENT = 'bonus_released';
+
+/**
+ * Служебные события промокода (трек promo-codes) — те же три состояния и те же
+ * правила, что у баллов выше.
+ *
+ * `promo_reserved` — код занят под выставленный счёт; `promo_spent` — заказ
+ * оплачен, активация израсходована; `promo_released` — право вернули ЯВНО.
+ *
+ * ⚠️ Автовозврат по правилу «денег не приходило» события НЕ пишет — по той же
+ * причине, что у баллов.
+ *
+ * ⚠️ СЛУЖЕБНЫЕ: в таймлайн клиента не показываются (денилист
+ * `INTERNAL_EVENT_TYPES` в `lib/cabinet/read.ts`). Про скидку клиент узнаёт из
+ * суммы на экране заказа.
+ */
+export const PROMO_RESERVED_EVENT = 'promo_reserved';
+export const PROMO_SPENT_EVENT = 'promo_spent';
+export const PROMO_RELEASED_EVENT = 'promo_released';
+
+/**
  * Атомарно «занять» право напомнить об оплате: не чаще одного раза в
  * `cooldownMs` на заказ.
  *

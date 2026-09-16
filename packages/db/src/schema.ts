@@ -693,6 +693,70 @@ export const referralPayouts = pgTable(
   }),
 ).enableRLS();
 
+// Списание реферальных баллов в счёт заказа (трек referral-balance-spend).
+//
+// Состояние, а не журнал (по образцу `payments`): одна строка на заказ, статус
+// движется `reserved → spent | released`. Отдельная таблица, а НЕ строка в
+// `referral_accruals`: тот ledger append-only и с `CHECK amount >= 0`, то есть
+// «списание отрицательной строкой» невозможно by design, а строка нового `kind`
+// испортила бы витрины дохода (они суммируют по статусу, не по знаку).
+//
+// `order_id` первичным ключом даёт «не более одного списания на заказ»
+// бесплатно и делает занятие идемпотентным (`ON CONFLICT DO NOTHING`).
+// Аудит-след пишется отдельно строками `order_events` (append-only), поэтому
+// история не теряется при смене статуса этой строки.
+//
+// ⚠️ Возврат баллов разделён по признаку «приходили ли деньги»: `expired` и
+// `cancelled` возвращают резерв ПРАВИЛОМ (см. `balanceExpr`) — точек
+// захоронения заказа много, и забытая означала бы молча сожжённые баллы
+// клиента; `failed` возвращает ОПЕРАТОР кнопкой (там деньги уже приняты, и
+// автовозврат был бы единственным путём к отрицательному балансу).
+export const referralRedemptionStatusEnum = pgEnum('referral_redemption_status', [
+  'reserved',
+  'spent',
+  'released',
+]);
+
+export const referralRedemptions = pgTable(
+  'referral_redemptions',
+  {
+    orderId: uuid('order_id')
+      .primaryKey()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // Сколько центов баланса списано (USD-центы, как весь ledger начислений).
+    amountUsdCents: integer('amount_usd_cents').notNull(),
+    // Во сколько рублей-копеек это превратилось в счёте — снимок, а не расчёт:
+    // курс заказа может быть переписан только вместе с заказом.
+    discountKopecks: integer('discount_kopecks').notNull(),
+    // Курс USDT→RUB × 10000 на момент конверсии (снимок `orders`).
+    rateKopecks: integer('rate_kopecks').notNull(),
+    status: referralRedemptionStatusEnum('status').default('reserved').notNull(),
+    // Кто вернул баллы руками; NULL — системный откат (сбой выставления счёта).
+    releasedBy: uuid('released_by').references(() => staff.id),
+    reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // По нему считается баланс партнёра — то есть запрос на КАЖДУЮ витрину
+    // кабинета и на каждое занятие под локом.
+    userIdx: index('referral_redemptions_user_idx').on(t.userId),
+    // Покрытие FK released_by: ON DELETE у staff нет, но join панели по автору
+    // возврата без индекса сканирует таблицу целиком.
+    releasedByIdx: index('referral_redemptions_released_by_idx').on(t.releasedBy),
+    // Деньги строго положительны: строка существует только там, где реально
+    // списали. «Нулевое списание» отличалось бы от отсутствия строки ничем,
+    // кроме лишней записи в балансовой выборке.
+    amountPositive: check('referral_redemptions_amount_positive', sql`${t.amountUsdCents} > 0`),
+    discountPositive: check(
+      'referral_redemptions_discount_positive',
+      sql`${t.discountKopecks} > 0`,
+    ),
+  }),
+).enableRLS();
+
 // Помесячные агрегаты прогрессии (Этап C) — пишет крон `referral-rollup` один раз
 // на партнёра за месяц. PK(user_id, month) даёт естественную идемпотентность
 // (повторный запуск месяца — ON CONFLICT DO NOTHING). `month` — первое число
@@ -759,8 +823,8 @@ export const aiUsageDaily = pgTable('ai_usage_daily', {
 //
 // ⚠️ Одна строка на провайдера, а не история. Крон бежит каждые 5 минут: лента
 // дала бы 288 строк в сутки ради справочного числа, а «последнюю» пришлось бы
-// искать сортировкой на КАЖДОЙ оплате. Нужен график баланса — его строит
-// Metabase по своим данным, а не денежный путь.
+// искать сортировкой на КАЖДОЙ оплате. Нужен график баланса — это отдельная
+// витрина панели по этой таблице (BACKLOG), а не денежный путь.
 
 export const vccBalanceSnapshots = pgTable('vcc_balance_snapshots', {
   // Кто эмитент карт ('payspace'). Ключом, а не константой в коде: второй
@@ -1055,5 +1119,134 @@ export const funnelTextRevisions = pgTable(
   },
   (t) => ({
     keyTimeIdx: index('funnel_text_revisions_key_created_at_idx').on(t.key, t.createdAt),
+  }),
+).enableRLS();
+
+// ─── Промокоды (трек promo-codes) ─────────────────────────────────────────
+//
+// Скидка по промокоду устроена как скидка по баллам и живёт по тем же
+// правилам: уменьшает СЧЁТ (`payments.amount_rub`), а не заказ
+// (`orders.amount_rub` остаётся полной ценой — по ней сверяется чек).
+//
+// ⚠️ Принципиальное отличие от баллов: промокод НЕ обязан укладываться в маржу
+// заказа. Решение владельца 2026-09-11 — «дать все $5, терпеть убыток»: на
+// заказе дешевле ~2100 ₽ скидка съедает всю комиссию и часть карточного фонда.
+// Это осознанный маркетинговый расход, а не дефект. Ограничение остаётся ровно
+// одно, физическое: счёт не может упасть ниже минимума шлюза.
+//
+// Правила кода живут В СТРОКЕ, а не в коде: номинал, порог, потолок-по-марже,
+// лимиты и срок — колонки. Новый промокод = новая строка, а не новый деплой.
+export const promoCodes = pgTable(
+  'promo_codes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    // Хранится НОРМАЛИЗОВАННЫМ (trim + upper + латинские гомоглифы → кириллица,
+    // `normalizePromoCode`). Схлопывание визуально одинаковых написаний в одну
+    // строку — защита, а не побочный эффект: «ДAРЛИНГ» с латинской A не должен
+    // существовать как отдельный код.
+    code: text('code').notNull(),
+    // Номинал скидки в USD-центах ($5 = 500). Проценты осознанно не
+    // поддерживаем — у скидки должна быть предсказуемая цена для нас.
+    discountUsdCents: integer('discount_usd_cents').notNull(),
+    // Ограничивать ли скидку маржой заказа. `true` — как у баллов, заказ
+    // никогда не уходит в минус; `false` — номинал даётся целиком (ДАРЛИНГ).
+    capToMargin: boolean('cap_to_margin').default(true).notNull(),
+    // Порог суммы ЗАКАЗА, ниже которого код не применяется (NULL — порога нет).
+    // Инструмент честного «промокод действует от N ₽» вместо урезанной скидки.
+    minOrderAmountKopecks: integer('min_order_amount_kopecks'),
+    // Сколько раз код доступен ОДНОМУ клиенту. У ДАРЛИНГ — 1.
+    perUserLimit: integer('per_user_limit').default(1).notNull(),
+    // Общий потолок активаций на весь код (NULL — без потолка): бюджет акции.
+    maxRedemptions: integer('max_redemptions'),
+    startsAt: timestamp('starts_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    isActive: boolean('is_active').default(true).notNull(),
+    // Заметка владельца: зачем код заведён. Клиенту не показывается.
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    // Поиск по коду — на КАЖДУЮ проверку из кабинета, и он же единственный
+    // барьер против двух строк с одинаковым написанием.
+    codeUnique: uniqueIndex('promo_codes_code_unique').on(t.code),
+    discountPositive: check('promo_codes_discount_positive', sql`${t.discountUsdCents} > 0`),
+    // Ноль означал бы «код заведён и никому не доступен» — состояние, для
+    // которого уже есть `is_active`.
+    perUserLimitPositive: check('promo_codes_per_user_limit_positive', sql`${t.perUserLimit} > 0`),
+    maxRedemptionsPositive: check(
+      'promo_codes_max_redemptions_positive',
+      sql`${t.maxRedemptions} IS NULL OR ${t.maxRedemptions} > 0`,
+    ),
+    minOrderPositive: check(
+      'promo_codes_min_order_positive',
+      sql`${t.minOrderAmountKopecks} IS NULL OR ${t.minOrderAmountKopecks} > 0`,
+    ),
+    // Окно с концом раньше начала — мисконфиг, который иначе проявился бы
+    // молчаливым «код не работает» и разбирался бы вручную.
+    windowSane: check(
+      'promo_codes_window_sane',
+      sql`${t.startsAt} IS NULL OR ${t.expiresAt} IS NULL OR ${t.expiresAt} > ${t.startsAt}`,
+    ),
+  }),
+).enableRLS();
+
+// Состояние применения промокода к заказу — НЕ журнал (аудит-след пишется
+// строками `order_events`, они append-only).
+//
+// `order_id` первичным ключом даёт «не более одного промокода на заказ»
+// бесплатно и делает занятие идемпотентным.
+//
+// ⚠️ Право на промокод возвращается ПРАВИЛОМ, а не кнопкой (в отличие от
+// баллов, где `failed` разбирает оператор): `expired`/`cancelled` без успешного
+// платежа не считаются использованной активацией — см. `livePromoRedemptionSql`.
+// Точек захоронения заказа много, и забытая означала бы молча сгоревший
+// промокод у клиента, который ничего не оплатил.
+export const promoRedemptionStatusEnum = pgEnum('promo_redemption_status', [
+  'reserved',
+  'spent',
+  'released',
+]);
+
+export const promoRedemptions = pgTable(
+  'promo_redemptions',
+  {
+    orderId: uuid('order_id')
+      .primaryKey()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    // RESTRICT: удаление промокода не должно стирать историю его применений.
+    promoCodeId: uuid('promo_code_id')
+      .notNull()
+      .references(() => promoCodes.id, { onDelete: 'restrict' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // Снимок номинала на момент применения: правка строки `promo_codes` не
+    // должна задним числом менять уже выставленные счета.
+    discountUsdCents: integer('discount_usd_cents').notNull(),
+    // Во сколько рублей-копеек это превратилось в счёте.
+    discountKopecks: integer('discount_kopecks').notNull(),
+    // Курс USDT→RUB × 10000 на момент конверсии (снимок `orders`).
+    rateKopecks: integer('rate_kopecks').notNull(),
+    status: promoRedemptionStatusEnum('status').default('reserved').notNull(),
+    // Кто вернул право руками; NULL — системный откат или возврат по правилу.
+    releasedBy: uuid('released_by').references(() => staff.id),
+    reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // По нему считается «сколько раз этот клиент применял этот код» — запрос на
+    // каждую проверку кода и на каждое занятие под локом.
+    promoUserIdx: index('promo_redemptions_promo_user_idx').on(t.promoCodeId, t.userId),
+    userIdx: index('promo_redemptions_user_idx').on(t.userId),
+    releasedByIdx: index('promo_redemptions_released_by_idx').on(t.releasedBy),
+    // Строка существует только там, где скидку реально дали: «нулевая скидка»
+    // отличалась бы от отсутствия строки лишь записью в подсчёте активаций.
+    discountPositive: check('promo_redemptions_discount_positive', sql`${t.discountKopecks} > 0`),
+    usdPositive: check('promo_redemptions_usd_positive', sql`${t.discountUsdCents} > 0`),
+    // Курс — такой же денежный снимок, как обе суммы, и ноль в нём делает
+    // пересчёт «рубли ↔ центы» бессмысленным. Вызывающий подставляет
+    // `?? 0` из заказа без курса, и до этой строки такой заказ доходить не
+    // должен — но защищает пусть база, а не только гейт выше по стеку.
+    ratePositive: check('promo_redemptions_rate_positive', sql`${t.rateKopecks} > 0`),
   }),
 ).enableRLS();

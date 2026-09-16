@@ -40,6 +40,8 @@ const h = vi.hoisted(() => ({
     pendingBefore: null as PaymentLike | null,
     /** Платёж, видимый ВНУТРИ транзакции (под локом) — по умолчанию тот же. */
     pendingInTx: undefined as PaymentLike | null | undefined,
+    /** Списание баллов по заказу; null — списания не было. */
+    redemption: null as { discountKopecks: number; status: string } | null,
   },
   claimPaymentTerminal: vi.fn(),
   // Сигнатура нужна типам: тест читает второй аргумент (вход перехода).
@@ -65,6 +67,9 @@ vi.mock('@oplati/db', () => ({
   claimPaymentTerminal: h.claimPaymentTerminal,
   transitionOrder: h.transitionOrder,
   lockOrderForUpdate: h.lockOrderForUpdate,
+  // Списание баллов: возвращается ПРАВИЛОМ (`balanceExpr`), отмена его не
+  // снимает — читает только ради текста «баллы вернулись».
+  findRedemptionByOrderId: vi.fn(async () => h.state.redemption ?? null),
 }));
 
 vi.mock('../jobs/poll-payment-one.ts', () => ({ pollPaymentOnce: h.pollPaymentOnce }));
@@ -85,6 +90,7 @@ beforeEach(() => {
   h.state.payments = [];
   h.state.pendingBefore = null;
   h.state.pendingInTx = undefined;
+  h.state.redemption = null;
   h.claimPaymentTerminal.mockResolvedValue({ id: 'p1', status: 'failed' });
   h.transitionOrder.mockResolvedValue({});
   h.lockOrderForUpdate.mockImplementation(async () =>
@@ -334,5 +340,43 @@ describe('гонка со сменой статуса', () => {
     if (res.ok) throw new Error('unreachable');
     expect(res.error).toBe('failed');
     expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Списание баллов возвращается ПРАВИЛОМ (`balanceExpr` не считает резерв под
+ * заказом в `cancelled`), а не вызовом. Отмена обязана про это СКАЗАТЬ:
+ * молчаливый возврат клиент прочтёт как «баллы сгорели» (решение Q13).
+ */
+describe('отмена заказа со списанными баллами', () => {
+  it('текст прямо говорит, что баллы вернулись на баланс', async () => {
+    h.state.order = payable();
+    h.lockOrderForUpdate.mockResolvedValue(payable());
+    h.state.redemption = { discountKopecks: 28_600, status: 'reserved' };
+
+    const res = await cancelOrderByClient({ orderId: 'o1', userId: 'u1', source: 'cabinet' });
+
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.message).toContain('Баллы вернулись на баланс');
+    expect(res.ok && res.message).toContain('286 ₽');
+  });
+
+  it('заказ без списания про баллы не говорит ничего', async () => {
+    h.state.order = payable();
+    h.lockOrderForUpdate.mockResolvedValue(payable());
+
+    const res = await cancelOrderByClient({ orderId: 'o1', userId: 'u1', source: 'cabinet' });
+
+    expect(res.ok && res.message).not.toContain('Баллы');
+  });
+
+  it('уже возвращённое списание вторично не обещается', async () => {
+    h.state.order = payable();
+    h.lockOrderForUpdate.mockResolvedValue(payable());
+    h.state.redemption = { discountKopecks: 28_600, status: 'released' };
+
+    const res = await cancelOrderByClient({ orderId: 'o1', userId: 'u1', source: 'cabinet' });
+
+    expect(res.ok && res.message).not.toContain('Баллы');
   });
 });

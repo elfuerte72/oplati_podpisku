@@ -45,9 +45,13 @@ export function PendingOrdersList({
             <span className="mt-0.5 block font-body text-xs text-[var(--text-muted)]">
               {order.amountKopecks !== null && (
                 <span className="font-display font-bold text-[var(--text)]">
-                  {formatRub(order.amountKopecks)}
+                  {/* Сумма К ОПЛАТЕ: полная цена заказа минус списанные баллы.
+                      `amountKopecks` остаётся полной ценой (по ней сверяется
+                      чек), поэтому здесь только вычитаем, никогда не наоборот. */}
+                  {formatRub(order.amountKopecks - (order.bonus?.discountKopecks ?? 0))}
                 </span>
               )}
+              {order.bonus && ` · −${formatRub(order.bonus.discountKopecks)} баллами`}
               {order.amountKopecks !== null && ' · '}
               {/* Срок — то, из-за чего этот блок вообще нужен: заказ живёт часы,
                   и «до 14:30» отвечает на «успею ли» без захода внутрь. */}

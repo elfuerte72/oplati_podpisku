@@ -19,7 +19,8 @@ import {
 import { askForContactBeforeInvoice } from './contact-flow';
 import { persistInbound, safeAppendMessage } from './persist';
 import { sendSafely } from './send';
-import { buildBuyerFeeLine, PAYMENT_PENDING_HINT } from './templates';
+import { buildBonusAppliedLine, buildBuyerFeeLine, PAYMENT_PENDING_HINT } from './templates';
+import { invoicedAmountForOrder } from '../referral/spend.ts';
 
 /**
  * Привязка веб-сессии к Telegram: deep-link `/start link_<token>` + handoff
@@ -222,13 +223,20 @@ async function buildPendingOrderHandoffText(
       orderId: pending.id,
     });
 
+    // Сумма СЧЁТА, а не заказа: часть цены могла быть погашена баллами, и
+    // назвать полную цену значило бы попросить больше, чем просит платёжная
+    // страница (трек referral-balance-spend).
+    const invoiced = await invoicedAmountForOrder(pending);
+    const invoicedKopecks = invoiced.amountKopecks ?? 0;
     const parts = [
-      `Готово, Telegram привязан! Твой заказ ${pending.shortId} на ${formatRub(pending.amountRub ?? 0)} уже ждёт — счёт готов, оплатить можно прямо отсюда:\n${confirmResult.paymentUrl}`,
+      `Готово, Telegram привязан! Твой заказ ${pending.shortId} на ${formatRub(invoicedKopecks)} уже ждёт — счёт готов, оплатить можно прямо отсюда:\n${confirmResult.paymentUrl}`,
     ];
     if (confirmResult.qrPayload) {
       parts.push('Или отсканируй QR-код в приложении банка по СБП.');
     }
-    const feeLine = buildBuyerFeeLine(currentBuyerFeePercent(), pending.amountRub ?? 0);
+    const bonusLine = buildBonusAppliedLine(invoiced.discountKopecks);
+    if (bonusLine) parts.push(bonusLine);
+    const feeLine = buildBuyerFeeLine(currentBuyerFeePercent(), invoicedKopecks);
     if (feeLine) parts.push(feeLine);
     parts.push(
       `Счёт действует до ${formatExpires(confirmResult.expiresAt)}. Чек и доступы после оплаты придут сюда, в Telegram.`,

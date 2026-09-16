@@ -6,10 +6,11 @@
 -- транзакция, а не промпт: модель физически не может ни изменить данные, ни
 -- прочитать то, чего у роли нет.
 --
--- Образец — `metabase_ro` (docs/runbooks/metabase.md): те же таблицы и те же
--- колоночные ограничения, плюс две таблицы воронки (`client_feedback`,
--- `funnel_sends`) и вьюхи аналитики. Отличия от metabase_ro — в сторону
--- УЖЕСТОЧЕНИЯ, потому что читатель здесь не человек, а внешний провайдер модели:
+-- `panel_ai_ro` — единственная read-only роль боевой БД; `metabase_ro`, по образцу
+-- которой она писалась, снята 2026-09-16 вместе с Metabase (docs/history/metabase.md).
+-- Белый список таблиц с колоночными ограничениями, две таблицы воронки
+-- (`client_feedback`, `funnel_sends`) и вьюхи аналитики. Ограничения строже,
+-- чем нужны человеку, потому что читатель здесь — внешний провайдер модели:
 --   - `staff` — без `totp_secret`/`totp_last_step` (второй фактор входа в
 --     панель), без `email`/`telegram_id` (контакты персонала);
 --   - `vpn_subscriptions` — без `subscription_url` (ссылка даёт доступ к VPN).
@@ -20,8 +21,8 @@
 -- `users` сверх перечисленных колонок (email, телефон, IP, имя),
 -- `payments.raw_payload`, `referral_payouts.destination`.
 --
--- `ALTER DEFAULT PRIVILEGES` НЕ ставится намеренно (та же политика, что у
--- metabase_ro): новая таблица = явный грант, и словарь схемы в
+-- `ALTER DEFAULT PRIVILEGES` НЕ ставится намеренно: новая таблица = явный грант
+-- этой роли, и словарь схемы в
 -- `apps/web/lib/panel/ai/schema-dictionary.ts` обязан описывать ровно то, что
 -- выдано здесь (зеркало ловится тестом `schema-dictionary.test.ts`).
 --
@@ -62,6 +63,11 @@ GRANT SELECT ON conversations TO panel_ai_ro;
 GRANT SELECT ON referral_accruals TO panel_ai_ro;
 GRANT SELECT ON referral_monthly_stats TO panel_ai_ro;
 GRANT SELECT ON referral_partners TO panel_ai_ro;
+GRANT SELECT ON referral_redemptions TO panel_ai_ro;
+-- Промокоды (трек promo-codes): «сколько стоила акция» — вопрос к аналитику, а
+-- секретов в этих таблицах нет (код акции не тайна после её запуска).
+GRANT SELECT ON promo_codes TO panel_ai_ro;
+GRANT SELECT ON promo_redemptions TO panel_ai_ro;
 GRANT SELECT ON client_feedback TO panel_ai_ro;
 GRANT SELECT ON funnel_sends TO panel_ai_ro;
 GRANT SELECT ON analytics_event_types TO panel_ai_ro;

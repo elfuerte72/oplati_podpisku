@@ -1,10 +1,15 @@
 import { z } from 'zod';
 
-import { PANEL_PENDING_ORDER_STATUSES, type PanelOrderSort } from '@oplati/db';
+import {
+  PANEL_PENDING_ORDER_STATUSES,
+  PANEL_SEARCH_QUERY_MAX_LENGTH,
+  type PanelOrderSort,
+} from '@oplati/db';
 import { orderStatus, type OrderStatus } from '@oplati/types';
 
-import { ANALYTICS_PERIODS, type AnalyticsPeriod } from './analytics/period';
+import { parseOptionalPeriod, type AnalyticsPeriod } from './analytics/period';
 import { PRESET_TITLES, SORT_TITLES } from './labels';
+import { firstParam, panelPageSchema } from './paging';
 
 /**
  * Разбор адреса экрана заказов. Параметры адреса — граница (инвариант 5),
@@ -51,23 +56,6 @@ export const SORT_OPTIONS: ReadonlyArray<{ key: PanelOrderSort; title: string }>
   { key: 'amount_asc', title: SORT_TITLES.amount_asc },
 ];
 
-/** Потолок поиска — тот же, что в репозитории; длиннее вводить незачем. */
-const MAX_QUERY_LENGTH = 100;
-
-/**
- * Разбор периода заказов. Свой, а не из аналитики: там период обязателен и
- * откатывается к тридцати дням, здесь «всё время» — законное состояние.
- *
- * Без приведений: список допустимых значений один (`ANALYTICS_PERIODS`), а
- * проверка вхождения сама сужает тип — так смена состава периодов не пройдёт
- * мимо типов.
- */
-function parsePeriodDays(raw: string | undefined): AnalyticsPeriod | null {
-  if (raw === undefined) return null;
-  const days = Number(raw);
-  return ANALYTICS_PERIODS.find((allowed) => allowed === days) ?? null;
-}
-
 export type PanelOrdersQuery = {
   query: string;
   preset: (typeof STATUS_PRESETS)[number];
@@ -85,37 +73,34 @@ export type PanelOrdersQuery = {
   ignored: string[];
 };
 
-function firstValue(raw: string | string[] | undefined): string | undefined {
-  return Array.isArray(raw) ? raw[0] : raw;
-}
-
 export function parseOrdersQuery(
   params: Record<string, string | string[] | undefined>,
 ): PanelOrdersQuery {
   const ignored: string[] = [];
 
-  const rawQuery = firstValue(params.q)?.trim() ?? '';
-  const query = rawQuery.slice(0, MAX_QUERY_LENGTH);
+  // Потолок поиска — тот же, что в репозитории (`@oplati/db`): обрезка на
+  // экране короче, чем в базе, значила бы, что ссылка ищет не то, что ввели.
+  const query = (firstParam(params.q)?.trim() ?? '').slice(0, PANEL_SEARCH_QUERY_MAX_LENGTH);
 
-  const rawStatus = firstValue(params.status);
+  const rawStatus = firstParam(params.status);
   const parsedStatus = rawStatus ? orderStatus.safeParse(rawStatus) : null;
   if (rawStatus && !parsedStatus?.success) ignored.push('status');
 
-  const rawPreset = firstValue(params.s);
+  const rawPreset = firstParam(params.s);
   const parsedPreset = rawPreset ? presetKeySchema.safeParse(rawPreset) : null;
   if (rawPreset && !parsedPreset?.success) ignored.push('s');
 
-  const rawSort = firstValue(params.sort);
+  const rawSort = firstParam(params.sort);
   const parsedSort = rawSort ? sortSchema.safeParse(rawSort) : null;
   if (rawSort && !parsedSort?.success) ignored.push('sort');
 
-  const rawPeriod = firstValue(params.period);
-  const period = parsePeriodDays(rawPeriod);
+  const rawPeriod = firstParam(params.period);
+  const period = parseOptionalPeriod(rawPeriod);
   // Непонятый период не «молча показывает всё»: экран говорит об этом вслух.
   if (rawPeriod && period === null) ignored.push('period');
 
-  const rawPage = firstValue(params.page);
-  const parsedPage = rawPage ? z.coerce.number().int().min(1).max(1000).safeParse(rawPage) : null;
+  const rawPage = firstParam(params.page);
+  const parsedPage = rawPage ? panelPageSchema.safeParse(rawPage) : null;
   if (rawPage && !parsedPage?.success) ignored.push('page');
 
   const presetKey = parsedPreset?.success ? parsedPreset.data : 'all';

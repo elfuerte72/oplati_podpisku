@@ -1,4 +1,14 @@
-# Metabase — вопросы к боевой БД без SQL
+# Metabase — вопросы к боевой БД без SQL (архив, выведен 2026-09-16)
+
+⚠️ **Это история, а не рунбук.** Metabase удалён с VPS 2026-09-16 по решению владельца:
+с 31.07 его никто не открывал, а панель `/admin` покрыла всё, чем он занимался («Отчёты»,
+AI-аналитик, лента действий клиента, дневной отчёт). Роль `metabase_ro` снята, роутер
+Traefik и A-запись убраны. Архив тома app-БД, compose и роутера — на VPS в
+`/root/archive/metabase-2026-09-16/` (README внутри описывает возврат). Текст ниже
+оставлен ради SQL готовых вопросов и разбора грантов через вьюхи; актуальная read-only
+роль одна — `panel_ai_ro` (`packages/db/scripts/panel-ai-role.sql`, ADR 0003).
+
+---
 
 Развёрнут 2026-07-28 шаблоном Dokploy в проекте `oplatishka`, окружение
 `production`. Это инструмент чтения аналитики, а не часть контура оплаты: его
@@ -67,7 +77,7 @@ letsencrypt`, и только потом публиковать.
 
 Выдано `SELECT` на: `orders`, `order_events`, `services`, `ai_usage_daily`,
 `cards`, `conversations`, `referral_accruals`, `referral_monthly_stats`,
-`referral_partners`, `vpn_subscriptions`, `staff`; на `payments` — без
+`referral_partners`, `referral_redemptions`, `vpn_subscriptions`, `staff`; на `payments` — без
 `raw_payload`; на `users` — только `id`, `language`, `created_at`, `updated_at`,
 `referred_by`, `referral_code`, `referred_by_set_at`; на `referral_payouts` — без
 `destination`.
@@ -83,6 +93,23 @@ ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry
 
 После нового гранта — в Metabase «Admin → Databases → Sync database schema»,
 иначе таблица не появится.
+
+✅ **Промокоды выданы 2026-09-11** (трек promo-codes, вместе с миграцией 0047):
+`promo_codes` и `promo_redemptions` доступны обеим ролям. Секретов в них нет, а
+«сколько стоила акция» — обычный вопрос к BI. Команда, если понадобится повторить
+на другом контуре:
+
+```bash
+ssh root@187.124.172.104 'docker exec $(docker ps --filter name=oplatishka-db-ry3smb -q) \
+  psql -U oplatishka -d oplatishka -c "
+    GRANT SELECT ON promo_codes, promo_redemptions TO metabase_ro;
+    GRANT SELECT ON promo_codes, promo_redemptions TO panel_ai_ro;
+  "'
+```
+
+⚠️ Считая активации, не берите голый `COUNT(*)`: применение под заказом в
+`expired`/`cancelled` без успешного платежа активацией не считается — право
+вернулось клиенту. Правило живёт в `livePromoRedemptionSql`.
 
 ### Рядом живёт `panel_ai_ro` — роль AI-аналитика панели
 

@@ -128,19 +128,35 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: false, error: 'too_soon' }, { status: 409 });
   }
 
+  // Сумма, которую реально просит платёжная страница: полная цена заказа минус
+  // ОБЕ скидки — списанные баллы (трек referral-balance-spend) и промокод
+  // (трек promo-codes).
+  //
+  // ⚠️ Забыть вторую значит попросить у клиента больше, чем просит платёжная
+  // страница, — в сообщении, которое отправляет живой оператор кнопкой.
+  const invoiceAmountKopecks =
+    order.amountRubKopecks === null
+      ? null
+      : order.amountRubKopecks - order.bonusDiscountKopecks - order.promoDiscountKopecks;
+
   try {
     await bot.api.sendMessage(
       telegramId,
       buildPaymentReminderText({
         shortId: order.shortId,
-        amountRubKopecks: order.amountRubKopecks,
+        // ⚠️ Сумма СЧЁТА, а не заказа: клиент платит по живой ссылке, и она
+        // выставлена на цену за вычетом списанных баллов. `amountRubKopecks`
+        // остаётся полной ценой заказа — назвать её значило бы попросить
+        // денег больше, чем просит страница оплаты.
+        amountRubKopecks: invoiceAmountKopecks,
         paymentUrl: paymentUrl.data,
         expiresAt: order.invoice?.expiresAt ?? null,
         // Надбавку платёжной системы называем ТУ ЖЕ, что и первое сообщение со
         // ссылкой: без неё напоминание обещает 11 680 ₽ там, где страница
         // оплаты попросит около 12 381 ₽ (надбавка покупателя Freekassa 6%).
-        // Процент берётся у шлюза ЭТОГО счёта, а не у текущего основного.
-        feeNote: buyerFeeLineFor(order.invoice?.provider, order.amountRubKopecks),
+        // Процент берётся у шлюза ЭТОГО счёта, а не у текущего основного, и
+        // считается от суммы счёта — провайдер начисляет его именно на неё.
+        feeNote: buyerFeeLineFor(order.invoice?.provider, invoiceAmountKopecks),
         now,
       }),
       { link_preview_options: { is_disabled: true } },

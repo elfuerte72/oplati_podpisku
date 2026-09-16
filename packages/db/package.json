@@ -16,6 +16,7 @@
     "db:seed": "tsx --env-file=../../.env scripts/seed-catalog.ts",
     "db:init-roles": "tsx --env-file=../../.env scripts/init-roles.ts",
     "db:staff": "tsx --env-file=../../.env scripts/manage-staff.ts",
+    "db:promo": "tsx --env-file=../../.env scripts/manage-promo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

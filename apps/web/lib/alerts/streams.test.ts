@@ -57,6 +57,7 @@ function configureGroup(threads: Partial<Record<string, string>> = {}) {
   h.env.OPS_GROUP_THREAD_SUPPORT = threads.support ?? '33';
   h.env.OPS_GROUP_THREAD_ERRORS = threads.errors ?? '44';
   h.env.OPS_GROUP_THREAD_DEPLOY = threads.deploy ?? '55';
+  h.env.OPS_GROUP_THREAD_REPORTS = threads.reports ?? '66';
 }
 
 beforeEach(() => {
@@ -75,12 +76,12 @@ describe('opsGroup — конфигурация из env', () => {
     expect(opsGroup()).toBeNull();
   });
 
-  it('таблица «поток → thread id» читается из пяти переменных', () => {
+  it('таблица «поток → thread id» читается из шести переменных', () => {
     configureGroup();
 
     expect(opsGroup()).toEqual({
       chatId: GROUP,
-      threads: { critical: 11, payments: 22, support: 33, errors: 44, deploy: 55 },
+      threads: { critical: 11, payments: 22, support: 33, errors: 44, deploy: 55, reports: 66 },
     });
   });
 
@@ -94,6 +95,7 @@ describe('opsGroup — конфигурация из env', () => {
       support: null,
       errors: null,
       deploy: null,
+      reports: null,
     });
   });
 

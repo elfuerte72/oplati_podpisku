@@ -57,6 +57,20 @@ const h = vi.hoisted(() => ({
   ),
   preflightReportMock: vi.fn(async (..._args: unknown[]) => {}),
   preflightReleaseMock: vi.fn(async (..._args: unknown[]) => {}),
+  appendEventMock: vi.fn(async (..._args: unknown[]) => {}),
+  // Дефолт — «фича клиента не касается»: остальные сьюты про баллы не знают.
+  claimBonusMock: vi.fn(
+    async () =>
+      ({ kind: 'skipped' }) as
+        | { kind: 'skipped' }
+        | {
+            kind: 'claimed';
+            owned: boolean;
+            plan: { discountKopecks: number; spendUsdCents: number };
+          }
+        | { kind: 'unavailable'; balanceUsdCents: number },
+  ),
+  releaseBonusMock: vi.fn(async (..._args: unknown[]) => {}),
   invoiceMock: vi.fn(async () => ({
     invoice: {
       id: 'inv-1',
@@ -76,6 +90,15 @@ vi.mock('@oplati/db', () => ({
   transitionOrder: h.transitionMock,
   setOrderExpiresAt: h.setExpiresMock,
   findPendingPaymentByOrderId: vi.fn(async () => h.state.pendingPayment),
+  appendOrderEvent: h.appendEventMock,
+  BONUS_RESERVED_EVENT: 'bonus_reserved',
+}));
+
+// Списание баллов (трек referral-balance-spend): гейты и лок проверяются
+// своими сьютами, здесь важно ЧТО роут делает с их вердиктом.
+vi.mock('@/lib/referral/spend', () => ({
+  claimBonusForOrder: h.claimBonusMock,
+  releaseBonusClaim: h.releaseBonusMock,
 }));
 
 vi.mock('@/lib/loveandpay', () => {
@@ -159,6 +182,7 @@ beforeEach(() => {
     payment: { id: 'pay-1' },
   }));
   h.preflightMock.mockResolvedValue({ state: 'ok' });
+  h.claimBonusMock.mockResolvedValue({ kind: 'skipped' });
   h.invoiceMock.mockResolvedValue({
     invoice: {
       id: 'inv-1',
@@ -578,5 +602,162 @@ describe('POST /api/payments/create — освобождение занятог�
     await POST(makeRequest({ orderId: ORDER_ID }));
 
     expect(h.preflightReleaseMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/payments/create — списание реферальных баллов', () => {
+  const PLAN = { discountKopecks: 28_600, spendUsdCents: 354 };
+
+  it('счёт уходит на сумму СО СКИДКОЙ, а payments.amount_rub — та же сумма', async () => {
+    h.state.order = { ...h.state.order!, amountRub: 200_800 };
+    h.claimBonusMock.mockResolvedValue({ kind: 'claimed', owned: true, plan: PLAN });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(resp.status).toBe(200);
+    // Сумма в API шлюза.
+    expect(h.invoiceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: (200_800 - 28_600) / 100 }),
+    );
+    // Сумма, по которой вебхук сверяет недоплату.
+    expect(h.upsertMock).toHaveBeenCalledWith(
+      h.txSentinel,
+      expect.objectContaining({ amountRub: 200_800 - 28_600 }),
+    );
+  });
+
+  it('событие bonus_reserved пишется В ТОЙ ЖЕ транзакции, что создание платежа', async () => {
+    h.claimBonusMock.mockResolvedValue({ kind: 'claimed', owned: true, plan: PLAN });
+
+    await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(h.appendEventMock).toHaveBeenCalledWith(
+      h.txSentinel,
+      expect.objectContaining({
+        orderId: ORDER_ID,
+        eventType: 'bonus_reserved',
+        payload: expect.objectContaining({ spendUsdCents: 354, discountKopecks: 28_600 }),
+      }),
+    );
+  });
+
+  it('без useBonus баллы не занимаются вовсе и события нет', async () => {
+    await POST(makeRequest({ orderId: ORDER_ID }));
+
+    expect(h.claimBonusMock).not.toHaveBeenCalled();
+    expect(h.appendEventMock).not.toHaveBeenCalled();
+    expect(h.invoiceMock).toHaveBeenCalledWith(expect.objectContaining({ amount: 1_000 }));
+  });
+
+  it('фича клиента не касается (флаг/allowlist) — useBonus игнорируется, счёт полный', async () => {
+    h.claimBonusMock.mockResolvedValue({ kind: 'skipped' });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(resp.status).toBe(200);
+    expect(h.invoiceMock).toHaveBeenCalledWith(expect.objectContaining({ amount: 1_000 }));
+    expect(h.appendEventMock).not.toHaveBeenCalled();
+  });
+
+  it('гонка с заявкой на вывод → 409 bonus_unavailable, счёт НЕ создаётся', async () => {
+    h.claimBonusMock.mockResolvedValue({ kind: 'unavailable', balanceUsdCents: 12 });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+    const json = (await resp.json()) as { error: string; balanceUsdCents: number };
+
+    expect(resp.status).toBe(409);
+    expect(json.error).toBe('bonus_unavailable');
+    expect(json.balanceUsdCents).toBe(12);
+    expect(h.invoiceMock).not.toHaveBeenCalled();
+    // Занятый фонд отпускаем — заказ жив, клиент вернётся.
+    expect(h.preflightReleaseMock).toHaveBeenCalledWith(ORDER_ID);
+  });
+
+  it('сбой шлюза снимает ОБА занятия — и фонд, и баллы', async () => {
+    h.claimBonusMock.mockResolvedValue({ kind: 'claimed', owned: true, plan: PLAN });
+    h.invoiceMock.mockRejectedValue(new Error('boom'));
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(resp.status).toBe(500);
+    expect(h.preflightReleaseMock).toHaveBeenCalledWith(ORDER_ID);
+    expect(h.releaseBonusMock).toHaveBeenCalledWith(ORDER_ID);
+  });
+
+  it('чужое занятие: скидка применяется, но в catch НЕ снимается', async () => {
+    // Двойной тап. Снять чужое занятие значило бы оставить клиенту скидку, не
+    // потратив ни одного балла: счёт победителя уже выставлен на сумму со скидкой.
+    h.claimBonusMock.mockResolvedValue({ kind: 'claimed', owned: false, plan: PLAN });
+    h.invoiceMock.mockRejectedValue(new Error('boom'));
+
+    await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(h.releaseBonusMock).not.toHaveBeenCalled();
+  });
+
+  it('repeat_confirm (заказ уже pending_payment) баллы не трогает', async () => {
+    h.state.order = { ...h.state.order!, status: 'pending_payment' };
+    h.state.pendingPayment = { id: 'pay-winner', rawPayload: STORED_INVOICE };
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(resp.status).toBe(200);
+    expect(h.claimBonusMock).not.toHaveBeenCalled();
+    expect(h.releaseBonusMock).not.toHaveBeenCalled();
+  });
+
+  it('минимум шлюза считается по сумме СЧЁТА и снимает занятые баллы', async () => {
+    // 600 ₽ заказ, скидка 200 ₽ → счёт 400 ₽ при минимуме 500 ₽.
+    h.state.order = { ...h.state.order!, amountRub: 60_000 };
+    h.claimBonusMock.mockResolvedValue({
+      kind: 'claimed',
+      owned: true,
+      plan: { discountKopecks: 20_000, spendUsdCents: 247 },
+    });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('below_min_amount');
+    expect(h.invoiceMock).not.toHaveBeenCalled();
+    expect(h.releaseBonusMock).toHaveBeenCalledWith(ORDER_ID);
+    expect(h.preflightReleaseMock).toHaveBeenCalledWith(ORDER_ID);
+  });
+
+  it('гейт телефона считает по ПОЛНОЙ сумме заказа — скидка не способ не давать телефон', async () => {
+    // Заказ 12 000 ₽ при пороге 10 000 ₽: даже со скидкой 2700 ₽ (счёт 9300 ₽)
+    // телефон обязателен — иначе списание работало бы как обход антифрода (Q4).
+    h.state.order = { ...h.state.order!, amountRub: 1_200_000 };
+    h.state.phoneThreshold = 10_000;
+    h.state.payerContact = { telegramId: '12345', email: 'c@example.com', phone: null };
+    h.claimBonusMock.mockResolvedValue({
+      kind: 'claimed',
+      owned: true,
+      plan: { discountKopecks: 270_000, spendUsdCents: 3334 },
+    });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(422);
+    expect(json.error).toBe('phone_required');
+    // Гейт стоит ДО занятия баллов — занимать их незачем.
+    expect(h.claimBonusMock).not.toHaveBeenCalled();
+  });
+
+  it('баллы занимаются ПОСЛЕ фонда: его отказ не трогает баланс клиента', async () => {
+    h.preflightMock.mockResolvedValue({
+      state: 'insufficient',
+      availableUsdCents: 0,
+      neededUsdCents: 5000,
+      committedUsdCents: 0,
+      shortfallUsdCents: 5000,
+    });
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID, useBonus: true }));
+
+    expect(resp.status).toBe(422);
+    expect(h.claimBonusMock).not.toHaveBeenCalled();
   });
 });

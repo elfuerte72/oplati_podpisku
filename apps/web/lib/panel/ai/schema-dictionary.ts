@@ -233,6 +233,78 @@ export const PANEL_AI_SCHEMA: readonly SchemaEntry[] = [
     ],
   },
   {
+    table: 'referral_redemptions',
+    kind: 'table',
+    purpose:
+      'Списания реферальных баллов в счёт СВОЕГО заказа: одна строка на заказ. ' +
+      'Не журнал, а состояние: reserved — занято под выставленный счёт, spent — ' +
+      'заказ оплачен со скидкой, released — баллы вернули. Резерв под заказом в ' +
+      'expired/cancelled баланс не уменьшает (правило, а не строка).',
+    columns: [
+      { name: 'order_id', meaning: 'заказ (он же первичный ключ)' },
+      { name: 'user_id', meaning: 'кто списал баллы' },
+      { name: 'amount_usd_cents', meaning: money('списано баллов в центах USD') },
+      { name: 'discount_kopecks', meaning: money('на сколько уменьшен счёт, в копейках RUB') },
+      { name: 'rate_kopecks', meaning: 'курс USDT→RUB × 10000 на момент конверсии' },
+      { name: 'status', meaning: 'reserved | spent | released' },
+      { name: 'released_by', meaning: 'кто вернул баллы руками (NULL — автоматика)' },
+      { name: 'reserved_at', meaning: 'занято' },
+      { name: 'settled_at', meaning: 'закрыто (потрачено или возвращено)' },
+    ],
+  },
+  {
+    table: 'promo_codes',
+    kind: 'table',
+    purpose:
+      'Правила промокода: номинал и ограничения акции. Один код — одна строка. ' +
+      'cap_to_margin=false означает, что номинал выдаётся целиком, даже когда он ' +
+      'больше нашей комиссии по заказу (так заведён ДАРЛИНГ) — такой заказ ' +
+      'убыточен осознанно.',
+    columns: [
+      { name: 'id', meaning: 'uuid' },
+      { name: 'code', meaning: 'написание кода (нормализованное: верхний регистр, кириллица)' },
+      { name: 'discount_usd_cents', meaning: money('номинал скидки в центах USD') },
+      { name: 'cap_to_margin', meaning: 'ограничивать ли скидку комиссией заказа' },
+      {
+        name: 'min_order_amount_kopecks',
+        meaning: money('порог суммы заказа в копейках RUB; NULL — порога нет'),
+      },
+      { name: 'per_user_limit', meaning: 'сколько раз код доступен одному клиенту' },
+      { name: 'max_redemptions', meaning: 'общий лимит активаций; NULL — без лимита' },
+      { name: 'starts_at', meaning: 'начало действия; NULL — без границы' },
+      { name: 'expires_at', meaning: 'конец действия; NULL — без границы' },
+      { name: 'is_active', meaning: 'выключатель кода' },
+      { name: 'note', meaning: 'заметка владельца' },
+      { name: 'created_at', meaning: 'заведён' },
+    ],
+  },
+  {
+    table: 'promo_redemptions',
+    kind: 'table',
+    purpose:
+      'Применения промокода к заказам: одна строка на заказ. Не журнал, а ' +
+      'состояние: reserved — занято под выставленный счёт, spent — заказ оплачен ' +
+      'со скидкой, released — право вернули. Занятие под заказом в ' +
+      'expired/cancelled БЕЗ успешного платежа активацией не считается (правило, ' +
+      'а не строка), поэтому «сколько активаций израсходовано» — это счёт строк с ' +
+      'учётом статуса заказа, а не просто COUNT(*).',
+    columns: [
+      { name: 'order_id', meaning: 'заказ (он же первичный ключ)' },
+      { name: 'promo_code_id', meaning: 'какой код применён' },
+      { name: 'user_id', meaning: 'кто применил' },
+      {
+        name: 'discount_usd_cents',
+        meaning: money('ФАКТИЧЕСКИ выданная скидка в центах USD (не номинал кода)'),
+      },
+      { name: 'discount_kopecks', meaning: money('на сколько уменьшен счёт, в копейках RUB') },
+      { name: 'rate_kopecks', meaning: 'курс USDT→RUB × 10000 на момент конверсии' },
+      { name: 'status', meaning: 'reserved | spent | released' },
+      { name: 'released_by', meaning: 'кто вернул право руками (NULL — автоматика)' },
+      { name: 'reserved_at', meaning: 'занято' },
+      { name: 'settled_at', meaning: 'закрыто (потрачено или возвращено)' },
+    ],
+  },
+  {
     table: 'referral_payouts',
     kind: 'table',
     purpose: 'Заявки партнёров на выплату (реквизиты роли не выданы).',

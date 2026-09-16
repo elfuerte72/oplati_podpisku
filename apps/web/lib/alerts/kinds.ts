@@ -4,7 +4,7 @@
  * (`format.ts`), и скрипт образцов.
  */
 
-export const ALERT_STREAMS = ['critical', 'payments', 'support', 'errors', 'deploy'] as const;
+export const ALERT_STREAMS = ['critical', 'payments', 'support', 'errors', 'deploy', 'reports'] as const;
 
 export type AlertStream = (typeof ALERT_STREAMS)[number];
 
@@ -19,4 +19,7 @@ export const STREAM_MARKERS: Readonly<Record<AlertStream, string>> = {
   support: '🎧',
   errors: '⚠️',
   deploy: '🚀',
+  // Не событие, а сводка (дневной отчёт, `lib/jobs/daily-report.ts`): звука у
+  // темы нет, читают утром.
+  reports: '📊',
 };

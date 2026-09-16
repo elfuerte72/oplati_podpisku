@@ -43,6 +43,13 @@ export function exportOrderRow(order: PanelOrderListItem): string[] {
     orderStatusLabel(order.status),
     order.serviceName ?? '',
     formatRublesForCsv(order.amountRubKopecks),
+    // Пустая ячейка, а не «0,00», когда списания не было: ноль в колонке денег
+    // читается как «списали ноль», то есть как факт, которого не происходило.
+    order.bonusDiscountKopecks > 0 ? formatRublesForCsv(order.bonusDiscountKopecks) : '',
+    // Скидка по промокоду — ОТДЕЛЬНОЙ колонкой рядом с баллами (трек
+    // promo-codes). Обе уменьшают счёт, и без второй сумма в файле не сходится
+    // с тем, что реально попросила платёжная страница.
+    order.promoDiscountKopecks > 0 ? formatRublesForCsv(order.promoDiscountKopecks) : '',
     order.client.displayName ?? '',
     order.client.telegramId ?? '',
     order.client.email ?? '',

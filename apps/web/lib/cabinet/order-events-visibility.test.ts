@@ -42,6 +42,16 @@ describe('isClientVisibleOrderEvent', () => {
     );
   });
 
+  it('учёт баллов — наш, а не судьба заказа клиента', () => {
+    // Клиент видит скидку прямо в сумме на экране заказа. Строки
+    // «bonus_reserved» / «bonus_spent» / «bonus_released» в истории добавили бы
+    // к ней только вопросы: это наш учёт, а не событие его покупки.
+    expect(isInternalOrderEvent('bonus_reserved')).toBe(true);
+    expect(isInternalOrderEvent('bonus_spent')).toBe(true);
+    expect(isInternalOrderEvent('bonus_released')).toBe(true);
+    expect(isClientVisibleOrderEvent({ eventType: 'bonus_spent', toStatus: null })).toBe(false);
+  });
+
   it('отказ preflight — наша кухня, клиенту в таймлайне не место', () => {
     // Клиент получил свой текст в ответ на кнопку. Строка «Оплата заблокирована»
     // в истории заказа сказала бы ему только то, что проблема у нас, — и ровно
