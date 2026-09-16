@@ -49,30 +49,29 @@ export function dispatchIssueCard(orderId: string): void {
  * принята» в тему «Платежи» (2026-09-16). Зовётся ТОЛЬКО из ветки
  * `outcome.paidOk` обработчиков, то есть у победителя `claimPaymentSucceeded`:
  * это и есть гарантия «ровно одно сообщение на платёж» — повтор вебхука и
- * опрос крона сюда не доходят. Два уведомления независимы: сбой одного не
- * отменяет второе, каждое ловит свою ошибку.
+ * опрос крона сюда не доходят.
+ *
+ * Два уведомления независимы и по ошибкам, и по времени: идут параллельно, у
+ * каждого свой перехват. Последовательный `await` держал бы сообщение персоналу
+ * за зависшим `sendMessage` клиенту (у клиентского бота поводка нет) — и
+ * перезапуск контейнера на деплое хоронил бы оба.
  */
 export function dispatchPaymentConfirmed(orderId: string): void {
   log.info({ event: 'jobs.dispatch.payment_confirmed', orderId });
   after(async () => {
-    // Обе функции сами не бросают, но try/catch на всякий случай.
-    try {
-      await notifyPaymentConfirmed(orderId);
-    } catch (err) {
-      log.error({ event: 'jobs.dispatch.payment_confirmed.failed', orderId, err });
-      Sentry.captureException(err, {
-        tags: { source: 'jobs.dispatcher', job: 'payment_confirmed' },
-        extra: { orderId },
-      });
-    }
-    try {
-      await notifyPaymentOps(orderId);
-    } catch (err) {
-      log.error({ event: 'jobs.dispatch.payment_ops.failed', orderId, err });
-      Sentry.captureException(err, {
-        tags: { source: 'jobs.dispatcher', job: 'payment_ops' },
-        extra: { orderId },
-      });
-    }
+    await Promise.all([
+      guarded('payment_confirmed', orderId, () => notifyPaymentConfirmed(orderId)),
+      guarded('payment_ops', orderId, () => notifyPaymentOps(orderId)),
+    ]);
   });
+}
+
+/** Обе функции сами не бросают; перехват — на случай, если однажды начнут. */
+async function guarded(job: string, orderId: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    log.error({ event: `jobs.dispatch.${job}.failed`, orderId, err });
+    Sentry.captureException(err, { tags: { source: 'jobs.dispatcher', job }, extra: { orderId } });
+  }
 }

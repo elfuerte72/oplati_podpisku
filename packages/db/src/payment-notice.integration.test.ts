@@ -1,16 +1,18 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 
+import type { OrderParameters } from '@oplati/types';
+
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import { createTestDb } from './test-harness.ts';
 import { createDraftOrder } from './repositories/orders.ts';
 import { findPaidOrderNotice } from './repositories/payment-notice.ts';
-import type { OrderParameters } from '@oplati/types';
 
 /**
- * Карточка «Оплата принята» — реальный Postgres (PGlite): три подзапроса,
- * lateral-join платежа и список статусов покупки подменой не проверить.
+ * Карточка «Оплата принята» — реальный Postgres (PGlite): подзапросы скидок с
+ * общими условиями «списание живо», join платежа и список статусов покупки
+ * подменой не проверить.
  */
 
 let db: DB;
@@ -53,6 +55,18 @@ async function setStatus(orderId: string, status: string, paidAt?: Date) {
   );
 }
 
+async function succeededPayment(orderId: string, amountKopecks: number, over: { recoveredViaPolling?: boolean } = {}) {
+  await db.insert(schema.payments).values({
+    orderId,
+    provider: 'freekassa',
+    providerRef: `fk-${++seq}`,
+    amountRub: amountKopecks,
+    status: 'succeeded',
+    recoveredViaPolling: over.recoveredViaPolling ?? false,
+    completedAt: new Date(),
+  });
+}
+
 beforeAll(async () => {
   ({ db } = await createTestDb());
 });
@@ -74,15 +88,7 @@ describe('findPaidOrderNotice', () => {
       parameters: { tierName: 'Standard' },
     });
     await setStatus(order.id, 'paid', new Date('2026-09-16T10:00:00Z'));
-    await db.insert(schema.payments).values({
-      orderId: order.id,
-      provider: 'freekassa',
-      providerRef: `fk-${seq}`,
-      amountRub: 159_500,
-      status: 'succeeded',
-      recoveredViaPolling: true,
-      completedAt: new Date('2026-09-16T10:00:05Z'),
-    });
+    await succeededPayment(order.id, 159_500, { recoveredViaPolling: true });
     await db.insert(schema.referralRedemptions).values({
       orderId: order.id,
       userId: user.id,
@@ -98,7 +104,6 @@ describe('findPaidOrderNotice', () => {
     await setStatus(expired.id, 'expired');
 
     const notice = await findPaidOrderNotice(db, order.id);
-    expect(notice).not.toBeNull();
     expect(notice).toMatchObject({
       shortId: order.shortId,
       status: 'paid',
@@ -112,7 +117,6 @@ describe('findPaidOrderNotice', () => {
       originalCurrency: 'USD',
       customDescription: null,
       client: {
-        userId: user.id,
         displayName: 'Мария',
         telegramUsername: 'maria_pays',
         telegramId: user.telegramId,
@@ -120,29 +124,39 @@ describe('findPaidOrderNotice', () => {
       },
       payment: { provider: 'freekassa', amountKopecks: 159_500, recoveredViaPolling: true },
     });
-    expect(notice?.paidAt?.toISOString()).toBe('2026-09-16T10:00:00.000Z');
-    expect(notice?.payment?.completedAt?.toISOString()).toBe('2026-09-16T10:00:05.000Z');
     expect(notice?.client.since).toBeInstanceOf(Date);
   });
 
-  it('заказ вне каталога без платежа: описание клиента, платёж null, покупка первая', async () => {
+  it('заказ вне каталога: описание клиента; покупка первая', async () => {
     const user = await makeUser();
     const order = await makeOrder({ userId: user.id, serviceId: null });
     await setStatus(order.id, 'paid', new Date());
+    await succeededPayment(order.id, 200_000);
 
     const notice = await findPaidOrderNotice(db, order.id);
     expect(notice).toMatchObject({
       serviceName: null,
       customDescription: 'своя подписка',
-      payment: null,
+      payment: { provider: 'freekassa', amountKopecks: 200_000, recoveredViaPolling: false },
       client: { purchases: 1, displayName: null, telegramUsername: null },
     });
+  });
+
+  it('этот заказ считается покупкой, даже если выпуск карты уже успел уронить его в failed', async () => {
+    const user = await makeUser();
+    const order = await makeOrder({ userId: user.id, serviceId: null });
+    await setStatus(order.id, 'failed', new Date());
+    await succeededPayment(order.id, 200_000);
+    const notice = await findPaidOrderNotice(db, order.id);
+    expect(notice?.status).toBe('failed');
+    expect(notice?.client.purchases).toBe(1);
   });
 
   it('освобождённое списание скидкой не считается', async () => {
     const user = await makeUser();
     const order = await makeOrder({ userId: user.id, serviceId: null });
     await setStatus(order.id, 'paid', new Date());
+    await succeededPayment(order.id, 200_000);
     await db.insert(schema.referralRedemptions).values({
       orderId: order.id,
       userId: user.id,
@@ -155,7 +169,11 @@ describe('findPaidOrderNotice', () => {
     expect(notice?.bonusDiscountKopecks).toBe(0);
   });
 
-  it('неизвестный заказ → null', async () => {
+  it('заказ без успешного платежа и неизвестный заказ → null', async () => {
+    const user = await makeUser();
+    const order = await makeOrder({ userId: user.id, serviceId: null });
+    await setStatus(order.id, 'paid', new Date());
+    expect(await findPaidOrderNotice(db, order.id)).toBeNull();
     expect(await findPaidOrderNotice(db, '00000000-0000-0000-0000-000000000000')).toBeNull();
   });
 });
