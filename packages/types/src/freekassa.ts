@@ -312,3 +312,90 @@ export function toStorableNotification(
     ...(masked !== undefined ? { payer_account_masked: masked } : {}),
   };
 }
+
+// ─── Баланс магазина (POST /balance) ──────────────────────────────────────
+
+/**
+ * Строка баланса магазина: валюта и остаток. Дока показывает число, живой
+ * ответ 2026-09-16 прислал строку `"4026.31"` — принимаем оба, наружу отдаём
+ * строку; в копейки переводит `parseRubleAmountToKopecks` там, где валюта
+ * заведомо RUB.
+ */
+export const freekassaBalanceEntrySchema = z.object({
+  currency: z.string().min(1),
+  value: freekassaNumeric,
+});
+export type FreekassaBalanceEntry = z.infer<typeof freekassaBalanceEntrySchema>;
+
+export const freekassaBalanceResponseSchema = z.object({
+  type: z.literal('success'),
+  balance: z.array(freekassaBalanceEntrySchema),
+});
+export type FreekassaBalanceResponse = z.infer<typeof freekassaBalanceResponseSchema>;
+
+// ─── Выплаты с баланса магазина (POST /withdrawals) ──────────────────────
+
+/**
+ * Статусы выплаты.
+ *
+ * ⚠️ Дока описывает статусы только у ЗАКАЗОВ (0/1/6/8/9); у выплат таблицы
+ * нет. Живой список 2026-09-16 показал `1` у двух исполненных выводов —
+ * совпадение остальных кодов с заказами остаётся предположением, поэтому
+ * неизвестный код показывается числом, а не подписывается наугад.
+ */
+export const FREEKASSA_WITHDRAWAL_STATUS = {
+  NEW: 0,
+  DONE: 1,
+  ERROR: 8,
+  CANCELLED: 9,
+} as const;
+
+/**
+ * Выплата в ответе `/withdrawals`.
+ *
+ * ⚠️ Поле `account` (куда ушли деньги: email кошелька, номер карты) НАМЕРЕННО
+ * не объявлено — `z.object` отбрасывает неизвестные ключи, и реквизит владельца
+ * не попадает ни в объект, ни в логи, ни на экран. Тот же приём, что у
+ * `freekassaOrderSchema`.
+ */
+export const freekassaWithdrawalSchema = z.object({
+  id: freekassaNumeric,
+  amount: freekassaNumeric,
+  currency: z.string().min(1),
+  /** Способ вывода — id из `/withdrawals/currencies` (11–22 = FKWallet.io). */
+  ext_currency_id: z.coerce.number().int(),
+  /** Время провайдера как есть (`2026-09-15 10:03:27`), пояс докой не назван. */
+  date: z.string().optional(),
+  status: z.coerce.number().int(),
+});
+export type FreekassaWithdrawal = z.infer<typeof freekassaWithdrawalSchema>;
+
+export const freekassaWithdrawalsResponseSchema = z.object({
+  type: z.literal('success'),
+  pages: z.number().int().optional(),
+  orders: z.array(freekassaWithdrawalSchema),
+});
+export type FreekassaWithdrawalsResponse = z.infer<typeof freekassaWithdrawalsResponseSchema>;
+
+/**
+ * Способы вывода, доступные кассе через API.
+ *
+ * Снято живым вызовом `POST /withdrawals/currencies` 2026-09-16 (касса 74953):
+ * ТОЛЬКО собственный кошелёк FKWallet.io, у всех `can_exchange: 0` — вывод на
+ * карту или внешний крипто-адрес через API кассы невозможен. Имена —
+ * провайдера, как в ответе; неизвестный id подписывается номером.
+ */
+export const FREEKASSA_WITHDRAWAL_METHODS: Readonly<Record<number, string>> = {
+  11: 'FKWallet.io RUB',
+  12: 'FKWallet.io USD',
+  13: 'FKWallet.io EUR',
+  14: 'FKWallet.io UAH',
+  15: 'FKWallet.io KZT',
+  16: 'FKWallet.io USDT',
+  17: 'FKWallet.io BTC',
+  18: 'FKWallet.io LTC',
+  19: 'FKWallet.io ETH',
+  20: 'FKWallet.io TRX',
+  21: 'FKWallet.io BNB',
+  22: 'FKWallet.io TON',
+};

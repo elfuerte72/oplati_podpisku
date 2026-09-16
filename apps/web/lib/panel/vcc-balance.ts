@@ -142,7 +142,7 @@ function reading(
  * транспорта. Отличается от «провайдер ответил ошибкой» и от дрейфа контракта:
  * те требуют человека, а этот — терпения.
  */
-function isSlowProviderError(err: unknown): boolean {
+export function isSlowProviderError(err: unknown): boolean {
   if (err instanceof Error && err.name === 'AbortError') return true;
   return err instanceof TypeError && /fetch failed|terminated|network|socket/i.test(err.message);
 }

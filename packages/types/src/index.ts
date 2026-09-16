@@ -58,6 +58,16 @@ export {
   freekassaOrdersResponseSchema,
   type FreekassaOrdersResponse,
   freekassaTerminalReason,
+  freekassaBalanceEntrySchema,
+  type FreekassaBalanceEntry,
+  freekassaBalanceResponseSchema,
+  type FreekassaBalanceResponse,
+  FREEKASSA_WITHDRAWAL_STATUS,
+  FREEKASSA_WITHDRAWAL_METHODS,
+  freekassaWithdrawalSchema,
+  type FreekassaWithdrawal,
+  freekassaWithdrawalsResponseSchema,
+  type FreekassaWithdrawalsResponse,
 } from './freekassa.ts';
 
 export {
@@ -98,6 +108,10 @@ export {
   type PaySpaceCardInfoData,
   paySpaceUserBalanceDataSchema,
   type PaySpaceUserBalanceData,
+  paySpaceBalanceEntrySchema,
+  type PaySpaceBalanceEntry,
+  paySpaceBalancesDataSchema,
+  type PaySpaceBalancesData,
 } from './paypace.ts';
 
 // ─── Order status + state machine ─────────────────────────────────────────

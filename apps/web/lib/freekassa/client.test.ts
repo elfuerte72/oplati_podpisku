@@ -348,3 +348,88 @@ describe('onApiError (наблюдатель для ops-алёртов)', () => 
     expect(onApiError).not.toHaveBeenCalled();
   });
 });
+
+describe('FreekassaClient.getBalance / listWithdrawals (панель, раздел «Финансы»)', () => {
+  it('баланс: подписанное тело только с shopId и nonce, суммы наружу строкой', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        type: 'success',
+        balance: [
+          { currency: 'RUB', value: '4026.31' },
+          { currency: 'USD', value: 0 },
+        ],
+      }),
+    );
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const balance = await client.getBalance({ timeoutMs: 3000, queueWaitMs: 5000 });
+
+    expect(balance).toEqual([
+      { currency: 'RUB', value: '4026.31' },
+      { currency: 'USD', value: '0' },
+    ]);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.fk.life/v1/balance');
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['nonce', 'shopId', 'signature']);
+    expect(body.signature).toBe(signApiRequest({ shopId: 777, nonce: 2_000_000_001 }, API_KEY));
+  });
+
+  it('выплаты: реквизит получателя отбрасывается схемой и не доходит до вызывающего', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        type: 'success',
+        pages: 1,
+        orders: [
+          {
+            id: 3139438,
+            amount: 7300,
+            currency: 'RUB',
+            ext_currency_id: 11,
+            account: 'owner@example.com',
+            date: '2026-09-15 10:03:27',
+            status: 1,
+          },
+        ],
+      }),
+    );
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const rows = await client.listWithdrawals();
+
+    expect(rows).toEqual([
+      {
+        id: '3139438',
+        amount: '7300',
+        currency: 'RUB',
+        ext_currency_id: 11,
+        date: '2026-09-15 10:03:27',
+        status: 1,
+      },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('owner@example.com');
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://api.fk.life/v1/withdrawals');
+  });
+
+  it('свой поводок: чтение обрывается по переданному таймауту, а не через 30 с', async () => {
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        }),
+    );
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    await expect(client.getBalance({ timeoutMs: 20 })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('ответ без списка балансов — дрейф контракта, а не пустой баланс', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ type: 'success' }));
+    const client = makeClient({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    await expect(client.getBalance()).rejects.toBeInstanceOf(FreekassaContractError);
+  });
+});

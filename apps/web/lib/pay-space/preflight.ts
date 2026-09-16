@@ -393,6 +393,39 @@ async function sumCommittedFunding(db: DBLike, now: Date): Promise<number> {
   }, 0);
 }
 
+/** Чем занят фонд, в USD-центах; «свободно» = остаток минус все три. */
+export type FundCommitments = {
+  /** Обещанные карты по заказам с живым счётом, оплаченным и в выпуске. */
+  committedUsdCents: number;
+  /** Живые резервы черновиков, прошедших гейт, но ещё без счёта. */
+  reservedUsdCents: number;
+  /** `PAYSPACE_SAFETY_RESERVE_USD_CENTS`. */
+  safetyReserveUsdCents: number;
+};
+
+/**
+ * Обязательства фонда для экрана «Финансы» (трек treasury, тикет 01) — ТОЙ ЖЕ
+ * арифметикой, что у гейта выше. Второй расчёт на экране разошёлся бы с гейтом
+ * при первой правке, и панель показывала бы «свободно $80» там, где гейт
+ * отказывает клиенту (зеркало без автосверки — инвариант 10).
+ *
+ * Без замка и транзакции: это справочное чтение, оно ничего не занимает.
+ * Порядок чтений тот же, что под замком, — резервы первыми: сосед, ушедший
+ * между запросами в `pending_payment`, посчитается дважды, а не потеряется.
+ */
+export async function summarizeFundCommitments(
+  db: DBLike,
+  now: Date = new Date(),
+): Promise<FundCommitments> {
+  const reservedUsdCents = await sumLiveCardFundReservations(db, now);
+  const committedUsdCents = await sumCommittedFunding(db, now);
+  return {
+    committedUsdCents,
+    reservedUsdCents,
+    safetyReserveUsdCents: serverEnv.PAYSPACE_SAFETY_RESERVE_USD_CENTS,
+  };
+}
+
 /**
  * Цена заказа, годная для расчёта фонда, — или `null`.
  *

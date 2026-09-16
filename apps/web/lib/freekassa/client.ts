@@ -1,11 +1,15 @@
 import {
+  freekassaBalanceResponseSchema,
   freekassaCreateOrderParamsSchema,
   freekassaCreateOrderResponseSchema,
   freekassaErrorResponseSchema,
   freekassaOrdersResponseSchema,
+  freekassaWithdrawalsResponseSchema,
   kopecksToRubleAmount,
+  type FreekassaBalanceEntry,
   type FreekassaCreateOrderResponse,
   type FreekassaOrder,
+  type FreekassaWithdrawal,
 } from '@oplati/types';
 
 import type { Logger } from '../logger.ts';
@@ -61,6 +65,17 @@ export type FreekassaClientOptions = {
    * «сбой обращения» не превратился в «любая ошибка модуля».
    */
   onApiError?: (err: unknown, ctx: { path: string }) => void;
+};
+
+/**
+ * Дедлайны ЧТЕНИЯ для экранов панели: свой поводок на запрос и своё ожидание
+ * очереди. Дефолты клиента (30 с на запрос, минута в очереди) рассчитаны на
+ * фоновые кроны, где важнее не потерять оплату; экран с остатком кассы столько
+ * ждать не может — он покажет прежнее число с пометкой.
+ */
+export type FreekassaReadOptions = {
+  timeoutMs?: number;
+  queueWaitMs?: number;
 };
 
 export type CreateOrderInput = {
@@ -160,6 +175,46 @@ export class FreekassaClient {
     return resp.orders.find((o) => o.merchant_order_id === paymentId) ?? null;
   }
 
+  /**
+   * `POST /balance` — остаток магазина по валютам (панель, раздел «Финансы»).
+   *
+   * Чтение, но nonce тратится и очередь общая: запрос встаёт ЗА `createOrder`
+   * и опросами крона, а не обгоняет их — иначе его меньший nonce был бы
+   * отвергнут, а больший отверг бы следующий платёжный запрос.
+   */
+  async getBalance(opts?: FreekassaReadOptions): Promise<FreekassaBalanceEntry[]> {
+    const resp = await this.serialized(async () => {
+      const params = { shopId: this.shopId, nonce: await this.nonceProvider() };
+      const body = { ...params, signature: signApiRequest(params, this.apiKey) };
+      return await this.requestJson(
+        '/balance',
+        body,
+        (raw) => freekassaBalanceResponseSchema.parse(raw),
+        opts?.timeoutMs,
+      );
+    }, opts?.queueWaitMs ?? FreekassaClient.QUEUE_WAIT_BACKGROUND_MS);
+    return resp.balance;
+  }
+
+  /**
+   * `POST /withdrawals` — выплаты с баланса магазина, первая страница в
+   * порядке провайдера (живой ответ 2026-09-16: новые сверху). Реквизит
+   * получателя отбрасывает схема, сюда он не доходит.
+   */
+  async listWithdrawals(opts?: FreekassaReadOptions): Promise<FreekassaWithdrawal[]> {
+    const resp = await this.serialized(async () => {
+      const params = { shopId: this.shopId, nonce: await this.nonceProvider() };
+      const body = { ...params, signature: signApiRequest(params, this.apiKey) };
+      return await this.requestJson(
+        '/withdrawals',
+        body,
+        (raw) => freekassaWithdrawalsResponseSchema.parse(raw),
+        opts?.timeoutMs,
+      );
+    }, opts?.queueWaitMs ?? FreekassaClient.QUEUE_WAIT_BACKGROUND_MS);
+    return resp.orders;
+  }
+
   // ─── Internals ───────────────────────────────────────────────────────────
 
   /**
@@ -243,9 +298,10 @@ export class FreekassaClient {
     path: string,
     body: Record<string, unknown>,
     parse: (raw: unknown) => T,
+    timeoutMs?: number,
   ): Promise<T> {
     try {
-      return await this.sendJson(path, body, parse);
+      return await this.sendJson(path, body, parse, timeoutMs);
     } catch (err) {
       // Своё try/catch: бросок наблюдателя ПОДМЕНИЛ бы исходную ошибку, и
       // `payments/create` перестал бы узнавать `FreekassaApiError` — клиент
@@ -264,11 +320,12 @@ export class FreekassaClient {
     path: string,
     body: Record<string, unknown>,
     parse: (raw: unknown) => T,
+    timeoutMs?: number,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     this.log.info({ event: 'freekassa.request', path });
 
-    const { resp, respText } = await this.fetchWithTimeout(url, body);
+    const { resp, respText } = await this.fetchWithTimeout(url, body, timeoutMs);
 
     let raw: unknown;
     try {
@@ -324,13 +381,24 @@ export class FreekassaClient {
     }
   }
 
-  /** `fetch` + чтение тела под общим таймаутом; таймер гасится всегда. */
+  /**
+   * `fetch` + чтение тела под общим таймаутом; таймер гасится всегда.
+   *
+   * Свой бюджет передаёт только вызывающий с коротким поводком (экран панели);
+   * мусорное число (0, NaN) не принимается — иначе запрос обрывался бы до
+   * отправки, и это выглядело бы как падение провайдера.
+   */
   private async fetchWithTimeout(
     url: string,
     body: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<{ resp: Response; respText: string }> {
+    const budgetMs =
+      timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), budgetMs);
     try {
       const resp = await this.fetchImpl(url, {
         method: 'POST',

@@ -137,3 +137,37 @@ export const paySpaceUserBalanceDataSchema = z.object({
   currency: z.string(),
 });
 export type PaySpaceUserBalanceData = z.infer<typeof paySpaceUserBalanceDataSchema>;
+
+// ─── Балансы аккаунта (GET /balance/) ────────────────────────────────────
+
+/**
+ * Один баланс мерчанта: криптовалюта и остаток. Это КРИПТО-кошельки
+ * (USDT-TRC20, USDT-BEP20, …), из которых пополняется карточный субаккаунт;
+ * сам субаккаунт — `paySpaceUserBalanceDataSchema`.
+ *
+ * Живой ответ 2026-09-16: `id` — строка (`"748"`) при `integer` в примере
+ * доки, `chain` бывает `null`. Сумма криптовалюты остаётся строкой: у неё до
+ * восьми знаков после точки, и центы ей не подходят; в доллары переводится
+ * `fiat_balance`.
+ */
+export const paySpaceBalanceEntrySchema = z.object({
+  id: z.union([z.string(), z.number()]).transform((v) => String(v)),
+  currency: z.object({
+    code: z.string().min(1),
+    name: z.string().optional(),
+    chain: z.string().nullable().optional(),
+    min_amount: paySpaceMoney.optional(),
+    network_fee: paySpaceMoney.optional(),
+  }),
+  balance: paySpaceMoney,
+  fiat_balance: paySpaceMoney,
+  is_active: z.boolean().optional(),
+});
+export type PaySpaceBalanceEntry = z.infer<typeof paySpaceBalanceEntrySchema>;
+
+export const paySpaceBalancesDataSchema = z.object({
+  balances: z.array(paySpaceBalanceEntrySchema),
+  total_balance: paySpaceMoney,
+  fiat_currency: z.string().min(1),
+});
+export type PaySpaceBalancesData = z.infer<typeof paySpaceBalancesDataSchema>;
