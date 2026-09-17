@@ -8,6 +8,7 @@ import {
 
 import type { DB } from '../index.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
+import { toInt } from './pg-numbers.ts';
 
 /**
  * Выборки раздела «Аналитика» админ-панели (спека `.scratch/admin-panel-v2/`,
@@ -60,12 +61,6 @@ function dayKeySql(column: ReturnType<typeof sql.raw>) {
 
 function withinRange(column: ReturnType<typeof sql.raw>, range: AnalyticsRange) {
   return sql`${column} >= ${range.since}::timestamptz AND ${column} < ${range.until}::timestamptz`;
-}
-
-/** Числа из `db.execute` приходят строками (bigint/numeric) — приводим один раз. */
-function toInt(value: unknown): number {
-  const n = typeof value === 'number' ? value : Number(value ?? 0);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
 // ─── Деньги ───────────────────────────────────────────────────────────────
