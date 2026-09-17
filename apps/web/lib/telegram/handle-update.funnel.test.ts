@@ -53,10 +53,10 @@ vi.mock('./support-flow', () => ({
   handleSupportCommand: vi.fn(async () => undefined),
   tryHandlePendingSupport: vi.fn(async () => false),
 }));
+vi.mock('@/lib/support/availability', () => ({ isSupportAiAvailable: () => false }));
 vi.mock('./support-session', () => ({
-  isSupportAiEnabled: () => false,
   openSupportFromBot: vi.fn(async () => ({ status: 'opened' })),
-  routeSupportIncoming: vi.fn(async () => ({ status: 'answered' })),
+  routeSupportIncoming: vi.fn(async () => ({ status: 'not_in_session' })),
   finishSupportFromBot: vi.fn(async () => undefined),
   resetSupportOnStart: vi.fn(async () => undefined),
 }));

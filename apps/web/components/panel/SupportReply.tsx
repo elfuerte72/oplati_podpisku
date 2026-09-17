@@ -7,6 +7,7 @@ import { lookupLabel } from '@/lib/panel/format';
 import {
   ACTION_TITLES,
   FALLBACK_ERROR_TEXT,
+  SUPPORT_ASSISTANT_OFF_TEXT,
   SUPPORT_ERROR_TEXT,
   SUPPORT_NOT_RECORDED_TEXT,
   SUPPORT_REPLY_SENT_TEXT,
@@ -41,6 +42,7 @@ export function SupportReply({
   canReply = true,
   canReturn = false,
   canClose = false,
+  assistantAvailable = true,
 }: {
   conversationId: string;
   needsAssign: boolean;
@@ -50,6 +52,13 @@ export function SupportReply({
   canReturn?: boolean;
   /** «Закрыть» — в любом режиме оператора. */
   canClose?: boolean;
+  /**
+   * Доступен ли помощник (`isSupportAiAvailable`, читает серверная страница).
+   * `false` — кнопка «Вернуть помощнику» видна, но неактивна, и рядом написано
+   * почему (crm-serious-fixes, тикет 02): помощник вернётся, и кнопку не
+   * убираем, чтобы оператор не гадал, куда она пропала.
+   */
+  assistantAvailable?: boolean;
 }) {
   const router = useRouter();
   const [text, setText] = useState('');
@@ -197,14 +206,25 @@ export function SupportReply({
       {canReturn || canClose ? (
         <p className="panel-muted" style={{ marginTop: 12 }}>
           {canReturn ? (
-            <button
-              type="button"
-              className="panel-button panel-button--secondary"
-              onClick={() => transition('/api/panel/support/return')}
-              disabled={busy}
-            >
-              {ACTION_TITLES.returnToAi}
-            </button>
+            <>
+              <button
+                type="button"
+                className="panel-button panel-button--secondary"
+                onClick={() => transition('/api/panel/support/return')}
+                disabled={busy || !assistantAvailable}
+                aria-describedby={assistantAvailable ? undefined : 'support-assistant-off'}
+              >
+                {ACTION_TITLES.returnToAi}
+              </button>
+              {assistantAvailable ? null : (
+                <>
+                  {' '}
+                  <span id="support-assistant-off" className="panel-muted">
+                    {SUPPORT_ASSISTANT_OFF_TEXT}
+                  </span>
+                </>
+              )}
+            </>
           ) : null}{' '}
           {canClose ? (
             <button

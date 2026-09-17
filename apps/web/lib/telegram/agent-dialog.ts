@@ -28,7 +28,8 @@ import { childLogger } from '@/lib/logger';
 import { createToolHandlers } from '@/lib/tool-handlers';
 
 import { supportPorts } from '@/lib/support/adapters';
-import { isSupportAiEnabled, supportRequestContext } from './support-session';
+import { isSupportAiAvailable } from '@/lib/support/availability';
+import { supportRequestContext } from './support-session';
 import { escalate } from '@/lib/support/session';
 
 import { buildConfirmKeyboard } from './catalog-callbacks';
@@ -174,7 +175,7 @@ export async function runAgentDialog(
           // ⚠️ Только при включённом помощнике: без него режим `operator`
           // некому снять — панельные кнопки есть, но клиент до них не
           // достучится, и одна команда модели запирала бы разговор навсегда.
-          ...(isSupportAiEnabled()
+          ...(isSupportAiAvailable()
             ? {
                 escalateToHuman: async (reason: string) => {
                   const ports = supportPorts(

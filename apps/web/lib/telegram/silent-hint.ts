@@ -121,20 +121,26 @@ export function __silentHintMemorySize(): number {
 }
 
 /**
- * Альбом уже обработан в этом процессе?
+ * Первый ли это апдейт альбома? `true` — обрабатываем, `false` — хвост альбома.
  *
  * Telegram шлёт ОТДЕЛЬНЫЙ апдейт на каждое фото альбома с общим
  * `media_group_id`. Без этой проверки альбом из десяти кадров означал бы
- * десять походов в БД (upsert клиента, поиск разговора, чтение режима) — и это
- * в том же процессе, что принимает вебхуки платежей.
+ * десять походов в БД (upsert клиента, поиск разговора, чтение режима), десять
+ * строк «[фото]» в переписке и десять уведомлений персоналу — и это в том же
+ * процессе, что принимает вебхуки платежей.
  *
- * Память процесса, а не Redis: альбом приходит подряд и почти всегда в один
- * контейнер, а лишний поход в БД — не авария. Потолок тот же, что у подсказки.
+ * Эшелона два — тем же приёмом, что у подсказки (crm-serious-fixes, тикет 04):
+ *   - память процесса занимается СИНХРОННО и первой: апдейты альбома приходят
+ *     пачкой и обрабатываются конкурентно, а Redis fail-open — без локального
+ *     эшелона при его аварии альбом снова давал бы строку на каждый кадр;
+ *   - Redis — на случай, когда кадры одного альбома разъехались по процессам.
+ *
+ * Никогда не бросает (`claimOnce` сам не бросает).
  */
 const albums = new Map<string, number>();
 const ALBUM_TTL_MS = 60_000;
 
-export function claimMediaGroup(groupId: string, now: number = Date.now()): boolean {
+export async function claimMediaGroup(groupId: string, now: number = Date.now()): Promise<boolean> {
   const seen = albums.get(groupId);
   if (seen !== undefined && seen > now) return false;
   if (albums.size >= MEMORY_MAX_ENTRIES) {
@@ -142,7 +148,12 @@ export function claimMediaGroup(groupId: string, now: number = Date.now()): bool
     if (albums.size >= MEMORY_MAX_ENTRIES) albums.clear();
   }
   albums.set(groupId, now + ALBUM_TTL_MS);
-  return true;
+  return claimOnce(albumKey(groupId), ALBUM_TTL_MS / 1000);
+}
+
+/** Ключ несёт id бота: иначе прод и dev гасят альбомы друг друга. */
+function albumKey(groupId: string): string {
+  return `tg:album:${botIdFromToken(serverEnv.TELEGRAM_BOT_TOKEN)}:${groupId}`;
 }
 
 /** Только для тестов: сбросить память альбомов между сценариями. */

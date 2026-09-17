@@ -7,7 +7,12 @@ import * as schema from './schema.ts';
 import type { DB } from './index.ts';
 import { createTestDb } from './test-harness.ts';
 import { appendMessage } from './repositories/messages.ts';
-import { claimSupportConversation } from './repositories/panel.ts';
+import {
+  claimSupportConversation,
+  countUnansweredSupportRequests,
+  getSupportThreadForPanel,
+  listSupportRequestsForPanel,
+} from './repositories/panel.ts';
 import {
   countSupportAiReplies,
   findLastStaffFollowUpAt,
@@ -819,5 +824,382 @@ describe('совместимость с панелью', () => {
       sql`SELECT count(*) AS cnt FROM messages WHERE conversation_id = ${conversation.id} AND role = 'system'`,
     );
     expect(Number(rows[0]?.cnt ?? 0)).toBe(1);
+  });
+});
+
+/**
+ * Одно правило «обращение ждёт человека» на список, счётчик меню и сторожа
+ * крона (crm-serious-fixes, тикет 03).
+ *
+ * Весь поток прода — обращения флоу без режима (`source = 'support'`,
+ * помощник выключен). До тикета их нечем было снять, кроме доставленного
+ * ответа: «Подключиться» → «Закрыть» сообщало клиенту о завершении, а «+1»
+ * висело бессрочно; сторож «без ответа > 2 ч» требовал режим `operator` и не
+ * видел ни одного такого обращения. Теперь обращение снимает ответ оператора
+ * ИЛИ закрытие/возврат помощнику ПОЗЖЕ последнего маркера — и это условие одно.
+ */
+describe('одно правило «ждёт человека» (тикет 03)', () => {
+  const base = Date.now() - 5 * 3_600_000;
+  /** Момент сценария: минуты от начала. Время задаём явно — INSERT'ы подряд ложатся в одну отметку. */
+  const t = (minutes: number) => new Date(base + minutes * 60_000);
+
+  async function setAt(messageId: string, at: Date) {
+    await db.update(schema.messages).set({ createdAt: at }).where(eq(schema.messages.id, messageId));
+  }
+
+  /** Служебная строка перехода с этим триггером — в нужный момент. */
+  async function setTransitionAt(conversationId: string, trigger: string, at: Date) {
+    await db.execute(sql`
+      UPDATE messages SET created_at = ${at.toISOString()}
+       WHERE conversation_id = ${conversationId}
+         AND role = 'system'
+         AND meta ->> 'trigger' = ${trigger}
+    `);
+  }
+
+  /** Обращение двухшагового флоу бота при выключенном помощнике: режим не меняется. */
+  async function legacyRequest(conversationId: string, at: Date) {
+    const row = await appendMessage(db, {
+      conversationId,
+      role: 'assistant',
+      content: 'Обращение отправлено',
+      meta: { source: 'support', support_request: true, support_delivered: true },
+    });
+    await setAt(row.id, at);
+  }
+
+  /** Эскалация помощника: переход к человеку + маркер на строке эскалации. */
+  async function escalation(conversationId: string, at: Date) {
+    await transitionConversationMode(db, {
+      conversationId,
+      from: ['idle', 'ai'],
+      to: 'operator',
+      trigger: 'hard',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    await setTransitionAt(conversationId, 'hard', at);
+    const row = await appendMessage(db, {
+      conversationId,
+      role: 'assistant',
+      content: 'Передаю оператору',
+      meta: { source: 'support_escalation', support_request: true, support_delivered: true },
+    });
+    await setAt(row.id, at);
+  }
+
+  async function operatorReply(conversationId: string, staffId: string, at: Date) {
+    await transitionConversationMode(db, {
+      conversationId,
+      from: ['idle', 'ai', 'operator'],
+      to: 'operator',
+      trigger: 'operator_reply',
+      modeExpiresAt: minutesFromNow(24 * 60),
+      assignedOperatorId: staffId,
+      onlyIfFreeOrOwnedBy: staffId,
+    });
+    await setTransitionAt(conversationId, 'operator_reply', at);
+    const row = await appendMessage(db, { conversationId, role: 'operator', content: 'разбираюсь', staffId });
+    await setAt(row.id, at);
+  }
+
+  async function claim(conversationId: string, staffId: string, at: Date) {
+    expect(await claimSupportConversation(db, { conversationId, staffId })).toBe('claimed');
+    await setTransitionAt(conversationId, 'operator_claim', at);
+  }
+
+  /** «Закрыть» из панели — тот же переход, что делает роут. */
+  async function close(conversationId: string, at: Date) {
+    const res = await transitionConversationMode(db, {
+      conversationId,
+      from: 'operator',
+      to: 'idle',
+      trigger: 'operator_close',
+      actorName: 'Оператор',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    expect(res.transitioned).toBe(true);
+    await setTransitionAt(conversationId, 'operator_close', at);
+  }
+
+  /** «Вернуть помощнику» из панели. */
+  async function returnToAi(conversationId: string, at: Date) {
+    const res = await transitionConversationMode(db, {
+      conversationId,
+      from: 'operator',
+      to: 'ai',
+      trigger: 'operator_return',
+      modeExpiresAt: minutesFromNow(30),
+      assignedOperatorId: null,
+    });
+    expect(res.transitioned).toBe(true);
+    await setTransitionAt(conversationId, 'operator_return', at);
+  }
+
+  /** Реплика клиента в разговоре у оператора — как пишет её модуль поддержки. */
+  async function followUp(conversationId: string, at: Date) {
+    await touchConversationMode(db, { conversationId, mode: 'operator', modeExpiresAt: null });
+    const row = await appendMessage(db, {
+      conversationId,
+      role: 'user',
+      content: 'заказ 1234, деньги списали',
+      meta: { support_request: true, source: 'support_follow_up' },
+    });
+    await setAt(row.id, at);
+  }
+
+  async function cronIds(olderThan: Date): Promise<string[]> {
+    return (await findUnansweredSupportConversations(db, { olderThan, limit: 10_000 })).map(
+      (r) => r.conversationId,
+    );
+  }
+
+  it('список, счётчик и сторож отвечают ОДИНАКОВО на каждом сценарии', async () => {
+    const staff = await makeStaff();
+    const user = await makeUser();
+    const countBefore = await countUnansweredSupportRequests(db);
+
+    const scenarios: { name: string; awaiting: boolean; build: (id: string) => Promise<void> }[] = [
+      { name: 'флоу без режима, ответа нет', awaiting: true, build: (id) => legacyRequest(id, t(0)) },
+      {
+        name: 'флоу без режима: «Подключиться» → «Закрыть»',
+        awaiting: false,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await claim(id, staff.id, t(1));
+          await close(id, t(2));
+        },
+      },
+      {
+        name: 'флоу без режима: «Подключиться» без закрытия — ещё ждёт',
+        awaiting: true,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await claim(id, staff.id, t(1));
+        },
+      },
+      {
+        name: 'флоу без режима: закрыли, клиент обратился снова',
+        awaiting: true,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await claim(id, staff.id, t(1));
+          await close(id, t(2));
+          await legacyRequest(id, t(3));
+        },
+      },
+      {
+        name: 'флоу без режима: оператор ответил',
+        awaiting: false,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await operatorReply(id, staff.id, t(1));
+        },
+      },
+      { name: 'эскалация, ответа нет', awaiting: true, build: (id) => escalation(id, t(0)) },
+      {
+        name: 'эскалация: «Закрыть» без ответа',
+        awaiting: false,
+        build: async (id) => {
+          await escalation(id, t(0));
+          await close(id, t(1));
+        },
+      },
+      {
+        name: 'эскалация: «Вернуть помощнику»',
+        awaiting: false,
+        build: async (id) => {
+          await escalation(id, t(0));
+          await returnToAi(id, t(1));
+        },
+      },
+      {
+        name: 'оператор ответил, клиент ответил ему',
+        awaiting: true,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await operatorReply(id, staff.id, t(1));
+          await followUp(id, t(2));
+        },
+      },
+    ];
+
+    const expected = new Map<string, { name: string; awaiting: boolean }>();
+    for (const scenario of scenarios) {
+      const conversation = await makeConversation({ userId: user.id });
+      await scenario.build(conversation.id);
+      expected.set(conversation.id, { name: scenario.name, awaiting: scenario.awaiting });
+    }
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id, limit: 50 });
+    const cron = new Set(await cronIds(minutesFromNow(1)));
+    for (const [conversationId, { name, awaiting }] of expected) {
+      const row = items.find((i) => i.conversationId === conversationId);
+      expect({ name, list: row?.awaitingOperator }).toEqual({ name, list: awaiting });
+      expect({ name, cron: cron.has(conversationId) }).toEqual({ name, cron: awaiting });
+    }
+    const awaitingCount = [...expected.values()].filter((e) => e.awaiting).length;
+    expect(await countUnansweredSupportRequests(db)).toBe(countBefore + awaitingCount);
+  });
+
+  it('«Подключиться» → «Закрыть» у обращения флоу без режима гасит счётчик сразу', async () => {
+    const staff = await makeStaff();
+    const conversation = await makeConversation();
+    const before = await countUnansweredSupportRequests(db);
+
+    await legacyRequest(conversation.id, t(0));
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+
+    await claim(conversation.id, staff.id, t(1));
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+
+    await close(conversation.id, t(2));
+    expect(await countUnansweredSupportRequests(db)).toBe(before);
+  });
+
+  it('сторож видит обращение флоу без режима старше двух часов — разговор в idle', async () => {
+    const conversation = await makeConversation();
+    await legacyRequest(conversation.id, hoursAgo(3));
+
+    expect((await getConversationState(db, conversation.id))?.mode).toBe('idle');
+    expect(await cronIds(hoursAgo(2))).toContain(conversation.id);
+  });
+
+  it('сторож не видит обращение флоу без режима моложе порога', async () => {
+    const conversation = await makeConversation();
+    await legacyRequest(conversation.id, minutesFromNow(-30));
+
+    expect(await cronIds(hoursAgo(2))).not.toContain(conversation.id);
+  });
+
+  it('маркер в сессии помощника обращением к человеку не считается — ни в списке, ни у сторожа', async () => {
+    const user = await makeUser();
+    const conversation = await makeConversation({
+      mode: 'ai',
+      modeExpiresAt: minutesFromNow(30),
+      userId: user.id,
+    });
+    const row = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'вопрос',
+      meta: { support_request: true },
+    });
+    await setAt(row.id, hoursAgo(3));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(false);
+    expect(await cronIds(hoursAgo(2))).not.toContain(conversation.id);
+  });
+});
+
+/**
+ * Ответ клиента оператору при выключенном помощнике (crm-serious-fixes,
+ * тикет 01) — то, что пишет модуль поддержки, глазами панели и крона.
+ */
+describe('реплика клиента после ответа оператора (тикет 01)', () => {
+  it('разговор снова «без ответа», срок снят — крон его не закроет', async () => {
+    const staff = await makeStaff();
+    const user = await makeUser();
+    // Оператор ответил больше суток назад: срок режима уже истёк.
+    const conversation = await makeConversation({
+      mode: 'operator',
+      modeExpiresAt: hoursAgo(1),
+      assignedOperatorId: staff.id,
+      userId: user.id,
+    });
+    const reply = await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'operator',
+      content: 'Уточните номер заказа',
+      staffId: staff.id,
+    });
+    await db
+      .update(schema.messages)
+      .set({ createdAt: hoursAgo(26) })
+      .where(eq(schema.messages.id, reply.id));
+    const before = await countUnansweredSupportRequests(db);
+
+    // Модуль: touch `operator` со сроком null + реплика с маркером.
+    await touchConversationMode(db, {
+      conversationId: conversation.id,
+      mode: 'operator',
+      modeExpiresAt: null,
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'заказ 1234, деньги списали',
+      meta: { support_request: true, source: 'support_follow_up' },
+    });
+
+    const expired = (await findExpiredOperatorConversations(db, { limit: 10_000 })).map(
+      (r) => r.conversationId,
+    );
+    expect(expired).not.toContain(conversation.id);
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((i) => i.conversationId === conversation.id);
+    expect(row?.awaitingOperator).toBe(true);
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(await countUnansweredSupportRequests(db)).toBe(before + 1);
+  });
+
+  it('ai → operator при недоступном помощнике: обращение видно, срок null', async () => {
+    const user = await makeUser();
+    const conversation = await makeConversation({
+      mode: 'ai',
+      modeExpiresAt: minutesFromNow(20),
+      userId: user.id,
+    });
+
+    const res = await transitionConversationMode(db, {
+      conversationId: conversation.id,
+      from: 'ai',
+      to: 'operator',
+      trigger: 'ai_unavailable',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    expect(res.transitioned).toBe(true);
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'user',
+      content: 'где карта?',
+      meta: { support_request: true, source: 'support_follow_up' },
+    });
+
+    expect(await getConversationState(db, conversation.id)).toMatchObject({
+      mode: 'operator',
+      modeExpiresAt: null,
+    });
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(true);
+  });
+});
+
+describe('срок режима в панели (тикет 03, SUP-13)', () => {
+  it('список и лента отдают срок режима — экран отличит истёкшего помощника от живого', async () => {
+    const user = await makeUser();
+    const expiresAt = hoursAgo(1);
+    const conversation = await makeConversation({
+      mode: 'ai',
+      modeExpiresAt: expiresAt,
+      userId: user.id,
+    });
+    await appendMessage(db, {
+      conversationId: conversation.id,
+      role: 'assistant',
+      content: 'Передали в поддержку',
+      meta: { source: 'support', support_request: true },
+    });
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    expect(items.find((i) => i.conversationId === conversation.id)?.modeExpiresAt?.getTime()).toBe(
+      expiresAt.getTime(),
+    );
+    const thread = await getSupportThreadForPanel(db, conversation.id);
+    expect(thread?.modeExpiresAt?.getTime()).toBe(expiresAt.getTime());
   });
 });

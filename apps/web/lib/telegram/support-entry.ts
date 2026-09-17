@@ -2,12 +2,13 @@ import 'server-only';
 
 import type { TelegramCallbackQuery } from '@oplati/types';
 
+import { isSupportAiAvailable } from '@/lib/support/availability';
 import { SUPPORT_ALREADY_OPEN } from '@/lib/support/texts';
 
 import { resolveCallbackContext } from './persist';
 import { sendSafely } from './send';
 import { handleSupportCallback } from './support-flow';
-import { isSupportAiEnabled, openSupportFromBot } from './support-session';
+import { openSupportFromBot } from './support-session';
 
 /**
  * Общий вход в поддержку ПО КНОПКЕ: помощник (если включён и состояние
@@ -21,7 +22,7 @@ export async function openSupportEntry(
   chatId: number,
   updateId: number,
 ): Promise<void> {
-  if (isSupportAiEnabled()) {
+  if (isSupportAiAvailable()) {
     const ctx = await resolveCallbackContext(cb, updateId);
     if (ctx) {
       const opened = await openSupportFromBot(ctx, chatId, updateId, cb.from, 'button');

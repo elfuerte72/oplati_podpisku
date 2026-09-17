@@ -17,7 +17,8 @@ import { childLogger } from '@/lib/logger';
 import { handleLinkDeepLink } from './link-flow';
 import { handleSupportCommand } from './support-flow';
 import { SUPPORT_START_PAYLOAD } from './links';
-import { isSupportAiEnabled, openSupportFromBot, resetSupportOnStart } from './support-session';
+import { isSupportAiAvailable } from '@/lib/support/availability';
+import { openSupportFromBot, resetSupportOnStart } from './support-session';
 import { persistInbound, safeAppendMessage, type PersistContext } from './persist';
 import { sendSafely } from './send';
 import {
@@ -123,14 +124,14 @@ export async function handleStartCommand(
     // а не меню.
     if (startPayloadRaw.toLowerCase() === SUPPORT_START_PAYLOAD) {
       await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
-      if (isSupportAiEnabled()) {
+      if (isSupportAiAvailable()) {
         const opened = await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
         if (opened.status !== 'unavailable') return;
       }
       await handleSupportCommand(update, message, chatId, '/support');
       return;
     }
-    if (isSupportAiEnabled()) {
+    if (isSupportAiAvailable()) {
       // ⚠️ Любой другой `/start` СБРАСЫВАЕТ помощника — молча. Это выход из
       // сессии для человека, который «залип» в разговоре: он видит привычное
       // меню, а не продолжение переписки. Разговор, который ведёт ОПЕРАТОР, не

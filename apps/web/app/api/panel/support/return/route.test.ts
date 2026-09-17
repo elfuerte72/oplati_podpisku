@@ -8,6 +8,11 @@ const h = vi.hoisted(() => ({
   ),
   sendMessage: vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}),
   track: vi.fn(),
+  assistantAvailable: true,
+}));
+
+vi.mock('@/lib/support/availability', () => ({
+  isSupportAiAvailable: () => h.assistantAvailable,
 }));
 
 vi.mock('@/lib/panel/session', () => ({ readPanelActor: h.readPanelActor }));
@@ -68,6 +73,7 @@ beforeEach(() => {
   h.transition.mockReset();
   h.sendMessage.mockReset();
   h.track.mockClear();
+  h.assistantAvailable = true;
   h.readPanelActor.mockImplementation(async () => actor('operator'));
   h.getThread.mockImplementation(async () => thread());
   h.transition.mockImplementation(async () => ({ transitioned: true, state: null }));
@@ -148,6 +154,38 @@ describe('POST /api/panel/support/return', () => {
     });
 
     expect((await POST(request({ conversationId: CONVERSATION_ID }))).status).toBe(200);
+  });
+
+  /**
+   * crm-serious-fixes, тикет 02. Помощник выключен на проде с 09.09, а кнопка
+   * срабатывала: клиенту уходило «Продолжайте — я на связи», разговор
+   * переходил в `ai`, и отвечать ему было некому.
+   */
+  it('помощник недоступен — 409 assistant_disabled: режим не меняется, клиенту ничего не уходит', async () => {
+    h.assistantAvailable = false;
+
+    const res = await POST(request({ conversationId: CONVERSATION_ID }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ ok: false, error: 'assistant_disabled' });
+    expect(h.transition).not.toHaveBeenCalled();
+    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(h.track).not.toHaveBeenCalled();
+  });
+
+  it('помощник недоступен — отказ и админу: возвращать разговор некому', async () => {
+    h.assistantAvailable = false;
+    h.readPanelActor.mockImplementation(async () => actor('admin'));
+
+    expect((await POST(request({ conversationId: CONVERSATION_ID }))).status).toBe(409);
+    expect(h.transition).not.toHaveBeenCalled();
+  });
+
+  it('помощник недоступен, но не вошедший всё равно получает 401, а не подсказку о настройке', async () => {
+    h.assistantAvailable = false;
+    h.readPanelActor.mockImplementation(async () => null);
+
+    expect((await POST(request({ conversationId: CONVERSATION_ID }))).status).toBe(401);
   });
 
   it('роль без прав — 403; чужой Origin — 403; не вошедший — 401', async () => {

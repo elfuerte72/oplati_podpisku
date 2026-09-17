@@ -176,9 +176,10 @@ export async function openSupportSession(
     return { status: 'already_open' };
   }
 
-  // Ключа нет — сессию НЕ открываем: приветствие без единого ответа за ним
-  // хуже, чем сразу сегодняшний флоу к человеку. Порт сам алёртит.
-  if (!ports.model.configured()) return { status: 'unavailable' };
+  // Помощник недоступен (флаг выключен или ключа нет) — сессию НЕ открываем:
+  // приветствие без единого ответа за ним хуже, чем сразу сегодняшний флоу к
+  // человеку. О пропавшем ключе порт алёртит сам.
+  if (!ports.model.available()) return { status: 'unavailable' };
 
   // ⚠️ `from` включает `ai`, а не только `idle`. У ИСТЁКШЕЙ сессии в БД
   // по-прежнему записано `ai` — срок гаснет лениво, отдельного сторожа нет.
@@ -253,7 +254,7 @@ export async function handleSupportMessage(
       await ports.delivery.toClient(SUPPORT_MEDIA_TO_OPERATOR);
       await noteClientFollowUp(
         ports,
-        input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.file,
+        input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document,
         now,
         input.userMeta,
       );
@@ -264,6 +265,10 @@ export async function handleSupportMessage(
   }
 
   if (mode === 'idle') return { status: 'not_in_session' };
+
+  // Живая сессия помощника, а помощника нет: флаг выключили или пропал ключ,
+  // пока клиент с ним говорил. Разговор уже идёт — отдаём его человеку.
+  if (!ports.model.available()) return await handOverWhileAiUnavailable(ports, input, now);
 
   // Реплика клиента в сессии помощника — ДО любого исхода ниже: и жёсткий
   // триггер, и кап, и ответ модели должны видеть её в ленте.
@@ -290,17 +295,6 @@ export async function handleSupportMessage(
       reason: `${hard.category}: «${hard.matched}»`,
       now,
     });
-  }
-
-  // Ключа нет при включённом флаге — ведём себя РОВНО как при выключённом
-  // флаге (спека §10): сессию гасим, клиент уходит в сегодняшний флоу к
-  // человеку. ⚠️ Именно гасим, а не эскалируем: эскалация запирает разговор в
-  // режиме оператора, из которого клиента выводит только человек, — и одна
-  // забытая переменная окружения превращала бы КАЖДОГО написавшего в
-  // недостижимого для бота. Алёрт о пропавшем ключе шлёт сам порт.
-  if (!ports.model.configured()) {
-    await closeToIdle(ports, 'ai_disabled');
-    return { status: 'not_in_session' };
   }
 
   const used = await ports.state.countAiReplies(new Date(now.getTime() - 24 * HOUR_MS));
@@ -398,6 +392,62 @@ async function loadMaskedHistory(
     currentText,
     { operatorPrefix: OPERATOR_HISTORY_PREFIX, mask: maskForModel },
   );
+}
+
+/**
+ * Живая сессия помощника при недоступном помощнике (crm-serious-fixes, Р4).
+ *
+ * Клиент говорил с помощником, а тот пропал: флаг выключили или исчез ключ.
+ * Разговор уходит человеку (`ai → operator`, срок `null`), реплика клиента
+ * становится обращением. Модель не зовётся.
+ *
+ * ⚠️ Это НЕ противоречит правилу «флаг без ключа — не эскалация»: то правило
+ * про ВХОД кнопкой (открыть сессию некому — клиент идёт в сегодняшний флоу).
+ * Здесь диалог уже идёт, и погасить его в `idle` значило бы ответить на вопрос
+ * клиента подсказкой «нажмите кнопку» — ровно та потеря, которую чинит тикет.
+ *
+ * Порядок как у `escalate`: переход → текст клиенту → реплика и пинг
+ * персоналу → запись ответа. Клиент узнаёт первым, а ответ бота ложится в ленту
+ * ПОСЛЕ реплики клиента, на которую он отвечает.
+ */
+async function handOverWhileAiUnavailable(
+  ports: SupportPorts,
+  input: { text: string; kind: 'text' | 'media'; mediaPlaceholder?: string; userMeta?: Record<string, unknown> },
+  now: Date,
+): Promise<SupportOutcome> {
+  const content =
+    input.kind === 'media' ? (input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document) : input.text;
+
+  const { transitioned } = await ports.state.transition({
+    from: 'ai',
+    to: 'operator',
+    trigger: 'ai_unavailable',
+    // ⚠️ null, а не срок: неотвеченное обращение не гаснет никогда.
+    modeExpiresAt: null,
+    assignedOperatorId: null,
+  });
+
+  if (!transitioned) {
+    // Условный переход не нашёл `ai`: разговор успели сменить (оператор
+    // подключился, соседнее сообщение, /start). Пляшем от ФАКТА в базе, а не
+    // от прочитанного минуту назад.
+    const fresh = await ports.state.read();
+    if (!fresh) return { status: 'state_unavailable' };
+    if (fresh.mode !== 'operator') return { status: 'not_in_session' };
+    await noteClientFollowUp(ports, content, now, input.userMeta);
+    return { status: 'operator_leads' };
+  }
+
+  const text = aiUnavailableText(now);
+  await ports.delivery.toClient(text);
+  await noteClientFollowUp(ports, content, now, input.userMeta);
+  await ports.state.append({
+    role: 'assistant',
+    content: text,
+    meta: { source: 'support_escalation', trigger: 'ai_unavailable' },
+  });
+  ports.analytics.track({ name: 'support_escalated', trigger: 'ai_unavailable' });
+  return { status: 'escalated', trigger: 'ai_unavailable' };
 }
 
 /**

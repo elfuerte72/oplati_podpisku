@@ -34,8 +34,8 @@ vi.mock('./persist', () => ({ persistInbound: vi.fn(), safeAppendMessage: vi.fn(
 vi.mock('./send', () => ({ sendSafely: vi.fn() }));
 vi.mock('./link-flow', () => ({ handleLinkDeepLink: vi.fn() }));
 vi.mock('./support-flow', () => ({ handleSupportCommand: vi.fn() }));
+vi.mock('@/lib/support/availability', () => ({ isSupportAiAvailable: () => false }));
 vi.mock('./support-session', () => ({
-  isSupportAiEnabled: () => false,
   openSupportFromBot: vi.fn(),
   resetSupportOnStart: vi.fn(),
 }));

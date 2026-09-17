@@ -122,7 +122,7 @@ describe('supportStateNote', () => {
   it('кто провёл переход руками — отдельным полем, а не «причиной»', () => {
     expect(
       supportStateNote({ source: 'support_state', from: 'operator', to: 'idle', trigger: 'operator_close', actor: 'Менеджер' }),
-    ).toBe('Режим: Закрыт · закрыл оператор · Менеджер');
+    ).toBe('Режим: Свободен · закрыл оператор · Менеджер');
   });
 
   it('незнакомый триггер показывается как есть, а не прячется', () => {

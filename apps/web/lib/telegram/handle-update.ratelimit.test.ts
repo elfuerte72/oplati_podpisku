@@ -59,10 +59,23 @@ vi.mock('./bot', () => ({
   getBot: () => ({ api: { answerCallbackQuery: vi.fn(async () => {}) } }),
 }));
 vi.mock('./start-menu', () => ({ handleStartCommand: h.startMock }));
-vi.mock('./support-flow', () => ({
-  handleSupportCallback: h.supportCallbackMock,
-  handleSupportCommand: h.supportMock,
-  tryHandlePendingSupport: vi.fn(async () => false),
+vi.mock('./support-flow', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./support-flow')>();
+  return {
+    extractSupportInline: actual.extractSupportInline,
+    handleSupportCallback: h.supportCallbackMock,
+    handleSupportCommand: h.supportMock,
+    tryHandlePendingSupport: vi.fn(async () => false),
+  };
+});
+// Модуль поддержки зовётся на каждом тексте и медиа (crm-serious-fixes,
+// тикет 01). Здесь проверяется лимит, а не поддержка: разговор вне сессии.
+vi.mock('@/lib/support/availability', () => ({ isSupportAiAvailable: () => false }));
+vi.mock('./support-session', () => ({
+  openSupportFromBot: vi.fn(async () => ({ status: 'unavailable' })),
+  routeSupportIncoming: vi.fn(async () => ({ status: 'not_in_session' })),
+  finishSupportFromBot: vi.fn(async () => undefined),
+  resetSupportOnStart: vi.fn(async () => undefined),
 }));
 vi.mock('./catalog-callbacks', () => ({
   handleOrderActionCallback: vi.fn(async () => undefined),

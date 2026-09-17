@@ -2,7 +2,6 @@ import 'server-only';
 
 import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 
-import { serverEnv } from '@/lib/env.server';
 import { childLogger } from '@/lib/logger';
 import { supportPorts, type SupportRequestContext } from '@/lib/support/adapters';
 import {
@@ -16,6 +15,7 @@ import type { SupportSurface } from '@/lib/support/ports';
 import { SUPPORT_MEDIA_PLACEHOLDER } from '@/lib/support/texts';
 
 import type { PersistContext } from './persist';
+import type { MediaKind } from './templates';
 
 /**
  * Мост между ботом и модулем поддержки: собирает контекст запроса и
@@ -27,10 +27,8 @@ import type { PersistContext } from './persist';
 
 const log = childLogger('telegram-bot');
 
-/** Включён ли помощник. Выключен — работает сегодняшний флоу к человеку. */
-export function isSupportAiEnabled(): boolean {
-  return serverEnv.SUPPORT_AI_ENABLED;
-}
+// «Доступен ли помощник» — `isSupportAiAvailable` в `lib/support/availability.ts`:
+// флаг И ключ, одна функция на бота, порт модели и панель.
 
 export function supportRequestContext(
   ctx: PersistContext,
@@ -64,7 +62,12 @@ export async function openSupportFromBot(
 }
 
 /**
- * Свободный текст или медиа внутри разговора.
+ * Свободный текст или медиа от клиента — В ЛЮБОМ режиме и при любом флаге.
+ *
+ * ⚠️ Зовётся и при выключенном помощнике (crm-serious-fixes, тикет 01): только
+ * модуль знает режим разговора, и только он ставит маркер обращения на
+ * реплику клиента, которому отвечает оператор. Доступность помощника модуль
+ * узнаёт сам — портом модели.
  *
  * Возвращает исход, чтобы вызывающий решил, что делать дальше: подсказка при
  * `not_in_session`, сегодняшний флоу при недоступной БД, тишина при живом
@@ -78,7 +81,7 @@ export async function routeSupportIncoming(
   input: {
     text: string;
     kind: 'text' | 'media';
-    mediaKind?: 'photo' | 'file';
+    mediaKind?: MediaKind;
     userMeta?: Record<string, unknown>;
   },
 ): Promise<SupportOutcome> {
@@ -88,7 +91,7 @@ export async function routeSupportIncoming(
     kind: input.kind,
     ...(input.userMeta ? { userMeta: input.userMeta } : {}),
     ...(input.kind === 'media'
-      ? { mediaPlaceholder: SUPPORT_MEDIA_PLACEHOLDER[input.mediaKind ?? 'file'] }
+      ? { mediaPlaceholder: SUPPORT_MEDIA_PLACEHOLDER[input.mediaKind ?? 'document'] }
       : {}),
   });
   log.info({
