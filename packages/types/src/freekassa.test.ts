@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FREEKASSA_ORDER_STATUS,
+  FREEKASSA_WITHDRAWAL_METHODS,
+  FREEKASSA_WITHDRAWAL_STATUS,
+  freekassaBalanceResponseSchema,
   freekassaCreateOrderResponseSchema,
+  freekassaWithdrawalsResponseSchema,
   freekassaOrdersResponseSchema,
   freekassaTerminalReason,
   freekassaNotificationSchema,
@@ -248,5 +252,68 @@ describe('freekassaTerminalReason', () => {
     // Хоронить такой заказ нельзя — исход решает провайдер.
     expect(FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD).toBe(7);
     expect(freekassaTerminalReason(FREEKASSA_ORDER_STATUS.ANTIFRAUD_HOLD)).toBeNull();
+  });
+});
+
+describe('баланс магазина и выплаты (панель, раздел «Финансы»)', () => {
+  it('баланс: остаток приходит числом или строкой, наружу — строка', () => {
+    const parsed = freekassaBalanceResponseSchema.parse({
+      type: 'success',
+      balance: [
+        { currency: 'RUB', value: '4026.31' },
+        { currency: 'USD', value: 0 },
+      ],
+    });
+    expect(parsed.balance).toEqual([
+      { currency: 'RUB', value: '4026.31' },
+      { currency: 'USD', value: '0' },
+    ]);
+  });
+
+  it('выплата: реквизит получателя отбрасывается, числа приводятся', () => {
+    const parsed = freekassaWithdrawalsResponseSchema.parse({
+      type: 'success',
+      pages: 1,
+      orders: [
+        {
+          id: 3139438,
+          amount: 7300,
+          currency: 'RUB',
+          ext_currency_id: '11',
+          account: 'owner@example.com',
+          date: '2026-09-15 10:03:27',
+          status: '1',
+        },
+      ],
+    });
+    expect(parsed.orders).toEqual([
+      {
+        id: '3139438',
+        amount: '7300',
+        currency: 'RUB',
+        ext_currency_id: 11,
+        date: '2026-09-15 10:03:27',
+        status: FREEKASSA_WITHDRAWAL_STATUS.DONE,
+      },
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain('owner@example.com');
+  });
+
+  it('ответ с ошибкой провайдера балансом не считается', () => {
+    expect(freekassaBalanceResponseSchema.safeParse({ type: 'error', message: 'nope' }).success).toBe(
+      false,
+    );
+  });
+
+  it('способы вывода кассы — только собственный FKWallet.io (снято живым вызовом)', () => {
+    // Вывод на карту или внешний крипто-адрес через API кассы невозможен: это
+    // факт, на котором держится вся схема пополнения карточного фонда.
+    // Точная форма «FKWallet.io <ВАЛЮТА>», а не startsWith: CodeQL читает
+    // проверку подстроки с точкой в имени как небезопасную проверку хоста.
+    expect(Object.values(FREEKASSA_WITHDRAWAL_METHODS).every((name) => /^FKWallet\.io [A-Z]{3,4}$/.test(name))).toBe(
+      true,
+    );
+    expect(FREEKASSA_WITHDRAWAL_METHODS[11]).toBe('FKWallet.io RUB');
+    expect(FREEKASSA_WITHDRAWAL_METHODS[16]).toBe('FKWallet.io USDT');
   });
 });

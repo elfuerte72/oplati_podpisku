@@ -1,5 +1,6 @@
 import {
   paySpaceAsyncOpDataSchema,
+  paySpaceBalancesDataSchema,
   paySpaceCardInfoDataSchema,
   paySpaceCreateCardDataSchema,
   paySpaceErrorSchema,
@@ -166,6 +167,33 @@ export type VccBalanceResult = {
   balanceUsdCents: number;
   pendingUsdCents: number;
   currency: string;
+};
+
+/** Один крипто-кошелёк мерчанта (GET /balance/). */
+export type AccountBalanceEntry = {
+  id: string;
+  /** Код валюты провайдера: `USDT-TRC20`, `USDT-BEP20`, `BTC`, … */
+  code: string;
+  chain: string | null;
+  /**
+   * Остаток в криптовалюте — строкой провайдера, без округления: до восьми
+   * знаков после точки, центы здесь не подходят.
+   */
+  amount: string;
+  /** Оценка остатка в USD-центах (`fiat_balance`). */
+  fiatUsdCents: number;
+  isActive: boolean;
+};
+
+export type AccountBalancesResult = {
+  balances: AccountBalanceEntry[];
+  /** Итог по всем кошелькам в USD-центах (`total_balance`). */
+  totalUsdCents: number;
+  /**
+   * В какой валюте провайдер посчитал оценку. Запрашиваем USD явно, но
+   * возвращаем факт: вызывающий обязан сверить, прежде чем звать это центами.
+   */
+  fiatCurrency: string;
 };
 
 const CARD_STATUS_LABELS: Record<string, string> = {
@@ -386,6 +414,41 @@ export class PaySpaceClient {
       balanceUsdCents: dollarStringToUsdCents(data.balance),
       pendingUsdCents: dollarStringToUsdCents(data.pending),
       currency: data.currency,
+    };
+  }
+
+  /**
+   * Крипто-балансы мерчанта (GET /balance/) — кошельки, ИЗ которых
+   * пополняется карточный субаккаунт (`/vcc/balance/topup/`, T+1). Сам
+   * субаккаунт — `getVccBalance`. Читает панель, раздел «Финансы».
+   *
+   * Валюта оценки запрашивается явно (`currency=USD`): без параметра провайдер
+   * берёт настройку мерчанта, и «центы» в имени поля стали бы ложью после её
+   * смены в кабинете. Факт всё равно возвращается (`fiatCurrency`).
+   */
+  async getBalances(opts?: {
+    timeoutMs?: number;
+    attempts?: number;
+  }): Promise<AccountBalancesResult> {
+    const data = await this.request({
+      method: 'GET',
+      path: '/balance/',
+      query: { currency: 'USD' },
+      schema: paySpaceBalancesDataSchema,
+      timeoutMs: opts?.timeoutMs,
+      maxAttempts: opts?.attempts,
+    });
+    return {
+      balances: data.balances.map((b) => ({
+        id: String(b.id),
+        code: b.currency.code,
+        chain: b.currency.chain ?? null,
+        amount: typeof b.balance === 'number' ? String(b.balance) : b.balance,
+        fiatUsdCents: dollarStringToUsdCents(b.fiat_balance),
+        isActive: b.is_active ?? true,
+      })),
+      totalUsdCents: dollarStringToUsdCents(data.total_balance),
+      fiatCurrency: data.fiat_currency,
     };
   }
 

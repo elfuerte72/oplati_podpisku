@@ -454,3 +454,57 @@ describe('PaySpaceClient — гейт неидемпотентности сил�
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('PaySpaceClient.getBalances', () => {
+  it('крипто-кошельки: оценка в центах, сумма криптовалюты строкой, валюта оценки запрошена явно', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResp(200, {
+        success: true,
+        data: {
+          balances: [
+            {
+              id: '748',
+              currency: {
+                code: 'USDT-TRC20',
+                name: 'Tether USD',
+                chain: 'Tron',
+                is_active: true,
+                min_amount: '2.5',
+                network_fee: '1.5902',
+              },
+              balance: '3.5985',
+              fiat_balance: '3.6',
+              is_active: true,
+            },
+            // Пример доки: id числом, chain null, суммы числом — принимаем всё.
+            { id: 754, currency: { code: 'BTC', chain: null }, balance: 0, fiat_balance: 0 },
+          ],
+          total_balance: '14.37',
+          fiat_currency: 'USD',
+        },
+      }),
+    );
+    const c = makeClient(fetchMock);
+
+    const res = await c.getBalances({ timeoutMs: 3000, attempts: 1 });
+
+    expect(res).toEqual({
+      balances: [
+        { id: '748', code: 'USDT-TRC20', chain: 'Tron', amount: '3.5985', fiatUsdCents: 360, isActive: true },
+        { id: '754', code: 'BTC', chain: null, amount: '0', fiatUsdCents: 0, isActive: true },
+      ],
+      totalUsdCents: 1437,
+      fiatCurrency: 'USD',
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://pay.test/api/v1/balance/?currency=USD');
+  });
+
+  it('ответ без списка кошельков — дрейф контракта', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResp(200, { success: true, data: { total_balance: '1', fiat_currency: 'USD' } }));
+    const c = makeClient(fetchMock);
+
+    await expect(c.getBalances()).rejects.toBeInstanceOf(PaySpaceContractError);
+  });
+});

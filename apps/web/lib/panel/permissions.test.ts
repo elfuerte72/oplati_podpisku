@@ -34,6 +34,19 @@ describe('canAccess', () => {
     expect(canAccess('operator', 'staff')).toBe(false);
   });
 
+  it('финансы — счета компании, только владельцу; менеджер видит пункт с пометкой', () => {
+    expect(canAccess('admin', 'treasury')).toBe(true);
+    expect(canAccess('operator', 'treasury')).toBe(false);
+    expect(sectionsFor('operator').find((s) => s.href === '/admin/treasury')).toMatchObject({
+      allowed: false,
+      title: 'Финансы',
+    });
+    // Первым в «Управлении»: остаток карточного счёта решает, выдадим ли мы
+    // следующую карту, а партнёры и тексты подождут.
+    const manage = groupedSectionsFor('admin').find((g) => g.group === 'manage');
+    expect(manage?.sections[0]?.href).toBe('/admin/treasury');
+  });
+
   it('аналитика, AI-аналитик и тексты воронки — инструменты владельца (панель v2, ветки A–C)', () => {
     for (const cap of ['analytics', 'ai', 'texts'] as const) {
       expect(canAccess('admin', cap)).toBe(true);

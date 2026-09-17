@@ -223,6 +223,13 @@ export default async function PanelHomePage() {
             ) : (
               <p className="panel-muted">{CELL_TEXT.balanceNotConfigured}</p>
             )}
+            {/* Только владельцу: раздел «Финансы» закрыт менеджеру, и ссылка на
+                заглушку с рабочего стола выглядела бы поломкой. */}
+            {canAccess(actor.role, 'treasury') ? (
+              <p style={{ marginTop: 8 }}>
+                <Link href="/admin/treasury">{SECTION_TITLES.treasury}</Link>
+              </p>
+            ) : null}
           </section>
         ) : null}
       </div>

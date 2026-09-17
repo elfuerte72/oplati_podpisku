@@ -39,6 +39,12 @@ export const PANEL_CAPABILITIES = [
   'fulfillment',
   /** Партнёры и заявки на вывод — реальные деньги. */
   'partners',
+  /**
+   * Раздел «Финансы» (трек treasury): остатки на счетах провайдеров и что из
+   * карточного фонда свободно. Только владелец: это казна компании, а не
+   * операционка, и следующий тикет трека повесит сюда кнопку перевода денег.
+   */
+  'treasury',
   /** Управление персоналом. */
   'staff',
   /**
@@ -132,6 +138,9 @@ export const PANEL_SECTIONS: readonly PanelSection[] = [
   { href: '/admin/feedback', capability: 'feedback', group: 'clients' },
   { href: '/admin/analytics', capability: 'analytics', group: 'analytics' },
   { href: '/admin/ai', capability: 'ai', group: 'analytics' },
+  // Финансы — первым в «Управлении»: остаток карточного счёта решает, выдадим
+  // ли мы следующую карту, а партнёры и тексты ждут.
+  { href: '/admin/treasury', capability: 'treasury', group: 'manage' },
   { href: '/admin/partners', capability: 'partners', group: 'manage' },
   { href: '/admin/texts', capability: 'texts', group: 'manage' },
   { href: '/admin/staff', capability: 'staff', group: 'manage' },

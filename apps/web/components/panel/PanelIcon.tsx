@@ -125,6 +125,15 @@ const SECTION_ICONS: Record<SectionKey, ReactElement> = {
       <path d="M15 10.2h3.2M15 13.6h3.2" {...S} />
     </>
   ),
+  // Финансы — кошелёк с клапаном: счета, а не отчёт (столбики уже у «Отчётов»).
+  treasury: (
+    <>
+      <path d="M4.5 8.5V6.6a1.6 1.6 0 0 1 1.6-1.6h10.6" {...S} />
+      <rect x="3.5" y="8.5" width="17" height="11" rx="2.2" {...S} />
+      <path d="M14.5 12h6v4h-6a2 2 0 0 1 0-4z" {...S} />
+      <circle cx="16.7" cy="14" r="0.9" fill="currentColor" stroke="none" />
+    </>
+  ),
 };
 
 /** Значки самой оболочки: меню, поиск, тумблеры вида, выход. */
