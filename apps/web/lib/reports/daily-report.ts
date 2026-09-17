@@ -123,8 +123,18 @@ function truncate(text: string, max: number): string {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
-/** Кто: `@username`, иначе имя из Telegram — оператор найдёт клиента по номеру заказа. */
-function clientLabel(order: DailyPaidOrder): string {
+export type ClientLabelInput = Pick<DailyPaidOrder, 'telegramUsername' | 'displayName'>;
+export type ServiceLabelInput = Pick<
+  DailyPaidOrder,
+  'serviceName' | 'tierName' | 'customDescription' | 'originalAmount' | 'originalCurrency'
+>;
+
+/**
+ * Кто: `@username`, иначе имя из Telegram — оператор найдёт клиента по номеру заказа.
+ * Экспортируется: те же подписи у уведомления «Оплата принята» в теме «Платежи»
+ * (`lib/jobs/notify-payment-ops.ts`) — один заказ в отчёте и в теме читается одинаково.
+ */
+export function clientLabel(order: ClientLabelInput): string {
   const username = order.telegramUsername?.trim();
   if (username) return `@${username}`;
   const name = order.displayName?.trim();
@@ -136,7 +146,7 @@ function clientLabel(order: DailyPaidOrder): string {
  * рядом цена в валюте сервиса («ChatGPT ($20)»): без неё Plus и Go одного
  * сервиса в списке неразличимы.
  */
-function serviceLabel(order: DailyPaidOrder): string {
+export function serviceLabel(order: ServiceLabelInput): string {
   if (order.serviceName) {
     if (order.tierName) return truncate(`${order.serviceName} ${order.tierName}`, 36);
     const price = servicePrice(order);
@@ -169,7 +179,7 @@ export function paidOrderLine(order: DailyPaidOrder): string {
   return parts.join(' · ');
 }
 
-function servicePrice(order: DailyPaidOrder): string | null {
+function servicePrice(order: Pick<ServiceLabelInput, 'originalAmount' | 'originalCurrency'>): string | null {
   if (order.originalAmount === null || order.originalAmount <= 0) return null;
   const value = order.originalAmount / 100;
   const text = Number.isInteger(value) ? String(value) : value.toFixed(2);

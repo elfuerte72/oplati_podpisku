@@ -449,3 +449,5 @@ export {
   type DailyPromoDiscounts,
   type DailySupport,
 } from './daily-report.ts';
+
+export { findPaidOrderNotice, type PaidOrderNotice } from './payment-notice.ts';
