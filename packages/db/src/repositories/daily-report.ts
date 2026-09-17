@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 
 import type { DB } from '../index.ts';
 import type { AnalyticsRange } from './analytics-panel.ts';
+import { toInt } from './pg-numbers.ts';
 
 /**
  * Выборки дневного отчёта в тему «Отчёты» ops-группы (`lib/jobs/daily-report.ts`).
@@ -19,12 +20,6 @@ import type { AnalyticsRange } from './analytics-panel.ts';
 
 function withinRange(column: ReturnType<typeof sql.raw>, range: AnalyticsRange) {
   return sql`${column} >= ${range.since}::timestamptz AND ${column} < ${range.until}::timestamptz`;
-}
-
-/** Числа из `db.execute` приходят строками (bigint/numeric) — приводим один раз. */
-function toInt(value: unknown): number {
-  const n = typeof value === 'number' ? value : Number(value ?? 0);
-  return Number.isFinite(n) ? Math.trunc(n) : 0;
 }
 
 // ─── Аудитория ────────────────────────────────────────────────────────────

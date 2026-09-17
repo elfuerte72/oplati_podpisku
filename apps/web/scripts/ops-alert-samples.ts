@@ -11,7 +11,7 @@
  * Отправка — прямым вызовом Bot API, без приложения: это смоук формы сообщения,
  * а не пути доставки (он проверяется тестами и живым обращением).
  */
-import { formatOpsMessage, type OpsMessage } from '../lib/alerts/format';
+import { formatOpsMessage, type OpsMessage, panelUrl } from '../lib/alerts/format';
 import type { AlertStream } from '../lib/alerts/kinds';
 
 type Sample = OpsMessage & { stream: AlertStream; label: string };
@@ -64,6 +64,22 @@ const samples: Sample[] = [
     title: 'За час ни одной оплаты',
     body: 'Похоже, оплаты не проходят: за последний час выставлено 7 счетов через freekassa, оплачено 0.',
     action: { text: 'проверить шлюз; при необходимости переключить PAYMENT_PRIMARY_PROVIDER на резервный и сделать redeploy' },
+  },
+  {
+    label: 'payment: accepted',
+    stream: 'payments',
+    title: 'Оплата принята',
+    facts: [
+      { label: 'Заказ', value: 'ORD-7F3K2' },
+      { label: 'Клиент', value: '@maria_pays' },
+      { label: 'Покупка', value: '3-я, клиент с 01.08.2026' },
+      { label: 'Что', value: 'Netflix ($15.99)' },
+      { label: 'Сумма', value: '1 595 ₽ (цена 2 000 ₽, баллы −405 ₽)' },
+      { label: 'Провайдер', value: 'Freekassa, вебхук' },
+    ],
+    // Информационное: хвоста «Что делать» нет, ссылка — последней строкой тела.
+    body: `Деньги приняты, заказ в выпуске карты.\n${panelUrl('/admin/orders/ORD-7F3K2', PANEL_HOST)}`,
+    preformatted: true,
   },
   {
     label: 'freekassa: underpayment',
