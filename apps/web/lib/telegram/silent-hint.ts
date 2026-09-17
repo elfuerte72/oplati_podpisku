@@ -55,20 +55,35 @@ export async function claimSilentHint(
   identity: string,
   now: number = Date.now(),
 ): Promise<boolean> {
-  const blockedUntil = memory.get(identity);
+  return claimTwoTier(memory, 'hint', identity, SILENT_HINT_TTL_SECONDS, now);
+}
+
+/**
+ * Двухэшелонный claim окна: память процесса, затем Redis. Один на подсказку и
+ * альбом — вторая копия разъехалась бы в самом неочевидном месте (порядок
+ * эшелонов, чистка памяти).
+ *
+ * Локальное окно занимается СИНХРОННО, до похода в Redis. Иначе десять
+ * апдейтов альбома, пришедших параллельно (Telegram шлёт их пачкой, а Next
+ * обрабатывает конкурентно), все успевают пройти проверку до первой записи —
+ * и весь дедуп ложится на Redis, который здесь fail-open. То есть ровно в
+ * сценарии, ради которого локальный эшелон и написан, он бы не работал.
+ *
+ * Окно помнится и когда Redis ответит «занято»: значит право уже взял соседний
+ * процесс, и переспрашивать его на каждое фото альбома незачем.
+ */
+async function claimTwoTier(
+  local: Map<string, number>,
+  kind: 'hint' | 'album',
+  id: string,
+  ttlSeconds: number,
+  now: number,
+): Promise<boolean> {
+  const blockedUntil = local.get(id);
   if (blockedUntil !== undefined && blockedUntil > now) return false;
-
-  // Локальное окно занимается СИНХРОННО, до похода в Redis. Иначе десять
-  // апдейтов альбома, пришедших параллельно (Telegram шлёт их пачкой, а Next
-  // обрабатывает конкурентно), все успевают пройти проверку до первой записи —
-  // и весь дедуп ложится на Redis, который здесь fail-open. То есть ровно в
-  // сценарии, ради которого локальный эшелон и написан, он бы не работал.
-  //
-  // Помним окно и когда Redis ответит «занято»: значит подсказку уже отправил
-  // соседний процесс, и переспрашивать его на каждое фото альбома незачем.
-  remember(identity, now + SILENT_HINT_TTL_SECONDS * 1000);
-
-  return claimOnce(hintKey(identity), SILENT_HINT_TTL_SECONDS);
+  if (local.size >= MEMORY_MAX_ENTRIES) prune(local, now);
+  local.set(id, now + ttlSeconds * 1000);
+  return claimOnce(claimKey(kind, id), ttlSeconds);
 }
 
 /**
@@ -80,24 +95,19 @@ export async function claimSilentHint(
  */
 export async function releaseSilentHint(identity: string): Promise<void> {
   memory.delete(identity);
-  await releaseClaim(hintKey(identity));
+  await releaseClaim(claimKey('hint', identity));
 }
 
-/** Ключ несёт id бота: иначе прод и dev гасят подсказки друг друга. */
-function hintKey(identity: string): string {
-  return `tg:hint:${botIdFromToken(serverEnv.TELEGRAM_BOT_TOKEN)}:${identity}`;
+/** Ключ несёт id бота: иначе прод и dev гасят подсказки и альбомы друг друга. */
+function claimKey(kind: 'hint' | 'album', id: string): string {
+  return `tg:${kind}:${botIdFromToken(serverEnv.TELEGRAM_BOT_TOKEN)}:${id}`;
 }
 
-function remember(identity: string, expiresAtMs: number): void {
-  if (memory.size >= MEMORY_MAX_ENTRIES) prune(expiresAtMs - SILENT_HINT_TTL_SECONDS * 1000);
-  memory.set(identity, expiresAtMs);
-}
-
-function prune(now: number): void {
-  for (const [key, expiresAt] of memory) {
-    if (expiresAt <= now) memory.delete(key);
+function prune(local: Map<string, number>, now: number): void {
+  for (const [key, expiresAt] of local) {
+    if (expiresAt <= now) local.delete(key);
   }
-  if (memory.size >= MEMORY_MAX_ENTRIES) memory.clear();
+  if (local.size >= MEMORY_MAX_ENTRIES) local.clear();
 }
 
 /**
@@ -138,22 +148,10 @@ export function __silentHintMemorySize(): number {
  * Никогда не бросает (`claimOnce` сам не бросает).
  */
 const albums = new Map<string, number>();
-const ALBUM_TTL_MS = 60_000;
+const ALBUM_TTL_SECONDS = 60;
 
 export async function claimMediaGroup(groupId: string, now: number = Date.now()): Promise<boolean> {
-  const seen = albums.get(groupId);
-  if (seen !== undefined && seen > now) return false;
-  if (albums.size >= MEMORY_MAX_ENTRIES) {
-    for (const [key, until] of albums) if (until <= now) albums.delete(key);
-    if (albums.size >= MEMORY_MAX_ENTRIES) albums.clear();
-  }
-  albums.set(groupId, now + ALBUM_TTL_MS);
-  return claimOnce(albumKey(groupId), ALBUM_TTL_MS / 1000);
-}
-
-/** Ключ несёт id бота: иначе прод и dev гасят альбомы друг друга. */
-function albumKey(groupId: string): string {
-  return `tg:album:${botIdFromToken(serverEnv.TELEGRAM_BOT_TOKEN)}:${groupId}`;
+  return claimTwoTier(albums, 'album', groupId, ALBUM_TTL_SECONDS, now);
 }
 
 /** Только для тестов: сбросить память альбомов между сценариями. */

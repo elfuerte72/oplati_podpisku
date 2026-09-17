@@ -1,6 +1,11 @@
 import { sql, type SQL } from 'drizzle-orm';
 
-import { SUPPORT_REQUEST_META_KEY, SUPPORT_STATE_META_SOURCE } from '@oplati/types';
+import {
+  SUPPORT_FLOW_META_SOURCE,
+  SUPPORT_REQUEST_META_KEY,
+  SUPPORT_STATE_META_SOURCE,
+  type ConversationModeTrigger,
+} from '@oplati/types';
 
 /**
  * ЕДИНСТВЕННОЕ определение «обращение ждёт человека» (crm-serious-fixes,
@@ -16,7 +21,7 @@ import { SUPPORT_REQUEST_META_KEY, SUPPORT_STATE_META_SOURCE } from '@oplati/typ
  * Правило — ОБА слагаемых:
  *
  *  1. Кто может ждать человека: разговор в режиме `operator` ИЛИ последнее
- *     обращение пришло флоу без режима (`source = 'support'` — двухшаговый флоу
+ *     обращение пришло флоу без режима (`SUPPORT_FLOW_META_SOURCE` — двухшаговый флоу
  *     бота при выключенном помощнике: режим он не ставит по решению владельца).
  *     Маркер в сессии помощника обращением к человеку не считается.
  *  2. Последнее обращение не снято: ПОЗЖЕ последней строки с маркером нет ни
@@ -33,23 +38,32 @@ import { SUPPORT_REQUEST_META_KEY, SUPPORT_STATE_META_SOURCE } from '@oplati/typ
  * (страница, подсчёт, порог давности), а условие — одно.
  */
 
-/** `source` обращения флоу без режима разговора. */
-export const LEGACY_SUPPORT_REQUEST_SOURCE = 'support';
+/**
+ * Переходы панели, которые снимают обращение наравне с ответом. Типизированы
+ * enum'ом триггеров: переименуй триггер — сборка упадёт здесь, а не SQL молча
+ * перестанет находить закрытия.
+ */
+export const SUPPORT_REQUEST_CLOSING_TRIGGERS = [
+  'operator_close',
+  'operator_return',
+] as const satisfies readonly ConversationModeTrigger[];
 
-/** Переходы панели, которые снимают обращение наравне с ответом. */
-export const SUPPORT_REQUEST_CLOSING_TRIGGERS = ['operator_close', 'operator_return'] as const;
+/** Имя таблицы или алиас — строкой, как у соседних фрагментов. */
+function alias(ref: SQL | string): SQL {
+  return typeof ref === 'string' ? sql.raw(ref) : ref;
+}
 
 /** Строка переписки — отметка поданного обращения. */
-export function supportRequestMarkerSql(message: string): SQL {
-  return sql`(${sql.raw(message)}.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'`;
+export function supportRequestMarkerSql(message: SQL | string): SQL {
+  return sql`(${alias(message)}.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'`;
 }
 
 /**
  * `source` ПОСЛЕДНЕЙ строки с маркером — агрегат для `GROUP BY conversation_id`
  * по строкам, уже отфильтрованным `supportRequestMarkerSql`.
  */
-export function lastSupportRequestSourceSql(message: string): SQL {
-  const m = sql.raw(message);
+export function lastSupportRequestSourceSql(message: SQL | string): SQL {
+  const m = alias(message);
   return sql`(array_agg(${m}.meta ->> 'source' ORDER BY ${m}.created_at DESC))[1]`;
 }
 
@@ -88,7 +102,7 @@ export function awaitingOperatorSql(input: {
   lastRequestAt: SQL;
 }): SQL {
   return sql`(
-    (${input.handoffMode} = 'operator' OR ${input.lastSource} = ${LEGACY_SUPPORT_REQUEST_SOURCE})
+    (${input.handoffMode} = 'operator' OR ${input.lastSource} = ${SUPPORT_FLOW_META_SOURCE})
     AND NOT ${supportRequestSettledSql(input.conversationId, input.lastRequestAt)}
   )`;
 }

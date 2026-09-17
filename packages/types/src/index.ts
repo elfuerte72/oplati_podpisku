@@ -489,6 +489,23 @@ export const cardStatus = z.enum(['active', 'idle', 'recycled']);
  */
 export const SUPPORT_REQUEST_META_KEY = 'support_request';
 
+/**
+ * `meta.source` строк двухшагового флоу поддержки бота («опишите проблему» и
+ * поданное обращение) — флоу БЕЗ режима разговора: при выключенном помощнике
+ * он режим не ставит. Читают трое — список и счётчик панели и сторож крона
+ * (`support-awaiting-sql.ts`), — поэтому строка одна: разъезд с писателем
+ * (`support-flow.ts`) молча гасил бы «без ответа» у всего потока прода.
+ */
+export const SUPPORT_FLOW_META_SOURCE = 'support';
+
+/**
+ * `meta.source` реплики клиента в разговоре, который ведёт человек (модуль
+ * поддержки, `noteClientFollowUp`). Интеграционные тесты панели и крона пишут
+ * строку с этой же константой — копия литерала там проверяла бы не то, что
+ * пишет модуль.
+ */
+export const SUPPORT_FOLLOW_UP_META_SOURCE = 'support_follow_up';
+
 /** Дошло ли обращение до оператора. Недоставленное — авария конфигурации. */
 export const SUPPORT_DELIVERED_META_KEY = 'support_delivered';
 

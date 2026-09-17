@@ -370,6 +370,11 @@ export type PanelClientSupportSummary = {
   lastClientMessageAt: Date | null;
   /** Режим последнего telegram-разговора: кто сейчас отвечает клиенту. */
   lastMode: ConversationMode | null;
+  /**
+   * Срок этого режима — экран показывает ЭФФЕКТИВНЫЙ режим: истёкшая сессия
+   * помощника в БД остаётся `ai` (crm-serious-fixes, тикет 03, SUP-13).
+   */
+  lastModeExpiresAt: Date | null;
 };
 
 export type PanelClientVpn = {
@@ -437,6 +442,7 @@ export async function getClientActivityForPanel(
       client_messages_count: number | string;
       last_client_message_at: string | Date | null;
       last_mode: string | null;
+      last_mode_expires_at: string | Date | null;
     }>(sql`
       SELECT
         (SELECT count(*)::int FROM conversations c WHERE c.user_id = ${userId}::uuid)
@@ -447,9 +453,16 @@ export async function getClientActivityForPanel(
         (SELECT MAX(m.created_at)
            FROM conversations c JOIN messages m ON m.conversation_id = c.id
           WHERE c.user_id = ${userId}::uuid AND m.role = 'user') AS last_client_message_at,
-        (SELECT c.handoff_mode::text FROM conversations c
-          WHERE c.user_id = ${userId}::uuid AND c.channel = 'telegram'
-          ORDER BY c.updated_at DESC, c.id DESC LIMIT 1) AS last_mode
+        lc.handoff_mode::text AS last_mode,
+        lc.mode_expires_at AS last_mode_expires_at
+      -- Режим и его срок — из ОДНОЙ строки последнего разговора: два отдельных
+      -- подзапроса с одинаковой сортировкой разъехались бы при правке одного.
+      FROM (SELECT 1) AS one
+      LEFT JOIN LATERAL (
+        SELECT c.handoff_mode, c.mode_expires_at FROM conversations c
+         WHERE c.user_id = ${userId}::uuid AND c.channel = 'telegram'
+         ORDER BY c.updated_at DESC, c.id DESC LIMIT 1
+      ) AS lc ON true
     `),
     db.execute<{ status: string; expire_at: string | Date; created_at: string | Date }>(sql`
       SELECT v.status, v.expire_at, v.created_at
@@ -482,6 +495,7 @@ export async function getClientActivityForPanel(
       clientMessagesCount: Number(support?.client_messages_count ?? 0),
       lastClientMessageAt: toDate(support?.last_client_message_at),
       lastMode: isConversationMode(support?.last_mode) ? support.last_mode : null,
+      lastModeExpiresAt: toDate(support?.last_mode_expires_at),
     },
     vpn: vpn
       ? {

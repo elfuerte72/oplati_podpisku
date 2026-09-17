@@ -25,6 +25,8 @@ import {
   orderStatusTone,
 } from '@/lib/panel/format';
 import { STATUS_TONE_CLASS, supportModeClass } from '@/lib/panel/class-names';
+import { lookupLabel } from '@/lib/panel/format';
+import { effectiveSupportMode } from '@/lib/panel/support-mode';
 import { panelPageAccess } from '@/lib/panel/guard';
 import {
   ACTION_TITLES,
@@ -89,6 +91,11 @@ export default async function PanelClientPage({
 
   const { client } = detail;
   const reach = clientReachability(client);
+  // Эффективный режим, как в разделе «Поддержка»: истёкшая сессия помощника —
+  // свободный разговор, а не «Помощник» (SUP-13).
+  const lastSupportMode = activity.support.lastMode
+    ? effectiveSupportMode(activity.support.lastMode, activity.support.lastModeExpiresAt)
+    : null;
   // Личка — главное действие карточки: половина обращений решается одной
   // фразой человеку, а не перепиской через бота. Username сверяется с Telegram
   // (best-effort, свой поводок), поэтому ссылка есть и у клиентов, заведённых
@@ -263,9 +270,9 @@ export default async function PanelClientPage({
             </dd>
             <dt>{CLIENT_CARD_TEXT.mode}</dt>
             <dd>
-              {activity.support.lastMode ? (
-                <span className={supportModeClass(activity.support.lastMode)}>
-                  {SUPPORT_MODE_LABELS[activity.support.lastMode]}
+              {lastSupportMode ? (
+                <span className={supportModeClass(lastSupportMode)}>
+                  {lookupLabel(SUPPORT_MODE_LABELS, lastSupportMode) ?? lastSupportMode}
                 </span>
               ) : (
                 <span className="panel-muted">—</span>

@@ -15,6 +15,7 @@ import {
   SUPPORT_GUARDED,
   SUPPORT_MEDIA_TO_AI,
   SUPPORT_MEDIA_TO_OPERATOR,
+  SUPPORT_OPERATOR_LEADS,
 } from './texts';
 
 /**
@@ -730,6 +731,42 @@ describe('помощник недоступен (флаг выключен ил�
 
   const userRows = (h: Harness) => h.appended.filter((r) => r.role === 'user');
 
+  it('вход кнопкой в разговор у оператора: говорим, кто ведёт, и записываем ответ в ленту', async () => {
+    const h = harness({ snapshot: operator, available: false });
+    const res = await openSupportSession(h.ports, { surface: 'button', now: NOW });
+
+    expect(res).toEqual({ status: 'operator_leads' });
+    expect(h.sent.map((s) => s.text)).toEqual([SUPPORT_OPERATOR_LEADS]);
+    // Ответ бота — часть переписки (Р5): без строки лента показывала бы нажатие
+    // без реакции, а флаг «ждём описание» от прошлого нажатия висел бы дальше.
+    expect(h.appended).toEqual([
+      { role: 'assistant', content: SUPPORT_OPERATOR_LEADS, meta: { source: 'support_operator_leads' } },
+    ]);
+    expect(h.transitions).toHaveLength(0);
+  });
+
+  it('вход кнопкой в живую сессию без помощника: сессию гасим, клиент идёт в сегодняшний флоу', async () => {
+    const h = harness({ snapshot: liveAi, available: false });
+    const res = await openSupportSession(h.ports, { surface: 'button', now: NOW });
+
+    expect(res).toEqual({ status: 'unavailable' });
+    expect(h.transitions).toEqual([
+      expect.objectContaining({ from: 'ai', to: 'idle', trigger: 'ai_disabled' }),
+    ]);
+    // «Я на связи» от помощника, которого нет, не отправляем.
+    expect(h.sent).toHaveLength(0);
+    expect(h.touches).toHaveLength(0);
+  });
+
+  it('вход кнопкой в свободный разговор без помощника: ничего не пишем, флоу к человеку', async () => {
+    const h = harness({ snapshot: idle, available: false });
+    expect(await openSupportSession(h.ports, { surface: 'button', now: NOW })).toEqual({
+      status: 'unavailable',
+    });
+    expect(h.appended).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
   it('operator: реплика — обращение с маркером, срок null, персонал уведомлён, клиенту тишина', async () => {
     const h = harness({ snapshot: operator, available: false });
     const res = await handleSupportMessage(h.ports, { text: 'заказ 1234', kind: 'text', now: NOW });
@@ -770,7 +807,7 @@ describe('помощник недоступен (флаг выключен ил�
     expect(h.sent).toHaveLength(0);
   });
 
-  it('ai с живым сроком: разговор уходит человеку, реплика — обращение, модель не зовётся', async () => {
+  it('ai с живым сроком: разговор уходит человеку единым путём эскалации, модель не зовётся', async () => {
     const h = harness({ snapshot: liveAi, available: false });
     const res = await handleSupportMessage(h.ports, {
       text: 'где карта?',
@@ -780,37 +817,39 @@ describe('помощник недоступен (флаг выключен ил�
     });
 
     expect(res).toEqual({ status: 'escalated', trigger: 'ai_unavailable' });
+    // Тот же переход, что у любой эскалации: срок null — обращение не гаснет.
     expect(h.transitions).toEqual([
-      expect.objectContaining({ from: 'ai', to: 'operator', trigger: 'ai_unavailable', modeExpiresAt: null }),
+      expect.objectContaining({ to: 'operator', trigger: 'ai_unavailable', modeExpiresAt: null }),
     ]);
-    expect(userRows(h)).toEqual([
-      {
-        role: 'user',
-        content: 'где карта?',
-        meta: { telegram_message_id: 11, support_request: true, source: 'support_follow_up' },
-      },
-    ]);
-    expect(h.staffFollowUps).toHaveLength(1);
+    // Персоналу — уведомление об эскалации с контекстом, а не пинг о реплике.
+    expect(h.staffNotified).toEqual([{ trigger: 'ai_unavailable', reason: null }]);
     expect(h.modelCalls).toHaveLength(0);
     // Клиент говорил с помощником — ему честно говорят, что дальше человек.
-    // Один раз, а не «передаю» плюс «оператор видит только текст».
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]?.text).toContain('Помощник сейчас недоступен');
     expect(h.events).toContainEqual({ name: 'support_escalated', trigger: 'ai_unavailable' });
   });
 
-  it('ai с живым сроком: ответ клиенту записан в переписку ПОСЛЕ его реплики', async () => {
+  it('ai с живым сроком: реплика клиента в ленте, за ней — ответ бота с маркером обращения', async () => {
     const h = harness({ snapshot: liveAi, available: false });
-    await handleSupportMessage(h.ports, { text: 'где карта?', kind: 'text', now: NOW });
+    await handleSupportMessage(h.ports, {
+      text: 'где карта?',
+      kind: 'text',
+      userMeta: { telegram_message_id: 11 },
+      now: NOW,
+    });
 
     expect(h.appended.map((r) => r.role)).toEqual(['user', 'assistant']);
-    expect(h.appended[1]?.content).toBe(h.sent[0]?.text);
-    // Маркер обращения — на реплике клиента, а не на ответе бота: «без ответа»
-    // панель считает от последнего маркера, и это должна быть реплика клиента.
-    expect(h.appended[1]?.meta?.support_request).toBeUndefined();
+    expect(h.appended[0]).toEqual({ role: 'user', content: 'где карта?', meta: { telegram_message_id: 11 } });
+    // Маркер — на строке эскалации, как у любой передачи человеку: «без ответа»
+    // панель считает от последнего маркера, и он стоит ПОСЛЕ реплики клиента.
+    expect(h.appended[1]).toMatchObject({
+      content: h.sent[0]?.text,
+      meta: { source: 'support_escalation', trigger: 'ai_unavailable', support_request: true },
+    });
   });
 
-  it('ai с живым сроком, медиа: одна строка-плейсхолдер с маркером', async () => {
+  it('ai с живым сроком, медиа: строка-плейсхолдер и эскалация, без «опишите словами» вдогонку', async () => {
     const h = harness({ snapshot: liveAi, available: false });
     const res = await handleSupportMessage(h.ports, {
       text: '',
@@ -820,39 +859,19 @@ describe('помощник недоступен (флаг выключен ил�
     });
 
     expect(res).toEqual({ status: 'escalated', trigger: 'ai_unavailable' });
-    expect(userRows(h)).toEqual([
-      expect.objectContaining({ content: '[фото]', meta: expect.objectContaining({ support_request: true }) }),
-    ]);
+    expect(userRows(h)).toEqual([{ role: 'user', content: '[фото]' }]);
     expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.text).not.toBe(SUPPORT_MEDIA_TO_AI);
   });
 
-  it('ai с живым сроком: переход перехватил оператор — реплика ему, клиенту второго текста нет', async () => {
-    const h = harness({ snapshot: liveAi, available: false });
-    // Между чтением режима и переходом оператор успел «Подключиться»: условный
-    // UPDATE `from: 'ai'` не находит строку, в базе уже `operator`.
-    h.ports.state.transition = async () => {
-      h.snapshot = operator;
-      return { transitioned: false };
-    };
+  it('ai с живым сроком: переход перехватили — второго «передаю оператору» клиент не получит', async () => {
+    const h = harness({ snapshot: liveAi, available: false, transitioned: false });
     const res = await handleSupportMessage(h.ports, { text: 'ау', kind: 'text', now: NOW });
 
-    expect(res).toEqual({ status: 'operator_leads' });
-    expect(userRows(h)).toEqual([
-      expect.objectContaining({ content: 'ау', meta: expect.objectContaining({ support_request: true }) }),
-    ]);
+    expect(res).toEqual({ status: 'escalated', trigger: 'ai_unavailable' });
+    expect(userRows(h)).toHaveLength(1);
     expect(h.sent).toHaveLength(0);
-  });
-
-  it('ai с живым сроком: переход не состоялся и разговор уже закрыт — бот идёт прежним путём', async () => {
-    const h = harness({ snapshot: liveAi, available: false });
-    h.ports.state.transition = async () => {
-      h.snapshot = idle;
-      return { transitioned: false };
-    };
-    const res = await handleSupportMessage(h.ports, { text: 'ау', kind: 'text', now: NOW });
-
-    expect(res).toEqual({ status: 'not_in_session' });
-    expect(h.appended).toHaveLength(0);
+    expect(h.staffNotified).toHaveLength(0);
   });
 
   it.each([

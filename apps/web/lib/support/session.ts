@@ -1,5 +1,7 @@
 import {
   SUPPORT_AI_META_SOURCE,
+  SUPPORT_FOLLOW_UP_META_SOURCE,
+  SUPPORT_REQUEST_META_KEY,
   type ConversationModeTrigger,
   type SupportEscalationTrigger,
 } from '@oplati/types';
@@ -165,9 +167,28 @@ export async function openSupportSession(
   if (mode === 'operator') {
     // Разговор у человека: перевод обратно в помощника отменил бы решение
     // оператора. Но и МОЛЧАТЬ нельзя — человек нажал кнопку и ждёт хоть
-    // чего-то; говорим, кто ведёт и что ответ придёт сюда же.
+    // чего-то; говорим, кто ведёт и что ответ придёт сюда же. Это верно и при
+    // выключенном помощнике: двухшаговый флоу «опишите проблему» поверх
+    // разговора с оператором просил бы описание, которое модуль потом тихо
+    // приобщит к обращению, не ответив клиенту ничего.
     await ports.delivery.toClient(SUPPORT_OPERATOR_LEADS);
+    // Ответ — в ленту (Р5): иначе панель видит нажатие без реакции. Заодно
+    // строка `assistant` без флага ожидания снимает флаг «ждём описание» от
+    // прошлого нажатия — он читается из последней такой строки.
+    await ports.state.append({
+      role: 'assistant',
+      content: SUPPORT_OPERATOR_LEADS,
+      meta: { source: 'support_operator_leads' },
+    });
     return { status: 'operator_leads' };
+  }
+
+  if (mode === 'ai' && !ports.model.available()) {
+    // Живая сессия, а помощника уже нет: «я на связи» от него было бы
+    // обещанием, которое некому исполнить. Гасим сессию, клиент идёт в
+    // сегодняшний флоу к человеку.
+    await closeToIdle(ports, 'ai_disabled');
+    return { status: 'unavailable' };
   }
 
   if (mode === 'ai') {
@@ -266,14 +287,31 @@ export async function handleSupportMessage(
 
   if (mode === 'idle') return { status: 'not_in_session' };
 
-  // Живая сессия помощника, а помощника нет: флаг выключили или пропал ключ,
-  // пока клиент с ним говорил. Разговор уже идёт — отдаём его человеку.
-  if (!ports.model.available()) return await handOverWhileAiUnavailable(ports, input, now);
-
   // Реплика клиента в сессии помощника — ДО любого исхода ниже: и жёсткий
   // триггер, и кап, и ответ модели должны видеть её в ленте.
   if (input.kind === 'text') {
     await ports.state.append({ role: 'user', content: input.text, meta: input.userMeta });
+  }
+
+  // Живая сессия помощника, а помощника нет: флаг выключили или пропал ключ,
+  // пока клиент с ним говорил (crm-serious-fixes, Р4). Разговор уже идёт —
+  // отдаём его человеку тем же путём, что любую эскалацию: переход с сроком
+  // null, честный текст клиенту, уведомление персоналу с контекстом, маркер
+  // обращения на строке эскалации. Модель не зовётся.
+  //
+  // ⚠️ Это НЕ противоречит правилу «флаг без ключа — не эскалация»: то правило
+  // про ВХОД (открыть сессию некому — клиент идёт в сегодняшний флоу, см.
+  // `openSupportSession`). Погасить идущий диалог в `idle` значило бы ответить
+  // на вопрос клиента подсказкой «нажмите кнопку».
+  if (!ports.model.available()) {
+    if (input.kind === 'media') {
+      await ports.state.append({
+        role: 'user',
+        content: input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document,
+        meta: input.userMeta,
+      });
+    }
+    return await escalate(ports, { trigger: 'ai_unavailable', reason: null, now });
   }
 
   if (input.kind === 'media') {
@@ -395,62 +433,6 @@ async function loadMaskedHistory(
 }
 
 /**
- * Живая сессия помощника при недоступном помощнике (crm-serious-fixes, Р4).
- *
- * Клиент говорил с помощником, а тот пропал: флаг выключили или исчез ключ.
- * Разговор уходит человеку (`ai → operator`, срок `null`), реплика клиента
- * становится обращением. Модель не зовётся.
- *
- * ⚠️ Это НЕ противоречит правилу «флаг без ключа — не эскалация»: то правило
- * про ВХОД кнопкой (открыть сессию некому — клиент идёт в сегодняшний флоу).
- * Здесь диалог уже идёт, и погасить его в `idle` значило бы ответить на вопрос
- * клиента подсказкой «нажмите кнопку» — ровно та потеря, которую чинит тикет.
- *
- * Порядок как у `escalate`: переход → текст клиенту → реплика и пинг
- * персоналу → запись ответа. Клиент узнаёт первым, а ответ бота ложится в ленту
- * ПОСЛЕ реплики клиента, на которую он отвечает.
- */
-async function handOverWhileAiUnavailable(
-  ports: SupportPorts,
-  input: { text: string; kind: 'text' | 'media'; mediaPlaceholder?: string; userMeta?: Record<string, unknown> },
-  now: Date,
-): Promise<SupportOutcome> {
-  const content =
-    input.kind === 'media' ? (input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document) : input.text;
-
-  const { transitioned } = await ports.state.transition({
-    from: 'ai',
-    to: 'operator',
-    trigger: 'ai_unavailable',
-    // ⚠️ null, а не срок: неотвеченное обращение не гаснет никогда.
-    modeExpiresAt: null,
-    assignedOperatorId: null,
-  });
-
-  if (!transitioned) {
-    // Условный переход не нашёл `ai`: разговор успели сменить (оператор
-    // подключился, соседнее сообщение, /start). Пляшем от ФАКТА в базе, а не
-    // от прочитанного минуту назад.
-    const fresh = await ports.state.read();
-    if (!fresh) return { status: 'state_unavailable' };
-    if (fresh.mode !== 'operator') return { status: 'not_in_session' };
-    await noteClientFollowUp(ports, content, now, input.userMeta);
-    return { status: 'operator_leads' };
-  }
-
-  const text = aiUnavailableText(now);
-  await ports.delivery.toClient(text);
-  await noteClientFollowUp(ports, content, now, input.userMeta);
-  await ports.state.append({
-    role: 'assistant',
-    content: text,
-    meta: { source: 'support_escalation', trigger: 'ai_unavailable' },
-  });
-  ports.analytics.track({ name: 'support_escalated', trigger: 'ai_unavailable' });
-  return { status: 'escalated', trigger: 'ai_unavailable' };
-}
-
-/**
  * Клиент написал в разговор, который ведёт человек.
  *
  * Строка помечается маркером обращения — «без ответа» в панели считается от
@@ -468,7 +450,7 @@ async function noteClientFollowUp(
   await ports.state.append({
     role: 'user',
     content: text,
-    meta: { ...userMeta, support_request: true, source: 'support_follow_up' },
+    meta: { ...userMeta, [SUPPORT_REQUEST_META_KEY]: true, source: SUPPORT_FOLLOW_UP_META_SOURCE },
   });
 
   const last = await ports.staff.lastFollowUpAt();

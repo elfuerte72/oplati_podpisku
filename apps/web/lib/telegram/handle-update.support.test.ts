@@ -17,8 +17,8 @@ const h = vi.hoisted(() => ({
   sendMock: vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true),
   appendMock: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
   startMock: vi.fn(async () => undefined),
-  supportCommandMock: vi.fn(async () => undefined),
-  supportCallbackMock: vi.fn(async () => undefined),
+  supportCommandMock: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
+  supportCallbackMock: vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined),
   // Типы моков заданы явно: `vi.fn(async () => ...)` выводит пустой кортеж
   // аргументов и союз из одного литерала, и тест перестаёт компилироваться,
   // как только проверяет реально переданный аргумент или другой исход.
@@ -107,8 +107,6 @@ vi.mock('./vpn-flow', () => ({
   handleVpnCallback: vi.fn(async () => undefined),
   handleVpnRefreshCallback: vi.fn(async () => undefined),
 }));
-
-import { SUPPORT_OPERATOR_LEADS } from '@/lib/support/texts';
 
 import { handleTelegramUpdate } from './handle-update';
 import { __resetMediaGroupMemory, __resetSilentHintMemory } from './silent-hint';
@@ -259,20 +257,44 @@ describe('вход в поддержку', () => {
 describe('выключенный помощник', () => {
   beforeEach(() => {
     h.state.supportAiEnabled = false;
+    // Так отвечает настоящий модуль без помощника в свободном разговоре.
+    h.openSupportMock.mockResolvedValue({ status: 'unavailable' });
   });
 
-  it('кнопка ведёт в сегодняшний флоу к человеку', async () => {
+  it('кнопка в свободном разговоре ведёт в сегодняшний флоу, контекст второй раз не резолвится', async () => {
     await handleTelegramUpdate(callbackUpdate('support') as never);
 
+    expect(h.openSupportMock.mock.calls[0]?.[4]).toBe('button');
     expect(h.supportCallbackMock).toHaveBeenCalledTimes(1);
-    expect(h.openSupportMock).not.toHaveBeenCalled();
+    expect(h.supportCallbackMock.mock.calls[0]?.[3]).toEqual({ userId: 'u1', conversationId: 'c1' });
   });
 
-  it('команда ведёт в сегодняшний флоу к человеку', async () => {
+  it('команда в свободном разговоре ведёт в сегодняшний флоу, «/support» в ленте ровно один раз', async () => {
     await handleTelegramUpdate(textUpdate('/support') as never);
 
     expect(h.supportCommandMock).toHaveBeenCalledTimes(1);
-    expect(h.openSupportMock).not.toHaveBeenCalled();
+    expect(h.supportCommandMock.mock.calls[0]?.[4]).toMatchObject({ commandRecorded: true });
+    expect(botUserRows().map((c) => c[2])).toEqual(['/support']);
+  });
+
+  /**
+   * Находка ревью: без чтения режима на входе кнопка в разговоре у оператора
+   * запускала «опишите проблему», описание перехватывал модуль, и клиенту не
+   * отвечало ничего.
+   */
+  it('кнопка в разговоре у оператора: двухшагового флоу нет — модуль сказал, кто ведёт', async () => {
+    h.openSupportMock.mockResolvedValue({ status: 'operator_leads' });
+    await handleTelegramUpdate(callbackUpdate('support') as never);
+
+    expect(h.supportCallbackMock).not.toHaveBeenCalled();
+  });
+
+  it('команда в разговоре у оператора: двухшагового флоу нет', async () => {
+    h.openSupportMock.mockResolvedValue({ status: 'operator_leads' });
+    await handleTelegramUpdate(textUpdate('/support') as never);
+
+    expect(h.supportCommandMock).not.toHaveBeenCalled();
+    expect(h.routeIncomingMock).not.toHaveBeenCalled();
   });
 
   it('голая /support модуль не зовёт: первым сообщением она не считается', async () => {
@@ -342,21 +364,23 @@ describe('выключенный помощник', () => {
   });
 
   it('«/support <текст>» в разговоре у оператора: реплика уходит модулем, повторного обращения нет', async () => {
+    h.openSupportMock.mockResolvedValue({ status: 'operator_leads' });
     h.routeIncomingMock.mockResolvedValue({ status: 'operator_leads' });
     await handleTelegramUpdate(textUpdate('/support деньги списали') as never);
 
+    // «Обращение у оператора» клиенту говорит модуль на входе; текст после
+    // команды становится продолжением обращения — маркер ставит модуль.
     expect(h.routeIncomingMock.mock.calls[0]?.[4]).toMatchObject({ text: 'деньги списали', kind: 'text' });
     expect(h.supportCommandMock).not.toHaveBeenCalled();
-    // Модуль в режиме оператора молчит, а человек набрал команду и ждёт ответа.
-    expect(h.sendMock).toHaveBeenCalledTimes(1);
-    expect(h.sendMock.mock.calls[0]?.[1]).toBe(SUPPORT_OPERATOR_LEADS);
+    expect(h.sendMock).not.toHaveBeenCalled();
   });
 
   it('«/support <текст>» вне разговора с оператором — сегодняшний двухшаговый флоу', async () => {
-    h.routeIncomingMock.mockResolvedValue({ status: 'not_in_session' });
     await handleTelegramUpdate(textUpdate('/support деньги списали') as never);
 
+    expect(h.routeIncomingMock).not.toHaveBeenCalled();
     expect(h.supportCommandMock).toHaveBeenCalledTimes(1);
+    expect(h.supportCommandMock.mock.calls[0]?.[4]).toMatchObject({ commandRecorded: true });
     expect(h.sendMock).not.toHaveBeenCalled();
   });
 
@@ -368,6 +392,25 @@ describe('выключенный помощник', () => {
     expect(botUserRows()).toHaveLength(1);
     expect(botUserRows()[0]?.[2]).toBe('[фото]');
     expect(h.sendMock.mock.calls[0]?.[1]).toBe(SILENT_MEDIA_HINT);
+    // Персоналу — та же пометка, что в ленте, а не сырой тип вложения.
+    expect(h.inboundAlertMock.mock.calls[0]?.[0]).toMatchObject({ text: '[фото]' });
+  });
+
+  it('РЕГРЕСС ревью: скриншот после кнопки «Поддержка» не затирает ожидание описания', async () => {
+    // Флаг «ждём описание» читается из последней строки бота. Строка подсказки
+    // на вложение затёрла бы его, и текстовое описание обращением не стало бы.
+    h.routeIncomingMock.mockResolvedValue({ status: 'not_in_session' });
+    await handleTelegramUpdate(photoUpdate() as never);
+
+    expect(h.appendMock.mock.calls.filter((c) => c[1] === 'assistant')).toHaveLength(0);
+  });
+
+  it('кадр альбома с подписью пришёл вторым: подпись в ленте без второй пометки', async () => {
+    h.routeIncomingMock.mockResolvedValue({ status: 'not_in_session' });
+    await handleTelegramUpdate(photoUpdate('album-caption-late') as never);
+    await handleTelegramUpdate(photoUpdate('album-caption-late', 'вот ошибка') as never);
+
+    expect(botUserRows().map((c) => c[2])).toEqual(['[фото]', 'вот ошибка']);
   });
 
   it('голосовое в idle: плейсхолдер своего типа, а не «[файл]»', async () => {

@@ -47,6 +47,8 @@ import type { TelegramMessage, TelegramUpdate } from '@oplati/types';
 import { persistInbound, safeAppendMessage } from './persist.ts';
 import { sendSafely } from './send.ts';
 import { buildStartMenuKeyboard, handleStartCommand } from './start-menu.ts';
+import { handleSupportCommand } from './support-flow.ts';
+import { openSupportFromBot } from './support-session.ts';
 import {
   REFERRAL_PARTNER_JOINED_TEXT,
   REFERRAL_SELF_LINK_TEXT,
@@ -262,5 +264,52 @@ describe('handleStartCommand — обратная связь на /start ref_', 
 
     expect(resolveReferralCode).not.toHaveBeenCalled();
     expect(sent()).toEqual([[CHAT, 'greeting']]);
+  });
+});
+
+/**
+ * Deep-link `?start=support` читает режим разговора при любом флаге
+ * (crm-serious-fixes, тикет 01): в разговоре у оператора «опишите проблему»
+ * просил бы описание, которое модуль потом тихо приобщит к обращению.
+ */
+describe('handleStartCommand — deep-link поддержки', () => {
+  const CHAT = 200;
+  const ctx = { userId: 'client-uuid', conversationId: 'conv', userCreated: false };
+
+  function startSupport() {
+    const message = {
+      message_id: 9,
+      date: 0,
+      chat: { id: CHAT, type: 'private' },
+      from: { id: CHAT, is_bot: false, first_name: 'Клиент' },
+      text: '/start support',
+    } as unknown as TelegramMessage;
+    const update = { update_id: 2, message } as unknown as TelegramUpdate;
+    return handleStartCommand(update, message, CHAT, '/start support');
+  }
+
+  beforeEach(() => {
+    h.env.REFERRAL_ENABLED = false;
+    vi.mocked(safeAppendMessage).mockReset().mockResolvedValue(true);
+    vi.mocked(sendSafely).mockReset().mockResolvedValue(true);
+    vi.mocked(persistInbound).mockReset().mockResolvedValue(ctx);
+    vi.mocked(handleSupportCommand).mockReset();
+    vi.mocked(openSupportFromBot).mockReset();
+  });
+
+  it('разговор у оператора: двухшагового флоу нет — модуль уже сказал, кто ведёт', async () => {
+    vi.mocked(openSupportFromBot).mockResolvedValue({ status: 'operator_leads' });
+    await startSupport();
+
+    expect(vi.mocked(openSupportFromBot).mock.calls[0]?.[4]).toBe('deeplink');
+    expect(handleSupportCommand).not.toHaveBeenCalled();
+  });
+
+  it('помощника нет, разговор свободен: двухшаговый флоу с уже полученным контекстом', async () => {
+    vi.mocked(openSupportFromBot).mockResolvedValue({ status: 'unavailable' });
+    await startSupport();
+
+    expect(handleSupportCommand).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleSupportCommand).mock.calls[0]?.[4]).toEqual({ ctx });
   });
 });

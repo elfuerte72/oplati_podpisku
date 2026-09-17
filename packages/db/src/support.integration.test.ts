@@ -1,7 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
-import { SUPPORT_AI_META_SOURCE, SUPPORT_STATE_META_SOURCE } from '@oplati/types';
+import {
+  SUPPORT_AI_META_SOURCE,
+  SUPPORT_FLOW_META_SOURCE,
+  SUPPORT_FOLLOW_UP_META_SOURCE,
+  SUPPORT_STATE_META_SOURCE,
+} from '@oplati/types';
 
 import * as schema from './schema.ts';
 import type { DB } from './index.ts';
@@ -863,7 +868,7 @@ describe('одно правило «ждёт человека» (тикет 03)'
       conversationId,
       role: 'assistant',
       content: 'Обращение отправлено',
-      meta: { source: 'support', support_request: true, support_delivered: true },
+      meta: { source: SUPPORT_FLOW_META_SOURCE, support_request: true, support_delivered: true },
     });
     await setAt(row.id, at);
   }
@@ -944,7 +949,7 @@ describe('одно правило «ждёт человека» (тикет 03)'
       conversationId,
       role: 'user',
       content: 'заказ 1234, деньги списали',
-      meta: { support_request: true, source: 'support_follow_up' },
+      meta: { support_request: true, source: SUPPORT_FOLLOW_UP_META_SOURCE },
     });
     await setAt(row.id, at);
   }
@@ -1131,7 +1136,7 @@ describe('реплика клиента после ответа оператор
       conversationId: conversation.id,
       role: 'user',
       content: 'заказ 1234, деньги списали',
-      meta: { support_request: true, source: 'support_follow_up' },
+      meta: { support_request: true, source: SUPPORT_FOLLOW_UP_META_SOURCE },
     });
 
     const expired = (await findExpiredOperatorConversations(db, { limit: 10_000 })).map(
@@ -1154,9 +1159,12 @@ describe('реплика клиента после ответа оператор
       userId: user.id,
     });
 
+    // Как пишет модуль: реплика клиента, затем `escalate('ai_unavailable')` —
+    // переход и строка эскалации с маркером обращения.
+    await appendMessage(db, { conversationId: conversation.id, role: 'user', content: 'где карта?' });
     const res = await transitionConversationMode(db, {
       conversationId: conversation.id,
-      from: 'ai',
+      from: ['idle', 'ai'],
       to: 'operator',
       trigger: 'ai_unavailable',
       modeExpiresAt: null,
@@ -1165,9 +1173,14 @@ describe('реплика клиента после ответа оператор
     expect(res.transitioned).toBe(true);
     await appendMessage(db, {
       conversationId: conversation.id,
-      role: 'user',
-      content: 'где карта?',
-      meta: { support_request: true, source: 'support_follow_up' },
+      role: 'assistant',
+      content: 'Помощник сейчас недоступен — передаю оператору.',
+      meta: {
+        source: 'support_escalation',
+        trigger: 'ai_unavailable',
+        support_request: true,
+        support_delivered: true,
+      },
     });
 
     expect(await getConversationState(db, conversation.id)).toMatchObject({
@@ -1192,7 +1205,7 @@ describe('срок режима в панели (тикет 03, SUP-13)', () => 
       conversationId: conversation.id,
       role: 'assistant',
       content: 'Передали в поддержку',
-      meta: { source: 'support', support_request: true },
+      meta: { source: SUPPORT_FLOW_META_SOURCE, support_request: true },
     });
 
     const { items } = await listSupportRequestsForPanel(db, { userId: user.id });

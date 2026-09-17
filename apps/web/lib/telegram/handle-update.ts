@@ -50,10 +50,8 @@ import {
   type MediaKind,
 } from './templates';
 import { handleVpnCallback, handleVpnRefreshCallback } from './vpn-flow';
-import { isSupportAiAvailable } from '@/lib/support/availability';
 import {
   SUPPORT_ALREADY_OPEN,
-  SUPPORT_OPERATOR_LEADS,
   supportMediaContent,
 } from '@/lib/support/texts';
 
@@ -137,6 +135,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   const chatId = message.chat.id;
   const telegramUserId = message.from?.id;
+  /** Meta строки клиента: по ней реплику в ленте сверяют с апдейтом Telegram. */
+  const inboundMeta = {
+    telegram_update_id: update.update_id,
+    telegram_message_id: message.message_id,
+  };
 
   // Если есть text — нормальный путь. Caption приравниваем к text (фото со
   // словами «нужен ChatGPT» — нормальный продуктовый кейс).
@@ -224,10 +227,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         return;
       }
 
-      const userMeta = {
-        telegram_update_id: update.update_id,
-        telegram_message_id: message.message_id,
-      };
       // Режим разговора читается ВСЕГДА, а не только при включённом помощнике
       // (crm-serious-fixes, тикет 01): вложение клиента, которому отвечает
       // оператор, — такое же обращение, как текст. Модуль ставит маркер и
@@ -239,7 +238,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           text: '',
           kind: 'media',
           mediaKind,
-          userMeta,
+          userMeta: inboundMeta,
         });
         if (outcome.status !== 'not_in_session' && outcome.status !== 'state_unavailable') {
           return;
@@ -250,7 +249,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           ctx,
           'user',
           supportMediaContent(mediaKind),
-          userMeta,
+          inboundMeta,
           update.update_id,
         );
       }
@@ -268,17 +267,10 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
           SILENT_MEDIA_HINT,
           update.update_id,
         );
-        // Подсказку кладём в переписку, как и на текст: иначе лента показывала
-        // бы вложение клиента без единого ответа, хотя ответ был.
-        if (hinted && ctx) {
-          await safeAppendMessage(
-            ctx,
-            'assistant',
-            SILENT_MEDIA_HINT,
-            { source: 'silent_hint' },
-            update.update_id,
-          );
-        }
+        // ⚠️ Подсказку на вложение в переписку НЕ пишем, в отличие от текста.
+        // Флаг «ждём описание проблемы» читается из ПОСЛЕДНЕЙ строки бота:
+        // клиент нажал «Поддержка», прислал скриншот, и строка подсказки
+        // затёрла бы флаг — его текстовое описание обращением уже не стало бы.
         // Фото — обычный способ пожаловаться (скриншот отказа оплаты), и такой
         // клиент так же невидим без уведомления. Самого файла персоналу не шлём:
         // в текст уходит только пометка о типе вложения.
@@ -288,7 +280,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
             firstName: message.from.first_name,
             lastName: message.from.last_name,
             username: message.from.username,
-            text: `[${mediaKind}]`,
+            text: supportMediaContent(mediaKind),
             updateId: update.update_id,
           });
         }
@@ -312,17 +304,19 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   const text = rawText;
   const isFromCaption = !message.text && message.caption !== undefined;
   const captionMediaKind = isFromCaption ? detectMediaKind(message) : null;
+  // Кадр альбома с подписью занимает альбом, чтобы остальные кадры не легли в
+  // ленту вторыми строками «[фото]». Сам кадр обрабатывается в любом случае —
+  // подпись терять нельзя. Если альбом уже занят кадром без подписи (он пришёл
+  // раньше и оставил «[фото]»), подпись ложится без второй пометки.
+  const albumAlreadyLogged =
+    message.media_group_id !== undefined &&
+    !(await claimMediaGroup(String(message.media_group_id)));
   // Что лечь в переписку и уйти оператору: подпись к вложению — вместе с
   // плейсхолдером («[фото] вот скриншот»). Без него оператор не узнал бы, что
   // клиент прислал скриншот, а видел бы только подпись (тикет 04). Команды,
   // меню и AI-диалог продажи получают `text` как раньше.
-  const threadText = captionMediaKind ? supportMediaContent(captionMediaKind, text) : text;
-  if (message.media_group_id) {
-    // Подпись альбома приходит на первом кадре: занимаем альбом, чтобы
-    // остальные кадры не легли в ленту вторыми строками «[фото]». Сам кадр с
-    // подписью обрабатывается в любом случае — подпись терять нельзя.
-    await claimMediaGroup(String(message.media_group_id));
-  }
+  const threadText =
+    captionMediaKind && !albumAlreadyLogged ? supportMediaContent(captionMediaKind, text) : text;
   if (isFromCaption) {
     const mediaKind = captionMediaKind;
     log.info({
@@ -379,54 +373,26 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     text.startsWith('/support@') ||
     text === SUPPORT_BUTTON
   ) {
-    if (!isSupportAiAvailable()) {
-      // Помощник недоступен: вход — сегодняшний двухшаговый флоу к человеку.
-      // Но однострочная «/support <текст>» — это реплика клиента, и если
-      // разговор уже ведёт оператор, она обязана стать продолжением его
-      // обращения (маркер, срок null), а не вторым обращением поверх: иначе
-      // крон через сутки после ответа оператора закрыл бы ждущего клиента
-      // (crm-serious-fixes, тикет 01). Режим знает только модуль.
-      const inline = extractSupportInline(text);
-      const ctx = inline ? await persistInbound(update, message) : null;
-      if (inline && ctx) {
-        const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
-          text: inline,
-          kind: 'text',
-          userMeta: { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
-        });
-        if (outcome.status === 'operator_leads') {
-          // Модуль у оператора молчит, а человек набрал команду и ждёт ответа.
-          await sendSafely(chatId, SUPPORT_OPERATOR_LEADS, update.update_id);
-          return;
-        }
-        if (outcome.status !== 'not_in_session' && outcome.status !== 'state_unavailable') {
-          // Разговор ушёл человеку, и клиенту модуль уже сказал об этом сам.
-          return;
-        }
-      }
-      await handleSupportCommand(update, message, chatId, text);
-      return;
-    }
     const ctx = await persistInbound(update, message);
     if (!ctx) {
       // БД недоступна — состояние читать нечем; уводим в сегодняшний флоу.
-      await handleSupportCommand(update, message, chatId, text);
+      await handleSupportCommand(update, message, chatId, text, { ctx: null });
       return;
     }
-    // Команду как реплику пишем сами: модуль пишет только то, что уйдёт
-    // модели, а «/support» ей не нужен. Текст после команды запишет модуль.
-    await safeAppendMessage(
-      ctx,
-      'user',
-      '/support',
-      { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
-      update.update_id,
-    );
+    // Команду как реплику пишем сами и ДО чтения режима: ответ бота
+    // (приветствие, «обращение у оператора», «опишите проблему») обязан лечь в
+    // ленту после неё. Модуль пишет только то, что уйдёт модели, а «/support»
+    // ей не нужен. Текст после команды запишет модуль или флоу к человеку.
+    await safeAppendMessage(ctx, 'user', '/support', inboundMeta, update.update_id);
+    // Режим читается при ЛЮБОМ флаге (crm-serious-fixes, тикет 01): модуль сам
+    // знает, доступен ли помощник. Разговор у оператора получает «обращение уже
+    // у оператора», а не «опишите проблему» поверх идущего диалога — иначе
+    // описание тихо легло бы в обращение без ответа клиенту.
     const opened = await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'command');
     if (opened.status === 'unavailable') {
-      // Состояние не прочитать — сегодняшний флоу к человеку, он умеет
-      // работать без него.
-      await handleSupportCommand(update, message, chatId, text);
+      // Помощника нет (флаг, ключ) или состояние не прочитать — сегодняшний
+      // двухшаговый флоу к человеку, он умеет работать без режима.
+      await handleSupportCommand(update, message, chatId, text, { ctx, commandRecorded: true });
       return;
     }
     if (opened.status === 'already_open') {
@@ -435,8 +401,9 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       await sendSafely(chatId, SUPPORT_ALREADY_OPEN, update.update_id);
     }
     // Однострочная форма «/support <текст>» — это уже первое сообщение
-    // сессии: заставлять человека повторять то, что он только что написал,
-    // значит терять его на лишнем шаге.
+    // сессии (или продолжение обращения у оператора — маркер ставит модуль):
+    // заставлять человека повторять то, что он только что написал, значит
+    // терять его на лишнем шаге.
     //
     // ⚠️ Разбор — общей `extractSupportInline`, а не своим регэкспом: сюда
     // попадает и нажатие старой reply-кнопки, чей ЛЕЙБЛ («Написать в
@@ -448,7 +415,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
       await routeSupportIncoming(ctx, chatId, update, message, {
         text: inline,
         kind: 'text',
-        userMeta: { telegram_update_id: update.update_id, telegram_message_id: message.message_id },
+        userMeta: inboundMeta,
       });
     }
     return;
@@ -463,10 +430,6 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
   });
 
   const ctx = await persistInbound(update, message);
-  const userMeta = {
-    telegram_update_id: update.update_id,
-    telegram_message_id: message.message_id,
-  };
   if (ctx) {
     // ⚠️ Реплику клиента пишет МОДУЛЬ поддержки — только он знает режим и
     // ставит маркер обращения в `operator`. Бот пишет её сам лишь когда модуль
@@ -480,7 +443,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     const outcome = await routeSupportIncoming(ctx, chatId, update, message, {
       text: threadText,
       kind: 'text',
-      userMeta,
+      userMeta: inboundMeta,
     });
     if (outcome.status === 'operator_leads') {
       // Разговор ведёт человек: он ответит из панели. Бот молчит, чтобы не
@@ -493,7 +456,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
     }
     // Сессии нет или состояние не прочитать — дальше бот работает как без
     // помощника, и реплику пишет сам.
-    await safeAppendMessage(ctx, 'user', threadText, userMeta, update.update_id);
+    await safeAppendMessage(ctx, 'user', threadText, inboundMeta, update.update_id);
 
     // Pending-state читаем ОДИН раз (meta последнего assistant-сообщения) и
     // диспатчим: ожидание описания для /support ИЛИ ожидание суммы для
@@ -542,7 +505,8 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
         firstName: message.from.first_name,
         lastName: message.from.last_name,
         username: message.from.username,
-        text,
+        // То же, что легло в ленту: подпись к фото — с пометкой вложения.
+        text: threadText,
         updateId: update.update_id,
       });
     }

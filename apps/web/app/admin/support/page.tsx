@@ -56,8 +56,12 @@ export default async function PanelSupportPage({
     offset: panelOffset(page, PANEL_DEFAULT_ROWS),
   });
   const now = new Date();
-  const shownMode = (item: (typeof items)[number]) =>
-    effectiveSupportMode(item.handoffMode, item.modeExpiresAt, now);
+  // Эффективный режим считается один раз на строку: истёкшая сессия помощника
+  // показывается свободным разговором (SUP-13).
+  const rows = items.map((item) => ({
+    ...item,
+    shownMode: effectiveSupportMode(item.handoffMode, item.modeExpiresAt, now),
+  }));
 
   return (
     <PanelShell actor={access.actor} current="/admin/support">
@@ -88,7 +92,7 @@ export default async function PanelSupportPage({
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {rows.map((item) => (
                 <tr key={item.conversationId}>
                   <td>
                     <Link href={`/admin/clients/${item.client.id}`}>
@@ -118,12 +122,11 @@ export default async function PanelSupportPage({
                     )}
                   </td>
                   <td>
-                    {/* Режим — кто сейчас отвечает клиенту, ЭФФЕКТИВНЫЙ: истёкшая
-                        сессия помощника показывается свободной (SUP-13).
+                    {/* Режим — кто сейчас отвечает клиенту, эффективный.
                         Незнакомое значение enum показываем как есть, а не
                         прячем: это сигнал разъезда. */}
-                    <span className={supportModeClass(shownMode(item))}>
-                      {lookupLabel(SUPPORT_MODE_LABELS, shownMode(item)) ?? shownMode(item)}
+                    <span className={supportModeClass(item.shownMode)}>
+                      {lookupLabel(SUPPORT_MODE_LABELS, item.shownMode) ?? item.shownMode}
                     </span>
                   </td>
                   <td className="panel-muted">{item.assignedOperatorName ?? '—'}</td>

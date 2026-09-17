@@ -122,13 +122,15 @@ export async function handleStartCommand(
     // клиентом нет. Без помощника (флаг, ключ, непрочитанное состояние) —
     // сегодняшний флоу к человеку, как по кнопке: ссылка обещала поддержку,
     // а не меню.
+    //
+    // Режим читается при любом флаге (crm-serious-fixes, тикет 01): если
+    // разговор уже ведёт оператор, клиенту говорят «обращение у оператора»,
+    // а не «опишите проблему» поверх идущего диалога.
     if (startPayloadRaw.toLowerCase() === SUPPORT_START_PAYLOAD) {
       await sendSafely(chatId, GREETING, update.update_id, buildStartMenuKeyboard());
-      if (isSupportAiAvailable()) {
-        const opened = await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
-        if (opened.status !== 'unavailable') return;
-      }
-      await handleSupportCommand(update, message, chatId, '/support');
+      const opened = await openSupportFromBot(ctx, chatId, update.update_id, message.from, 'deeplink');
+      if (opened.status !== 'unavailable') return;
+      await handleSupportCommand(update, message, chatId, '/support', { ctx });
       return;
     }
     if (isSupportAiAvailable()) {

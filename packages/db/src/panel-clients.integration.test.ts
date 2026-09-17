@@ -376,6 +376,31 @@ describe('getClientActivityForPanel', () => {
     expect(support.clientMessagesCount).toBe(2);
     expect(support.lastClientMessageAt).not.toBeNull();
     expect(support.lastMode).toBe('operator');
+    expect(support.lastModeExpiresAt).toBeNull();
+  });
+
+  it('поддержка: срок режима отдаётся из той же строки последнего разговора (SUP-13)', async () => {
+    // Истёкшая сессия помощника в БД остаётся `ai` — карточка показывает
+    // эффективный режим, и для этого ей нужен срок ИМЕННО этого разговора.
+    const user = await makeUser({ displayName: 'Клиент с истёкшим помощником' });
+    const older = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const latest = await createConversation(db, { userId: user.id, channel: 'telegram' });
+    const expiresAt = new Date('2026-09-01T10:00:00Z');
+    await db.execute(sql`
+      UPDATE conversations SET handoff_mode = 'operator', mode_expires_at = NULL,
+             updated_at = now() - interval '1 day'
+       WHERE id = ${older.id}
+    `);
+    await db.execute(sql`
+      UPDATE conversations SET handoff_mode = 'ai', mode_expires_at = ${expiresAt.toISOString()},
+             updated_at = now()
+       WHERE id = ${latest.id}
+    `);
+
+    const { support } = await getClientActivityForPanel(db, user.id);
+
+    expect(support.lastMode).toBe('ai');
+    expect(support.lastModeExpiresAt?.toISOString()).toBe(expiresAt.toISOString());
   });
 
   it('VPN: статус и срок без ссылки-подписки', async () => {
@@ -408,6 +433,7 @@ describe('getClientActivityForPanel', () => {
       clientMessagesCount: 0,
       lastClientMessageAt: null,
       lastMode: null,
+      lastModeExpiresAt: null,
     });
     expect(activity.vpn).toBeNull();
   });

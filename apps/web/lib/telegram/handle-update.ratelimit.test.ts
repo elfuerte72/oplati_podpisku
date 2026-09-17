@@ -51,6 +51,7 @@ vi.mock('./send', () => ({
 }));
 vi.mock('./persist', () => ({
   persistInbound: vi.fn(async () => null),
+  resolveCallbackContext: vi.fn(async () => null),
   readPendingMeta: vi.fn(async () => null),
   safeAppendMessage: vi.fn(async () => undefined),
 }));
