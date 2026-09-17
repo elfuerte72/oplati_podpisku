@@ -62,10 +62,23 @@ vi.mock('./bot', async (importOriginal) => {
   };
 });
 vi.mock('./start-menu', () => ({ handleStartCommand: h.startMock }));
-vi.mock('./support-flow', () => ({
-  handleSupportCallback: vi.fn(async () => undefined),
-  handleSupportCommand: h.supportCommandMock,
-  tryHandlePendingSupport: h.pendingSupportMock,
+vi.mock('./support-flow', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./support-flow')>();
+  return {
+    extractSupportInline: actual.extractSupportInline,
+    handleSupportCallback: vi.fn(async () => undefined),
+    handleSupportCommand: h.supportCommandMock,
+    tryHandlePendingSupport: h.pendingSupportMock,
+  };
+});
+// Модуль поддержки зовётся на каждом тексте и медиа (crm-serious-fixes,
+// тикет 01). Подсказка — ветка разговора вне сессии, её и моделируем.
+vi.mock('@/lib/support/availability', () => ({ isSupportAiAvailable: () => false }));
+vi.mock('./support-session', () => ({
+  openSupportFromBot: vi.fn(async () => ({ status: 'unavailable' })),
+  routeSupportIncoming: vi.fn(async () => ({ status: 'not_in_session' })),
+  finishSupportFromBot: vi.fn(async () => undefined),
+  resetSupportOnStart: vi.fn(async () => undefined),
 }));
 vi.mock('./catalog-callbacks', () => ({
   handleOrderActionCallback: vi.fn(async () => undefined),

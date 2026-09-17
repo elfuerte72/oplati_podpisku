@@ -2,13 +2,17 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { ConversationMode, ConversationModeTrigger } from '@oplati/types';
 import {
   SUPPORT_AI_META_SOURCE,
-  SUPPORT_REQUEST_META_KEY,
   SUPPORT_STATE_META_SOURCE,
 } from '@oplati/types';
 
 import { conversations, messages } from '../schema.ts';
 import type { DB, DBLike } from '../index.ts';
 import { emitDbChange } from '../change-feed.ts';
+import {
+  awaitingOperatorSql,
+  lastSupportRequestSourceSql,
+  supportRequestMarkerSql,
+} from './support-awaiting-sql.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 
 /**
@@ -306,12 +310,16 @@ export type UnansweredSupportConversation = SupportConversationRef & {
 };
 
 /**
- * Разговоры у оператора, где клиент ждёт ответа дольше порога.
+ * Обращения, которые ждут человека дольше порога, — сторож «без ответа».
  *
- * Считаем от ПОСЛЕДНЕГО сообщения клиента и требуем отсутствия ответа
- * оператора после него: разговор один на клиента, и «когда-то отвечали»
- * означало бы, что повторное обращение постоянного клиента навсегда числится
- * отвеченным.
+ * Правило «ждёт человека» — `awaitingOperatorSql`, ТО ЖЕ, что у списка и
+ * счётчика панели (crm-serious-fixes, тикет 03). До тикета сторож требовал
+ * режим `operator` и не видел ни одного обращения флоу без режима — то есть
+ * весь поток прода при выключенном помощнике.
+ *
+ * Порог считаем от ПОСЛЕДНЕГО обращения: разговор один на клиента, и «когда-то
+ * отвечали» означало бы, что повторное обращение постоянного клиента навсегда
+ * числится отвеченным.
  */
 export async function findUnansweredSupportConversations(
   db: DB,
@@ -324,18 +332,13 @@ export async function findUnansweredSupportConversations(
     last_client_at: Date | string;
   }>(sql`
     WITH asked AS (
-      -- ТО ЖЕ правило, что у счётчика панели (countUnansweredSupportRequests,
-      -- awaitingOperatorCondition): маркер обращения на строке, а не любая
-      -- реплика клиента, И разговор в режиме operator. Иначе бейдж «без
-      -- ответа» в панели и пинг крона расходились бы на живых разговорах — так
-      -- закрытое без ответа обращение висело в «+1», а крон о нём молчал.
-      -- Единственная оговорка: обращения флоу без режима (source = support)
-      -- панель считает, а крон не пингует — им DM оператору ушёл при подаче.
-      SELECT m.conversation_id, max(m.created_at) AS last_client_at
+      -- Маркер обращения на строке, а не любая реплика клиента: обращение
+      -- создаёт кнопка (правило В3), а не факт того, что человек что-то написал.
+      SELECT m.conversation_id,
+             max(m.created_at) AS last_client_at,
+             ${lastSupportRequestSourceSql('m')} AS last_source
         FROM messages m
-        JOIN conversations c ON c.id = m.conversation_id
-       WHERE (m.meta ->> ${SUPPORT_REQUEST_META_KEY}) = 'true'
-         AND c.handoff_mode = 'operator'
+       WHERE ${supportRequestMarkerSql('m')}
        GROUP BY m.conversation_id
     )
     SELECT c.id AS conversation_id, u.id AS user_id, u.telegram_id, a.last_client_at
@@ -343,12 +346,12 @@ export async function findUnansweredSupportConversations(
       JOIN conversations c ON c.id = a.conversation_id
       JOIN users u ON u.id = c.user_id
      WHERE a.last_client_at < ${opts.olderThan.toISOString()}
-       AND NOT EXISTS (
-             SELECT 1 FROM messages o
-              WHERE o.conversation_id = a.conversation_id
-                AND o.role = 'operator'
-                AND o.created_at > a.last_client_at
-           )
+       AND ${awaitingOperatorSql({
+         handoffMode: sql.raw('c.handoff_mode'),
+         lastSource: sql.raw('a.last_source'),
+         conversationId: sql.raw('a.conversation_id'),
+         lastRequestAt: sql.raw('a.last_client_at'),
+       })}
      ORDER BY a.last_client_at ASC
      LIMIT ${opts.limit}
   `);

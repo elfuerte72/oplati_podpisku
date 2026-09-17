@@ -7,6 +7,7 @@ import { childLogger } from '@/lib/logger';
 import { assertPanelRequestOrigin, guardPanelOperation, panelGuardResponse } from '@/lib/panel/guard';
 import { invalidateMenuCounts } from '@/lib/panel/menu-counts';
 import { canReturnToAi } from '@/lib/panel/permissions';
+import { isSupportAiAvailable } from '@/lib/support/availability';
 import { sessionDeadline } from '@/lib/support/session';
 import { SUPPORT_RETURNED_TO_AI } from '@/lib/support/texts';
 import { getBot } from '@/lib/telegram/bot';
@@ -37,6 +38,16 @@ export async function POST(req: Request): Promise<Response> {
 
   const guard = await guardPanelOperation('support');
   if (!guard.ok) return panelGuardResponse(guard);
+
+  // Помощника нет (флаг выключен или нет ключа) — возвращать разговор некому
+  // (crm-serious-fixes, тикет 02). Без этого клиент получал «Продолжайте — я на
+  // связи», разговор уходил в `ai`, и ответить ему было некому: бот при
+  // недоступном помощнике модель не зовёт. Кнопка на экране при этом неактивна,
+  // а проверка здесь — для устаревшей страницы и прямого запроса.
+  if (!isSupportAiAvailable()) {
+    log.warn({ event: 'panel.support.return_assistant_disabled', staffId: guard.actor.id });
+    return Response.json({ ok: false, error: 'assistant_disabled' }, { status: 409 });
+  }
 
   let conversationId: string;
   try {

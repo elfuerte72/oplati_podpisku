@@ -11,6 +11,7 @@ import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
 import { supportModeClass } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
+import { effectiveSupportMode } from '@/lib/panel/support-mode';
 import {
   ACTION_TITLES,
   CELL_TEXT,
@@ -54,6 +55,13 @@ export default async function PanelSupportPage({
   const { items, hasMore } = await listSupportRequestsForPanel(getDb(), {
     offset: panelOffset(page, PANEL_DEFAULT_ROWS),
   });
+  const now = new Date();
+  // Эффективный режим считается один раз на строку: истёкшая сессия помощника
+  // показывается свободным разговором (SUP-13).
+  const rows = items.map((item) => ({
+    ...item,
+    shownMode: effectiveSupportMode(item.handoffMode, item.modeExpiresAt, now),
+  }));
 
   return (
     <PanelShell actor={access.actor} current="/admin/support">
@@ -84,7 +92,7 @@ export default async function PanelSupportPage({
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {rows.map((item) => (
                 <tr key={item.conversationId}>
                   <td>
                     <Link href={`/admin/clients/${item.client.id}`}>
@@ -114,10 +122,11 @@ export default async function PanelSupportPage({
                     )}
                   </td>
                   <td>
-                    {/* Режим — кто сейчас отвечает клиенту. Незнакомое значение
-                        enum показываем как есть, а не прячем: это сигнал разъезда. */}
-                    <span className={supportModeClass(item.handoffMode)}>
-                      {lookupLabel(SUPPORT_MODE_LABELS, item.handoffMode) ?? item.handoffMode}
+                    {/* Режим — кто сейчас отвечает клиенту, эффективный.
+                        Незнакомое значение enum показываем как есть, а не
+                        прячем: это сигнал разъезда. */}
+                    <span className={supportModeClass(item.shownMode)}>
+                      {lookupLabel(SUPPORT_MODE_LABELS, item.shownMode) ?? item.shownMode}
                     </span>
                   </td>
                   <td className="panel-muted">{item.assignedOperatorName ?? '—'}</td>

@@ -16,6 +16,7 @@ import {
 import { dispatchSupportTool, isSupportAiConfigured, runProfile, supportTools } from '@oplati/agent';
 
 import { trackServer } from '@/lib/analytics/track';
+import { serverEnv } from '@/lib/env.server';
 import { redactCardNumbers } from '@/lib/telegram/templates';
 import { childLogger } from '@/lib/logger';
 
@@ -30,6 +31,7 @@ import type {
   SupportStaffPort,
   SupportStatePort,
 } from './ports';
+import { isSupportAiAvailable } from './availability';
 import { buildSupportProfile } from './profile';
 import { SUPPORT_FINISH_BUTTON, SUPPORT_FINISH_CALLBACK } from './texts';
 import { createSupportToolHandlers } from './tools';
@@ -130,9 +132,13 @@ function stateAdapter(ctx: SupportRequestContext): SupportStatePort {
 
 function modelAdapter(ctx: SupportRequestContext): SupportModelPort {
   return {
-    configured: () => {
-      const ok = isSupportAiConfigured();
-      if (!ok && !missingKeyAlerted) {
+    available: () => {
+      const ok = isSupportAiAvailable();
+      // Алёрт — только про пропавший КЛЮЧ при включённом флаге. Выключенный
+      // флаг — решение владельца, а не авария, и модуль теперь зовётся на
+      // каждое сообщение клиента: без этого условия Sentry получал бы ложную
+      // тревогу при штатном режиме прода.
+      if (serverEnv.SUPPORT_AI_ENABLED && !isSupportAiConfigured() && !missingKeyAlerted) {
         // Алёрт, а не только лог: при включённом флаге и пустом ключе помощник
         // ведёт себя как выключённый — клиент этого не замечает, и конфиг мог
         // бы протухать месяцами (паттерн `ANTHROPIC_API_KEY`).

@@ -2,6 +2,7 @@ import 'server-only';
 
 import {
   SUPPORT_DELIVERED_META_KEY,
+  SUPPORT_FLOW_META_SOURCE,
   SUPPORT_REQUEST_META_KEY,
   type TelegramCallbackQuery,
   type TelegramMessage,
@@ -101,34 +102,39 @@ async function submitSupportRequest(
  *     в meta assistant-сообщения (следующий текст подхватит tryHandlePendingSupport).
  *
  * Уже за rate-limit'ом (вызывается из основного диспатчера после проверки).
+ *
+ * `opts.ctx` — контекст, который вызывающий уже получил (он читал режим
+ * разговора до этого флоу): второй upsert клиента и разговора ради того же
+ * апдейта не нужен. Не передан — получаем сами. `opts.commandRecorded` —
+ * вызывающий уже записал строку «/support» (до чтения режима, чтобы ответ бота
+ * лёг в ленту ПОСЛЕ команды): второй раз её не пишем, а из однострочной формы
+ * записываем только текст обращения.
  */
 export async function handleSupportCommand(
   update: TelegramUpdate,
   message: TelegramMessage,
   chatId: number,
   text: string,
+  opts: { ctx?: PersistContext | null; commandRecorded?: boolean } = {},
 ): Promise<void> {
   const updateId = update.update_id;
   log.info({ event: 'telegram.support.command', chatId, telegramUserId: message.from?.id });
+  const resolveCtx = async () =>
+    opts.ctx !== undefined ? opts.ctx : await persistInbound(update, message);
+  const userMeta = { telegram_update_id: updateId, telegram_message_id: message.message_id };
 
   const inline = extractSupportInline(text);
   if (inline) {
     const ok = await submitSupportRequest(message.from, inline, updateId, 'command');
     const reply = ok ? SUPPORT_SENT_TEXT : SUPPORT_FAIL_TEXT;
-    const ctx = await persistInbound(update, message);
+    const ctx = await resolveCtx();
     if (ctx) {
-      await safeAppendMessage(
-        ctx,
-        'user',
-        text,
-        { telegram_update_id: updateId, telegram_message_id: message.message_id },
-        updateId,
-      );
+      await safeAppendMessage(ctx, 'user', opts.commandRecorded ? inline : text, userMeta, updateId);
       await safeAppendMessage(
         ctx,
         'assistant',
         reply,
-        { source: 'support', [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
+        { source: SUPPORT_FLOW_META_SOURCE, [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
         updateId,
       );
     }
@@ -137,24 +143,20 @@ export async function handleSupportCommand(
   }
 
   // Двухшаговый флоу: нужен conversationId, чтобы записать pending-флаг.
-  const ctx = await persistInbound(update, message);
+  const ctx = await resolveCtx();
   if (!ctx) {
     // БД недоступна — флаг сохранить негде. Направляем на inline-форму (без БД).
     await sendSafely(chatId, SUPPORT_UNAVAILABLE_TEXT, updateId);
     return;
   }
-  await safeAppendMessage(
-    ctx,
-    'user',
-    text,
-    { telegram_update_id: updateId, telegram_message_id: message.message_id },
-    updateId,
-  );
+  if (!opts.commandRecorded) {
+    await safeAppendMessage(ctx, 'user', text, userMeta, updateId);
+  }
   await safeAppendMessage(
     ctx,
     'assistant',
     SUPPORT_ASK_TEXT,
-    { source: 'support', [AWAITING_SUPPORT_META_KEY]: true },
+    { source: SUPPORT_FLOW_META_SOURCE, [AWAITING_SUPPORT_META_KEY]: true },
     updateId,
   );
   await sendSafely(chatId, SUPPORT_ASK_TEXT, updateId);
@@ -172,13 +174,17 @@ export async function handleSupportCommand(
  * Осознанно: если пользователь был в custom-amount флоу (ждали сумму) и нажал
  * поддержку — это явная смена намерения, флаг поддержки перекрывает ожидание
  * суммы, и следующее сообщение уходит оператору (а не оформляет заказ).
+ *
+ * `knownCtx` — как у `handleSupportCommand`: контекст, уже полученный
+ * вызывающим, второй раз не резолвится.
  */
 export async function handleSupportCallback(
   cb: TelegramCallbackQuery,
   chatId: number,
   updateId: number,
+  knownCtx?: PersistContext | null,
 ): Promise<void> {
-  const ctx = await resolveCallbackContext(cb, updateId);
+  const ctx = knownCtx !== undefined ? knownCtx : await resolveCallbackContext(cb, updateId);
   if (!ctx) {
     await sendSafely(chatId, SUPPORT_UNAVAILABLE_TEXT, updateId);
     return;
@@ -195,7 +201,7 @@ export async function handleSupportCallback(
     ctx,
     'assistant',
     SUPPORT_ASK_TEXT,
-    { source: 'support', [AWAITING_SUPPORT_META_KEY]: true },
+    { source: SUPPORT_FLOW_META_SOURCE, [AWAITING_SUPPORT_META_KEY]: true },
     updateId,
   );
   await sendSafely(chatId, SUPPORT_ASK_TEXT, updateId);
@@ -224,7 +230,7 @@ export async function tryHandlePendingSupport(
     ctx,
     'assistant',
     reply,
-    { source: 'support', [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
+    { source: SUPPORT_FLOW_META_SOURCE, [SUPPORT_REQUEST_META_KEY]: true, [SUPPORT_DELIVERED_META_KEY]: ok },
     updateId,
   );
   await sendSafely(chatId, reply, updateId);

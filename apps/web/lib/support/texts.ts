@@ -1,4 +1,4 @@
-import { isWithinOperatorHours, OPERATOR_HOURS } from '../telegram/templates';
+import { isWithinOperatorHours, OPERATOR_HOURS, type MediaKind } from '../telegram/templates';
 
 /**
  * Тексты помощника поддержки клиенту (спека §7, утверждены владельцем).
@@ -103,9 +103,30 @@ export const SUPPORT_GUARDED =
 /**
  * Что кладём в переписку вместо самого вложения. Оператор в панели должен
  * видеть, что клиент что-то присылал, — иначе его «вот скриншот» повисает в
- * воздухе.
+ * воздухе. Диалог с дырой бесполезен и для обучения будущего помощника на
+ * переписке оператора (crm-serious-fixes, Р5).
+ *
+ * Словарь ОДИН на все пути: модуль поддержки (сессия помощника, разговор у
+ * оператора) и бот (разговор вне сессии). Ключи — весь `MediaKind`, поэтому
+ * новый тип вложения без подписи не соберётся. Подпись к вложению пишется
+ * той же строкой после плейсхолдера: «[фото] не проходит оплата».
+ *
+ * Сам файл оператору не доставляется — это отдельная задача BACKLOG.
  */
-export const SUPPORT_MEDIA_PLACEHOLDER: Record<'photo' | 'file', string> = {
+export const SUPPORT_MEDIA_PLACEHOLDER = {
   photo: '[фото]',
-  file: '[файл]',
-};
+  document: '[файл]',
+  audio: '[файл]',
+  voice: '[голосовое]',
+  video: '[видео]',
+  video_note: '[видео]',
+  animation: '[видео]',
+  sticker: '[стикер]',
+} as const satisfies Record<MediaKind, string>;
+
+/** Строка переписки для вложения с подписью (или без неё). */
+export function supportMediaContent(kind: MediaKind, caption?: string | null): string {
+  const placeholder = SUPPORT_MEDIA_PLACEHOLDER[kind];
+  const text = caption?.trim();
+  return text ? `${placeholder} ${text}` : placeholder;
+}

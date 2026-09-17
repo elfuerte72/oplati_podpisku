@@ -21,7 +21,9 @@ import {
 } from '@/lib/panel/labels';
 import { lookupLabel } from '@/lib/panel/format';
 import { SUPPORT_HISTORY_DAYS, supportReplyBlockReason, supportRoleLabel, supportStateNote } from '@/lib/panel/support';
+import { effectiveSupportMode } from '@/lib/panel/support-mode';
 import { canReturnToAi } from '@/lib/panel/permissions';
+import { isSupportAiAvailable } from '@/lib/support/availability';
 
 /**
  * `/admin/support/<conversationId>` — переписка и ответ клиенту (спека §5.6).
@@ -68,7 +70,11 @@ export default async function PanelSupportThreadPage({
     actorId: access.actor.id,
   });
   const mine = thread.assignedOperatorId === access.actor.id;
-  const modeLabel = lookupLabel(SUPPORT_MODE_LABELS, thread.handoffMode) ?? thread.handoffMode;
+  // Эффективный режим: сессия помощника гаснет лениво, и истёкшая в БД всё ещё
+  // `ai` (SUP-13). Кнопки ниже решают по записанному режиму — операции тоже
+  // проверяют его, а не экранный.
+  const shownMode = effectiveSupportMode(thread.handoffMode, thread.modeExpiresAt);
+  const modeLabel = lookupLabel(SUPPORT_MODE_LABELS, shownMode) ?? shownMode;
   const inOperatorMode = thread.handoffMode === 'operator';
   const mayReturn =
     inOperatorMode &&
@@ -155,6 +161,7 @@ export default async function PanelSupportThreadPage({
             canReply={!blocked}
             canReturn={mayReturn}
             canClose={inOperatorMode}
+            assistantAvailable={isSupportAiAvailable()}
           />
         ) : null}
       </section>

@@ -1,5 +1,7 @@
 import {
   SUPPORT_AI_META_SOURCE,
+  SUPPORT_FOLLOW_UP_META_SOURCE,
+  SUPPORT_REQUEST_META_KEY,
   type ConversationModeTrigger,
   type SupportEscalationTrigger,
 } from '@oplati/types';
@@ -165,9 +167,28 @@ export async function openSupportSession(
   if (mode === 'operator') {
     // Разговор у человека: перевод обратно в помощника отменил бы решение
     // оператора. Но и МОЛЧАТЬ нельзя — человек нажал кнопку и ждёт хоть
-    // чего-то; говорим, кто ведёт и что ответ придёт сюда же.
+    // чего-то; говорим, кто ведёт и что ответ придёт сюда же. Это верно и при
+    // выключенном помощнике: двухшаговый флоу «опишите проблему» поверх
+    // разговора с оператором просил бы описание, которое модуль потом тихо
+    // приобщит к обращению, не ответив клиенту ничего.
     await ports.delivery.toClient(SUPPORT_OPERATOR_LEADS);
+    // Ответ — в ленту (Р5): иначе панель видит нажатие без реакции. Заодно
+    // строка `assistant` без флага ожидания снимает флаг «ждём описание» от
+    // прошлого нажатия — он читается из последней такой строки.
+    await ports.state.append({
+      role: 'assistant',
+      content: SUPPORT_OPERATOR_LEADS,
+      meta: { source: 'support_operator_leads' },
+    });
     return { status: 'operator_leads' };
+  }
+
+  if (mode === 'ai' && !ports.model.available()) {
+    // Живая сессия, а помощника уже нет: «я на связи» от него было бы
+    // обещанием, которое некому исполнить. Гасим сессию, клиент идёт в
+    // сегодняшний флоу к человеку.
+    await closeToIdle(ports, 'ai_disabled');
+    return { status: 'unavailable' };
   }
 
   if (mode === 'ai') {
@@ -176,9 +197,10 @@ export async function openSupportSession(
     return { status: 'already_open' };
   }
 
-  // Ключа нет — сессию НЕ открываем: приветствие без единого ответа за ним
-  // хуже, чем сразу сегодняшний флоу к человеку. Порт сам алёртит.
-  if (!ports.model.configured()) return { status: 'unavailable' };
+  // Помощник недоступен (флаг выключен или ключа нет) — сессию НЕ открываем:
+  // приветствие без единого ответа за ним хуже, чем сразу сегодняшний флоу к
+  // человеку. О пропавшем ключе порт алёртит сам.
+  if (!ports.model.available()) return { status: 'unavailable' };
 
   // ⚠️ `from` включает `ai`, а не только `idle`. У ИСТЁКШЕЙ сессии в БД
   // по-прежнему записано `ai` — срок гаснет лениво, отдельного сторожа нет.
@@ -253,7 +275,7 @@ export async function handleSupportMessage(
       await ports.delivery.toClient(SUPPORT_MEDIA_TO_OPERATOR);
       await noteClientFollowUp(
         ports,
-        input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.file,
+        input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document,
         now,
         input.userMeta,
       );
@@ -269,6 +291,27 @@ export async function handleSupportMessage(
   // триггер, и кап, и ответ модели должны видеть её в ленте.
   if (input.kind === 'text') {
     await ports.state.append({ role: 'user', content: input.text, meta: input.userMeta });
+  }
+
+  // Живая сессия помощника, а помощника нет: флаг выключили или пропал ключ,
+  // пока клиент с ним говорил (crm-serious-fixes, Р4). Разговор уже идёт —
+  // отдаём его человеку тем же путём, что любую эскалацию: переход с сроком
+  // null, честный текст клиенту, уведомление персоналу с контекстом, маркер
+  // обращения на строке эскалации. Модель не зовётся.
+  //
+  // ⚠️ Это НЕ противоречит правилу «флаг без ключа — не эскалация»: то правило
+  // про ВХОД (открыть сессию некому — клиент идёт в сегодняшний флоу, см.
+  // `openSupportSession`). Погасить идущий диалог в `idle` значило бы ответить
+  // на вопрос клиента подсказкой «нажмите кнопку».
+  if (!ports.model.available()) {
+    if (input.kind === 'media') {
+      await ports.state.append({
+        role: 'user',
+        content: input.mediaPlaceholder ?? SUPPORT_MEDIA_PLACEHOLDER.document,
+        meta: input.userMeta,
+      });
+    }
+    return await escalate(ports, { trigger: 'ai_unavailable', reason: null, now });
   }
 
   if (input.kind === 'media') {
@@ -290,17 +333,6 @@ export async function handleSupportMessage(
       reason: `${hard.category}: «${hard.matched}»`,
       now,
     });
-  }
-
-  // Ключа нет при включённом флаге — ведём себя РОВНО как при выключённом
-  // флаге (спека §10): сессию гасим, клиент уходит в сегодняшний флоу к
-  // человеку. ⚠️ Именно гасим, а не эскалируем: эскалация запирает разговор в
-  // режиме оператора, из которого клиента выводит только человек, — и одна
-  // забытая переменная окружения превращала бы КАЖДОГО написавшего в
-  // недостижимого для бота. Алёрт о пропавшем ключе шлёт сам порт.
-  if (!ports.model.configured()) {
-    await closeToIdle(ports, 'ai_disabled');
-    return { status: 'not_in_session' };
   }
 
   const used = await ports.state.countAiReplies(new Date(now.getTime() - 24 * HOUR_MS));
@@ -418,7 +450,7 @@ async function noteClientFollowUp(
   await ports.state.append({
     role: 'user',
     content: text,
-    meta: { ...userMeta, support_request: true, source: 'support_follow_up' },
+    meta: { ...userMeta, [SUPPORT_REQUEST_META_KEY]: true, source: SUPPORT_FOLLOW_UP_META_SOURCE },
   });
 
   const last = await ports.staff.lastFollowUpAt();

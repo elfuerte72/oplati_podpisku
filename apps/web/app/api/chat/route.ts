@@ -28,7 +28,7 @@ import {
   type AgentUsageLike,
 } from '@/lib/ai/budget';
 import { serverEnv } from '@/lib/env.server';
-import { isSupportAiEnabled } from '@/lib/telegram/support-session';
+import { isSupportAiAvailable } from '@/lib/support/availability';
 import { childLogger } from '@/lib/logger';
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit';
 import { rememberClientIp } from '@/lib/contacts/track-ip';
@@ -90,7 +90,7 @@ const CHAT_DISABLED_BASE =
 function chatDisabledText(): string {
   return (
     CHAT_DISABLED_BASE +
-    (isSupportAiEnabled()
+    (isSupportAiAvailable()
       ? 'Там на вопросы отвечает помощник поддержки, а при необходимости подключается оператор.'
       : 'Там вам ответит оператор.')
   );
