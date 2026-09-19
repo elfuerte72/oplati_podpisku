@@ -331,6 +331,13 @@ export class FreekassaClient {
     try {
       raw = JSON.parse(respText);
     } catch (err) {
+      // ⚠️ Парсинг идёт ДО проверки `resp.ok` (у L&P — после), поэтому сюда
+      // попадает и HTML-заглушка балансировщика на 5xx: «дрейф контракта» тут
+      // название типа, а не диагноз. Статус ошибка несёт, и `503`-семантику из
+      // него достаёт `isFreekassaUnavailable` — порядок проверок оставлен как
+      // есть намеренно: тип с НЕперечисляемым `rawBody` и стабильным
+      // сообщением не отправляет сырое тело шлюза в Sentry и не рвёт
+      // группировку issue (инцидент 2026-09-17).
       throw new FreekassaContractError(
         resp.status,
         `Non-JSON response: ${(err as Error).message}`,

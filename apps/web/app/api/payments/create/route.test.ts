@@ -41,6 +41,13 @@ const h = vi.hoisted(() => ({
       phone?: string | null;
     } | null,
     phoneThreshold: null as number | null,
+    // Ошибка, которой падает выставление счёта. Сам `createGatewayInvoice`
+    // проверен своим сьютом; здесь важно, ЧТО роут отвечает клиенту.
+    gatewayFailure: null as unknown,
+    // null → шлюз по env (у тестов это L&P). Нужен, чтобы сбой Freekassa
+    // проверять на её же шлюзе: ветка 503 у L&P дополнительно пингует
+    // healthcheck прокси через `after()`, которого вне запроса нет.
+    primaryGatewayOverride: null as 'loveandpay' | 'freekassa' | null,
   },
   phoneGateNotifyMock: vi.fn((..._args: unknown[]) => Promise.resolve()),
   // Вердикт preflight карточного фонда. Дефолт — «хватает»: гейт проверяется
@@ -141,8 +148,16 @@ vi.mock('@/lib/payments/gateway', async (importOriginal) => {
     ...actual,
     maxAmountRubFor: (gateway: 'loveandpay' | 'freekassa') =>
       h.state.maxAmountRubOverride ?? actual.maxAmountRubFor(gateway),
+    createGatewayInvoice: async (input: Parameters<typeof actual.createGatewayInvoice>[0]) => {
+      if (h.state.gatewayFailure !== null) throw h.state.gatewayFailure;
+      return await actual.createGatewayInvoice(input);
+    },
+    primaryPaymentGateway: () => h.state.primaryGatewayOverride ?? actual.primaryPaymentGateway(),
   };
 });
+
+import { FreekassaContractError } from '@/lib/freekassa/errors';
+import { PROVIDER_UNAVAILABLE_TEXT } from '@/lib/loveandpay/availability';
 
 import { POST } from './route.ts';
 
@@ -172,6 +187,8 @@ beforeEach(() => {
   // Дефолт — профиль с почтой: гейт email_required проверяется отдельным сьютом.
   h.state.payerContact = { telegramId: '12345', email: 'client@example.com' };
   h.state.phoneThreshold = null;
+  h.state.gatewayFailure = null;
+  h.state.primaryGatewayOverride = null;
   // Транзакция исполняет callback с сентинелом (rollback-семантику проверяет
   // интеграционный сьют packages/db на реальном Postgres).
   h.transactionMock.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -759,5 +776,45 @@ describe('POST /api/payments/create — списание реферальных 
 
     expect(resp.status).toBe(422);
     expect(h.claimBonusMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/payments/create — лежащий шлюз против его отказа', () => {
+  beforeEach(() => {
+    h.state.primaryGatewayOverride = 'freekassa';
+  });
+
+  it('Freekassa отдала 5xx без JSON → 503 provider_unavailable, а не 500', async () => {
+    // Инцидент 2026-09-17: шлюз ответил HTML-страницей «502 Bad Gateway», клиент
+    // бросил КОНТРАКТ-ошибку, и классификатор считал это багом интеграции —
+    // клиент получал `500 internal_error` вместо честного «попробуй позже».
+    h.state.gatewayFailure = new FreekassaContractError(
+      502,
+      "Non-JSON response: Unexpected token '<'",
+      '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
+    );
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string; message?: string };
+
+    expect(resp.status).toBe(503);
+    expect(json.error).toBe('provider_unavailable');
+    expect(json.message).toBe(PROVIDER_UNAVAILABLE_TEXT);
+    // Заказ за сбой шлюза не наказан: фиксация цены жива, клиент вернётся.
+    expect(h.transitionMock).not.toHaveBeenCalled();
+  });
+
+  it('дрейф контракта на 2xx остаётся 500: «позже» его не вылечит', async () => {
+    h.state.gatewayFailure = new FreekassaContractError(
+      200,
+      'Response schema mismatch: orders',
+      '{"orders":null}',
+    );
+
+    const resp = await POST(makeRequest({ orderId: ORDER_ID }));
+    const json = (await resp.json()) as { error: string };
+
+    expect(resp.status).toBe(500);
+    expect(json.error).toBe('internal_error');
   });
 });
