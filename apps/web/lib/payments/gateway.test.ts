@@ -71,6 +71,7 @@ import { notifyOps } from '@/lib/alerts/notify-ops.ts';
 // НАСТОЯЩИЙ класс ошибки: детектор недоступности проверяет его через
 // `instanceof`, и подделка из мока index.ts прошла бы мимо него — тест на
 // «4xx не даёт фоллбэка» стал бы тавтологией.
+import { FreekassaContractError } from '../freekassa/errors.ts';
 import { LoveAndPayApiError } from '../loveandpay/errors.ts';
 import {
   createGatewayInvoice,
@@ -472,6 +473,42 @@ describe('автофоллбэк на резервный шлюз', () => {
     });
 
     expect(invoice.provider).toBe('loveandpay');
+  });
+
+  it('Freekassa ответила 5xx без JSON — тоже недоступность, а не баг интеграции', async () => {
+    // Регресс инцидента 2026-09-17: шлюз отдал HTML-страницу «502 Bad Gateway»,
+    // поэтому клиент бросает КОНТРАКТ-ошибку — но решает статус, а не тип.
+    // Без этого фоллбэк молчал бы, а клиент получил бы `500 internal_error`
+    // вместо «технический сбой, заказ сохранён».
+    h.createOrderMock.mockRejectedValueOnce(
+      new FreekassaContractError(
+        502,
+        "Non-JSON response: Unexpected token '<'",
+        '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
+      ),
+    );
+
+    const invoice = await createGatewayInvoice({
+      gateway: 'freekassa',
+      order: ORDER,
+      amountKopecks: 249_050,
+    });
+
+    expect(invoice.provider).toBe('loveandpay');
+  });
+
+  it('дрейф контракта на 2xx фоллбэк НЕ вызывает — у резервного та же форма ответа не починится', async () => {
+    const drift = new FreekassaContractError(
+      200,
+      'Response schema mismatch: orders',
+      '{"orders":null}',
+    );
+    h.createOrderMock.mockRejectedValueOnce(drift);
+
+    await expect(
+      createGatewayInvoice({ gateway: 'freekassa', order: ORDER, amountKopecks: 249_050 }),
+    ).rejects.toBe(drift);
+    expect(h.createInvoiceMock).not.toHaveBeenCalled();
   });
 
   it('НЕ срабатывает на отказ шлюза (4xx): шлюз жив, причина повторится и у второго', async () => {
