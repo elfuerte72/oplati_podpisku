@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   getClientActivityForPanel,
   getClientDetailForPanel,
+  getUserBillingAddress,
   getDb,
   listClientFeedbackByUserForPanel,
 } from '@oplati/db';
@@ -82,10 +83,14 @@ export default async function PanelClientPage({
   const db = getDb();
   // Три выборки независимы — идут параллельно; отсутствие клиента решает
   // первая, остальные у несуществующего id просто пусты.
-  const [detail, activity, feedback] = await Promise.all([
+  const [detail, activity, feedback, billingAddress] = await Promise.all([
     getClientDetailForPanel(db, parsedId.data),
     getClientActivityForPanel(db, parsedId.data),
     listClientFeedbackByUserForPanel(db, parsedId.data),
+    // Адрес закрепляется случайно и больше нигде не виден: клиенту он уходит
+    // одним сообщением при выпуске карты. Потерял сообщение — назвать адрес
+    // заново может только тот, кто видит эту строку.
+    getUserBillingAddress(db, parsedId.data),
   ]);
   if (!detail) notFound();
 
@@ -185,6 +190,14 @@ export default async function PanelClientPage({
                     : CELL_TEXT.phoneManual}
                 </span>
               ) : null}
+            </dd>
+            <dt>{CLIENT_CARD_TEXT.billingAddress}</dt>
+            <dd>
+              {billingAddress ? (
+                `${billingAddress.streetLine1}, ${billingAddress.city}, ${billingAddress.stateCode} ${billingAddress.postalCode}`
+              ) : (
+                <span className="panel-muted">{CLIENT_CARD_TEXT.billingAddressNone}</span>
+              )}
             </dd>
             <dt>Язык</dt>
             <dd>{client.language}</dd>

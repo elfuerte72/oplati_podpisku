@@ -83,24 +83,17 @@ vi.mock('../pay-space/index.ts', () => ({
   PaySpaceApiError: h.PaySpaceApiError,
 }));
 
-vi.mock('../billing-address.ts', () => ({
-  getRandomUsBillingAddress: vi.fn(async () => ({
-    streetLine1: '350 5th Ave',
-    city: 'New York',
-    state: 'New York',
-    stateCode: 'NY',
-    postalCode: '10118',
-    country: 'United States',
-    countryCode: 'US',
-  })),
-  formatBillingAddressLines: vi.fn((address: { streetLine1: string; city: string; postalCode: string }) => [
-    `Street address: ${address.streetLine1}`,
-    `City: ${address.city}`,
-    'State: New York (NY)',
-    `ZIP: ${address.postalCode}`,
-    'Country: United States',
-  ]),
-}));
+// Закрепление адреса ходит в БД (`getOrAssignUserBillingAddress`) — его
+// подменяем. Адрес при этом берём из НАСТОЯЩЕГО пула, а форматирование
+// оставляем настоящим: выдуманный в тесте адрес проверял бы сообщение клиенту
+// на том, чего клиент никогда не получит.
+vi.mock('../billing-address.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../billing-address.ts')>();
+  return {
+    ...actual,
+    resolveBillingAddressForUser: vi.fn(async () => actual.BILLING_ADDRESS_POOL[0]),
+  };
+});
 
 vi.mock('../telegram/bot.ts', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
@@ -117,6 +110,7 @@ vi.mock('../referral/reverse.ts', () => ({
 }));
 
 import * as db from '@oplati/db';
+import { BILLING_ADDRESS_POOL, resolveBillingAddressForUser } from '../billing-address.ts';
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { issueCard } from './issue-card.ts';
 
@@ -192,6 +186,14 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('Карта пополнена'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    // Закреплённый адрес приходит и при пополнении: клиент с картой, выпущенной
+    // до 2026-09-21, получал адрес от генератора фейков и настоящий видит здесь
+    // впервые.
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining(`<b>Street address:</b> <code>${BILLING_ADDRESS_POOL[0].streetLine1}</code>`),
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
@@ -522,9 +524,12 @@ describe('issueCard', () => {
       expect.stringContaining('<b>Номер:</b> <code>4111111111111234</code>'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
+    // Адрес — закреплённый за ИМЕННО этим клиентом, а не случайный на вызов.
+    expect(resolveBillingAddressForUser).toHaveBeenCalledWith(expect.anything(), 'user-1');
+    const address = BILLING_ADDRESS_POOL[0];
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
-      expect.stringContaining('<b>Street address:</b> <code>350 5th Ave</code>'),
+      expect.stringContaining(`<b>Street address:</b> <code>${address.streetLine1}</code>`),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
@@ -534,7 +539,7 @@ describe('issueCard', () => {
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
-      expect.stringContaining('<b>ZIP:</b> <code>10118</code>'),
+      expect.stringContaining(`<b>ZIP:</b> <code>${address.postalCode}</code>`),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
     // Правила оплаты с ценой $20 (original 2000, БЕЗ буфера) + кнопка-инструкция.

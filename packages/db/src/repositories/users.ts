@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 
 import { sql } from 'drizzle-orm';
 
-import type { PhoneSource } from '@oplati/types';
+import { billingAddress, type BillingAddress, type PhoneSource } from '@oplati/types';
 
-import type { DB } from '../index.ts';
+import type { DB, DBLike } from '../index.ts';
 import { noopLogger, type RepoLogger } from './logger.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 
@@ -397,6 +397,47 @@ export async function touchUserLastSeenIp(
     RETURNING id
   `);
   return rows.length > 0;
+}
+
+/**
+ * Billing-адрес клиента: закрепить `candidate`, если адреса ещё нет, и вернуть
+ * тот, что ЗАКРЕПЛЁН на самом деле.
+ *
+ * Один условный UPDATE, а не «прочитал — решил — записал»: два выпуска карты
+ * одному клиенту (повтор `issue-card` recovery-кроном поверх живого вызова)
+ * иначе оба увидели бы «адреса нет» и выдали ему ДВА разных. `COALESCE` под
+ * блокировкой строки отдаёт обоим адрес первого выигравшего — клиенту уходит
+ * то же, что лежит в базе, и у сервиса его аккаунт привязан к одному адресу.
+ *
+ * `null` — клиента нет или в колонке лежит строка, не прошедшая схему (кто-то
+ * правил базу руками): вызывающий обязан сам решить, что делать без адреса.
+ * `updated_at` не двигается намеренно — закрепление адреса пишет наш фоновый
+ * выпуск карты, а не действие клиента.
+ */
+export async function getOrAssignUserBillingAddress(
+  db: DBLike,
+  input: { userId: string; candidate: BillingAddress },
+): Promise<BillingAddress | null> {
+  const rows = await db.execute<{ billing_address: unknown }>(sql`
+    UPDATE users
+    SET billing_address = COALESCE(billing_address, ${JSON.stringify(input.candidate)}::jsonb)
+    WHERE id = ${input.userId}
+    RETURNING billing_address
+  `);
+  const parsed = billingAddress.safeParse(rows[0]?.billing_address);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Закреплённый billing-адрес клиента без записи — для панели. `null` — не закреплён. */
+export async function getUserBillingAddress(
+  db: DBLike,
+  userId: string,
+): Promise<BillingAddress | null> {
+  const rows = await db.execute<{ billing_address: unknown }>(sql`
+    SELECT billing_address FROM users WHERE id = ${userId}
+  `);
+  const parsed = billingAddress.safeParse(rows[0]?.billing_address);
+  return parsed.success ? parsed.data : null;
 }
 
 /**

@@ -369,6 +369,26 @@ export const servicePaymentInstructions = z.object({
 });
 export type ServicePaymentInstructions = z.infer<typeof servicePaymentInstructions>;
 
+/**
+ * Billing-адрес, закреплённый за клиентом (`users.billing_address`, jsonb).
+ *
+ * Хранится СНИМОК адреса, а не номер в пуле: у сервиса аккаунт клиента
+ * привязан к тому адресу, который ему выдали, и правка пула (адрес убрали,
+ * поправили ZIP) не должна молча менять его уже обслуженным клиентам.
+ * Схема одна на писателя (`@oplati/db`) и читателей (бот, панель) — строка из
+ * БД проверяется на чтении, как любой jsonb.
+ */
+export const billingAddress = z.object({
+  streetLine1: z.string().min(1).max(200),
+  city: z.string().min(1).max(100),
+  state: z.string().min(1).max(100),
+  stateCode: z.string().length(2),
+  postalCode: z.string().regex(/^\d{5}$/),
+  country: z.literal('United States'),
+  countryCode: z.literal('US'),
+});
+export type BillingAddress = z.infer<typeof billingAddress>;
+
 // ─── AI agent tool results ────────────────────────────────────────────────
 
 /**

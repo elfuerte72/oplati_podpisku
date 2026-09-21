@@ -23,6 +23,7 @@ import {
   FUNNEL_SURVEY_KINDS,
 } from '@oplati/types';
 import type {
+  BillingAddress,
   OrderParameters,
   PricingPolicy,
   ServicePaymentInstructions,
@@ -149,6 +150,12 @@ export const users = pgTable(
     // apps/web/lib/funnel/gate.ts). Транзакционные сообщения (счета, реквизиты
     // карты, статусы платежа) поле не читают — это его покупка, а не маркетинг.
     funnelOptOutAt: timestamp('funnel_opt_out_at', { withTimezone: true }),
+    // Billing-адрес к карте, закреплённый за клиентом: выпадает случайно из пула
+    // на ПЕРВОМ заказе и дальше не меняется — у сервиса его аккаунт привязан к
+    // этому адресу. Снимок, а не номер в пуле (см. `billingAddress` в
+    // @oplati/types). Пишется ТОЛЬКО `getOrAssignUserBillingAddress` — первым
+    // выигравшим; nullable — у клиентов без выпущенной карты его нет.
+    billingAddress: jsonb('billing_address').$type<BillingAddress>(),
     // Реферальная программа. `referredBy` — пригласивший партнёр (self-FK).
     // Ставится ТОЛЬКО при создании строки (immutable: ON CONFLICT не трогает),
     // чтобы дерево сети нельзя было переписать задним числом. `referralCode` —
