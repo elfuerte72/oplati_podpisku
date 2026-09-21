@@ -1,8 +1,33 @@
-import { randomUUID } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, expect, it } from 'vitest';
+import type { BillingAddress } from '@oplati/types';
 
-import { BILLING_ADDRESS_POOL, billingAddressForUser, formatBillingAddressLines } from './billing-address.ts';
+const h = vi.hoisted(() => ({
+  assign: vi.fn<(db: unknown, input: { userId: string; candidate: unknown }) => Promise<unknown>>(),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
+vi.mock('@oplati/db', () => ({ getOrAssignUserBillingAddress: h.assign }));
+vi.mock('@sentry/nextjs', () => ({
+  captureException: h.captureException,
+  captureMessage: h.captureMessage,
+}));
+
+import {
+  BILLING_ADDRESS_POOL,
+  formatBillingAddressLines,
+  pickRandomBillingAddress,
+  resolveBillingAddressForUser,
+} from './billing-address.ts';
+
+const DB = {} as Parameters<typeof resolveBillingAddressForUser>[0];
+
+beforeEach(() => {
+  h.assign.mockReset();
+  h.captureException.mockClear();
+  h.captureMessage.mockClear();
+});
 
 /**
  * Правила пула billing-адресов. Существование самих зданий тест проверить не
@@ -56,34 +81,70 @@ describe('пул billing-адресов', () => {
   });
 });
 
-describe('billingAddressForUser', () => {
-  it('один клиент — один адрес: повторный выпуск карты не меняет адрес, привязанный у сервиса', () => {
-    const userId = randomUUID();
-
-    expect(billingAddressForUser(userId)).toBe(billingAddressForUser(userId));
-  });
-
-  it('клиенты расходятся по ВСЕМУ пулу, а не складываются в пару адресов', () => {
-    const seen = new Set<string>();
-    for (let i = 0; i < 300; i++) seen.add(billingAddressForUser(randomUUID()).streetLine1);
+describe('pickRandomBillingAddress', () => {
+  it('выпадают ВСЕ адреса пула, а не пара первых', () => {
+    const seen = new Set<BillingAddress>();
+    for (let i = 0; i < 500; i++) seen.add(pickRandomBillingAddress());
 
     expect(seen.size).toBe(BILLING_ADDRESS_POOL.length);
   });
+});
 
-  it('любая строка даёт адрес из пула — выбор не может упасть после приёма рублей', () => {
-    for (const userId of ['', 'user-1', 'не-uuid', '0']) {
-      expect(BILLING_ADDRESS_POOL).toContain(billingAddressForUser(userId));
-    }
+describe('resolveBillingAddressForUser', () => {
+  it('первый заказ: случайный адрес из пула уходит на закрепление, клиент получает закреплённый', async () => {
+    h.assign.mockImplementation(async (_db, input) => input.candidate);
+
+    const address = await resolveBillingAddressForUser(DB, 'user-1');
+
+    expect(h.assign).toHaveBeenCalledWith(DB, { userId: 'user-1', candidate: address });
+    expect(BILLING_ADDRESS_POOL).toContain(address);
+  });
+
+  it('следующий заказ: клиент получает УЖЕ закреплённый адрес, а не свежий случайный', async () => {
+    // Адреса нет в пуле намеренно: закреплённый снимок живёт своей жизнью, и
+    // правка пула не должна менять адрес обслуженному клиенту.
+    const pinned: BillingAddress = {
+      streetLine1: '1 Old Pool St',
+      city: 'Dover',
+      state: 'Delaware',
+      stateCode: 'DE',
+      postalCode: '19901',
+      country: 'United States',
+      countryCode: 'US',
+    };
+    h.assign.mockResolvedValue(pinned);
+
+    expect(await resolveBillingAddressForUser(DB, 'user-1')).toBe(pinned);
+  });
+
+  it('БД упала — клиент всё равно получает настоящий адрес, а сбой уходит в Sentry', async () => {
+    // Вызывается после приёма рублей: сбой вспомогательного шага не должен
+    // стоить клиенту карты.
+    h.assign.mockRejectedValue(new Error('connection refused'));
+
+    const address = await resolveBillingAddressForUser(DB, 'user-1');
+
+    expect(BILLING_ADDRESS_POOL).toContain(address);
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('в колонке лежит нечитаемая строка — адрес из пула и громкий сигнал, а не тишина', async () => {
+    h.assign.mockResolvedValue(null);
+
+    const address = await resolveBillingAddressForUser(DB, 'user-1');
+
+    expect(BILLING_ADDRESS_POOL).toContain(address);
+    expect(h.captureMessage).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('formatBillingAddressLines', () => {
   it('отдаёт строки в том порядке, в каком их спрашивает форма оплаты', () => {
     expect(formatBillingAddressLines(BILLING_ADDRESS_POOL[0])).toEqual([
-      'Street address: 801 SW 10th Ave',
-      'City: Portland',
-      'State: Oregon (OR)',
-      'ZIP: 97205',
+      'Street address: 201 W 36th Ave',
+      'City: Anchorage',
+      'State: Alaska (AK)',
+      'ZIP: 99503',
       'Country: United States',
     ]);
   });

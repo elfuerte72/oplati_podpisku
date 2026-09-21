@@ -1,6 +1,8 @@
 export {
+  getOrAssignUserBillingAddress,
   getOrCreateUserByTelegramId,
   getOrCreateUserByWebSessionId,
+  getUserBillingAddress,
   getUserTelegramId,
   getUserPayerContact,
   touchUserLastSeenIp,

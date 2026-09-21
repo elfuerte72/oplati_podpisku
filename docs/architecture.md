@@ -122,7 +122,7 @@ lib/
   http.ts / dedup.ts / redis.ts   fetch с таймаутом на чтение тела; claimOnce (Redis); клиент Redis
   ratelimit.ts / client-ip.ts     Upstash sliding window по бакетам; источник identity (CLIENT_IP_MODE)
   pricing.ts / retention-policy.ts   округление цены вверх до рубля; сроки хранения
-  billing-address.ts / deployment-url.ts   billing-адрес к карте клиента (пул настоящих адресов, выбор от id клиента); публичный URL стенда
+  billing-address.ts / deployment-url.ts   billing-адрес к карте клиента (пул настоящих адресов; случайный на первом заказе, дальше закреплён в users.billing_address); публичный URL стенда
   clipboard.ts                    копирование в буфер для клиента: Clipboard API → execCommand →
                                   честный `false` (в Telegram WebView буфер часто закрыт)
   panel/                          админ-панель: labels (словарь всех текстов), permissions (роли),

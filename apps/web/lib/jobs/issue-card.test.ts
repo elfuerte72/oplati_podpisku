@@ -83,9 +83,17 @@ vi.mock('../pay-space/index.ts', () => ({
   PaySpaceApiError: h.PaySpaceApiError,
 }));
 
-// `../billing-address.ts` НЕ мокается намеренно: модуль чистый (пул адресов,
-// сети нет), и мок проверял бы сообщение клиенту на адресе, которого в пуле
-// может не быть.
+// Закрепление адреса ходит в БД (`getOrAssignUserBillingAddress`) — его
+// подменяем. Адрес при этом берём из НАСТОЯЩЕГО пула, а форматирование
+// оставляем настоящим: выдуманный в тесте адрес проверял бы сообщение клиенту
+// на том, чего клиент никогда не получит.
+vi.mock('../billing-address.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../billing-address.ts')>();
+  return {
+    ...actual,
+    resolveBillingAddressForUser: vi.fn(async () => actual.BILLING_ADDRESS_POOL[0]),
+  };
+});
 
 vi.mock('../telegram/bot.ts', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
@@ -102,7 +110,7 @@ vi.mock('../referral/reverse.ts', () => ({
 }));
 
 import * as db from '@oplati/db';
-import { billingAddressForUser } from '../billing-address.ts';
+import { BILLING_ADDRESS_POOL, resolveBillingAddressForUser } from '../billing-address.ts';
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { issueCard } from './issue-card.ts';
 
@@ -178,6 +186,14 @@ describe('issueCard', () => {
       '12345',
       expect.stringContaining('Карта пополнена'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    // Закреплённый адрес приходит и при пополнении: клиент с картой, выпущенной
+    // до 2026-09-21, получал адрес от генератора фейков и настоящий видит здесь
+    // впервые.
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining(`<b>Street address:</b> <code>${BILLING_ADDRESS_POOL[0].streetLine1}</code>`),
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
@@ -508,9 +524,9 @@ describe('issueCard', () => {
       expect.stringContaining('<b>Номер:</b> <code>4111111111111234</code>'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
-    // Адрес — из пула и ИМЕННО этого клиента: тот же, что поддержка назовёт
-    // ему заново, если сообщение потеряется.
-    const address = billingAddressForUser('user-1');
+    // Адрес — закреплённый за ИМЕННО этим клиентом, а не случайный на вызов.
+    expect(resolveBillingAddressForUser).toHaveBeenCalledWith(expect.anything(), 'user-1');
+    const address = BILLING_ADDRESS_POOL[0];
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.stringContaining(`<b>Street address:</b> <code>${address.streetLine1}</code>`),

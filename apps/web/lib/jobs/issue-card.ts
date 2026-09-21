@@ -20,8 +20,8 @@ import {
 
 import { notifyOps } from '../alerts/notify-ops.ts';
 import {
-  billingAddressForUser,
   formatBillingAddressLines,
+  resolveBillingAddressForUser,
   type BillingAddress,
 } from '../billing-address.ts';
 import { serverEnv } from '../env.server.ts';
@@ -235,6 +235,10 @@ export async function issueCard(orderId: string): Promise<void> {
           serviceShortId: order.shortId,
           priceUsdCents,
           pricingUrl,
+          // Тот же закреплённый адрес, что и при выпуске. Клиенту, получившему
+          // карту ДО 2026-09-21, адрес выдавал генератор фейков — ему здесь
+          // закрепится и впервые придёт настоящий.
+          billingAddress: await resolveBillingAddressForUser(db, order.userId),
         });
       } catch (err) {
         // PaySpaceApiError на топ-апе = провайдер ОТКЛОНИЛ операцию (success:false
@@ -338,11 +342,11 @@ export async function issueCard(orderId: string): Promise<void> {
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
       // рамках одного клиента через активную карту выше.
       // Billing address от карты не зависит и берётся заранее, чтобы реквизиты
-      // можно было зафиксировать сразу после выпуска — до первой записи в нашу
-      // БД. Выбор — из пула настоящих адресов, детерминированно от клиента:
-      // сети здесь нет, и повторный выпуск даст ему ТОТ ЖЕ адрес, с которым
-      // его аккаунт у сервиса уже привязан.
-      const billingAddress = billingAddressForUser(order.userId);
+      // можно было зафиксировать сразу после выпуска. Адрес закреплён за
+      // клиентом: на первом заказе выпадает случайно из пула настоящих адресов,
+      // дальше — тот же, с которым его аккаунт у сервиса уже привязан. Функция
+      // не бросает: сбой закрепления не должен стоить клиенту карты.
+      const billingAddress = await resolveBillingAddressForUser(db, order.userId);
 
       const created = await paypace.createCard({ amountUsdCents });
       issuedProviderCardId = created.cardId;
@@ -726,6 +730,7 @@ async function sendTopupNotice(args: {
   serviceShortId: string;
   priceUsdCents: number;
   pricingUrl: string | null;
+  billingAddress: BillingAddress;
 }): Promise<void> {
   if (!args.telegramId) {
     log.warn({ event: 'job.issue_card.topup_notice.no_telegram', shortId: args.serviceShortId });
@@ -735,11 +740,17 @@ async function sendTopupNotice(args: {
   // Сборка текста — внутри try: сбой не должен всплыть в issueCard и свалить
   // успешно пополненный (оплаченный) заказ в failed. Уведомление — best effort.
   try {
+    const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
     const messageHtml = [
       `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта пополнена.</b>`,
       'Плати той же картой, что и раньше — реквизиты уже у тебя (посмотреть можно в приложении).',
       '',
       paymentRulesHtml(args.priceUsdCents),
+      '',
+      '<b>Billing address</b>',
+      ...addressLines,
+      '',
+      'Если сервис попросит billing address, вводите адрес из блока выше.',
       '',
       'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
     ].join('\n');
