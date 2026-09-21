@@ -17,6 +17,7 @@ import {
   DEFAULT_REFERRAL_RATE_L1_BPS,
   FREEKASSA_ORDER_STATUS,
   SUPPORT_DELIVERED_META_KEY,
+  SUPPORT_STATE_META_SOURCE,
   type CardStatus,
   type OrderStatus,
   type PaymentStatus,
@@ -48,6 +49,7 @@ import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import {
+  SUPPORT_MARK_ANSWERED_TRIGGER,
   awaitingOperatorSql,
   lastSupportRequestSourceSql,
   supportRequestMarkerSql,
@@ -1308,6 +1310,13 @@ export type PanelSupportRequest = {
    * числится отвеченным.
    */
   lastOperatorReplyAt: Date | null;
+  /**
+   * Когда последнее обращение отметили отвеченным ВРУЧНУЮ (`null` — не
+   * отмечали): клиенту ответили мимо панели, и строки оператора в переписке
+   * нет. Экрану нужен именно факт отметки — иначе снятое обращение выглядело
+   * бы как закрытое без ответа.
+   */
+  markedAnsweredAt: Date | null;
   /** Кто ведёт диалог. */
   assignedOperatorName: string | null;
   /** Режим разговора, как записан в БД. */
@@ -1354,6 +1363,7 @@ export async function listSupportRequestsForPanel(
     last_request_at: Date | string;
     last_delivered: boolean | string | null;
     last_reply_at: Date | string | null;
+    last_marked_at: Date | string | null;
     operator_name: string | null;
     handoff_mode: string;
     mode_expires_at: Date | string | null;
@@ -1403,6 +1413,14 @@ export async function listSupportRequestsForPanel(
              WHERE o.conversation_id = c.id
                AND o.role = 'operator'
                AND o.created_at > r.last_request_at) AS last_reply_at,
+           -- Ручная отметка «отвечено» — тоже ПОСЛЕ последнего обращения: новое
+           -- обращение клиента старую отметку обнуляет, как и старый ответ.
+           (SELECT max(k.created_at) FROM messages k
+             WHERE k.conversation_id = c.id
+               AND k.role = 'system'
+               AND (k.meta ->> 'source') = ${SUPPORT_STATE_META_SOURCE}
+               AND (k.meta ->> 'trigger') = ${SUPPORT_MARK_ANSWERED_TRIGGER}
+               AND k.created_at > r.last_request_at) AS last_marked_at,
            s.display_name AS operator_name,
            c.handoff_mode,
            c.mode_expires_at
@@ -1429,6 +1447,7 @@ export async function listSupportRequestsForPanel(
     // мы не знаем, дошли ли они, и «не доставлено» было бы напраслиной.
     lastRequestDelivered: row.last_delivered === null ? true : String(row.last_delivered) === 'true',
     lastOperatorReplyAt: row.last_reply_at === null ? null : new Date(row.last_reply_at),
+    markedAnsweredAt: row.last_marked_at === null ? null : new Date(row.last_marked_at),
     assignedOperatorName: row.operator_name,
     handoffMode: row.handoff_mode,
     modeExpiresAt: row.mode_expires_at === null ? null : new Date(row.mode_expires_at),

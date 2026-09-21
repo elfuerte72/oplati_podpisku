@@ -8,6 +8,7 @@ import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelPager } from '@/components/panel/PanelPager';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { SupportMarkAnswered } from '@/components/panel/SupportMarkAnswered';
 import { supportModeClass } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
 import { panelOffset, panelPageHref, parsePanelPage } from '@/lib/panel/paging';
@@ -88,6 +89,8 @@ export default async function PanelSupportPage({
                 <th>{COLUMN_TITLES.repliedAt}</th>
                 <th>{COLUMN_TITLES.mode}</th>
                 <th>{COLUMN_TITLES.responsible}</th>
+                {/* Две колонки действий без заголовка: «Отвечено» и «Открыть». */}
+                <th />
                 <th />
               </tr>
             </thead>
@@ -107,9 +110,21 @@ export default async function PanelSupportPage({
                   <td>
                     <LocalAge iso={item.lastRequestAt.toISOString()} />
                   </td>
-                  <td className={item.lastOperatorReplyAt ? 'panel-muted' : undefined}>
+                  <td
+                    className={
+                      item.lastOperatorReplyAt || item.markedAnsweredAt ? 'panel-muted' : undefined
+                    }
+                  >
                     {item.lastOperatorReplyAt ? (
                       <LocalTime iso={item.lastOperatorReplyAt.toISOString()} />
+                    ) : item.markedAnsweredAt ? (
+                      // Ответили мимо панели и отметили вручную. Время без
+                      // пояснения читалось бы как ответ из панели, которого в
+                      // переписке нет.
+                      <>
+                        <LocalTime iso={item.markedAnsweredAt.toISOString()} />
+                        <div>{CELL_TEXT.markedAnswered}</div>
+                      </>
                     ) : item.awaitingOperator ? (
                       // Ждёт человека — флаг считает репозиторий тем же правилом,
                       // что и счётчик в меню: подсветка зовёт к действию только
@@ -130,6 +145,13 @@ export default async function PanelSupportPage({
                     </span>
                   </td>
                   <td className="panel-muted">{item.assignedOperatorName ?? '—'}</td>
+                  <td>
+                    {/* Кнопка только там, где есть что снимать, — по тому же
+                        флагу, которым операция проверяет обращение. */}
+                    {item.awaitingOperator ? (
+                      <SupportMarkAnswered conversationId={item.conversationId} />
+                    ) : null}
+                  </td>
                   <td>
                     <Link href={`/admin/support/${item.conversationId}`}>{ACTION_TITLES.open}</Link>
                   </td>

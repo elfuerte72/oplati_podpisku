@@ -25,6 +25,7 @@ import {
   findExpiredOperatorConversations,
   findUnansweredSupportConversations,
   getConversationState,
+  markSupportRequestAnswered,
   touchConversationMode,
   transitionConversationMode,
 } from './repositories/support.ts';
@@ -942,6 +943,13 @@ describe('одно правило «ждёт человека» (тикет 03)'
     await setTransitionAt(conversationId, 'operator_return', at);
   }
 
+  /** Ручная отметка «отвечено» из панели — клиенту ответили мимо неё. */
+  async function markAnswered(conversationId: string, at: Date) {
+    const res = await markSupportRequestAnswered(db, { conversationId, actorName: 'Оператор' });
+    expect(res.status).toBe('marked');
+    await setTransitionAt(conversationId, 'operator_mark_answered', at);
+  }
+
   /** Реплика клиента в разговоре у оператора — как пишет её модуль поддержки. */
   async function followUp(conversationId: string, at: Date) {
     await touchConversationMode(db, { conversationId, mode: 'operator', modeExpiresAt: null });
@@ -1028,6 +1036,31 @@ describe('одно правило «ждёт человека» (тикет 03)'
           await followUp(id, t(2));
         },
       },
+      {
+        name: 'флоу без режима: отметили отвеченным вручную',
+        awaiting: false,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await markAnswered(id, t(1));
+        },
+      },
+      {
+        name: 'флоу без режима: отметили вручную, клиент обратился снова',
+        awaiting: true,
+        build: async (id) => {
+          await legacyRequest(id, t(0));
+          await markAnswered(id, t(1));
+          await legacyRequest(id, t(2));
+        },
+      },
+      {
+        name: 'эскалация: отметили отвеченным вручную',
+        awaiting: false,
+        build: async (id) => {
+          await escalation(id, t(0));
+          await markAnswered(id, t(1));
+        },
+      },
     ];
 
     const expected = new Map<string, { name: string; awaiting: boolean }>();
@@ -1096,6 +1129,139 @@ describe('одно правило «ждёт человека» (тикет 03)'
     const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
     expect(items.find((i) => i.conversationId === conversation.id)?.awaitingOperator).toBe(false);
     expect(await cronIds(hoursAgo(2))).not.toContain(conversation.id);
+  });
+
+  /** Служебные строки ручной отметки этого разговора. */
+  async function markRows(conversationId: string) {
+    return (await systemRows(conversationId)).filter(
+      (r) => (r.meta as { trigger?: string } | null)?.trigger === 'operator_mark_answered',
+    );
+  }
+
+  it('ручная отметка у флоу без режима: счётчик гаснет, режим НЕ меняется, в ленте — кто отметил', async () => {
+    const user = await makeUser();
+    const conversation = await makeConversation({ userId: user.id });
+    await legacyRequest(conversation.id, t(0));
+    const before = await countUnansweredSupportRequests(db);
+
+    const res = await markSupportRequestAnswered(db, {
+      conversationId: conversation.id,
+      actorName: 'Владелец',
+    });
+
+    expect(res.status).toBe('marked');
+    expect(await countUnansweredSupportRequests(db)).toBe(before - 1);
+    expect((await getConversationState(db, conversation.id))?.mode).toBe('idle');
+
+    const rows = await markRows(conversation.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.meta).toMatchObject({
+      source: SUPPORT_STATE_META_SOURCE,
+      from: 'idle',
+      to: 'idle',
+      actor: 'Владелец',
+    });
+
+    // Экран показывает ФАКТ отметки, а не серое «Без ответа»: ответа оператора
+    // в переписке нет и не будет — клиенту писали мимо панели.
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((i) => i.conversationId === conversation.id);
+    expect(row?.awaitingOperator).toBe(false);
+    expect(row?.lastOperatorReplyAt).toBeNull();
+    expect(row?.markedAnsweredAt).toBeInstanceOf(Date);
+  });
+
+  it('ручная отметка у разговора в режиме оператора отпускает его: idle, без ведущего и срока', async () => {
+    const staff = await makeStaff();
+    const conversation = await makeConversation();
+    await legacyRequest(conversation.id, t(0));
+    await claim(conversation.id, staff.id, t(1));
+
+    const res = await markSupportRequestAnswered(db, {
+      conversationId: conversation.id,
+      actorName: 'Владелец',
+    });
+
+    expect(res.status).toBe('marked');
+    // ⚠️ Оставленный `operator` со сроком NULL значил бы «ждём человека»
+    // бессрочно: крон такой разговор не закрывает, помощник молчит.
+    expect(await getConversationState(db, conversation.id)).toMatchObject({
+      mode: 'idle',
+      modeExpiresAt: null,
+      assignedOperatorId: null,
+    });
+    // Одна строка, а не две: переход и отметка — одна и та же запись.
+    expect(await markRows(conversation.id)).toHaveLength(1);
+  });
+
+  it('чужой разговор отметить можно — это способ завершить, а не перехватить', async () => {
+    const owner = await makeStaff();
+    const conversation = await makeConversation();
+    await legacyRequest(conversation.id, t(0));
+    await claim(conversation.id, owner.id, t(1));
+
+    const res = await markSupportRequestAnswered(db, {
+      conversationId: conversation.id,
+      actorName: 'Другой оператор',
+    });
+    expect(res.status).toBe('marked');
+  });
+
+  it('повторная отметка ничего не пишет: две вкладки не плодят служебных строк', async () => {
+    const conversation = await makeConversation();
+    await legacyRequest(conversation.id, t(0));
+
+    expect(
+      (await markSupportRequestAnswered(db, { conversationId: conversation.id, actorName: 'А' })).status,
+    ).toBe('marked');
+    expect(
+      (await markSupportRequestAnswered(db, { conversationId: conversation.id, actorName: 'Б' })).status,
+    ).toBe('not_awaiting');
+    expect(await markRows(conversation.id)).toHaveLength(1);
+  });
+
+  it('отмечать нечего: обращения не было, оператор уже ответил, разговора нет', async () => {
+    const staff = await makeStaff();
+
+    const silent = await makeConversation();
+    expect(
+      (await markSupportRequestAnswered(db, { conversationId: silent.id, actorName: 'А' })).status,
+    ).toBe('not_awaiting');
+
+    const answered = await makeConversation();
+    await legacyRequest(answered.id, t(0));
+    await operatorReply(answered.id, staff.id, t(1));
+    expect(
+      (await markSupportRequestAnswered(db, { conversationId: answered.id, actorName: 'А' })).status,
+    ).toBe('not_awaiting');
+    expect(await markRows(answered.id)).toHaveLength(0);
+
+    expect(
+      (
+        await markSupportRequestAnswered(db, {
+          conversationId: '00000000-0000-4000-8000-000000000000',
+          actorName: 'А',
+        })
+      ).status,
+    ).toBe('not_found');
+  });
+
+  it('новое обращение после отметки: снова «без ответа», и старая отметка экрану не показывается', async () => {
+    const user = await makeUser();
+    const conversation = await makeConversation({ userId: user.id });
+    await legacyRequest(conversation.id, t(0));
+    await markAnswered(conversation.id, t(1));
+    await legacyRequest(conversation.id, t(2));
+
+    const { items } = await listSupportRequestsForPanel(db, { userId: user.id });
+    const row = items.find((i) => i.conversationId === conversation.id);
+    expect(row?.awaitingOperator).toBe(true);
+    expect(row?.markedAnsweredAt).toBeNull();
+
+    // И отметить его можно заново — отсчёт идёт от последнего маркера.
+    expect(
+      (await markSupportRequestAnswered(db, { conversationId: conversation.id, actorName: 'А' })).status,
+    ).toBe('marked');
   });
 });
 
