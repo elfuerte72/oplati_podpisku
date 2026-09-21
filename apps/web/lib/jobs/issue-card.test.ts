@@ -83,24 +83,9 @@ vi.mock('../pay-space/index.ts', () => ({
   PaySpaceApiError: h.PaySpaceApiError,
 }));
 
-vi.mock('../billing-address.ts', () => ({
-  getRandomUsBillingAddress: vi.fn(async () => ({
-    streetLine1: '350 5th Ave',
-    city: 'New York',
-    state: 'New York',
-    stateCode: 'NY',
-    postalCode: '10118',
-    country: 'United States',
-    countryCode: 'US',
-  })),
-  formatBillingAddressLines: vi.fn((address: { streetLine1: string; city: string; postalCode: string }) => [
-    `Street address: ${address.streetLine1}`,
-    `City: ${address.city}`,
-    'State: New York (NY)',
-    `ZIP: ${address.postalCode}`,
-    'Country: United States',
-  ]),
-}));
+// `../billing-address.ts` НЕ мокается намеренно: модуль чистый (пул адресов,
+// сети нет), и мок проверял бы сообщение клиенту на адресе, которого в пуле
+// может не быть.
 
 vi.mock('../telegram/bot.ts', () => ({
   getBot: () => ({ api: { sendMessage: h.sendMessageMock } }),
@@ -117,6 +102,7 @@ vi.mock('../referral/reverse.ts', () => ({
 }));
 
 import * as db from '@oplati/db';
+import { billingAddressForUser } from '../billing-address.ts';
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { issueCard } from './issue-card.ts';
 
@@ -522,9 +508,12 @@ describe('issueCard', () => {
       expect.stringContaining('<b>Номер:</b> <code>4111111111111234</code>'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
+    // Адрес — из пула и ИМЕННО этого клиента: тот же, что поддержка назовёт
+    // ему заново, если сообщение потеряется.
+    const address = billingAddressForUser('user-1');
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
-      expect.stringContaining('<b>Street address:</b> <code>350 5th Ave</code>'),
+      expect.stringContaining(`<b>Street address:</b> <code>${address.streetLine1}</code>`),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
@@ -534,7 +523,7 @@ describe('issueCard', () => {
     );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
-      expect.stringContaining('<b>ZIP:</b> <code>10118</code>'),
+      expect.stringContaining(`<b>ZIP:</b> <code>${address.postalCode}</code>`),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
     // Правила оплаты с ценой $20 (original 2000, БЕЗ буфера) + кнопка-инструкция.

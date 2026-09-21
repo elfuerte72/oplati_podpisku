@@ -1,180 +1,92 @@
-import { z } from 'zod';
+import { createHash } from 'node:crypto';
 
-import { fetchJsonWithTimeout } from './http.ts';
-import { childLogger } from './logger.ts';
-
-const log = childLogger('billing-address');
-
-const RANDOM_USER_URL = 'https://randomuser.me/api/1.4/?nat=us&inc=location&noinfo';
-const RANDOM_USER_TIMEOUT_MS = 4_000;
+/**
+ * Billing address, который клиент вводит на сайте сервиса вместе с картой.
+ *
+ * ⚠️ До 2026-09-21 адрес брался у `randomuser.me` — генератора фейковых персон.
+ * Улицу, город, штат и ZIP он выдаёт НЕЗАВИСИМО друг от друга: «Indianapolis,
+ * Washington 45410», «Corpus Christi, Ohio 97486». Живая проверка двадцати
+ * адресов не нашла ни одного настоящего. Сайты сервисов сверяют ZIP со штатом
+ * (расчёт налога с продаж, антифрод) и такой адрес отвергают — клиент получал
+ * отказ оплаты при исправной карте, а с настоящим адресом та же карта
+ * проходила (инцидент в `docs/incidents.md`).
+ *
+ * Теперь — пул НАСТОЯЩИХ адресов. Правила пула держит тест
+ * `billing-address.test.ts`, а существование адресов проверяет скрипт
+ * `scripts/verify-billing-addresses.ts` (перепись США + OpenStreetMap):
+ *
+ *  - Только общественные здания (библиотеки). Чужой ЖИЛОЙ адрес в пул не
+ *    кладём: он осел бы в десятках платёжных записей у сервисов, и это
+ *    проблемы постороннего человека, а не наши.
+ *  - Только штаты БЕЗ налога с продаж. Карта выпускается на цену сервиса плюс
+ *    буфер под FX и VAT; налог штата (до ~10%) сервис добавил бы к цене сверху,
+ *    и он съедал бы буфер, рассчитанный на другое.
+ *  - Сети в пути выпуска карты больше нет: выбор адреса не может ни зависнуть,
+ *    ни упасть — а вызывается он уже после приёма рублей.
+ */
 
 export type BillingAddress = {
   streetLine1: string;
   city: string;
   state: string;
-  stateCode: string | null;
+  stateCode: string;
   postalCode: string;
   country: 'United States';
   countryCode: 'US';
 };
 
-const randomUserLocationSchema = z.object({
-  results: z
-    .array(
-      z.object({
-        location: z.object({
-          street: z.object({
-            number: z.number(),
-            name: z.string().min(1),
-          }),
-          city: z.string().min(1),
-          state: z.string().min(1),
-          country: z.string().min(1),
-          postcode: z.union([z.string(), z.number()]),
-        }),
-      }),
-    )
-    .min(1),
-});
+const US = { country: 'United States', countryCode: 'US' } as const;
 
-const US_STATE_CODES: Record<string, string> = {
-  Alabama: 'AL',
-  Alaska: 'AK',
-  Arizona: 'AZ',
-  Arkansas: 'AR',
-  California: 'CA',
-  Colorado: 'CO',
-  Connecticut: 'CT',
-  Delaware: 'DE',
-  Florida: 'FL',
-  Georgia: 'GA',
-  Hawaii: 'HI',
-  Idaho: 'ID',
-  Illinois: 'IL',
-  Indiana: 'IN',
-  Iowa: 'IA',
-  Kansas: 'KS',
-  Kentucky: 'KY',
-  Louisiana: 'LA',
-  Maine: 'ME',
-  Maryland: 'MD',
-  Massachusetts: 'MA',
-  Michigan: 'MI',
-  Minnesota: 'MN',
-  Mississippi: 'MS',
-  Missouri: 'MO',
-  Montana: 'MT',
-  Nebraska: 'NE',
-  Nevada: 'NV',
-  'New Hampshire': 'NH',
-  'New Jersey': 'NJ',
-  'New Mexico': 'NM',
-  'New York': 'NY',
-  'North Carolina': 'NC',
-  'North Dakota': 'ND',
-  Ohio: 'OH',
-  Oklahoma: 'OK',
-  Oregon: 'OR',
-  Pennsylvania: 'PA',
-  'Rhode Island': 'RI',
-  'South Carolina': 'SC',
-  'South Dakota': 'SD',
-  Tennessee: 'TN',
-  Texas: 'TX',
-  Utah: 'UT',
-  Vermont: 'VT',
-  Virginia: 'VA',
-  Washington: 'WA',
-  'West Virginia': 'WV',
-  Wisconsin: 'WI',
-  Wyoming: 'WY',
-};
-
-const FALLBACK_US_ADDRESSES: readonly [BillingAddress, ...BillingAddress[]] = [
-  {
-    streetLine1: '350 5th Ave',
-    city: 'New York',
-    state: 'New York',
-    stateCode: 'NY',
-    postalCode: '10118',
-    country: 'United States',
-    countryCode: 'US',
-  },
-  {
-    streetLine1: '1 Market St',
-    city: 'San Francisco',
-    state: 'California',
-    stateCode: 'CA',
-    postalCode: '94105',
-    country: 'United States',
-    countryCode: 'US',
-  },
-  {
-    streetLine1: '600 Congress Ave',
-    city: 'Austin',
-    state: 'Texas',
-    stateCode: 'TX',
-    postalCode: '78701',
-    country: 'United States',
-    countryCode: 'US',
-  },
+/**
+ * Каждый адрес подтверждён 2026-09-21 ДВУМЯ источниками: геокодер Бюро
+ * переписи США (номер дома в диапазоне улицы, канонический ZIP) и
+ * OpenStreetMap (по адресу стоит названное здание). Новый адрес — только после
+ * того же прогона: из восьми кандидатов «по памяти» двое проверку не прошли
+ * (у одного оказался другой ZIP, второй перепись не нашла вовсе).
+ *
+ * ⚠️ Порядок не менять и из середины не удалять: адрес клиента выбирается по
+ * номеру в пуле, и сдвиг поменял бы адрес уже обслуженным клиентам — у сервиса
+ * их карта привязана со старым. Новые адреса дописывать В КОНЕЦ (часть
+ * клиентов всё равно переедет — это цена отсутствия хранения, см. BACKLOG).
+ */
+export const BILLING_ADDRESS_POOL: readonly [BillingAddress, ...BillingAddress[]] = [
+  // Multnomah County Central Library
+  { streetLine1: '801 SW 10th Ave', city: 'Portland', state: 'Oregon', stateCode: 'OR', postalCode: '97205', ...US },
+  // Missoula Public Library
+  { streetLine1: '455 E Main St', city: 'Missoula', state: 'Montana', stateCode: 'MT', postalCode: '59802', ...US },
+  // Nashua Public Library
+  { streetLine1: '2 Court St', city: 'Nashua', state: 'New Hampshire', stateCode: 'NH', postalCode: '03060', ...US },
+  // Wilmington Public Library
+  { streetLine1: '10 E 10th St', city: 'Wilmington', state: 'Delaware', stateCode: 'DE', postalCode: '19801', ...US },
+  // Eugene Public Library
+  { streetLine1: '100 W 10th Ave', city: 'Eugene', state: 'Oregon', stateCode: 'OR', postalCode: '97401', ...US },
+  // Manchester City Library
+  { streetLine1: '405 Pine St', city: 'Manchester', state: 'New Hampshire', stateCode: 'NH', postalCode: '03104', ...US },
 ];
 
 /**
- * Random User Generator — бесплатный публичный API без ключа. Это не
- * критичный dependency: при ошибке возвращаем локальный публичный US-адрес,
- * чтобы выдача карты не зависела от стороннего сервиса.
+ * Адрес клиента — ДЕТЕРМИНИРОВАННО от его id, а не случайно.
+ *
+ * Адрес нигде не хранится (уходит одним сообщением при выпуске карты), и при
+ * случайном выборе повторный выпуск давал бы клиенту ДРУГОЙ адрес — при том
+ * что у сервиса его аккаунт уже привязан к прежнему. Детерминизм даёт то же,
+ * что дало бы хранение: один клиент — один адрес, и поддержка может назвать
+ * его заново, когда клиент потерял сообщение.
  */
-export async function getRandomUsBillingAddress(): Promise<BillingAddress> {
-  try {
-    // fetchJsonWithTimeout, а не fetchWithTimeout: второй снимает таймаут ещё
-    // до чтения тела, и сторонний сервис, отдавший заголовки и замолчавший,
-    // вешал бы выпуск карты — уже после приёма рублей (ревью 2026-08-11).
-    const data = await fetchJsonWithTimeout(
-      RANDOM_USER_URL,
-      { headers: { Accept: 'application/json' } },
-      randomUserLocationSchema,
-      RANDOM_USER_TIMEOUT_MS,
-    );
-    if (!data) {
-      throw new Error('randomuser: ответ недоступен или не соответствует контракту');
-    }
-
-    const first = data.results[0];
-    if (!first) {
-      throw new Error('randomuser returned no results');
-    }
-    const { location } = first;
-    return {
-      streetLine1: `${location.street.number} ${location.street.name}`,
-      city: location.city,
-      state: location.state,
-      stateCode: US_STATE_CODES[location.state] ?? null,
-      postalCode: String(location.postcode),
-      country: 'United States',
-      countryCode: 'US',
-    };
-  } catch (err) {
-    log.warn({ event: 'billing_address.randomuser_fallback', err });
-    return fallbackAddress();
-  }
+export function billingAddressForUser(userId: string): BillingAddress {
+  // sha256, а не сумма кодов символов: uuid'ы клиентов отличаются хвостом, и
+  // слабая свёртка складывала бы их в два-три адреса из пула.
+  const digest = createHash('sha256').update(userId).digest();
+  const index = digest.readUInt32BE(0) % BILLING_ADDRESS_POOL.length;
+  return BILLING_ADDRESS_POOL[index] ?? BILLING_ADDRESS_POOL[0];
 }
 
 export function formatBillingAddressLines(address: BillingAddress): string[] {
   return [
     `Street address: ${address.streetLine1}`,
     `City: ${address.city}`,
-    `State: ${formatState(address)}`,
+    `State: ${address.state} (${address.stateCode})`,
     `ZIP: ${address.postalCode}`,
     `Country: ${address.country}`,
   ];
-}
-
-function formatState(address: BillingAddress): string {
-  return address.stateCode ? `${address.state} (${address.stateCode})` : address.state;
-}
-
-function fallbackAddress(): BillingAddress {
-  const index = Math.floor(Math.random() * FALLBACK_US_ADDRESSES.length);
-  return FALLBACK_US_ADDRESSES[index] ?? FALLBACK_US_ADDRESSES[0];
 }

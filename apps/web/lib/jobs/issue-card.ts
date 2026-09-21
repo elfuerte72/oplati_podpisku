@@ -20,8 +20,8 @@ import {
 
 import { notifyOps } from '../alerts/notify-ops.ts';
 import {
+  billingAddressForUser,
   formatBillingAddressLines,
-  getRandomUsBillingAddress,
   type BillingAddress,
 } from '../billing-address.ts';
 import { serverEnv } from '../env.server.ts';
@@ -178,7 +178,7 @@ export async function issueCard(orderId: string): Promise<void> {
     expYear: number;
     cvc: string;
     cardType: string | null;
-    billingAddress: Awaited<ReturnType<typeof getRandomUsBillingAddress>>;
+    billingAddress: BillingAddress;
   } | null = null;
   /** Идентификатор карты у провайдера — для ops-алёрта, если наша строка не записалась. */
   let issuedProviderCardId: string | null = null;
@@ -337,10 +337,12 @@ export async function issueCard(orderId: string): Promise<void> {
       // карту в провайдере необратимо, а переиспользование PAN разными клиентами
       // недопустимо (утечка реквизитов прежнему владельцу). Reuse — только в
       // рамках одного клиента через активную карту выше.
-      // Billing address от карты не зависит и берётся заранее (у функции свой
-      // таймаут и локальный фолбэк), чтобы реквизиты можно было зафиксировать
-      // сразу после выпуска — до первой записи в нашу БД.
-      const billingAddress = await getRandomUsBillingAddress();
+      // Billing address от карты не зависит и берётся заранее, чтобы реквизиты
+      // можно было зафиксировать сразу после выпуска — до первой записи в нашу
+      // БД. Выбор — из пула настоящих адресов, детерминированно от клиента:
+      // сети здесь нет, и повторный выпуск даст ему ТОТ ЖЕ адрес, с которым
+      // его аккаунт у сервиса уже привязан.
+      const billingAddress = billingAddressForUser(order.userId);
 
       const created = await paypace.createCard({ amountUsdCents });
       issuedProviderCardId = created.cardId;
