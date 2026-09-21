@@ -6,9 +6,10 @@ import {
 } from '@oplati/types';
 
 import { conversations, messages } from '../schema.ts';
-import type { DB, DBLike } from '../index.ts';
+import type { DB, DBLike, DBTx } from '../index.ts';
 import { emitDbChange } from '../change-feed.ts';
 import {
+  SUPPORT_MARK_ANSWERED_TRIGGER,
   awaitingOperatorSql,
   lastSupportRequestSourceSql,
   supportRequestMarkerSql,
@@ -109,15 +110,53 @@ export async function getConversationState(
 }
 
 /**
+ * Служебная строка `support_state` — ЕДИНСТВЕННЫЙ её писатель. Зовут двое:
+ * состоявшийся переход режима и ручная отметка «отвечено» без смены режима.
+ * Форму meta читают панель (`supportStateNote`), правило «ждёт человека» и
+ * контекст помощника — вторая рукописная копия разъехалась бы с ними молча.
+ */
+async function insertModeStateRow(
+  tx: DBTx,
+  input: {
+    conversationId: string;
+    from: ConversationMode | null;
+    to: ConversationMode;
+    trigger: ConversationModeTrigger;
+    reason?: string | null;
+    actorName?: string | null;
+  },
+): Promise<void> {
+  await tx.insert(messages).values({
+    conversationId: input.conversationId,
+    role: 'system',
+    // Содержимое читаемо и без словаря (лог, psql при разборе инцидента);
+    // подписи для панели собираются из meta.
+    content: `${input.from ?? 'any'} → ${input.to}`,
+    meta: {
+      source: SUPPORT_STATE_META_SOURCE,
+      from: input.from,
+      to: input.to,
+      trigger: input.trigger,
+      ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.actorName ? { actor: input.actorName } : {}),
+    },
+  });
+}
+
+/**
  * Перевести разговор в другой режим. Состоявшийся переход пишет служебную
  * строку `messages` с `role='system'` В ТОЙ ЖЕ ТРАНЗАКЦИИ: панель показывает
  * её как след «кто и почему передал», а разъехавшийся след хуже отсутствующего.
  *
  * Ноль строк на UPDATE — не ошибка, а «переход не состоялся»: режим уже
  * сменили, разговор захватил коллега, разговора нет вовсе.
+ *
+ * `DBLike`, как у `transitionOrderDetailed`: вызванная внутри чужой транзакции,
+ * функция открывает вложенную (savepoint) — так ручная отметка «отвечено»
+ * меняет режим этим же писателем, а не вторым рукописным UPDATE.
  */
 export async function transitionConversationMode(
-  db: DB,
+  db: DBLike,
   input: TransitionConversationModeInput,
   log: RepoLogger = noopLogger,
 ): Promise<TransitionConversationModeResult> {
@@ -204,22 +243,8 @@ export async function transitionConversationMode(
       return { transitioned: false, state };
     }
 
-    const fromMode = fromModes.length === 1 ? fromModes[0] : null;
-    await tx.insert(messages).values({
-      conversationId,
-      role: 'system',
-      // Содержимое читаемо и без словаря (лог, psql при разборе инцидента);
-      // подписи для панели собираются из meta.
-      content: `${fromMode ?? 'any'} → ${to}`,
-      meta: {
-        source: SUPPORT_STATE_META_SOURCE,
-        from: fromMode,
-        to,
-        trigger,
-        ...(reason ? { reason } : {}),
-        ...(actorName ? { actor: actorName } : {}),
-      },
-    });
+    const fromMode = fromModes.length === 1 ? (fromModes[0] ?? null) : null;
+    await insertModeStateRow(tx, { conversationId, from: fromMode, to, trigger, reason, actorName });
 
     log.info({ event: 'db.support.transitioned', conversationId, from: fromModes, to, trigger });
     // Панель слушает ленту изменений: режим — кто отвечает клиенту, а служебная
@@ -262,6 +287,117 @@ export async function touchConversationMode(
     RETURNING id
   `);
   return rows.length > 0;
+}
+
+export type MarkSupportRequestAnsweredResult =
+  | { status: 'marked'; state: ConversationState }
+  /** Снимать нечего: уже ответили, закрыли, отметили — или обращения не было. */
+  | { status: 'not_awaiting'; state: ConversationState }
+  | { status: 'not_found' };
+
+/**
+ * Ручная отметка «отвечено»: клиенту ответили МИМО панели (личкой в Telegram
+ * по ссылке `t.me/<username>` из карточки клиента), и строки оператора в
+ * переписке от такого ответа не появляется — обращение висело бы «без ответа»
+ * бессрочно, а сторож крона напоминал бы о нём каждые четыре часа.
+ *
+ * Клиенту НИЧЕГО не уходит — этим отметка и отличается от «Закрыть», которое
+ * шлёт «оператор завершил обращение» и требует режима `operator`.
+ *
+ * Что делает, одной транзакцией:
+ *
+ *  - Берёт строку разговора под `FOR UPDATE` ПЕРВЫМ действием: две вкладки
+ *    панели иначе обе видели бы «ждёт человека» и писали две служебные строки.
+ *  - Проверяет «ждёт человека» ТЕМ ЖЕ `awaitingOperatorSql`, что список,
+ *    счётчик и сторож: кнопка рисуется по флагу списка, и своё правило здесь
+ *    означало бы кнопку, которая отвечает отказом.
+ *  - Разговор у оператора переводит в `idle` единственным писателем режима —
+ *    ведущий и срок снимаются, как у «Закрыть». ⚠️ Оставлять `operator` нельзя:
+ *    `mode_expires_at IS NULL` в нём значит «ждём человека», крон такой
+ *    разговор не закрывает никогда, и помощник молчал бы для этого клиента
+ *    бессрочно при уже снятом обращении. В остальных режимах режим не
+ *    трогается — пишется только служебная строка.
+ *
+ * Отметить можно и чужой разговор: это способ завершить, а не перехватить
+ * (то же решение, что у «Закрыть»). Новое обращение клиента после отметки
+ * снова даёт «без ответа» — отсчёт идёт от последнего маркера.
+ */
+export async function markSupportRequestAnswered(
+  db: DB,
+  input: { conversationId: string; actorName: string },
+  log: RepoLogger = noopLogger,
+): Promise<MarkSupportRequestAnsweredResult> {
+  const { conversationId, actorName } = input;
+
+  return await db.transaction(async (tx) => {
+    const locked = await tx
+      .select(STATE_COLUMNS)
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .for('update')
+      .limit(1);
+    const current = locked[0];
+    if (!current) return { status: 'not_found' };
+
+    const rows = await tx.execute<{ awaiting: boolean | string | null }>(sql`
+      WITH asked AS (
+        SELECT m.conversation_id,
+               max(m.created_at) AS last_request_at,
+               ${lastSupportRequestSourceSql('m')} AS last_source
+          FROM messages m
+         WHERE m.conversation_id = ${conversationId}
+           AND ${supportRequestMarkerSql('m')}
+         GROUP BY m.conversation_id
+      )
+      SELECT ${awaitingOperatorSql({
+        handoffMode: sql.raw('c.handoff_mode'),
+        lastSource: sql.raw('a.last_source'),
+        conversationId: sql.raw('a.conversation_id'),
+        lastRequestAt: sql.raw('a.last_request_at'),
+      })} AS awaiting
+        FROM asked a
+        JOIN conversations c ON c.id = a.conversation_id
+    `);
+    if (String(rows[0]?.awaiting) !== 'true') {
+      log.info({ event: 'db.support.mark_answered_skipped', conversationId, mode: current.mode });
+      return { status: 'not_awaiting', state: current };
+    }
+
+    if (current.mode === 'operator') {
+      const res = await transitionConversationMode(
+        tx,
+        {
+          conversationId,
+          from: 'operator',
+          to: 'idle',
+          trigger: SUPPORT_MARK_ANSWERED_TRIGGER,
+          actorName,
+          modeExpiresAt: null,
+          assignedOperatorId: null,
+        },
+        log,
+      );
+      // Строка под нашим локом, режим только что прочитан — несостоявшийся
+      // переход здесь не гонка, а поломка. Бросаем: транзакция откатится, и
+      // обращение не окажется «отмеченным» при разговоре, запертом у оператора.
+      if (!res.transitioned || !res.state) {
+        throw new Error(`markSupportRequestAnswered: переход operator → idle не состоялся (${conversationId})`);
+      }
+      return { status: 'marked', state: res.state };
+    }
+
+    await insertModeStateRow(tx, {
+      conversationId,
+      from: current.mode,
+      to: current.mode,
+      trigger: SUPPORT_MARK_ANSWERED_TRIGGER,
+      actorName,
+    });
+    log.info({ event: 'db.support.marked_answered', conversationId, mode: current.mode });
+    // Режим не менялся — панели достаточно знать про новую строку переписки.
+    emitDbChange('messages');
+    return { status: 'marked', state: current };
+  });
 }
 
 export type SupportConversationRef = {

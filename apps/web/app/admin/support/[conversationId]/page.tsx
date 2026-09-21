@@ -3,11 +3,12 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
 
-import { getDb, getSupportThreadForPanel } from '@oplati/db';
+import { getDb, getSupportThreadForPanel, listSupportRequestsForPanel } from '@oplati/db';
 
 import { LocalTime } from '@/components/panel/LocalTime';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
 import { PanelForbidden, PanelShell } from '@/components/panel/PanelShell';
+import { SupportMarkAnswered } from '@/components/panel/SupportMarkAnswered';
 import { SupportReply } from '@/components/panel/SupportReply';
 import { threadItemClass } from '@/lib/panel/class-names';
 import { panelPageAccess } from '@/lib/panel/guard';
@@ -17,6 +18,7 @@ import {
   COLUMN_TITLES,
   PAGE_TITLES,
   SUPPORT_BLOCK_TEXT,
+  SUPPORT_MARK_ANSWERED_HINT,
   SUPPORT_MODE_LABELS,
 } from '@/lib/panel/labels';
 import { lookupLabel } from '@/lib/panel/format';
@@ -61,8 +63,18 @@ export default async function PanelSupportThreadPage({
   const parsed = idSchema.safeParse(conversationId);
   if (!parsed.success) notFound();
 
-  const thread = await getSupportThreadForPanel(getDb(), parsed.data);
+  const db = getDb();
+  const thread = await getSupportThreadForPanel(db, parsed.data);
   if (!thread) notFound();
+
+  // «Ждёт человека» — флагом СПИСКА, а не своим выводом из режима: правило
+  // одно на список, счётчик, сторожа крона и операцию отметки, и кнопка
+  // «Отвечено» обязана появляться ровно там, где операция её примет.
+  const { items: clientRequests } = await listSupportRequestsForPanel(db, {
+    userId: thread.client.id,
+  });
+  const awaitingOperator =
+    clientRequests.find((r) => r.conversationId === thread.conversationId)?.awaitingOperator ?? false;
 
   const blocked = supportReplyBlockReason({
     clientTelegramId: thread.client.telegramId,
@@ -163,6 +175,16 @@ export default async function PanelSupportThreadPage({
             canClose={inOperatorMode}
             assistantAvailable={isSupportAiAvailable()}
           />
+        ) : null}
+        {/* ⚠️ Вне условия выше намеренно: клиенту без Telegram из панели не
+            ответить вовсе, и отметка — единственный способ снять его обращение. */}
+        {awaitingOperator ? (
+          <div style={{ marginTop: 12 }}>
+            <p className="panel-muted" style={{ marginBottom: 8 }}>
+              {SUPPORT_MARK_ANSWERED_HINT}
+            </p>
+            <SupportMarkAnswered conversationId={thread.conversationId} />
+          </div>
         ) : null}
       </section>
     </PanelShell>

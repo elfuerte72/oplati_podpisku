@@ -577,6 +577,9 @@ export const conversationModeTrigger = z.enum([
   'operator_claim',
   'operator_return',
   'operator_close',
+  // Ручная отметка «отвечено» — клиенту ответили мимо панели (личкой в
+  // Telegram), и сообщения от бота ему не уходит.
+  'operator_mark_answered',
   'auto',
 ]);
 export type ConversationModeTrigger = z.infer<typeof conversationModeTrigger>;

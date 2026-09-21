@@ -112,5 +112,6 @@ const SUPPORT_TRIGGER_LABELS = {
   operator_claim: 'подключился оператор',
   operator_return: 'возврат помощнику',
   operator_close: 'закрыл оператор',
+  operator_mark_answered: 'отмечено отвеченным',
   auto: 'автозакрытие',
 } as const satisfies Record<ConversationModeTrigger, string>;

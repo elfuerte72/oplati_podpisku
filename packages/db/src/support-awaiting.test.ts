@@ -34,6 +34,9 @@ describe('правило «ждёт человека» — один фрагме
     ['список /admin/support', PANEL, 'listSupportRequestsForPanel'],
     ['счётчик меню и рабочего стола', PANEL, 'countUnansweredSupportRequests'],
     ['сторож крона «без ответа»', SUPPORT, 'findUnansweredSupportConversations'],
+    // Кнопка «Отвечено» рисуется по флагу списка — своё правило у операции
+    // означало бы кнопку, которая отвечает отказом.
+    ['ручная отметка «отвечено»', SUPPORT, 'markSupportRequestAnswered'],
   ])('%s зовёт awaitingOperatorSql и общий маркер', (_name, source, fn) => {
     const text = body(source, fn);
     expect(text).toContain('awaitingOperatorSql(');
