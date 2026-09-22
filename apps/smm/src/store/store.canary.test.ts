@@ -70,14 +70,24 @@ describe('канарейки хранилища', () => {
   it('отпечаток ТЕЛА ПОСТА считает только store', () => {
     // Отпечаток — производное тела. Второе место, где он считается, вернуло бы
     // возможность подтвердить один текст, а опубликовать другой.
-    // `src/sources/article.ts` в исключении осознанно: он хэширует АДРЕС
-    // статьи для имени файла кэша, а не тело поста.
-    const allowed = ['src/store/text-sha.ts', 'src/sources/article.ts'];
+    // В исключении осознанно: `src/sources/article.ts` хэширует АДРЕС статьи
+    // для имени файла кэша, а `src/dialog/callback.ts` — ВОПРОС (углы,
+    // кандидаты) для отпечатка кнопки. Отпечаток превью автомат берёт готовым
+    // из `outcome.textSha`, то есть из хранилища, и это проверяется ниже.
+    const allowed = ['src/store/text-sha.ts', 'src/sources/article.ts', 'src/dialog/callback.ts'];
     const offenders = sourceFiles()
       .filter((file) => !allowed.includes(file.path))
       .filter((file) => /createHash\(\s*['"]sha256/.test(file.code))
       .map((file) => file.path);
     expect(offenders).toEqual([]);
+  });
+
+  it('отпечаток превью автомат берёт из хранилища, а не считает сам', () => {
+    const machine = sourceFiles().find((file) => file.path === 'src/dialog/machine.ts');
+    expect(machine?.code).toContain('outcome.textSha.slice(0, 8)');
+    // Автомат вообще не видит тела поста: ему приходит готовый отпечаток, а
+    // текст живёт в хранилище и в рендере.
+    expect(machine?.code).not.toContain('.body');
   });
 
   it('node:sqlite знает только db.ts', () => {

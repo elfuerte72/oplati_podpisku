@@ -33,7 +33,7 @@ describe('startApp', () => {
     const { logger, lines, out } = capture();
     const store = openStore({ path: ':memory:' });
 
-    const app = startApp({ env: testEnv(), logger, store });
+    const app = startApp({ env: testEnv(), logger, store, withoutBot: true });
     expect(out()).toContain('бот SMM поднялся');
     // Миграции применились при открытии базы, а не «когда-нибудь потом».
     expect(store.applied.length).toBeGreaterThan(0);
@@ -49,7 +49,7 @@ describe('startApp', () => {
   it('секреты в строку старта не попадают', () => {
     const { logger, out } = capture();
     const store = openStore({ path: ':memory:' });
-    startApp({ env: testEnv(), logger, store });
+    startApp({ env: testEnv(), logger, store, withoutBot: true });
     expect(out()).not.toContain('123:abc');
     expect(out()).not.toContain('sk-test');
     store.close();
@@ -65,7 +65,7 @@ describe('startApp', () => {
       SMM_MODEL_API_KEY: 'sk-test',
       SMM_DB_PATH: ':memory:',
     });
-    const app = startApp({ env, logger });
+    const app = startApp({ env, logger, withoutBot: true });
     await app.stop();
     // Закрытая база бросает на любом запросе — это и проверяем.
     expect(() => app.store.posts.listByStatus(['draft'])).toThrow();
