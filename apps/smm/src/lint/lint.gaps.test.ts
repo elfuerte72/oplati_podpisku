@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { lintPost, lintThreads } from './index.ts';
 import { BOT_RE, BRAND_RE, countMatches } from './rules.ts';
-import { sentences, tables, visibleLength } from './text.ts';
+import { sentences, tables, visibleLength, visibleText } from './text.ts';
 import type { LintContext, LintResult, PreviousPost, ThreadsLintContext } from './types.ts';
 
 /**
@@ -254,5 +254,13 @@ describe('заголовок и картинка', () => {
   it('ведущая картинка не считается текстом перед заголовком', () => {
     const body = `![](cover.png)\n\n${POST('Обычный абзац про то, что изменилось.')}`;
     expect(codes(lintPost(body, ctx())).errors).not.toContain('h1_not_first');
+  });
+});
+
+describe('снятие разметки', () => {
+  it('вложенный тег не переживает разбор', () => {
+    // ⚠️ Один проход превратил бы `<<b>b>` в `<b>` — то есть в тег, который и
+    // хотели убрать (находка CodeQL на PR #235).
+    expect(visibleText('текст <<b>b>жирный</b> дальше')).not.toContain('<b>');
   });
 });

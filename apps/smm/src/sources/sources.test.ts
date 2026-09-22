@@ -374,7 +374,7 @@ describe('внутренние адреса', () => {
     const visited: string[] = [];
     const spy: Fetcher = (url) => {
       visited.push(url);
-      if (url.startsWith('https://news.example')) {
+      if (new URL(url).host === 'news.example') {
         return Promise.resolve(
           new Response('', { status: 302, headers: { location: 'http://127.0.0.1:9999/secret' } }),
         );
@@ -469,7 +469,7 @@ describe('JSON-запрос к API', () => {
     const visited: string[] = [];
     const spy: Fetcher = (url) => {
       visited.push(url);
-      if (url.startsWith('https://api.example.com')) {
+      if (new URL(url).host === 'api.example.com') {
         return Promise.resolve(
           new Response('', { status: 302, headers: { location: 'http://127.0.0.1:9/steal' } }),
         );
@@ -492,7 +492,7 @@ describe('секреты на редиректе', () => {
     const spy: Fetcher = (url, init) => {
       const headers = (init.headers ?? {}) as Record<string, string>;
       seen.push({ url, auth: headers.authorization ?? headers['x-api-key'] });
-      if (url.startsWith('https://api.example.com')) {
+      if (new URL(url).host === 'api.example.com') {
         return Promise.resolve(
           new Response('', { status: 302, headers: { location: 'https://other.example.org/collect' } }),
         );

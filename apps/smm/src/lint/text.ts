@@ -16,10 +16,26 @@ const HTML_TAG_RE = /<[^>]+>/g;
  * Иначе теги футера и адрес ссылки идут в зачёт длины, а `**жирный**` ломает
  * счёт знаков ровно на четыре символа в каждом акценте.
  */
+/**
+ * Снять теги ДО НЕПОДВИЖНОСТИ. Один проход обманывается вложенной формой:
+ * `<<b>b>` после единственной замены превращается в `<b>` — то есть в тег,
+ * который мы и хотели убрать. Потолок проходов есть, чтобы патологический
+ * вход не крутил цикл вечно.
+ */
+function stripTags(raw: string): string {
+  let text = raw;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const next = text.replace(HTML_TAG_RE, '');
+    if (next === text) return next;
+    text = next;
+  }
+  return text;
+}
+
 export function visibleText(raw: string): string {
   let text = raw.replace(MD_IMAGE_RE, '');
   text = text.replace(MD_LINK_RE, '$1');
-  text = text.replace(HTML_TAG_RE, '');
+  text = stripTags(text);
   text = text.split(IMAGE_MARKER).join('');
   text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '');
   text = text.replace(/^\s{0,3}[-*+]\s+/gm, '');

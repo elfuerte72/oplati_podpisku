@@ -97,8 +97,7 @@ describe('раскладки Б, В, Г: rich-сообщение', () => {
   });
 
   it('без картинки маркер удаляется, а не остаётся в тексте', () => {
-    const body = RICH_BODY.replace('Нюанс: считают за месяц.', 'Нюанс: считают за месяц.');
-    const result = renderPost(post({ layout: 'b', body }));
+    const result = renderPost(post({ layout: 'b', body: RICH_BODY }));
     expect(result.ok).toBe(true);
     if (!result.ok || result.outgoing.kind !== 'rich') throw new Error('ожидался rich');
     expect(result.outgoing.markdown).not.toContain('[[IMAGE]]');

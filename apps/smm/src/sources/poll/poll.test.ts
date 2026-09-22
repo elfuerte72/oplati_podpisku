@@ -27,7 +27,13 @@ function serve(pages: Record<string, unknown>): { fetcher: Fetcher; calls: strin
   const calls: string[] = [];
   const fetcher: Fetcher = (url) => {
     calls.push(url);
-    const key = Object.keys(pages).find((candidate) => url.startsWith(candidate));
+    // Сверка по НАЧАЛУ адреса вместе с его разбором: «похоже на наш адрес»
+    // и «это наш адрес» — разные вещи, и двойник не должен учить плохому.
+    const target = new URL(url);
+    const key = Object.keys(pages).find((candidate) => {
+      const want = new URL(candidate);
+      return target.host === want.host && target.pathname.startsWith(want.pathname);
+    });
     if (key === undefined) return Promise.resolve(new Response('нет', { status: 404 }));
     const body = pages[key];
     if (typeof body === 'string') {
