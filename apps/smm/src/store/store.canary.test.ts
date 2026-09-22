@@ -67,11 +67,14 @@ describe('канарейки хранилища', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('отпечаток текста считает только store', () => {
+  it('отпечаток ТЕЛА ПОСТА считает только store', () => {
     // Отпечаток — производное тела. Второе место, где он считается, вернуло бы
     // возможность подтвердить один текст, а опубликовать другой.
+    // `src/sources/article.ts` в исключении осознанно: он хэширует АДРЕС
+    // статьи для имени файла кэша, а не тело поста.
+    const allowed = ['src/store/text-sha.ts', 'src/sources/article.ts'];
     const offenders = sourceFiles()
-      .filter((file) => file.path !== 'src/store/text-sha.ts')
+      .filter((file) => !allowed.includes(file.path))
       .filter((file) => /createHash\(\s*['"]sha256/.test(file.code))
       .map((file) => file.path);
     expect(offenders).toEqual([]);
