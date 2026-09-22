@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { RUBRIC_KEYS, type JudgeCriterion } from '../config/smm.config.ts';
+import { RUBRIC_KEYS, smmConfig, type JudgeCriterion } from '../config/smm.config.ts';
 
 /**
  * Схемы ответов модели. Модель пишет и оценивает, но НЕ решает, что делать
@@ -11,11 +11,18 @@ import { RUBRIC_KEYS, type JudgeCriterion } from '../config/smm.config.ts';
 const shortText = z.string().trim().min(1).max(400);
 const longText = z.string().trim().min(1).max(2000);
 
+/** Адрес: только http(s). Значение едет в разметку поста и в кнопку. */
+const httpUrl = z
+  .string()
+  .trim()
+  .max(600)
+  .refine((raw) => /^https?:\/\//i.test(raw), 'адрес должен начинаться с http или https');
+
 /** Факт с цитатой и адресом: утверждение без цитаты проверить нельзя. */
 export const FactSchema = z.object({
   statement: shortText,
-  quote: z.string().trim().min(1).max(600),
-  url: z.string().trim().max(500).optional(),
+  quote: z.string().trim().min(1).max(400),
+  url: httpUrl.optional(),
 });
 
 /**
@@ -26,9 +33,17 @@ export const FactSchema = z.object({
  * `unknown` в полях про Россию и оплату — штатный ответ. Раньше агент на этом
  * месте додумывал («работает через VPN»), и это уходило в пост.
  */
+/**
+ * Сколько фактов просим. Потолок подобран под `max_tokens` роли `dossier`:
+ * двенадцать фактов с цитатами не влезали в ответ, и шаг обрывался на лимите
+ * токенов вместо того, чтобы разобраться (ревью тикета 03). Число уходит в
+ * запрос вместе с досье — в промпте его нет намеренно.
+ */
+export const DOSSIER_FACTS_MAX = 8;
+
 export const DossierSchema = z.object({
   title: shortText,
-  facts: z.array(FactSchema).min(1).max(12),
+  facts: z.array(FactSchema).min(1).max(DOSSIER_FACTS_MAX),
   numbers: z
     .array(z.object({ value: shortText, unit: z.string().trim().max(40).optional(), what: shortText }))
     .max(12)
@@ -36,9 +51,17 @@ export const DossierSchema = z.object({
   dates: z.array(z.object({ date: shortText, what: shortText })).max(8).default([]),
   /** Что из этого новое для читателя с телефоном. */
   reader_new: longText,
-  works_in_russia: z.union([z.literal('unknown'), shortText]),
-  how_to_pay: z.union([z.literal('unknown'), shortText]),
+  /**
+   * `unknown` — штатный ответ, если из статьи это не следует. Отдельного типа
+   * у него нет: значение всё равно сравнивается со строкой, а `union` с
+   * литералом создавал бы видимость дискриминации, которой в типе нет.
+   */
+  works_in_russia: shortText,
+  how_to_pay: shortText,
 });
+
+/** Литерал «из статьи не следует». Придумывать вместо него догадку нельзя. */
+export const DOSSIER_UNKNOWN = 'unknown';
 
 export type Dossier = z.infer<typeof DossierSchema>;
 
@@ -92,14 +115,28 @@ export type JudgeNote = z.infer<typeof JudgeNoteSchema>;
  */
 export function judgeSchema(criteria: readonly JudgeCriterion[]) {
   if (criteria.length === 0) throw new Error('критерии судьи не заданы');
+  const keys = criteria.map((c) => c.key);
+  if (new Set(keys).size !== keys.length) {
+    // Дубль ключа склеился бы в один при сборке схемы, и среднее считалось бы
+    // по меньшему числу баллов — порог провала поехал бы молча.
+    throw new Error(`критерии судьи содержат дубль: ${keys.join(', ')}`);
+  }
+  // `as` нужен, потому что ключи схемы известны только в рантайме: собрать
+  // точный тип из массива нельзя, а вердикт всё равно считается по `scores`
+  // как по словарю (`evaluateJudge`).
   const scores = z.object(
-    Object.fromEntries(criteria.map((c) => [c.key, z.number().int().min(1).max(5)])),
+    Object.fromEntries(keys.map((key) => [key, z.number().int().min(1).max(5)])),
   ) as z.ZodType<Record<string, number>>;
   return z.object({
     scores,
     red_lines: z.enum(['pass', 'fail']),
     red_lines_reason: z.string().trim().max(400).default(''),
-    notes: z.array(JudgeNoteSchema).max(12).default([]),
+    // Критерий в претензии — только из списка: иначе судья ссылается на
+    // выдуманный критерий, и правка уходит в пустоту.
+    notes: z
+      .array(JudgeNoteSchema.extend({ criterion: z.enum(keys as [string, ...string[]]) }))
+      .max(12)
+      .default([]),
     weakest: z.string().trim().max(400).default(''),
     fixes: z.array(shortText).max(5).default([]),
   });
@@ -127,9 +164,15 @@ export type RankItem = z.infer<typeof RankItemSchema>;
  */
 export const ThreadsPostSchema = z.object({
   hook: z.string().trim().min(1).max(300),
-  pieces: z.array(z.string().trim().min(1).max(1000)).min(1).max(5),
-  tag: z.string().trim().max(50).optional(),
-  link: z.string().trim().max(600).optional(),
+  // Потолки читаются из конфига, а не дублируются здесь: лимиты площадки живут
+  // в одном месте (инвариант «зеркала не заводим»). Запас по знакам на часть
+  // двойной — точную длину с весом эмодзи считает линт.
+  pieces: z
+    .array(z.string().trim().min(1).max(smmConfig.threads.pieceLimit * 2))
+    .min(1)
+    .max(smmConfig.threads.maxPieces),
+  tag: z.string().trim().max(smmConfig.threads.tagMax).optional(),
+  link: httpUrl.optional(),
 });
 
 export type ThreadsPost = z.infer<typeof ThreadsPostSchema>;

@@ -31,14 +31,28 @@ export interface JudgeVerdict {
   readonly failReason?: 'red_lines' | 'mean_below' | 'criterion_below';
 }
 
-/** Сравнение текстов «как читает человек»: пробелы, кавычки и регистр не считаются. */
+/**
+ * Сравнение текстов «как читает человек»: регистр, кавычки любых видов, ё/е,
+ * тире и пробелы не считаются. Без этого живая претензия помечалась бы
+ * «цитата не найдена» из-за «Еще» против «Ещё» или лапок против ёлочек, а
+ * промпт правок прямо учит такую претензию игнорировать.
+ */
 function normalize(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[«»"'`]/g, '')
+    .replace(/ё/g, 'е')
+    .replace(/[«»„“”‘’"'`]/g, '')
+    .replace(/[—–]/g, '-')
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * Короче этого цитата ничего не доказывает: `«»` нормализуется в пустую строку,
+ * а пустая строка «находится» в любом тексте — судья получал бы непомеченную
+ * претензию за одну кавычку.
+ */
+const MIN_QUOTE_LENGTH = 8;
 
 export function evaluateJudge(
   answer: JudgeAnswer,
@@ -52,10 +66,13 @@ export function evaluateJudge(
   const min = Math.min(...values);
 
   const haystack = normalize(body);
-  const notes: CheckedNote[] = answer.notes.map((note) => ({
-    ...note,
-    quoteFound: note.quote.trim() !== '' && haystack.includes(normalize(note.quote)),
-  }));
+  const notes: CheckedNote[] = answer.notes.map((note) => {
+    const quote = normalize(note.quote);
+    return {
+      ...note,
+      quoteFound: quote.length >= MIN_QUOTE_LENGTH && haystack.includes(quote),
+    };
+  });
 
   let failReason: JudgeVerdict['failReason'];
   if (answer.red_lines === 'fail') failReason = 'red_lines';

@@ -25,7 +25,7 @@ export interface MessagesClient {
   readonly messages: {
     create(
       params: Anthropic.MessageCreateParamsNonStreaming,
-      options?: { timeout?: number },
+      options?: { timeout?: number; signal?: AbortSignal },
     ): Promise<Anthropic.Message>;
   };
 }
@@ -61,7 +61,14 @@ export interface ModelDeps {
   readonly now?: () => Date;
 }
 
-/** Клиент провайдера. Ретрай один: ход стоит денег, а бот попросит повтор кнопкой. */
+/**
+ * Клиент провайдера.
+ *
+ * `maxRetries: 0` — повтор у нас СВОЙ, на уровне шага (один перезапрос при
+ * ответе не по схеме) и кнопки «Повторить» у владельца. Ретраи SDK множились
+ * бы на срок роли: при двух заходах по две минуты один шаг ждал бы восемь,
+ * а в `usage` эти попытки не попадают вовсе.
+ */
 export function createModelClient(env: SmmEnv): Anthropic {
   return new Anthropic({
     apiKey: env.model.apiKey,
@@ -69,36 +76,68 @@ export function createModelClient(env: SmmEnv): Anthropic {
     // Сроки задаются на каждый запрос ролью; здесь потолок на случай, если
     // роль его не назвала.
     timeout: 120_000,
-    maxRetries: 1,
+    maxRetries: 0,
   });
 }
 
 /**
- * Вырезает ограждения кода и берёт первый объект или массив JSON.
+ * Достаёт JSON из ответа модели.
  *
  * Модель просят отвечать чистым JSON, но она периодически оборачивает ответ в
- * ```json. Отдельная функция, потому что это единственное место, где мы
- * прощаем провайдеру отклонение от просьбы.
+ * ограждения кода и дописывает фразу вокруг. Наивное «от первой скобки до
+ * последней» теряло валидный ответ, если в прозе была любая фигурная скобка
+ * («в поле {link}», «формат {ключ: значение}»), — а такая привычка у модели
+ * частая, и шаг проваливался при готовом JSON в руках (ревью тикета 03).
+ * Поэтому ищется СБАЛАНСИРОВАННЫЙ фрагмент, который разбирается.
  */
 export function extractJson(raw: string): string | undefined {
-  const withoutFences = raw
+  const text = raw
     .replace(/^\s*```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
-  const candidates = [withoutFences, raw];
-  for (const text of candidates) {
-    const firstObject = text.indexOf('{');
-    const firstArray = text.indexOf('[');
-    const start =
-      firstObject === -1
-        ? firstArray
-        : firstArray === -1
-          ? firstObject
-          : Math.min(firstObject, firstArray);
-    if (start === -1) continue;
-    const end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
-    if (end <= start) continue;
-    return text.slice(start, end + 1);
+
+  for (let start = 0; start < text.length; start += 1) {
+    const char = text[start];
+    if (char !== '{' && char !== '[') continue;
+    const end = matchingBracket(text, start);
+    if (end === undefined) continue;
+    const candidate = text.slice(start, end + 1);
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      // Сбалансированный, но не разобравшийся фрагмент — это проза со
+      // скобками. Ищем дальше, а не сдаёмся на первом кандидате.
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/** Индекс закрывающей скобки для открывающей на `start`, с учётом строк JSON. */
+function matchingBracket(text: string, start: number): number | undefined {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i] ?? '';
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{' || char === '[') stack.push(char);
+    else if (char === '}' || char === ']') {
+      const open = stack.pop();
+      if (open === undefined) return undefined;
+      if ((char === '}' && open !== '{') || (char === ']' && open !== '[')) return undefined;
+      if (stack.length === 0) return i;
+    }
   }
   return undefined;
 }
@@ -144,10 +183,17 @@ function modelNameFor(role: ModelRole, env: SmmEnv, config: SmmConfig): string {
   return env.model.writer;
 }
 
+/** Отрицательные и нечисловые значения от провайдера занижали бы месячную сводку. */
+function nonNegative(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
 export function createModel(deps: ModelDeps): Model {
   const config = deps.config ?? smmConfig;
   const promptSet = deps.promptSet ?? defaultPrompts();
   const now = deps.now ?? ((): Date => new Date());
+  /** Предупреждение о подмене модели — один раз на процесс, а не на каждый вызов. */
+  const warnedMismatch = new Set<string>();
 
   /**
    * Учёт расхода. Микродоллары считаются красиво: $1 за миллион токенов — это
@@ -159,30 +205,52 @@ export function createModel(deps: ModelDeps): Model {
    */
   function recordUsage(role: ModelRole, model: string, message: Anthropic.Message, ctx?: CallContext): void {
     const at = now();
-    const price = modelPriceUsd(model, at);
-    const inputTokens = message.usage.input_tokens ?? 0;
-    const outputTokens = message.usage.output_tokens ?? 0;
-    const cacheHitTokens = message.usage.cache_read_input_tokens ?? 0;
+    // Имя модели берётся из ОТВЕТА: провайдер молча маппит незнакомый id на
+    // свою модель, и опечатка в env иначе выглядит рабочей настройкой (те же
+    // грабли описаны у боевого клиента помощника).
+    const answered = typeof message.model === 'string' && message.model !== '' ? message.model : model;
+    if (answered !== model && !warnedMismatch.has(model)) {
+      warnedMismatch.add(model);
+      deps.logger.warn({ requested: model, answered }, 'провайдер ответил другой моделью');
+    }
+    const price = modelPriceUsd(answered, at);
+    // Поле usage может не прийти вовсе: его маппинг в Anthropic-совместимом
+    // слое DeepSeek не документирован, а «дока провайдера врёт» — правило дома.
+    const usage = (message.usage ?? {}) as Partial<Anthropic.Usage>;
+    const inputTokens = nonNegative(usage.input_tokens);
+    const outputTokens = nonNegative(usage.output_tokens);
+    // ⚠️ Семантика кэша живым вызовом НЕ подтверждена: считаем, что
+    // `input_tokens` кэш-попадания не включает (как у Anthropic). Если слой
+    // DeepSeek отдаёт сумму, кэш посчитается дважды — сырые поля печатает
+    // `eval:llm`, один живой прогон закрывает вопрос.
+    const cacheHitTokens = nonNegative(usage.cache_read_input_tokens);
     const usdMicros = Math.round(
       inputTokens * price.inputPerMillion +
         outputTokens * price.outputPerMillion +
         cacheHitTokens * price.cacheHitPerMillion,
     );
-    deps.usage.add({
-      postId: ctx?.postId,
-      role,
-      model,
-      inputTokens,
-      outputTokens,
-      cacheHitTokens,
-      usdMicros,
-      isPeak: price.isPeak,
-      priceKnown: price.known,
-    });
+    try {
+      deps.usage.add({
+        postId: ctx?.postId,
+        role,
+        model: answered,
+        inputTokens,
+        outputTokens,
+        cacheHitTokens,
+        usdMicros,
+        isPeak: price.isPeak,
+        priceKnown: price.known,
+      });
+    } catch (error) {
+      // Потеря строки учёта дешевле потери поста: ответ уже оплачен, и шаг
+      // обязан продолжиться. Обещание «json и markdown не бросают» держится
+      // именно здесь.
+      deps.logger.error({ role, model: answered, err: error }, 'расход не записался');
+    }
     deps.logger.info(
       {
         role,
-        model,
+        model: answered,
         postId: ctx?.postId,
         inputTokens,
         outputTokens,
@@ -216,13 +284,34 @@ export function createModel(deps: ModelDeps): Model {
           messages,
           thinking: { type: 'disabled' },
         },
-        { timeout: roleConfig.timeoutMs },
+        {
+          timeout: roleConfig.timeoutMs,
+          // ⚠️ Одного `timeout` недостаточно: SDK снимает таймер сразу после
+          // получения ЗАГОЛОВКОВ, и провайдер, отдавший 200 и замолчавший на
+          // теле, вешает шаг навсегда (правило CLAUDE.md про чтение тела,
+          // аудит 2026-08-10). `signal` живёт до конца чтения.
+          signal: AbortSignal.timeout(roleConfig.timeoutMs),
+        },
       );
     } catch (error) {
-      // Сеть и 5xx — это `api_error`: шаг провалился, но пост жив, и владелец
-      // получит кнопку «Повторить». Исключение наружу не летит никогда.
+      // Сеть, 5xx и обрыв на чтении тела — это `api_error`: шаг провалился, но
+      // пост жив, и владелец получит кнопку «Повторить». Исключение наружу не
+      // летит никогда.
       const message = error instanceof Error ? error.message : String(error);
-      deps.logger.warn({ role, model, postId: ctx?.postId, err: error }, 'модель не ответила');
+      // Ошибку логируем ПО ЧАСТЯМ: у APIError в `message` лежит тело ответа
+      // провайдера, а в нём при 400 может оказаться фрагмент запроса — то есть
+      // текст поста, который в лог не ходит.
+      deps.logger.warn(
+        {
+          role,
+          model,
+          postId: ctx?.postId,
+          status: (error as { status?: number }).status,
+          requestId: (error as { request_id?: string }).request_id,
+          reason: message.slice(0, 200),
+        },
+        'модель не ответила',
+      );
       return { ok: false, reason: 'api_error', message };
     }
 

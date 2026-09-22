@@ -66,6 +66,12 @@ async function main(): Promise<void> {
 
   const month = new Date().toISOString().slice(0, 7);
   const usage = store.usage.sumByMonth(month);
+  // Сырые поля учёта: маппинг usage у Anthropic-совместимого слоя DeepSeek не
+  // документирован, и один живой прогон закрывает вопрос, считается ли
+  // кэш-попадание внутри input_tokens.
+  for (const row of store.db.all<Record<string, unknown>>('SELECT * FROM usage ORDER BY id')) {
+    console.log('usage:', JSON.stringify(row));
+  }
   console.log(
     `\nВызовов: ${usage.calls}, расход: $${(usage.usdMicros / 1_000_000).toFixed(6)}` +
       `${usage.hasUnknownPrice ? ' (оценка: тариф модели неизвестен)' : ''}, время: ${ms} мс`,

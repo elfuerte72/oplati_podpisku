@@ -1,4 +1,5 @@
 import type { SmmEnv } from './config/env.ts';
+import { warmPrompts } from './llm/prompts.ts';
 import type { Logger } from './logger.ts';
 import { openStore, type Store } from './store/index.ts';
 
@@ -29,6 +30,9 @@ export function startApp(deps: AppDeps): RunningApp {
   // отказа первого счёта Freekassa.
   const externalStore = deps.store !== undefined;
   const store = deps.store ?? openStore({ path: env.dbPath });
+  // Промпты ролей читаются ЗДЕСЬ, при старте: недостающий в образе файл обязан
+  // ронять деплой, а не первый пост в три часа ночи.
+  const promptRoles = Object.keys(warmPrompts()).length;
 
   logger.info(
     {
@@ -36,6 +40,7 @@ export function startApp(deps: AppDeps): RunningApp {
       undoSeconds: env.publishUndoSeconds,
       models: { writer: env.model.writer, judge: env.model.judge, rank: env.model.rank },
       migrations: store.applied.map((m) => m.name),
+      promptRoles,
     },
     'бот SMM поднялся',
   );

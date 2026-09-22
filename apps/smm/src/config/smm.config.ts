@@ -455,13 +455,16 @@ export const smmConfig: SmmConfig = {
   rubrics: RUBRICS,
   layouts: LAYOUTS,
   roles: {
-    dossier: { temperature: 0, maxTokens: 4000, timeoutMs: 120_000, model: 'writer' },
-    plan: { temperature: 0.3, maxTokens: 2000, timeoutMs: 120_000, model: 'writer' },
+    // Сроки разные по делу: автор и правки отдают длинный текст не потоком, а
+    // разбор источника и ранжирование — короткий JSON. Один срок на всех
+    // означал бы, что зависший короткий шаг держит владельца две минуты.
+    dossier: { temperature: 0, maxTokens: 4000, timeoutMs: 90_000, model: 'writer' },
+    plan: { temperature: 0.3, maxTokens: 2000, timeoutMs: 60_000, model: 'writer' },
     write: { temperature: 0.7, maxTokens: 4000, timeoutMs: 120_000, model: 'writer' },
     revise: { temperature: 0.3, maxTokens: 4000, timeoutMs: 120_000, model: 'writer' },
     judge: { temperature: 0, maxTokens: 2000, timeoutMs: 120_000, model: 'judge' },
-    rank: { temperature: 0, maxTokens: 4000, timeoutMs: 120_000, model: 'rank' },
-    threads: { temperature: 0.5, maxTokens: 2000, timeoutMs: 120_000, model: 'writer' },
+    rank: { temperature: 0, maxTokens: 4000, timeoutMs: 90_000, model: 'rank' },
+    threads: { temperature: 0.5, maxTokens: 2000, timeoutMs: 90_000, model: 'writer' },
   },
   lint: {
     // Потолок видимого текста ниже лимита Telegram: остаток съедают футер и разметка.

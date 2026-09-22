@@ -45,3 +45,12 @@ export function prompts(): PromptSet {
   cached ??= loadPrompts();
   return cached;
 }
+
+/**
+ * Прогрев при старте. Зовётся из сборки приложения: без него недостающий в
+ * образе `.md` обнаружился бы на первом посте в три часа ночи, а не в первой
+ * строке логов при деплое.
+ */
+export function warmPrompts(): PromptSet {
+  return prompts();
+}
