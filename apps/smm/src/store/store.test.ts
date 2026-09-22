@@ -451,7 +451,6 @@ describe('состояние диалога', () => {
     // Перезапись не оставляет прежний срок: иначе новое ожидание унаследовало бы
     // чужой дедлайн.
     expect(row?.expiresAt).toBeUndefined();
-    expect(row?.expired).toBe(false);
     store.flow.clear(1);
     expect(store.flow.get(1)).toBeUndefined();
   });

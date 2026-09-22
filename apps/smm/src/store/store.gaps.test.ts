@@ -135,21 +135,22 @@ describe('одно сообщение канала — один пост', () =>
 });
 
 describe('состояние диалога', () => {
-  it('истёкший срок ожидания виден на чтении', () => {
+  it('срок ожидания хранится как есть: вывод делает автомат', () => {
     const { store, time } = fresh();
     store.flow.set(1, { state: 'post.await_input', expiresAt: '2026-09-22T11:00:00.000Z' });
-    expect(store.flow.get(1)?.expired).toBe(false);
     time.tick(2 * 60 * 60_000);
-    expect(store.flow.get(1)?.expired).toBe(true);
-    // Строка при этом не исчезает: погашение — дело диалога, не хранилища.
+    // Строка не исчезает и не помечается: погашение — дело диалога, а не
+    // хранилища, и считается по времени СОБЫТИЯ, а не по стенным часам.
+    expect(store.flow.get(1)?.expiresAt).toBe('2026-09-22T11:00:00.000Z');
     expect(store.flow.get(1)?.state).toBe('post.await_input');
   });
 
-  it('состояние без срока не истекает никогда', () => {
+  it('состояние без срока хранится без срока', () => {
     const { store, time } = fresh();
     store.flow.set(1, { state: 'idle' });
     time.tick(30 * 24 * 60 * 60_000);
-    expect(store.flow.get(1)?.expired).toBe(false);
+    // Нет срока — нечему истекать: автомат такое состояние не гасит.
+    expect(store.flow.get(1)?.expiresAt).toBeUndefined();
   });
 });
 

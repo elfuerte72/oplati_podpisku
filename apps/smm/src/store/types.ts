@@ -123,12 +123,6 @@ export interface FlowRow {
   readonly payload?: unknown;
   readonly expiresAt?: string;
   readonly updatedAt: string;
-  /**
-   * Срок ожидания истёк. Считается ПРИ ЧТЕНИИ: истёкшее ожидание замечает
-   * следующее входящее, и оставлять этот вывод каждому вызывающему — способ
-   * забыть его в одном месте из трёх.
-   */
-  readonly expired: boolean;
 }
 
 export interface Item {

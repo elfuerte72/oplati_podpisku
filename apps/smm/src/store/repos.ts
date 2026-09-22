@@ -9,7 +9,7 @@ import { ulid } from './ulid.ts';
 export interface FlowRepo {
   /** Строка диалога с посчитанным признаком «срок ожидания истёк». */
   get(ownerId: number): FlowRow | undefined;
-  set(ownerId: number, row: Omit<FlowRow, 'updatedAt' | 'expired'>): FlowRow;
+  set(ownerId: number, row: Omit<FlowRow, 'updatedAt'>): FlowRow;
   clear(ownerId: number): void;
 }
 
@@ -35,17 +35,15 @@ export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
     get(ownerId) {
       const row = db.get<FlowDbRow>('SELECT * FROM flow WHERE owner_id = ?', ownerId);
       if (row === undefined) return undefined;
-      // Протухание считается ЗДЕСЬ: иначе каждый вызывающий сравнивал бы срок
-      // сам, и одно из трёх мест это забыло бы (в проде так и вышло с лениво
-      // истёкшей сессией помощника).
-      const expired = row.expires_at !== null && row.expires_at <= now().toISOString();
+      // ⚠️ Протухание здесь НЕ считается: его считает автомат по времени
+      // СОБЫТИЯ (`event.at`), и вторая формула по стенным часам давала бы
+      // два разных ответа на один и тот же клик.
       return {
         state: row.state,
         postId: row.post_id ?? undefined,
         payload: parseJson(row.payload),
         expiresAt: row.expires_at ?? undefined,
         updatedAt: row.updated_at,
-        expired,
       };
     },
     set(ownerId, row) {
@@ -66,7 +64,7 @@ export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
         row.expiresAt ?? null,
         at,
       );
-      return { ...row, updatedAt: at, expired: false };
+      return { ...row, updatedAt: at };
     },
     clear(ownerId) {
       db.run('DELETE FROM flow WHERE owner_id = ?', ownerId);
