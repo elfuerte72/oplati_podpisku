@@ -47,6 +47,11 @@ export interface HealthDeps {
   readonly store: Store;
   /** Чей диалог проверяем на зависание: у бота один владелец. */
   readonly ownerId: number;
+  /**
+   * Идёт ли приём команд. ⚠️ Отдельно от «бот отвечает»: `getMe` работает и у
+   * глухого процесса, чей цикл `getUpdates` остановился на 409 при выкате.
+   */
+  readonly polling?: { readonly running: boolean; readonly reason?: string };
   /** Проверка бота: `getMe` со своим коротким поводком. */
   readonly checkBot: () => Promise<{ ok: boolean; message?: string }>;
   readonly modelApiKey?: string;
@@ -120,6 +125,18 @@ export async function check(deps: HealthDeps): Promise<HealthStatus> {
       ? { name: 'Бот', level: 'green', reason: 'Telegram отвечает' }
       : { name: 'Бот', level: 'red', reason: bot.message ?? 'Telegram не отвечает' },
   );
+
+  if (deps.polling !== undefined) {
+    items.push(
+      deps.polling.running
+        ? { name: 'Приём команд', level: 'green', reason: 'long polling идёт' }
+        : {
+            name: 'Приём команд',
+            level: 'red',
+            reason: `бот не принимает команды: ${deps.polling.reason ?? 'причина неизвестна'}`,
+          },
+    );
+  }
 
   items.push(await checkModel(deps));
 
