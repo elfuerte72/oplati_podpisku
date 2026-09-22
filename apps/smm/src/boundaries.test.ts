@@ -69,6 +69,21 @@ describe('границы apps/smm', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('конвейер не знает ни про Telegram, ни про хранилище', () => {
+    // Оркестрация обязана быть чистой: зависимости приходят аргументом, а
+    // персистит вызывающий. Импорт store втянул бы в конвейер SQLite и
+    // превратил бы тесты шагов в интеграционные.
+    const offenders: string[] = [];
+    for (const file of sourceFiles().filter((f) => f.path.startsWith('src/pipeline/'))) {
+      for (const specifier of importsOf(file.code)) {
+        if (specifier === 'grammy' || specifier.startsWith('grammy/') || /\/store\//.test(specifier)) {
+          offenders.push(`${file.path} → ${specifier}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('прямого fetch без обёртки с таймаутом в коде нет', () => {
     // Правило CLAUDE.md: fetch без таймаута запрещён, и таймаут обязан покрывать
     // чтение ТЕЛА. Единственное место, где живёт голый fetch, — src/sources/http.ts.

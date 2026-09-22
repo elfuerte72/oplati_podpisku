@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { ZodType } from 'zod';
+import type { output, ZodType, ZodTypeAny } from 'zod';
 
 import type { SmmEnv } from '../config/env.ts';
 import { modelPriceUsd, smmConfig, type ModelRole, type SmmConfig } from '../config/smm.config.ts';
@@ -42,12 +42,18 @@ export interface CallContext {
 }
 
 export interface Model {
-  json<T>(
+  /**
+   * Тип ответа выводится из СХЕМЫ (`output<S>`), а не из отдельного параметра:
+   * у схем с `.default()` вход и выход различаются, и `ZodType<T>` связывал
+   * `T` со входом — вызывающий получал тип, в котором поля со значением по
+   * умолчанию считались необязательными.
+   */
+  json<S extends ZodTypeAny>(
     role: ModelRole,
     input: string,
-    schema: ZodType<T>,
+    schema: S,
     ctx?: CallContext,
-  ): Promise<ModelResult<T>>;
+  ): Promise<ModelResult<output<S>>>;
   markdown(role: ModelRole, input: string, ctx?: CallContext): Promise<ModelResult<string>>;
 }
 
