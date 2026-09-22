@@ -16,6 +16,7 @@ import {
   searchNews,
   type Fetcher,
 } from './index.ts';
+import { decodeEntities } from './html.ts';
 import {
   ARTICLE_HTML,
   DIV_ONLY_HTML,
@@ -444,5 +445,20 @@ describe('кодировка страницы', () => {
       );
     const result = await fetchText('https://news.example/post', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('сущности HTML', () => {
+  it('раскрываются ОДИН раз: написанное словами не становится разметкой', () => {
+    expect(decodeEntities('&#38;lt;b&#38;gt;')).toBe('&lt;b&gt;');
+    expect(decodeEntities('&amp;lt;')).toBe('&lt;');
+  });
+
+  it('обычные формы раскрываются', () => {
+    expect(decodeEntities('&laquo;&#1055;&#x440;&#x438;&#x432;&#x435;&#x442;&raquo;')).toBe('«Привет»');
+  });
+
+  it('мусорный номер остаётся текстом, а не роняет разбор', () => {
+    expect(decodeEntities('&#9999999999;')).toBe('&#9999999999;');
   });
 });

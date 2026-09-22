@@ -1,6 +1,13 @@
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
 import { transition } from '../dialog/machine.ts';
-import type { DialogEvent, Effect, FlowPayload, FlowState, StateName } from '../dialog/types.ts';
+import type {
+  DecisionEffectKind,
+  DialogEvent,
+  Effect,
+  FlowPayload,
+  FlowState,
+  StateName,
+} from '../dialog/types.ts';
 import { STATES } from '../dialog/types.ts';
 import type { Logger } from '../logger.ts';
 import type { Store } from '../store/index.ts';
@@ -110,7 +117,7 @@ export function createEngine(deps: EngineDeps): Engine {
           deps.logger.warn({ postId: effect.postId, kind: effect.kind }, 'решение по несуществующему посту');
           return undefined;
         }
-        recordDecision(effect.postId, effect.kind as DecisionKind, effect.textSha, effect.payload);
+        recordDecision(effect.postId, effect.kind, effect.textSha, effect.payload);
         return undefined;
       }
       case 'schedule_publish':
@@ -132,7 +139,8 @@ export function createEngine(deps: EngineDeps): Engine {
    */
   function recordDecision(
     postId: string,
-    kind: DecisionKind,
+    // Список автомата — подмножество журнала: несоответствие ловит компилятор.
+    kind: DecisionEffectKind & DecisionKind,
     textSha?: string,
     payload?: unknown,
   ): void {

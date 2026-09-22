@@ -155,6 +155,9 @@ async function request(
     const isRedirect = response.status >= 300 && response.status < 400;
     if (!isRedirect) return { response, url: checked.url.toString() };
 
+    // Тело редиректа не нужно, но и висеть оно не должно: неотменённый поток
+    // держит сокет до сборки мусора.
+    await response.body?.cancel().catch(() => undefined);
     const location = response.headers.get('location');
     if (location === null || location === '') {
       return { ok: false, reason: 'http_error', message: `редирект ${response.status} без Location`, status: response.status };

@@ -173,10 +173,23 @@ export type Effect =
   | {
       readonly type: 'decision';
       readonly postId: string;
-      readonly kind: string;
+      readonly kind: DecisionEffectKind;
       readonly textSha?: string;
       readonly payload?: unknown;
     };
+
+/**
+ * Решения, которые пишет АВТОМАТ. Закрытый список, а не `string`: иначе
+ * исполнитель приводит присланное к типу журнала вслепую, и опечатка в
+ * названии доезжает до базы.
+ */
+export type DecisionEffectKind =
+  | 'rubric'
+  | 'angle'
+  | 'approve'
+  | 'cancel'
+  | 'reject'
+  | 'threads_posted';
 
 export interface TransitionContext {
   readonly now: string;

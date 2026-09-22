@@ -50,12 +50,27 @@ const ENTITIES: Record<string, string> = {
   lsquo: '‘',
 };
 
-/** Раскрывает сущности HTML. Числовые тоже: в русских текстах их много. */
+/**
+ * Раскрывает сущности HTML. Числовые тоже: в русских текстах их много.
+ *
+ * ⚠️ ОДИН проход по всем формам. Три прохода подряд раскрывали уже
+ * раскрытое: `&#38;lt;` (то есть буквальный текст «&lt;») превращался
+ * сначала в `&lt;`, а потом в `<` — страница получала разметку там, где
+ * автор написал её словами.
+ */
 export function decodeEntities(text: string): string {
-  return text
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
-    .replace(/&([a-z]+);/gi, (whole, name: string) => ENTITIES[name.toLowerCase()] ?? whole);
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+    const lower = body.toLowerCase();
+    if (lower.startsWith('#')) {
+      const code = lower.startsWith('#x')
+        ? Number.parseInt(lower.slice(2), 16)
+        : Number(lower.slice(1));
+      // Мусорный номер оставляем как есть: выдумывать символ не за что.
+      if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return whole;
+      return String.fromCodePoint(code);
+    }
+    return ENTITIES[lower] ?? whole;
+  });
 }
 
 /** Текст без тегов, с сохранением границ абзацев. */

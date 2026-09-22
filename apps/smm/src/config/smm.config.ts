@@ -564,6 +564,11 @@ export const smmConfig: SmmConfig = {
   },
 };
 
+/** Раскладка ли это. Значение приходит из БД строкой, и мусор там возможен. */
+export function isLayoutKey(value: unknown): value is LayoutKey {
+  return typeof value === 'string' && (LAYOUT_KEYS as readonly string[]).includes(value);
+}
+
 export function layoutFor(rubric: RubricKey): Layout {
   return smmConfig.layouts[smmConfig.rubrics[rubric].layout];
 }

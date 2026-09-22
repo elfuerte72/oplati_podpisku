@@ -1,4 +1,4 @@
-import { layoutFor, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
+import { isLayoutKey, layoutFor, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import type { DialogEvent, PipelineStep } from '../dialog/types.ts';
 import { formatJudge, type JudgeVerdict } from '../llm/judge.ts';
 import { formatLint } from '../lint/report.ts';
@@ -70,7 +70,10 @@ function historyOf(store: Store, platform: 'telegram' | 'threads'): HistoryPost[
 
 function renderableOf(post: Post): RenderablePost {
   return {
-    layout: post.layout ?? layoutFor(post.rubric ?? 'news').key,
+    // Раскладка приходит из БД строкой: мусор там даёт `TypeError` внутри
+    // отправки вместо честного отказа, поэтому неизвестное значение
+    // заменяется раскладкой рубрики.
+    layout: isLayoutKey(post.layout) ? post.layout : layoutFor(post.rubric ?? 'news').key,
     body: post.body ?? '',
     ...(post.sourceUrl === undefined ? {} : { sourceUrl: post.sourceUrl }),
     ...(post.imagePath === undefined ? {} : { imagePath: post.imagePath }),
@@ -84,7 +87,7 @@ function reviewContextOf(post: Post, store: Store, dossier?: Dossier): ReviewCon
   return {
     platform: post.platform,
     rubric,
-    layout: post.layout ?? layoutFor(rubric).key,
+    layout: isLayoutKey(post.layout) ? post.layout : layoutFor(rubric).key,
     cta: post.cta,
     hasImage: post.imagePath !== undefined,
     postId: post.id,
