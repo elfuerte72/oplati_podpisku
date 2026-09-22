@@ -1,4 +1,8 @@
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { isPrivateAddress, isPrivateHostname } from './address.ts';
 
 /**
  * HTTP наружу. Единственное место в боте, где живёт голый `fetch` (канарейка
@@ -18,6 +22,7 @@ import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
 export type HttpFailure =
   | 'bad_url'
   | 'bad_protocol'
+  | 'private_address'
   | 'too_many_redirects'
   | 'timeout'
   | 'transport'
@@ -60,6 +65,18 @@ export interface HttpOptions {
   readonly accept?: string;
   readonly fetcher?: Fetcher;
   readonly config?: SmmConfig;
+  /**
+   * Во что резолвится имя хоста. Подменяется в тестах; в проде — системный
+   * DNS. Проверка идёт на КАЖДОМ шаге редиректа, а не только на первом.
+   */
+  readonly resolver?: Resolver;
+}
+
+export type Resolver = (hostname: string) => Promise<readonly string[]>;
+
+async function systemResolver(hostname: string): Promise<readonly string[]> {
+  const found = await lookup(hostname, { all: true });
+  return found.map((entry) => entry.address);
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -84,7 +101,33 @@ function checkUrl(raw: string): { ok: true; url: URL } | HttpError {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { ok: false, reason: 'bad_protocol', message: `схема ${url.protocol} не поддерживается` };
   }
+  if (isPrivateHostname(url.hostname)) {
+    return { ok: false, reason: 'private_address', message: `внутренний адрес ${url.hostname}` };
+  }
   return { ok: true, url };
+}
+
+/**
+ * Куда на самом деле ведёт имя. Сбой резолва — НЕ повод пустить запрос:
+ * непроверенный адрес и есть то, от чего защищаемся.
+ */
+async function checkResolves(url: URL, resolve: Resolver): Promise<HttpError | undefined> {
+  if (isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0) return undefined;
+  let addresses: readonly string[];
+  try {
+    addresses = await resolve(url.hostname);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'transport',
+      message: `имя ${url.hostname} не резолвится: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const inside = addresses.find((address) => isPrivateAddress(address));
+  if (inside !== undefined) {
+    return { ok: false, reason: 'private_address', message: `${url.hostname} ведёт на внутренний ${inside}` };
+  }
+  return undefined;
 }
 
 interface RawResponse {
@@ -99,12 +142,14 @@ interface RawResponse {
 async function request(
   raw: string,
   init: RequestInit,
-  options: { maxRedirects: number; fetcher: Fetcher },
+  options: { maxRedirects: number; fetcher: Fetcher; resolver: Resolver },
 ): Promise<RawResponse | HttpError> {
   let current = raw;
   for (let hop = 0; hop <= options.maxRedirects; hop += 1) {
     const checked = checkUrl(current);
     if (!('url' in checked)) return checked;
+    const resolved = await checkResolves(checked.url, options.resolver);
+    if (resolved !== undefined) return resolved;
 
     const response = await options.fetcher(checked.url.toString(), { ...init, redirect: 'manual' });
     const isRedirect = response.status >= 300 && response.status < 400;
@@ -209,7 +254,11 @@ async function fetchBytes(
           accept: options.accept ?? 'text/html,application/xhtml+xml,*/*',
         },
       },
-      { maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS, fetcher },
+      {
+        maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
+        fetcher,
+        resolver: options.resolver ?? systemResolver,
+      },
     );
     if ('ok' in attempt && attempt.ok === false) return attempt;
 
@@ -248,11 +297,40 @@ async function fetchBytes(
   }
 }
 
+/**
+ * Кодировка ответа: заголовок, потом `<meta charset>` из начала тела.
+ * Русских сайтов в windows-1251 всё ещё много, а `utf-8` жёстко превращал их
+ * текст в вопросительные знаки — и этот мусор уезжал в досье и оплачивался
+ * вызовом модели.
+ */
+function charsetOf(contentType: string, bytes: Uint8Array): string {
+  const declared = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1];
+  if (declared !== undefined) return declared.toLowerCase();
+  // Заголовок молчит — смотрим начало документа: по спецификации объявление
+  // обязано уместиться в первый килобайт.
+  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 2048));
+  const meta =
+    /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(head)?.[1] ??
+    /<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([\w-]+)/i.exec(head)?.[1];
+  return (meta ?? 'utf-8').toLowerCase();
+}
+
+function decodeBody(bytes: Uint8Array, contentType: string): string {
+  const charset = charsetOf(contentType, bytes);
+  try {
+    return new TextDecoder(charset, { fatal: false }).decode(bytes);
+  } catch {
+    // Незнакомая кодировка — не повод терять страницу целиком: читаем как
+    // utf-8 и отдаём дальше, решение о годности принимает разбор статьи.
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  }
+}
+
 /** Текст страницы. Тело длиннее лимита обрезается, а не роняет запрос. */
 export async function fetchText(url: string, options: HttpOptions = {}): Promise<HttpTextResult | HttpError> {
   const result = await fetchBytes(url, options);
   if (!result.ok) return result;
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(result.bytes);
+  const text = decodeBody(result.bytes, result.contentType);
   return {
     ok: true,
     url: result.url,

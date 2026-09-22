@@ -1,5 +1,5 @@
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
-import { fetchJson, type Fetcher } from './http.ts';
+import { fetchJson, type Fetcher, type Resolver } from './http.ts';
 
 /**
  * Поиск первоисточника по теме. Нужен там, где владелец дал не ссылку, а слова:
@@ -44,6 +44,8 @@ export interface SearchOptions {
   readonly timeRange?: 'day' | 'week' | 'month';
   readonly maxResults?: number;
   readonly fetcher?: Fetcher;
+  /** Резолвер имени хоста: подменяется в тестах, в проде — системный DNS. */
+  readonly resolver?: Resolver;
   readonly config?: SmmConfig;
 }
 
@@ -74,6 +76,7 @@ async function searchOnce(
       search_depth: 'basic',
     },
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
+    ...(options.resolver === undefined ? {} : { resolver: options.resolver }),
     ...(options.config === undefined ? {} : { config: options.config }),
   });
   if (!response.ok) return { ok: false, message: response.message };

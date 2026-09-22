@@ -1,4 +1,4 @@
-export { advise } from './advise.ts';
+export { advise, advisePlan, type PlanAdvice } from './advise.ts';
 export {
   dossierInput,
   judgeInput,

@@ -1,6 +1,6 @@
 import type { SmmConfig } from '../config/smm.config.ts';
 import { fetchArticle, isTelegramUrl, type Article, type FetchArticleOptions } from './article.ts';
-import type { Fetcher } from './http.ts';
+import type { Fetcher, Resolver } from './http.ts';
 import { searchNews, type SearchCandidate, type SearchOptions } from './tavily.ts';
 
 /**
@@ -42,6 +42,8 @@ export interface ResolveOptions extends FetchArticleOptions {
   readonly tavilyApiKey?: string;
   readonly searchOptions?: Omit<SearchOptions, 'apiKey' | 'fetcher' | 'config'>;
   readonly fetcher?: Fetcher;
+  /** Резолвер имени хоста: подменяется в тестах, в проде — системный DNS. */
+  readonly resolver?: Resolver;
   readonly config?: SmmConfig;
 }
 
@@ -80,6 +82,7 @@ export async function resolveSource(
     ...options.searchOptions,
     ...(options.tavilyApiKey === undefined ? {} : { apiKey: options.tavilyApiKey }),
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
+    ...(options.resolver === undefined ? {} : { resolver: options.resolver }),
     ...(options.config === undefined ? {} : { config: options.config }),
   });
   if (!search.ok) return { kind: 'failed', reason: search.reason, message: search.message };

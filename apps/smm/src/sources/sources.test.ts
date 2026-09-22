@@ -1,11 +1,10 @@
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
-  createArticleCache,
   fetchArticle,
   fetchText,
   looksLikeLogo,
@@ -27,6 +26,12 @@ import {
   SMALL_COVER_HTML,
   TWITTER_COVER_HTML,
 } from './fixtures.ts';
+
+/**
+ * DNS в тестах свой: живой резолв сделал бы прогон зависимым от сети и от
+ * того, существует ли домен фикстуры на самом деле.
+ */
+const publicDns = (): Promise<readonly string[]> => Promise.resolve(['93.184.216.34']);
 
 /** Ответ-фикстура: тело отдаётся потоком, как у настоящего fetch. */
 function html(body: string, init: { status?: number; contentType?: string; url?: string } = {}): Response {
@@ -50,7 +55,7 @@ function fetcherFor(pages: Record<string, Response | (() => Response)>): { fetch
 describe('fetchText', () => {
   it('отдаёт текст страницы и конечный адрес', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/post': html('<p>привет</p>') });
-    const result = await fetchText('https://example.com/post', { fetcher });
+    const result = await fetchText('https://example.com/post', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.text).toContain('привет');
@@ -61,7 +66,7 @@ describe('fetchText', () => {
   it('тело больше лимита обрезается, а не роняет запрос', async () => {
     const big = 'а'.repeat(50_000);
     const { fetcher } = fetcherFor({ 'https://example.com/big': html(big) });
-    const result = await fetchText('https://example.com/big', { fetcher, maxBytes: 1024 });
+    const result = await fetchText('https://example.com/big', { fetcher, resolver: publicDns, maxBytes: 1024 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.truncated).toBe(true);
@@ -73,7 +78,7 @@ describe('fetchText', () => {
       'https://example.com/a': new Response(null, { status: 302, headers: { location: '/b' } }),
       'https://example.com/b': html('<p>цель</p>'),
     });
-    const result = await fetchText('https://example.com/a', { fetcher });
+    const result = await fetchText('https://example.com/a', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.url).toBe('https://example.com/b');
     expect(calls).toEqual(['https://example.com/a', 'https://example.com/b']);
@@ -82,26 +87,26 @@ describe('fetchText', () => {
   it('петля редиректов обрывается', async () => {
     const loop: Fetcher = () =>
       Promise.resolve(new Response(null, { status: 302, headers: { location: '/next' } }));
-    const result = await fetchText('https://example.com/start', { fetcher: loop, maxRedirects: 3 });
+    const result = await fetchText('https://example.com/start', { resolver: publicDns, fetcher: loop, maxRedirects: 3 });
     expect(result).toMatchObject({ ok: false, reason: 'too_many_redirects' });
   });
 
   it('не http-схема отвергается до запроса', async () => {
     const { fetcher, calls } = fetcherFor({});
-    const result = await fetchText('file:///etc/passwd', { fetcher });
+    const result = await fetchText('file:///etc/passwd', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'bad_protocol' });
     expect(calls).toEqual([]);
   });
 
   it('ошибка HTTP приходит Result-ом с кодом', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/404': html('нет', { status: 404 }) });
-    const result = await fetchText('https://example.com/404', { fetcher });
+    const result = await fetchText('https://example.com/404', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'http_error', status: 404 });
   });
 
   it('сетевая ошибка не бросает наружу', async () => {
     const broken: Fetcher = () => Promise.reject(new TypeError('fetch failed'));
-    const result = await fetchText('https://example.com/x', { fetcher: broken });
+    const result = await fetchText('https://example.com/x', { resolver: publicDns, fetcher: broken });
     expect(result).toMatchObject({ ok: false, reason: 'transport' });
   });
 
@@ -122,7 +127,7 @@ describe('fetchText', () => {
         new Response(slowBody, { status: 200, headers: { 'content-type': 'text/html' } }),
       );
     const started = Date.now();
-    const result = await fetchText('https://example.com/slow', { fetcher: slow, timeoutMs: 120 });
+    const result = await fetchText('https://example.com/slow', { resolver: publicDns, fetcher: slow, timeoutMs: 120 });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(['timeout', 'transport']).toContain(result.reason);
@@ -133,7 +138,7 @@ describe('fetchText', () => {
 describe('fetchArticle', () => {
   it('берёт заголовок, текст, обложку, сайт и дату', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/post': html(ARTICLE_HTML) });
-    const result = await fetchArticle('https://example.com/post', { fetcher });
+    const result = await fetchArticle('https://example.com/post', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const { article } = result;
@@ -146,7 +151,7 @@ describe('fetchArticle', () => {
 
   it('меню, подвал и скрипты в текст не попадают', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/post': html(ARTICLE_HTML) });
-    const result = await fetchArticle('https://example.com/post', { fetcher });
+    const result = await fetchArticle('https://example.com/post', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.article.text).not.toContain('Все права защищены');
@@ -158,7 +163,7 @@ describe('fetchArticle', () => {
 
   it('логотип обложкой не берётся', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/post': html(LOGO_COVER_HTML) });
-    const result = await fetchArticle('https://example.com/post', { fetcher });
+    const result = await fetchArticle('https://example.com/post', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.article.ogImage).toBeUndefined();
     expect(looksLikeLogo('https://cdn.example.com/static/logo-512.png')).toBe(true);
@@ -177,27 +182,27 @@ describe('fetchArticle', () => {
 
   it('страница Telegram отвергается без запроса', async () => {
     const { fetcher, calls } = fetcherFor({});
-    const result = await fetchArticle('https://t.me/durov/123', { fetcher });
+    const result = await fetchArticle('https://t.me/durov/123', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'telegram_post_not_source' });
     expect(calls).toEqual([]);
   });
 
   it('пейволл — это не статья', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/pay': html(PAYWALL_HTML) });
-    const result = await fetchArticle('https://example.com/pay', { fetcher });
+    const result = await fetchArticle('https://example.com/pay', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'empty_article' });
   });
 
   it('разметка без абзацев тоже читается', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/div': html(DIV_ONLY_HTML) });
-    const result = await fetchArticle('https://example.com/div', { fetcher });
+    const result = await fetchArticle('https://example.com/div', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.article.text).toContain('Google открыла память');
   });
 
   it('сущности HTML раскрываются', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/ent': html(ENTITIES_HTML) });
-    const result = await fetchArticle('https://example.com/ent', { fetcher });
+    const result = await fetchArticle('https://example.com/ent', { fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.article.text).toContain('«Gemini»');
@@ -212,7 +217,7 @@ describe('saveImage', () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const fetcher: Fetcher = () =>
       Promise.resolve(new Response(bytes, { status: 200, headers: { 'content-type': 'image/png' } }));
-    const result = await saveImage('https://cdn.example.com/cover', { dir, name: 'post-1', fetcher });
+    const result = await saveImage('https://cdn.example.com/cover', { dir, name: 'post-1', fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.path.endsWith('post-1.png')).toBe(true);
@@ -223,7 +228,7 @@ describe('saveImage', () => {
     const dir = mkdtempSync(join(tmpdir(), 'smm-img-'));
     const fetcher: Fetcher = () =>
       Promise.resolve(new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } }));
-    const result = await saveImage('https://cdn.example.com/page', { dir, name: 'post-2', fetcher });
+    const result = await saveImage('https://cdn.example.com/page', { dir, name: 'post-2', fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'unsupported_type' });
   });
 });
@@ -257,7 +262,7 @@ describe('searchNews', () => {
           : answer(['https://common.example.com/x', 'https://en.example.org/b']),
       );
     };
-    const result = await searchNews('память gemini', { apiKey: 'tvly-test', fetcher });
+    const result = await searchNews('память gemini', { apiKey: 'tvly-test', fetcher, resolver: publicDns });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.candidates.map((c) => c.url)).toEqual([
@@ -272,13 +277,13 @@ describe('searchNews', () => {
   it('пустая выдача — это «не нашлось», а не ошибка провайдера', async () => {
     const fetcher: Fetcher = () =>
       Promise.resolve(new Response(JSON.stringify({ results: [] }), { status: 200 }));
-    const result = await searchNews('тема', { apiKey: 'tvly-test', fetcher });
+    const result = await searchNews('тема', { apiKey: 'tvly-test', fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'empty' });
   });
 
   it('отказ провайдера на обоих языках — ошибка провайдера', async () => {
     const fetcher: Fetcher = () => Promise.resolve(new Response('нет доступа', { status: 401 }));
-    const result = await searchNews('тема', { apiKey: 'tvly-test', fetcher });
+    const result = await searchNews('тема', { apiKey: 'tvly-test', fetcher, resolver: publicDns });
     expect(result).toMatchObject({ ok: false, reason: 'provider_error' });
   });
 
@@ -288,7 +293,7 @@ describe('searchNews', () => {
       bodies.push(JSON.parse(String(init.body)));
       return Promise.resolve(answer(['https://example.com/a']));
     };
-    await searchNews('тема', { apiKey: 'tvly-test', fetcher, languages: ['ru'] });
+    await searchNews('тема', { apiKey: 'tvly-test', fetcher, resolver: publicDns, languages: ['ru'] });
     expect(bodies[0]).toMatchObject({ topic: 'news', time_range: 'week', language: 'ru' });
   });
 });
@@ -296,7 +301,7 @@ describe('searchNews', () => {
 describe('resolveSource', () => {
   it('ссылка распознаётся и читается', async () => {
     const { fetcher } = fetcherFor({ 'https://example.com/post': html(ARTICLE_HTML) });
-    const result = await resolveSource('https://example.com/post', { fetcher });
+    const result = await resolveSource('https://example.com/post', { fetcher, resolver: publicDns });
     expect(result.kind).toBe('url');
   });
 
@@ -309,14 +314,14 @@ describe('resolveSource', () => {
 
   it('бренд Оплатишки в брифе — отказ БЕЗ обращений к сети и модели', async () => {
     const { fetcher, calls } = fetcherFor({});
-    const result = await resolveSource('напиши про новую кнопку в Оплатишке', { fetcher });
+    const result = await resolveSource('напиши про новую кнопку в Оплатишке', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ kind: 'refused', reason: 'product_is_human' });
     expect(calls).toEqual([]);
   });
 
   it('ссылка на Telegram — отказ с причиной', async () => {
     const { fetcher } = fetcherFor({});
-    const result = await resolveSource('https://t.me/s/durov/123', { fetcher });
+    const result = await resolveSource('https://t.me/s/durov/123', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ kind: 'refused', reason: 'telegram_post_not_source' });
   });
 
@@ -327,7 +332,7 @@ describe('resolveSource', () => {
           status: 200,
         }),
       );
-    const result = await resolveSource('память gemini для всех', { fetcher, tavilyApiKey: 'tvly-test' });
+    const result = await resolveSource('память gemini для всех', { fetcher, resolver: publicDns, tavilyApiKey: 'tvly-test' });
     expect(result.kind).toBe('topic');
   });
 
@@ -339,46 +344,105 @@ describe('resolveSource', () => {
   it('непрочитанная статья — failed с причиной, а не отказ', async () => {
     // Владелец обязан различать «это не тема канала» и «страница не открылась».
     const { fetcher } = fetcherFor({ 'https://example.com/404': html('нет', { status: 404 }) });
-    const result = await resolveSource('https://example.com/404', { fetcher });
+    const result = await resolveSource('https://example.com/404', { fetcher, resolver: publicDns });
     expect(result).toMatchObject({ kind: 'failed', reason: 'http_error' });
   });
 });
 
-describe('кэш статей', () => {
-  it('отдаёт статью в пределах срока и забывает после', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'smm-cache-'));
-    let current = Date.parse('2026-09-22T10:00:00.000Z');
-    const cache = createArticleCache({
-      dir,
-      ttlMs: 12 * 60 * 60 * 1000,
-      now: () => new Date(current),
-    });
-    const article = {
-      url: 'https://example.com/post',
-      title: 'Заголовок',
-      text: 'Текст статьи',
-      truncated: false,
+describe('внутренние адреса', () => {
+  it('прямая ссылка на служебный адрес не запрашивается вовсе', async () => {
+    const visited: string[] = [];
+    const spy: Fetcher = (url) => {
+      visited.push(url);
+      return Promise.resolve(new Response('секрет', { status: 200 }));
     };
-    expect(cache.get(article.url)).toBeUndefined();
-    cache.set(article.url, article);
-    expect(cache.get(article.url)).toEqual(article);
-
-    current += 11 * 60 * 60 * 1000;
-    expect(cache.get(article.url)).toEqual(article);
-    current += 2 * 60 * 60 * 1000;
-    expect(cache.get(article.url)).toBeUndefined();
+    for (const url of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://127.0.0.1:3000/api/panel/events',
+      'http://[::1]:8080/',
+      'http://localhost/admin',
+    ]) {
+      const result = await fetchText(url, { resolver: publicDns, fetcher: spy });
+      expect(result).toMatchObject({ ok: false, reason: 'private_address' });
+    }
+    expect(visited).toEqual([]);
   });
 
-  it('негодный файл кэша сообщается, а не выдаётся за статью', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'smm-cache-'));
-    const reasons: string[] = [];
-    const cache = createArticleCache({ dir, ttlMs: 1000, onBroken: (r) => reasons.push(r) });
-    const article = { url: 'https://example.com/a', title: 'т', text: 'т', truncated: false };
-    cache.set(article.url, article);
-    // Портим файл руками: так выглядит оборванная запись при выключении.
-    const [file] = readdirSync(dir);
-    writeFileSync(join(dir, String(file)), '{не json', 'utf8');
-    expect(cache.get(article.url)).toBeUndefined();
-    expect(reasons).toHaveLength(1);
+  it('редирект внутрь тоже отсекается: страницу выбирает не владелец', async () => {
+    const visited: string[] = [];
+    const spy: Fetcher = (url) => {
+      visited.push(url);
+      if (url.startsWith('https://news.example')) {
+        return Promise.resolve(
+          new Response('', { status: 302, headers: { location: 'http://127.0.0.1:9999/secret' } }),
+        );
+      }
+      return Promise.resolve(new Response('секрет', { status: 200 }));
+    };
+    const result = await fetchText('https://news.example/post', {
+      fetcher: spy,
+      resolver: () => Promise.resolve(['93.184.216.34']),
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'private_address' });
+    expect(visited).toEqual(['https://news.example/post']);
+  });
+
+  it('имя, ведущее внутрь, отсекается по ответу DNS', async () => {
+    const spy: Fetcher = () => Promise.resolve(new Response('ок', { status: 200 }));
+    const result = await fetchText('https://rebind.example/page', {
+      fetcher: spy,
+      resolver: () => Promise.resolve(['10.0.0.5']),
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'private_address' });
+  });
+
+  it('несработавший DNS запрос не пропускает', async () => {
+    const result = await fetchText('https://unknown.example/page', {
+      fetcher: () => Promise.resolve(new Response('ок', { status: 200 })),
+      resolver: () => Promise.reject(new Error('ENOTFOUND')),
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'transport' });
+  });
+});
+
+describe('кодировка страницы', () => {
+  it('windows-1251 читается по charset из заголовка, а не мусором', async () => {
+    const bytes = Buffer.from('<p>\xcf\xf0\xe8\xe2\xe5\xf2</p>', 'binary');
+    const fetcher: Fetcher = () =>
+      Promise.resolve(
+        new Response(bytes, {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=windows-1251' },
+        }),
+      );
+    const result = await fetchText('https://news.example/post', { fetcher, resolver: publicDns });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain('Привет');
+  });
+
+  it('charset из <meta> тоже учитывается: заголовок его не назвал', async () => {
+    const head = '<html><head><meta charset="windows-1251"></head><body><p>';
+    const bytes = Buffer.concat([
+      Buffer.from(head, 'latin1'),
+      Buffer.from('\xcf\xf0\xe8\xe2\xe5\xf2', 'binary'),
+      Buffer.from('</p></body></html>', 'latin1'),
+    ]);
+    const fetcher: Fetcher = () =>
+      Promise.resolve(new Response(bytes, { status: 200, headers: { 'content-type': 'text/html' } }));
+    const result = await fetchText('https://news.example/post', { fetcher, resolver: publicDns });
+    expect(result.ok && result.text).toContain('Привет');
+  });
+
+  it('незнакомая кодировка не роняет запрос', async () => {
+    const fetcher: Fetcher = () =>
+      Promise.resolve(
+        new Response('<p>ок</p>', {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=x-unknown-42' },
+        }),
+      );
+    const result = await fetchText('https://news.example/post', { fetcher, resolver: publicDns });
+    expect(result.ok).toBe(true);
   });
 });

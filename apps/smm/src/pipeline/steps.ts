@@ -61,7 +61,13 @@ export async function buildDossier(
 }
 
 export async function plan(
-  input: { dossier: Dossier; advice?: Advice; seenAngles?: readonly string[]; postId?: string },
+  input: {
+    dossier: Dossier;
+    /** Совет плану: дефицит рубрик и «не повторять». */
+    advice?: { readonly text: string };
+    seenAngles?: readonly string[];
+    postId?: string;
+  },
   deps: PipelineDeps,
 ): Promise<StepResult<Plan>> {
   const ctx: StepLogContext = {

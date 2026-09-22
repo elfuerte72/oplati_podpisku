@@ -17,5 +17,4 @@ export {
   type ResolvedSource,
   type ResolveOptions,
 } from './resolve.ts';
-export { createArticleCache, type ArticleCache } from './cache.ts';
 export { decodeEntities, mainText, metaContent, stripNoise, toText } from './html.ts';

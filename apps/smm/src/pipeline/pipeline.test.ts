@@ -4,7 +4,7 @@ import { smmConfig } from '../config/smm.config.ts';
 import { createLogger } from '../logger.ts';
 import type { Model, ModelResult } from '../llm/model.ts';
 import type { ModelRole } from '../config/smm.config.ts';
-import { advise, buildDossier, plan, producePost, review, revisePost, trimArticle } from './index.ts';
+import { advise, advisePlan, buildDossier, plan, producePost, review, revisePost, trimArticle } from './index.ts';
 import {
   DOSSIER,
   DRAFT_WITH_LINT_ERROR,
@@ -15,7 +15,7 @@ import {
   PLAN_ANSWER,
   PLAN_NOTHING_CHANGES,
 } from './fixtures.ts';
-import type { Brief, PipelineDeps, ReviewContext } from './types.ts';
+import type { Brief, HistoryPost, PipelineDeps, ReviewContext } from './types.ts';
 
 /** Модель-фикстура: ответы задаёт тест по ролям, вызовы записываются. */
 function fakeModel(
@@ -378,5 +378,25 @@ describe('правки', () => {
     if (!result.ok) return;
     expect(result.value.body).toBe(mine);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('совет плану', () => {
+  it('на пустой истории молчит: советовать нечего', () => {
+    expect(advisePlan({ history: [] })).toBeUndefined();
+  });
+
+  it('называет рубрики в дефиците и что не повторять', () => {
+    const history: HistoryPost[] = Array.from({ length: 8 }, (_, index) => ({
+      id: `p${index}`,
+      cta: 'none',
+      rubric: 'news',
+      body: '# Google раздала память Gemini\n\nтело поста про память',
+    }));
+    const advice = advisePlan({ history });
+    expect(advice?.text).toContain('В дефиците');
+    // Рубрика «Как этим пользоваться» в плане есть, а в истории её нет.
+    expect(advice?.rubricDeficit.join(' ')).toContain('Как этим пользоваться');
+    expect(advice?.doNotRepeat.length).toBeGreaterThan(0);
   });
 });

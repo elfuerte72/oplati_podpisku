@@ -146,3 +146,32 @@ export function advise(input: AdviseInput): Advice {
 
   return { cta, ctaReasons: reasons, rubricDeficit: deficit, doNotRepeat, text: lines.join('\n') };
 }
+
+/**
+ * Совет ПЛАНУ: какие рубрики в дефиците и что не повторять.
+ *
+ * Отдельно от `advise`, потому что тому нужна рубрика — а план как раз её и
+ * предлагает. Считается теми же функциями: второй формулы дефицита нет.
+ */
+export interface PlanAdvice {
+  readonly rubricDeficit: readonly string[];
+  readonly doNotRepeat: readonly string[];
+  readonly text: string;
+}
+
+export function advisePlan(input: {
+  history?: readonly HistoryPost[];
+  config?: SmmConfig;
+}): PlanAdvice | undefined {
+  const config = input.config ?? smmConfig;
+  const history = input.history ?? [];
+  if (history.length === 0) return undefined;
+  const deficit = rubricDeficit(history.slice(0, CTA_WINDOW), config);
+  const doNotRepeat = freshnessNotes(history, config);
+  if (deficit.length === 0 && doNotRepeat.length === 0) return undefined;
+
+  const lines: string[] = [];
+  if (deficit.length > 0) lines.push(`В дефиците: ${deficit.join('; ')}.`);
+  for (const note of doNotRepeat) lines.push(`Не повторять: ${note}.`);
+  return { rubricDeficit: deficit, doNotRepeat, text: lines.join('\n') };
+}

@@ -50,7 +50,7 @@ function rubricList(config: SmmConfig): string {
 
 export function planInput(input: {
   dossier: Dossier;
-  advice?: Advice;
+  advice?: { readonly text: string };
   config?: SmmConfig;
   /** Углы, которые владелец уже видел: «Другие углы» не должны их повторить. */
   seenAngles?: readonly string[];

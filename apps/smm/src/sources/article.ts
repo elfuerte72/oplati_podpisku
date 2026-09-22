@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
 import { documentTitle, linkHref, mainText, metaContent } from './html.ts';
-import { fetchImage, fetchText, type Fetcher, type HttpError } from './http.ts';
+import { fetchImage, fetchText, type Fetcher, type HttpError, type Resolver } from './http.ts';
 
 /**
  * Статья-первоисточник: заголовок, текст, обложка. По этому досье потом пишется
@@ -102,6 +102,8 @@ function pickPublishedAt(html: string): string | undefined {
 
 export interface FetchArticleOptions {
   readonly fetcher?: Fetcher;
+  /** Резолвер имени хоста: подменяется в тестах, в проде — системный DNS. */
+  readonly resolver?: Resolver;
   readonly config?: SmmConfig;
   readonly timeoutMs?: number;
 }
@@ -120,6 +122,7 @@ export async function fetchArticle(
 
   const page = await fetchText(url, {
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
+    ...(options.resolver === undefined ? {} : { resolver: options.resolver }),
     ...(options.config === undefined ? {} : { config: options.config }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
@@ -175,6 +178,7 @@ export async function saveImage(
   const config = options.config ?? smmConfig;
   const result = await fetchImage(url, {
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
+    ...(options.resolver === undefined ? {} : { resolver: options.resolver }),
     config,
     maxBytes: config.http.imageMaxBytes,
   });

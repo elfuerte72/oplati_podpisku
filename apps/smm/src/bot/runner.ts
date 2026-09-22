@@ -3,7 +3,7 @@ import type { DialogEvent, PipelineStep } from '../dialog/types.ts';
 import { formatJudge, type JudgeVerdict } from '../llm/judge.ts';
 import { formatLint } from '../lint/report.ts';
 import type { Logger } from '../logger.ts';
-import { buildDossier, plan, producePost, revisePost, type PipelineDeps } from '../pipeline/index.ts';
+import { advisePlan, buildDossier, plan, producePost, revisePost, type PipelineDeps } from '../pipeline/index.ts';
 import { produceThreadsPost } from '../pipeline/threads.ts';
 import { threadsHandoff, type HandoffMessage } from '../threads/handoff.ts';
 import type { HistoryPost, ReviewContext } from '../pipeline/types.ts';
@@ -211,8 +211,16 @@ export function createRunner(deps: RunnerDeps): Runner {
     }
     if (dossier === undefined) return failed('plan', 'no_dossier', 'досье не собрано', at(), postId);
 
+    // Совет плану считается ЗДЕСЬ: у шага нет доступа к истории площадки, а
+    // без него рубрику модель выбирает вслепую и канал перекашивает.
+    const planAdvice = advisePlan({ history: historyOf(deps.store, post.platform) });
     const planned = await plan(
-      { dossier, postId, seenAngles: seen, ...(seen.length > 0 ? {} : {}) },
+      {
+        dossier,
+        postId,
+        seenAngles: seen,
+        ...(planAdvice === undefined ? {} : { advice: planAdvice }),
+      },
       deps.pipeline,
     );
     if (!planned.ok) return failed('plan', planned.reason, planned.message, at(), postId);
