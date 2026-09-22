@@ -3,6 +3,10 @@ import {
   AI_PHRASES,
   BOT_RE,
   BRAND_RE,
+  countMatches,
+  EXTREMIST_NOTE_RE,
+  MODEL_VERSION_RE,
+  THREADS_MENTION_RE,
   BRAND_SCOPED_RED_LINES,
   CARD_COUNTRY_WINDOW,
   CARD_RE,
@@ -32,6 +36,7 @@ import {
   sentences,
   shape,
   tables,
+  visibleLength,
   visibleText,
 } from './text.ts';
 import type { Finding, LintContext, LintResult, PreviousPost } from './types.ts';
@@ -71,7 +76,10 @@ function checkHeadline(raw: string, out: Collector): void {
   if (h1.length > 1) {
     out.error('multiple_h1', `заголовков первого уровня ${h1.length}, нужен один`);
   }
+  // Первая строка считается от текста БЕЗ картинок: ведущая `![](...)` иначе
+  // выглядела бы «текстом перед заголовком».
   const firstLine = raw
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .split('\n')
     .map((line) => line.trim())
     .find((line) => line !== '');
@@ -157,7 +165,7 @@ function checkLayout(raw: string, layout: Layout, out: Collector): void {
 }
 
 function checkLength(visible: string, layout: Layout, config: SmmConfig, out: Collector): void {
-  const length = visible.length;
+  const length = visibleLength(visible);
   if (length > config.lint.visibleTextMax) {
     out.error(
       'visible_too_long',
@@ -207,7 +215,7 @@ function checkWall(raw: string, config: SmmConfig, out: Collector): void {
       closeRun();
       continue;
     }
-    const size = block.visible.length;
+    const size = visibleLength(block.visible);
     if (size > config.lint.paragraphMaxChars) {
       out.error(
         'paragraph_long',
@@ -241,47 +249,56 @@ export function checkNumbers(visible: string, config: SmmConfig, out: Collector)
   });
 }
 
+/**
+ * Реклама по уровню.
+ *
+ * ⚠️ Имя бота в теле — ошибка на ЛЮБОМ уровне: ссылку ставит кнопка под постом,
+ * и дублировать её текстом значит просить читателя копировать то, что и так в
+ * один тап. Решение тикета 04; прежний контур, наоборот, ТРЕБОВАЛ хэндл при
+ * `hard`, и пост с кнопкой нёс ссылку дважды.
+ */
 export function checkAds(raw: string, cta: LintContext['cta'], out: Collector): void {
-  const botCount = (raw.match(BOT_RE) ?? []).length;
-  const brandCount = (raw.match(BRAND_RE) ?? []).length;
-  const lines = raw.split('\n').map((line) => line.trim());
-  const lastLine = lines.filter((line) => line !== '').at(-1) ?? '';
+  const botCount = countMatches(BOT_RE, raw);
+  const brandCount = countMatches(BRAND_RE, raw);
+  const lines = raw.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  const lastLine = lines.at(-1) ?? '';
+  const tail = lines.slice(-3).join('\n');
+
+  if (botCount > 0) {
+    out.error('bot_in_body', 'имя бота в тексте: ссылку ставит кнопка под постом, дублировать её не надо');
+  }
 
   if (cta === 'none') {
-    if (botCount > 0 || brandCount > 0) {
+    if (brandCount > 0) {
       out.error(
         'cta_none_has_brand',
-        'уровень рекламы none, а в тексте есть бот или бренд: убери упоминания или смени уровень',
+        'уровень рекламы none, а в тексте есть бренд: убери упоминание или смени уровень',
       );
     }
     return;
   }
   if (cta === 'soft') {
-    if (botCount > 1 || brandCount > 1) {
-      out.error('cta_soft_repeats', 'уровень soft: бренд или бот упомянуты больше одного раза');
+    if (brandCount > 1) {
+      out.error('cta_soft_repeats', 'уровень soft: бренд упомянут больше одного раза');
     }
-    if (BOT_RE.test(lastLine) && lastLine.length < 60) {
+    if (BRAND_RE.test(lastLine) && lastLine.length < 60) {
       out.error(
         'cta_soft_call',
         'уровень soft: последняя строка выглядит отдельным призывом, вплети упоминание в текст',
       );
     }
-    if (botCount === 0 && brandCount === 0) {
-      out.warn('cta_soft_empty', 'уровень soft, но ни бота, ни бренда в тексте нет: это фактически none');
+    if (brandCount === 0) {
+      out.warn('cta_soft_empty', 'уровень soft, но бренда в тексте нет: это фактически none');
     }
     return;
   }
-  // hard
-  if (botCount === 0) {
-    out.error('cta_hard_missing', 'уровень hard: нужен явный призыв в конце со ссылкой на бота');
-  } else {
-    const tail = lines.filter((line) => line !== '').slice(-3).join('\n');
-    if (!BOT_RE.test(tail)) {
-      out.warn('cta_hard_far', 'уровень hard: призыв не в последних трёх строках, читатель его не найдёт');
-    }
-    if (botCount > 1) {
-      out.warn('cta_hard_repeats', 'бот упомянут больше одного раза: один призыв сильнее двух');
-    }
+  // hard: призыв обязан быть, и он в конце. Ссылку несёт кнопка.
+  if (brandCount === 0) {
+    out.error('cta_hard_missing', 'уровень hard: нужен явный призыв в конце, сейчас его нет');
+  } else if (!BRAND_RE.test(tail)) {
+    out.warn('cta_hard_far', 'уровень hard: призыв не в последних трёх строках, читатель его не найдёт');
+  } else if (brandCount > 1) {
+    out.warn('cta_hard_repeats', 'бренд упомянут больше одного раза: один призыв сильнее двух');
   }
 }
 
@@ -348,8 +365,23 @@ export function checkStyleCommon(raw: string, visible: string, out: Collector): 
   }
 }
 
-/** Стиль, свойственный только каналу: маркер выделения и потолок эмодзи на пост. */
+/** Стиль, свойственный только каналу: маркер выделения, эмодзи, пометки закона. */
 function checkChannelStyle(raw: string, visible: string, config: SmmConfig, out: Collector): void {
+  if (THREADS_MENTION_RE.test(visible) && !EXTREMIST_NOTE_RE.test(visible)) {
+    // Ст. 13.15 КоАП: упоминание организации из перечня экстремистских без
+    // пометки. Правило было в прошлом контуре и потерялось при переносе.
+    out.warn(
+      'meta_disclaimer',
+      'упоминание Threads или Meta: нужна пометка, что сеть принадлежит Meta, признанной экстремистской и запрещённой в РФ',
+    );
+  }
+  const version = MODEL_VERSION_RE.exec(visible);
+  if (version !== null) {
+    out.warn(
+      'model_version',
+      `версия модели «${version[0]}»: называй человеческим именем, если сама версия не является новостью`,
+    );
+  }
   if (raw.includes('==')) {
     out.error(
       'marker_highlight',
@@ -363,11 +395,16 @@ function checkChannelStyle(raw: string, visible: string, config: SmmConfig, out:
 }
 
 function checkBlocks(raw: string, config: SmmConfig, out: Collector): void {
-  const present = SPECIAL_BLOCK_PATTERNS.filter((rule) => rule.re.test(raw));
-  if (present.length > config.lint.specialBlocksMax) {
+  // Считаются ШТУКИ, а не виды: две таблицы подряд — тоже два особых блока.
+  const found: string[] = [];
+  for (const rule of SPECIAL_BLOCK_PATTERNS) {
+    const count = rule.code === 'table' ? tables(raw).length : countMatches(rule.re, raw);
+    for (let i = 0; i < count; i += 1) found.push(rule.code);
+  }
+  if (found.length > config.lint.specialBlocksMax) {
     out.error(
       'special_blocks',
-      `особых блоков ${present.length} (${present.map((p) => p.code).join(', ')}), ` +
+      `особых блоков ${found.length} (${[...new Set(found)].join(', ')}), ` +
         `в посте максимум ${config.lint.specialBlocksMax}`,
     );
   }
@@ -397,12 +434,30 @@ function checkBlocks(raw: string, config: SmmConfig, out: Collector): void {
  * Без этой проверки автор воспроизводил образцы скилла и свои же прошлые посты
  * почти дословно — регэксп голоса хвалил ровно эти фразы.
  */
+export interface FreshnessOptions {
+  /**
+   * Как достать зачин. У канала это заголовок `#`, у Threads — первая строка:
+   * заголовков там нет вовсе, и безусловный `headline` молча выключал правило
+   * повтора зачина на всей площадке.
+   */
+  readonly head?: (body: string) => string;
+  /**
+   * Проверять ли повтор ФОРМЫ. У Threads ни подзаголовков, ни списков нет по
+   * правилам площадки, поэтому «четвёртый пост подряд с той же раскладкой»
+   * срабатывал бы на каждом посте.
+   */
+  readonly checkShape?: boolean;
+}
+
 export function checkFreshness(
   raw: string,
   previous: readonly PreviousPost[],
   config: SmmConfig,
   out: Collector,
+  options: FreshnessOptions = {},
 ): void {
+  const head = options.head ?? headline;
+  const checkShape = options.checkShape ?? true;
   if (previous.length === 0) return;
   const visible = visibleText(raw);
   const low = visible.toLowerCase();
@@ -420,19 +475,25 @@ export function checkFreshness(
         out.error('freshness_phrase', `«${phrase}» уже было в ${post.id}: найди другую связку`);
       }
     }
-    const common = [...sentences(visible)].filter((s) => sentences(prevVisible).has(s));
+    const prevSentences = sentences(prevVisible);
+    const common = [...sentences(visible)].filter((sentence) => prevSentences.has(sentence));
     for (const sentence of common.sort().slice(0, 2)) {
+      // Дедуп общий со стоп-фразами: одна и та же претензия из нескольких
+      // постов окна печаталась по разу на пост и распухала в отчёте.
+      const code = `freshness_sentence:${sentence}`;
+      if (seen.has(code)) continue;
+      seen.add(code);
       out.error('freshness_sentence', `фраза дословно из ${post.id}: «${sentence.slice(0, 60)}…»`);
     }
   }
 
-  const head = opener(headline(raw));
-  if (head !== '') {
+  const start = opener(head(raw));
+  if (start !== '') {
     for (const post of previous.slice(0, 10)) {
-      if (opener(headline(post.body)) === head) {
+      if (opener(head(post.body)) === start) {
         out.error(
           'freshness_opener',
-          `заголовок начинается так же, как в ${post.id}: «${head}»`,
+          `${options.head === undefined ? 'заголовок' : 'первая строка'} начинается так же, как в ${post.id}: «${start}»`,
         );
         break;
       }
@@ -450,6 +511,7 @@ export function checkFreshness(
 
   const form = shape(raw);
   if (
+    checkShape &&
     previous.length >= 3 &&
     previous.slice(0, 3).every((post) => {
       const prev = shape(post.body);

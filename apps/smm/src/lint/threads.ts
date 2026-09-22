@@ -30,7 +30,10 @@ import type { LintResult, PreviousPost, ThreadsLintContext } from './types.ts';
 
 /** Части поста: первая — сам пост, остальные — ответы-продолжения. */
 export function threadsPieces(text: string, separator = smmConfig.threads.separator): string[] {
-  const re = new RegExp(`^\\s*${separator}\\s*$`, 'm');
+  // Разделитель экранируется: это настройка конфига, и `***` иначе стал бы
+  // регулярным выражением вместо строки.
+  const escaped = separator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^\\s*${escaped}\\s*$`, 'm');
   return text
     .trim()
     .split(re)
@@ -210,7 +213,12 @@ export function lintThreads(text: string, ctx: ThreadsLintContext): LintResult {
   checkAds(visible, ctx.cta, out);
   checkNumbers(visible, config, out);
   checkRedLines(visible, visible, out);
-  checkFreshness(raw, ctx.previous ?? [], config, out);
+  // Свежесть считается по правилам ПЛОЩАДКИ: зачин у Threads — первая строка,
+  // а правило повтора формы здесь бессмысленно (ни подзаголовков, ни списков).
+  checkFreshness(raw, ctx.previous ?? [], config, out, {
+    head: (body) => threadsHook(body),
+    checkShape: false,
+  });
   checkChannelCopy(visible, ctx.channelPrevious ?? [], config.lint.freshnessWindow, out);
 
   return out.result();

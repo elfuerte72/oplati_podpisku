@@ -236,9 +236,17 @@ describe('реклама', () => {
   });
 
   it('cta hard с призывом в конце проходит', () => {
-    const body = `${GOOD_A}\n\nПодписку на такой сервис оплатим рублями: @oplatishkaa_bot`;
+    const body = `${GOOD_A}\n\nПодписку на такой сервис оплатим рублями через Оплатишку.`;
     const errors = codes(lintPost(body, ctx({ cta: 'hard' }))).errors;
     expect(errors).not.toContain('cta_hard_missing');
+  });
+
+  it('имя бота в теле — ошибка на любом уровне: ссылку ставит кнопка', () => {
+    // Решение тикета 04. Прежний контур, наоборот, ТРЕБОВАЛ хэндл при hard, и
+    // пост с кнопкой нёс ссылку дважды.
+    const body = `${GOOD_A}\n\nОплатить можно тут: @oplatishkaa_bot`;
+    expect(codes(lintPost(body, ctx({ cta: 'hard' }))).errors).toContain('bot_in_body');
+    expect(codes(lintPost(body, ctx({ cta: 'soft' }))).errors).toContain('bot_in_body');
   });
 
   it('cta soft без упоминаний — предупреждение', () => {

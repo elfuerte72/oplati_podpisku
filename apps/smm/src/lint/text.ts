@@ -33,6 +33,14 @@ export function visibleText(raw: string): string {
   return text.trim();
 }
 
+/**
+ * Длина видимого текста в КОДОВЫХ ТОЧКАХ: эмодзи в UTF-16 занимает две
+ * единицы, и `str.length` упирал бы пост в потолок раньше, чем сам Telegram.
+ */
+export function visibleLength(text: string): number {
+  return [...text].length;
+}
+
 /** Заголовок первого уровня, если он есть. */
 export function headline(raw: string): string {
   const body = raw.replace(MD_IMAGE_RE, '');
@@ -98,7 +106,8 @@ export function tables(raw: string): Table[] {
     if (current.length === 0) return;
     const dataRows = current.filter((row) => !/^\s*\|[\s|:-]+\|\s*$/.test(row));
     const columns = dataRows.reduce((max, row) => {
-      const cells = row.trim().replace(/^\||\|$/g, '').split('|');
+      // Экранированная черта внутри ячейки — не разделитель колонок.
+      const cells = row.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/);
       return Math.max(max, cells.length);
     }, 0);
     found.push({ rows: dataRows, columns });
@@ -184,14 +193,22 @@ export function paragraphs(raw: string): Paragraph[] {
  */
 export function sentences(visible: string, minChars = 35): Set<string> {
   const out = new Set<string>();
-  // Сначала абзацы: заголовок и лид не должны склеиться в одно «предложение»
-  // (у заголовка нет точки). Внутри абзаца переносы схлопываются.
+  const add = (part: string): void => {
+    const clean = part.replace(/^[\s.!?«»"]+|[\s.!?«»"]+$/g, '');
+    if (clean.length >= minChars) out.add(clean);
+  };
+  // Кандидаты собираются ДВУМЯ способами, и оба нужны:
+  //   - по абзацам со схлопыванием переносов: одно предложение в разных постах
+  //     свёрнуто по-разному, и разбиение по `\n` находило бы повтор только при
+  //     совпадающей вёрстке;
+  //   - по строкам: пункт списка — отдельный кандидат, иначе дословно
+  //     повторённый пункт ловится только вместе со всем списком.
   for (const block of visible.split(/\n\s*\n/)) {
     const flat = block.toLowerCase().replace(/\s+/g, ' ');
-    for (const part of flat.split(/(?<=[.!?])\s+/)) {
-      const clean = part.replace(/^[\s.!?«»"]+|[\s.!?«»"]+$/g, '');
-      if (clean.length >= minChars) out.add(clean);
-    }
+    for (const part of flat.split(/(?<=[.!?])\s+/)) add(part);
+  }
+  for (const line of visible.toLowerCase().split('\n')) {
+    for (const part of line.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/)) add(part);
   }
   return out;
 }
