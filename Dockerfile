@@ -13,6 +13,10 @@ RUN corepack enable
 # Только манифесты: слой переиспользуется, пока не меняется lockfile
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
 COPY apps/web/package.json apps/web/
+# ⚠️ Манифест SMM-бота нужен ЗДЕСЬ, хотя веб его код не собирает: без него
+# `pnpm install --frozen-lockfile` не сходится с lock-файлом воркспейса и
+# падает прямо при сборке прода. Сам бот собирается своим `apps/smm/Dockerfile`.
+COPY apps/smm/package.json apps/smm/
 COPY packages/types/package.json packages/types/
 COPY packages/db/package.json packages/db/
 COPY packages/agent/package.json packages/agent/
