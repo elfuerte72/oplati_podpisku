@@ -11,7 +11,9 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "eval:llm": "node --env-file-if-exists=.env evals/llm-smoke.ts"
+    "eval:llm": "node --env-file-if-exists=.env evals/llm-smoke.ts",
+    "eval:live": "node --env-file-if-exists=.env evals/live.ts",
+    "eval:judge": "node --env-file-if-exists=.env evals/judge-calibration.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",

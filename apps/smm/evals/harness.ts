@@ -112,6 +112,11 @@ export interface HarnessOptions {
   readonly config?: SmmConfig;
   readonly logger?: Logger;
   readonly now?: () => Date;
+  /**
+   * Живой прогон: настоящая модель и настоящее хранилище расхода. Страницы
+   * при этом тоже настоящие — фикстурный транспорт не подставляется.
+   */
+  readonly live?: { readonly model: Model; readonly store: Store };
 }
 
 /** Один сценарий целиком. Возвращает список расхождений, а не бросает. */
@@ -122,7 +127,7 @@ export async function runScenario(
   const ownerId = options.ownerId ?? 379_336_096;
   const channelId = options.channelId ?? '-1004257122135';
   const logger = options.logger ?? createLogger({ level: 'fatal', stream: { write() {} } });
-  const store: Store = openStore({ path: ':memory:' });
+  const store: Store = options.live?.store ?? openStore({ path: ':memory:' });
   const sends: { text: string; keyboard?: Keyboard }[] = [];
   const pending: Promise<void>[] = [];
   let channelPosts = 0;
@@ -131,7 +136,7 @@ export async function runScenario(
   try {
     const runner = createRunner({
       store,
-      pipeline: { model: fixtureModel(scenario.model), logger },
+      pipeline: { model: options.live?.model ?? fixtureModel(scenario.model), logger },
       handoff(messages) {
         for (const message of messages) {
           sends.push({ text: message.text, ...(message.button === undefined ? {} : { keyboard: { rows: [[message.button]] } }) });
@@ -158,7 +163,11 @@ export async function runScenario(
       ownerChatId: ownerId,
       channelId,
       ...(options.config === undefined ? {} : { config: options.config }),
-      resolve: { fetcher: fixtureFetcher(scenario.pages), resolver },
+      // В живом прогоне страницы качаются по-настоящему: подставлять двойник
+      // транспорта значило бы проверять конвейер на записанном интернете.
+      ...(options.live === undefined
+        ? { resolve: { fetcher: fixtureFetcher(scenario.pages), resolver } }
+        : {}),
       ...(options.now === undefined ? {} : { now: options.now }),
     });
 
@@ -255,7 +264,8 @@ export async function runScenario(
       }
     }
   } finally {
-    store.close();
+    // Живому прогону база нужна и после сценария: по ней считается расход.
+    if (options.live === undefined) store.close();
   }
 
   return { ok: failures.length === 0, failures, sends, channelPosts };

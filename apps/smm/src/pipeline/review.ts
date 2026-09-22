@@ -76,7 +76,11 @@ async function revise(
   return { ok: true, value: answer.value };
 }
 
-async function askJudge(
+/**
+ * Оценка редактора отдельным вызовом. Отдельно от `review`, потому что её
+ * зовёт калибровка: там нужен только вердикт, без кругов правок и публикации.
+ */
+export async function judgePost(
   body: string,
   ctx: ReviewContext,
   deps: PipelineDeps,
@@ -165,7 +169,7 @@ export async function review(
   }
 
   // --- второй гейт: редактор. До двух кругов правок.
-  let judge = await askJudge(body, ctx, deps);
+  let judge = await judgePost(body, ctx, deps);
   if (!judge.ok) return judge;
   let verdict = judge.value;
 
@@ -179,7 +183,7 @@ export async function review(
     rounds += 1;
     body = fixed.value;
     lint = runLint(body, ctx, config);
-    judge = await askJudge(body, ctx, deps);
+    judge = await judgePost(body, ctx, deps);
     if (!judge.ok) {
       return { ok: true, value: { body, lint, judge: verdict, rounds, verdict: 'fail', failedBy: 'judge' } };
     }
