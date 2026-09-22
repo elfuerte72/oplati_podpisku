@@ -36,9 +36,11 @@ export interface NotifyDeps {
 
 /** Ключ набора поломок: по нему считается «то же самое или новое». */
 export function troubleKey(status: HealthStatus): string {
+  // Причина входит в ключ: «Модель: ключ не задан» и «Модель: на счету минус»
+  // — разные аварии, и вторая не должна прятаться за первой на шесть часов.
   return status.items
     .filter((item) => item.level === 'red')
-    .map((item) => item.name)
+    .map((item) => `${item.name}: ${item.reason}`)
     .sort()
     .join('|');
 }
@@ -67,24 +69,27 @@ export async function notifyIfRed(status: HealthStatus, deps: NotifyDeps): Promi
   const at = now();
   const last = deps.store.settings.get(SETTINGS_HEALTH_LAST, LastAlertSchema);
 
-  async function deliver(text: string): Promise<void> {
+  /** true — сообщение доставлено. Окно дедупа занимается только по ФАКТУ. */
+  async function deliver(text: string): Promise<boolean> {
     const first = await deps.send(text, {});
-    if (first.ok) return;
+    if (first.ok) return true;
     if (first.staleThread === true) {
       // Тема протухла (её удалили или закрыли) — повторяем в корень группы:
       // сообщение о поломке важнее места, куда оно попадёт.
       const again = await deps.send(text, { toRoot: true });
-      if (again.ok) return;
+      if (again.ok) return true;
     }
     deps.logger.warn({}, 'сообщение о здоровье не доставлено');
+    return false;
   }
 
   if (status.level === 'green') {
     if (last === undefined) return 'muted';
-    // Одно «снова зелено» на выздоровление: запись стирается, и следующая
-    // поломка снова будет первой.
+    // Одно «снова зелено» на выздоровление: запись стирается ПОСЛЕ доставки,
+    // иначе недоставленное «снова зелено» теряется навсегда.
+    const delivered = await deliver(formatHealth(status));
+    if (!delivered) return 'muted';
     deps.store.settings.remove(SETTINGS_HEALTH_LAST);
-    await deliver(formatHealth(status));
     return 'recovered';
   }
 
@@ -94,7 +99,11 @@ export async function notifyIfRed(status: HealthStatus, deps: NotifyDeps): Promi
     if (Number.isFinite(passed) && passed < HEALTH_DEDUP_HOURS * 60 * 60 * 1000) return 'muted';
   }
 
+  // ⚠️ Окно дедупа занимается ПОСЛЕ доставки: недоставленное сообщение иначе
+  // глушило бы аварию на шесть часов — инвариант прода «дедуп фиксируется
+  // только по факту доставки».
+  const delivered = await deliver(formatHealth(status));
+  if (!delivered) return 'muted';
   deps.store.settings.set(SETTINGS_HEALTH_LAST, LastAlertSchema, { key, at: at.toISOString() });
-  await deliver(formatHealth(status));
   return 'sent';
 }

@@ -60,7 +60,9 @@ function publishedPost(store: Store, messageId: number, publishedAt: string): st
 }
 
 describe('счётчик витрины', () => {
-  it('понимает сокращения', () => {
+  it('понимает сокращения и обе роли запятой', () => {
+    expect(parseViews('1,234')).toBe(1234);
+    expect(parseViews('1,2K')).toBe(1200);
     expect(parseViews('1.2K')).toBe(1200);
     expect(parseViews('12.3K')).toBe(12_300);
     expect(parseViews('834')).toBe(834);
@@ -99,7 +101,12 @@ describe('сбор просмотров', () => {
   it('снятым пост становится только после ДВУХ пропусков', async () => {
     const store = openStore({ path: ':memory:' });
     const postId = publishedPost(store, 10, OLD);
-    const empty = { fetcher: serve(widget([{ id: 99, views: '100' }])), resolver: publicDns };
+    // Соседи по странице есть с обеих сторон: пост пропал из середины, а не
+    // уехал за границу страницы.
+    const empty = {
+      fetcher: serve(widget([{ id: 9, views: '100' }, { id: 11, views: '100' }])),
+      resolver: publicDns,
+    };
 
     const first = await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: empty, now: () => NOW });
     expect(first.withdrawn).toEqual([]);
@@ -127,7 +134,10 @@ describe('сбор просмотров', () => {
   it('появившийся снова пост обнуляет счётчик пропусков', async () => {
     const store = openStore({ path: ':memory:' });
     const postId = publishedPost(store, 10, OLD);
-    const gone = { fetcher: serve(widget([])), resolver: publicDns };
+    const gone = {
+      fetcher: serve(widget([{ id: 9, views: '100' }, { id: 11, views: '100' }])),
+      resolver: publicDns,
+    };
     const back = { fetcher: serve(widget([{ id: 10, views: '500' }])), resolver: publicDns };
 
     await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: gone, now: () => NOW });
@@ -135,6 +145,36 @@ describe('сбор просмотров', () => {
     await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: gone, now: () => NOW });
 
     expect(store.posts.get(postId)?.status).toBe('published');
+    store.close();
+  });
+
+  it('пост, уехавший за границу СТРАНИЦЫ витрины, не хоронится', async () => {
+    const store = openStore({ path: ':memory:' });
+    // Старый пост (номер 10) уже не помещается на страницу: витрина отдаёт
+    // последние сообщения, и его отсутствие означает «страница кончилась», а
+    // не «пост удалили».
+    const old = publishedPost(store, 10, OLD);
+    const fresh = publishedPost(store, 120, OLD);
+    const page = { fetcher: serve(widget([{ id: 118, views: '10' }, { id: 120, views: '20' }])), resolver: publicDns };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
+    }
+
+    expect(store.posts.get(old)?.status).toBe('published');
+    expect(store.posts.get(fresh)?.status).toBe('published');
+    store.close();
+  });
+
+  it('пост ВНУТРИ страницы, которого на ней нет, хоронится', async () => {
+    const store = openStore({ path: ':memory:' });
+    const removed = publishedPost(store, 119, OLD);
+    const page = { fetcher: serve(widget([{ id: 118, views: '10' }, { id: 120, views: '20' }])), resolver: publicDns };
+
+    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
+    const second = await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
+
+    expect(second.withdrawn).toEqual([removed]);
     store.close();
   });
 

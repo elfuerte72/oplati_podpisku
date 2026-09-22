@@ -139,12 +139,31 @@ interface RawResponse {
  * Запрос с ручным обходом редиректов. Возвращает ответ, тело которого ещё НЕ
  * прочитано: чтение идёт под тем же сигналом, что и запрос.
  */
+/** Заголовки без секретов: то, что нельзя отдавать чужому хосту. */
+function withoutSecrets(headers: RequestInit['headers']): Record<string, string> {
+  const out: Record<string, string> = {};
+  const entries: [string, string][] =
+    headers === undefined
+      ? []
+      : headers instanceof Headers
+        ? [...headers.entries()]
+        : Array.isArray(headers)
+          ? headers.map((pair) => [pair[0] ?? '', pair[1] ?? ''])
+          : Object.entries(headers).map(([name, value]) => [name, String(value ?? '')]);
+  for (const [name, value] of entries) {
+    if (/^(authorization|x-api-key|cookie|proxy-authorization)$/i.test(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 async function request(
   raw: string,
-  init: RequestInit,
+  initial: RequestInit,
   options: { maxRedirects: number; fetcher: Fetcher; resolver: Resolver },
 ): Promise<RawResponse | HttpError> {
   let current = raw;
+  let init = initial;
   for (let hop = 0; hop <= options.maxRedirects; hop += 1) {
     const checked = checkUrl(current);
     if (!('url' in checked)) return checked;
@@ -162,7 +181,14 @@ async function request(
     if (location === null || location === '') {
       return { ok: false, reason: 'http_error', message: `редирект ${response.status} без Location`, status: response.status };
     }
-    current = new URL(location, checked.url).toString();
+    const next = new URL(location, checked.url);
+    // ⚠️ Секретные заголовки НЕ переносятся на другой хост: иначе редирект
+    // уводит `x-api-key`/`authorization` чужому серверу, и проверка «не
+    // внутренний адрес» от этого не спасает — адрес может быть публичным.
+    if (next.host !== checked.url.host) {
+      init = { ...init, headers: withoutSecrets(init.headers) };
+    }
+    current = next.toString();
   }
   return {
     ok: false,

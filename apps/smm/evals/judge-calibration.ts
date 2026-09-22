@@ -31,6 +31,17 @@ function summary(group: Group): string {
 async function main(): Promise<void> {
   const env = loadEnv();
   const logger = createLogger({ level: env.logLevel });
+  // ⚠️ Открывается БОЕВАЯ база: только из неё видно, что владелец снял, а что
+  // оставил. Прогон стоит денег, и его расход попадёт в `/stats` месяца —
+  // поэтому требуется явное согласие флагом.
+  if (!process.argv.includes('--yes')) {
+    console.error(
+      'Калибровка читает боевую базу и тратит деньги на модель; её расход попадёт в /stats.\n' +
+        'Повтори с флагом --yes, если это понятно.',
+    );
+    process.exitCode = 1;
+    return;
+  }
   const store = openStore({ path: env.dbPath });
   const model = createModel({ client: createModelClient(env), env, usage: store.usage, logger });
 

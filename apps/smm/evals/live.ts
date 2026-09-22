@@ -2,9 +2,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { Api } from 'grammy';
+
 import { loadEnv } from '../src/config/env.ts';
 import { createLogger } from '../src/logger.ts';
 import { createModel, createModelClient } from '../src/llm/model.ts';
+import { grammyApi } from '../src/render/send.ts';
 import { openStore } from '../src/store/index.ts';
 import { loadScenarios, runScenario } from './harness.ts';
 
@@ -29,11 +32,22 @@ interface TrialReport {
   readonly calls: number;
 }
 
+/**
+ * Сколько попыток на сценарий. ⚠️ Мусор — ОШИБКА, а не «одна попытка»:
+ * `pass^N` это критерий готовности, и опечатка молча превращала его в один
+ * прогон при зелёном выводе.
+ */
 function parseTrials(argv: readonly string[]): number {
-  const flag = argv.indexOf('--trials');
+  const flag = argv.findIndex((arg) => arg === '--trials' || arg.startsWith('--trials='));
   if (flag < 0) return 1;
-  const value = Number(argv[flag + 1]);
-  return Number.isInteger(value) && value > 0 ? value : 1;
+  const raw = argv[flag]?.startsWith('--trials=') === true
+    ? (argv[flag] ?? '').slice('--trials='.length)
+    : (argv[flag + 1] ?? '');
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`--trials ожидает целое число больше нуля, получено «${raw}»`);
+  }
+  return value;
 }
 
 async function main(): Promise<void> {
@@ -55,6 +69,9 @@ async function main(): Promise<void> {
   const scenarios = loadScenarios();
   const reports: TrialReport[] = [];
 
+  // ⚠️ Отчёт пишется в `finally`: исключение на последнем сценарии иначе
+  // теряет результаты всех предыдущих вместе с их ценой.
+  try {
   for (const scenario of scenarios) {
     for (let trial = 1; trial <= trials; trial += 1) {
       // Своё хранилище на попытку: расход считается по нему, а не по общей
@@ -66,11 +83,12 @@ async function main(): Promise<void> {
         usage: store.usage,
         logger,
       });
+      const api = grammyApi(new Api(env.botToken));
       const started = Date.now();
       const outcome = await runScenario(
         // Живая модель и живые страницы: записанные ответы не подставляем.
         { ...scenario, model: {}, pages: {} },
-        { channelId, live: { model, store } },
+        { channelId, live: { model, store, api } },
       );
       const spend = store.usage.sumByMonth(new Date().toISOString().slice(0, 7));
       reports.push({
@@ -91,7 +109,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const day = new Date().toISOString().slice(0, 10);
+  } finally {
+  const day = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const path = join(HERE, 'reports', `${day}.json`);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({ at: new Date().toISOString(), trials, reports }, null, 2) + '\n');
@@ -101,6 +120,7 @@ async function main(): Promise<void> {
   if (failed.length > 0) {
     console.error(`провалов: ${failed.length} из ${reports.length}`);
     process.exitCode = 1;
+  }
   }
 }
 

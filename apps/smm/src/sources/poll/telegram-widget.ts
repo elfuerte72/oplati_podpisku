@@ -24,7 +24,7 @@ const AD_MARKERS = [
 /** Ссылки, которые первоисточником не являются. */
 const NOT_A_SOURCE = /^https?:\/\/(t\.me|telegram\.me|telegra\.ph|telesco\.pe)\//i;
 
-function messageBlocks(html: string): string[] {
+export function widgetBlocks(html: string): string[] {
   // Витрина отдаёт посты одинаковыми блоками; разбираем по началу блока, а не
   // по закрывающему тегу: вложенных div внутри поста произвольное число.
   return html.split(/<div class="tgme_widget_message[ "]/).slice(1);
@@ -70,17 +70,31 @@ function linksOf(block: string): string[] {
   return out;
 }
 
-/** Просмотры поста: единственный доступный счётчик охвата у чужого канала. */
-function viewsOf(block: string): number | undefined {
-  const raw = /<span class="tgme_widget_message_views">([^<]+)<\/span>/.exec(block)?.[1];
-  if (raw === undefined) return undefined;
-  const match = /^([\d.,]+)\s*([KMКМ])?$/i.exec(raw.trim());
+/**
+ * Счётчик витрины: «1.2K», «12.3K», «1M», «834», «1,234».
+ *
+ * ⚠️ Запятая бывает И разделителем тысяч, И десятичной: «1,234» — это тысяча
+ * двести тридцать четыре, а «1,2K» — тысяча двести. Различаем по форме числа
+ * и по суффиксу; иначе счётчик молча падает в тысячу раз и отравляет среднее
+ * в отчёте.
+ */
+export function parseViews(raw: string): number | undefined {
+  const match = /^([\d\s.,]+?)\s*([KMКМ])?$/i.exec(raw.trim());
   if (match === null) return undefined;
-  const value = Number((match[1] ?? '').replace(',', '.'));
-  if (!Number.isFinite(value)) return undefined;
+  const digits = (match[1] ?? '').replace(/\s/g, '');
   const suffix = (match[2] ?? '').toUpperCase();
+  const thousandsComma = suffix === '' && /^\d{1,3}(,\d{3})+$/.test(digits);
+  const normalized = thousandsComma ? digits.replace(/,/g, '') : digits.replace(',', '.');
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) return undefined;
   const factor = suffix === 'K' || suffix === 'К' ? 1000 : suffix === 'M' || suffix === 'М' ? 1_000_000 : 1;
   return Math.round(value * factor);
+}
+
+/** Просмотры поста: единственный доступный счётчик охвата у чужого канала. */
+export function widgetViews(block: string): number | undefined {
+  const raw = /<span class="tgme_widget_message_views">([^<]+)<\/span>/.exec(block)?.[1];
+  return raw === undefined ? undefined : parseViews(raw);
 }
 
 function publishedAtOf(block: string): string | undefined {
@@ -110,7 +124,7 @@ export async function telegramWidget(
   const limit = options.limit ?? 20;
   // ⚠️ `slice(-0)` — это весь массив, а не пустой: нулевой потолок нужно
   // обрабатывать явно.
-  const blocks = limit <= 0 ? [] : messageBlocks(page.text).slice(-limit);
+  const blocks = limit <= 0 ? [] : widgetBlocks(page.text).slice(-limit);
   for (const block of blocks) {
     const text = textOf(block);
     const links = linksOf(block);
@@ -124,7 +138,7 @@ export async function telegramWidget(
     seen.add(source);
 
     const publishedAt = publishedAtOf(block);
-    const views = viewsOf(block);
+    const views = widgetViews(block);
     items.push({
       sourceKind: 'telegram',
       sourceRef: clean,

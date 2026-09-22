@@ -50,7 +50,9 @@ export function buildReport(input: ReportInput): Report {
   const since30 = new Date(at.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const { stats, views, usage } = input.store;
 
-  const publishedTotal = stats.countPublished();
+  // Обе цифры — про КАНАЛ: «вышло всего» без фильтра площадки читалось как
+  // «в канал вышло столько», хотя туда попадали и посты Threads.
+  const publishedTotal = stats.countPublished({ platform: 'telegram' });
   const publishedPeriod = stats.countPublished({ sinceIso: since, platform: 'telegram' });
   const threadsPosted = stats.countPublished({ platform: 'threads' });
   const drafts = stats.countByStatus(IN_PROGRESS_STATUSES);

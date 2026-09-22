@@ -12,6 +12,7 @@ import type { Model, ModelResult } from '../src/llm/model.ts';
 import { createEngine, type Engine } from '../src/bot/engine.ts';
 import type { BotPorts } from '../src/bot/ports.ts';
 import { createRunner } from '../src/bot/runner.ts';
+import type { SendApi } from '../src/render/send.ts';
 import type { Fetcher, Resolver } from '../src/sources/http.ts';
 import { openStore, type Store } from '../src/store/index.ts';
 
@@ -29,6 +30,11 @@ const StepSchema = z.object({
   /** Что делает владелец. */
   command: z.string().optional(),
   args: z.string().optional(),
+  /**
+   * Аргумент для ЖИВОГО прогона. Фикстурный адрес в интернете не существует, и
+   * без замены живой прогон падал бы на первом же шаге независимо от модели.
+   */
+  liveArgs: z.string().optional(),
   text: z.string().optional(),
   /** Нажатие кнопки: действие ищется среди кнопок последнего сообщения. */
   click: z.string().optional(),
@@ -113,10 +119,13 @@ export interface HarnessOptions {
   readonly logger?: Logger;
   readonly now?: () => Date;
   /**
-   * Живой прогон: настоящая модель и настоящее хранилище расхода. Страницы
-   * при этом тоже настоящие — фикстурный транспорт не подставляется.
+   * Живой прогон: настоящая модель, настоящее хранилище расхода и настоящая
+   * отправка в ТЕСТОВЫЙ канал. Страницы тоже настоящие — фикстурный транспорт
+   * не подставляется.
    */
-  readonly live?: { readonly model: Model; readonly store: Store };
+  readonly live?: { readonly model: Model; readonly store: Store; readonly api: SendApi };
+  /** Адреса источников для живого прогона: у фикстурных страниц свои. */
+  readonly livePages?: Record<string, string>;
 }
 
 /** Один сценарий целиком. Возвращает список расхождений, а не бросает. */
@@ -125,8 +134,11 @@ export async function runScenario(
   options: HarnessOptions = {},
 ): Promise<RunOutcome> {
   const ownerId = options.ownerId ?? 379_336_096;
-  const channelId = options.channelId ?? '-1004257122135';
+  // ⚠️ Дефолта БОЕВОГО канала здесь нет намеренно: ошибка в этом месте
+  // необратима. Не назвали канал — сценарий «публикует» в никуда.
+  const channelId = options.channelId ?? 'канал-не-назван';
   const logger = options.logger ?? createLogger({ level: 'fatal', stream: { write() {} } });
+  const live = options.live;
   const store: Store = options.live?.store ?? openStore({ path: ':memory:' });
   const sends: { text: string; keyboard?: Keyboard }[] = [];
   const pending: Promise<void>[] = [];
@@ -136,28 +148,51 @@ export async function runScenario(
   try {
     const runner = createRunner({
       store,
-      pipeline: { model: options.live?.model ?? fixtureModel(scenario.model), logger },
+      pipeline: { model: live?.model ?? fixtureModel(scenario.model), logger },
       handoff(messages) {
         for (const message of messages) {
           sends.push({ text: message.text, ...(message.button === undefined ? {} : { keyboard: { rows: [[message.button]] } }) });
         }
         return Promise.resolve();
       },
-      api: {
-        sendRichMessage(chat) {
-          if (String(chat) === channelId) channelPosts += 1;
-          return Promise.resolve({ message_id: 501 });
-        },
-        sendPhoto(chat) {
-          if (String(chat) === channelId) channelPosts += 1;
-          return Promise.resolve({ message_id: 502 });
-        },
-        sendMessage(chat, text) {
-          if (String(chat) === channelId) channelPosts += 1;
-          else sends.push({ text });
-          return Promise.resolve({ message_id: 503 });
-        },
-      },
+      // В живом прогоне — НАСТОЯЩИЙ Bot API: сценарий обязан доходить до
+      // канала, иначе он проверяет заглушку, а четыре документа обещают
+      // обратное. Канал при этом только тестовый — гейт в `live.ts`.
+      api:
+        live === undefined
+          ? {
+              sendRichMessage(chat) {
+                if (String(chat) === channelId) channelPosts += 1;
+                return Promise.resolve({ message_id: 501 });
+              },
+              sendPhoto(chat) {
+                if (String(chat) === channelId) channelPosts += 1;
+                return Promise.resolve({ message_id: 502 });
+              },
+              sendMessage(chat, text) {
+                if (String(chat) === channelId) channelPosts += 1;
+                else sends.push({ text });
+                return Promise.resolve({ message_id: 503 });
+              },
+            }
+          : {
+              async sendRichMessage(chat, rich, sendOptions) {
+                const sent = await live.api.sendRichMessage(chat, rich, sendOptions);
+                if (String(chat) === channelId) channelPosts += 1;
+                return sent;
+              },
+              async sendPhoto(chat, photo, sendOptions) {
+                const sent = await live.api.sendPhoto(chat, photo, sendOptions);
+                if (String(chat) === channelId) channelPosts += 1;
+                return sent;
+              },
+              async sendMessage(chat, text, sendOptions) {
+                const sent = await live.api.sendMessage(chat, text, sendOptions);
+                if (String(chat) === channelId) channelPosts += 1;
+                else sends.push({ text });
+                return sent;
+              },
+            },
       logger,
       ownerId,
       ownerChatId: ownerId,
@@ -165,9 +200,7 @@ export async function runScenario(
       ...(options.config === undefined ? {} : { config: options.config }),
       // В живом прогоне страницы качаются по-настоящему: подставлять двойник
       // транспорта значило бы проверять конвейер на записанном интернете.
-      ...(options.live === undefined
-        ? { resolve: { fetcher: fixtureFetcher(scenario.pages), resolver } }
-        : {}),
+      ...(live === undefined ? { resolve: { fetcher: fixtureFetcher(scenario.pages), resolver } } : {}),
       ...(options.now === undefined ? {} : { now: options.now }),
     });
 
@@ -212,7 +245,8 @@ export async function runScenario(
       const before = sends.length;
 
       if (step.command !== undefined) {
-        const event: DialogEvent = { kind: 'command', command: step.command, args: step.args ?? '', at };
+        const args = (live === undefined ? step.args : (step.liveArgs ?? step.args)) ?? '';
+        const event: DialogEvent = { kind: 'command', command: step.command, args, at };
         await engine.handle(event);
       } else if (step.text !== undefined) {
         await engine.handle({ kind: 'text', text: step.text, at });
@@ -265,7 +299,7 @@ export async function runScenario(
     }
   } finally {
     // Живому прогону база нужна и после сценария: по ней считается расход.
-    if (options.live === undefined) store.close();
+    if (live === undefined) store.close();
   }
 
   return { ok: failures.length === 0, failures, sends, channelPosts };

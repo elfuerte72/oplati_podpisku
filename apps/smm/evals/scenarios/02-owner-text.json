@@ -85,7 +85,8 @@
     {
       "command": "/post",
       "args": "https://example.com/post",
-      "expectState": "post.await_rubric"
+      "expectState": "post.await_rubric",
+      "liveArgs": "https://en.wikipedia.org/wiki/ChatGPT"
     },
     {
       "click": "rub.news",

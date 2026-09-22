@@ -169,3 +169,33 @@ describe('канарейка лога прогонов', () => {
     expect(line).toContain('"usdMicros":1234');
   });
 });
+
+describe('секрет внутри текста', () => {
+  it('токен в адресе внутри сообщения об ошибке редактируется', () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: 'info',
+      stream: {
+        write(line: string) {
+          lines.push(line);
+        },
+      },
+    });
+
+    const error = new Error(
+      'fetch to https://api.telegram.org/bot7712345678:AAF-SECRET-TOKEN-VALUE-1234/sendMessage failed',
+    );
+    logger.error({ err: error }, 'отправка не удалась');
+
+    const line = lines[0] ?? '';
+    expect(line).not.toContain('AAF-SECRET-TOKEN-VALUE-1234');
+    expect(line).toContain('[Redacted]');
+  });
+
+  it('ключ модели в свободной строке тоже', () => {
+    const lines: string[] = [];
+    const logger = createLogger({ level: 'info', stream: { write: (line: string) => lines.push(line) } });
+    logger.warn({ note: 'ключ sk-abcdefghijklmnop отклонён' }, 'провайдер отказал');
+    expect(lines[0] ?? '').not.toContain('sk-abcdefghijklmnop');
+  });
+});

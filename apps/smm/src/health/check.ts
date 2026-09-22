@@ -45,6 +45,8 @@ const BalanceSchema = z.object({
 
 export interface HealthDeps {
   readonly store: Store;
+  /** Чей диалог проверяем на зависание: у бота один владелец. */
+  readonly ownerId: number;
   /** Проверка бота: `getMe` со своим коротким поводком. */
   readonly checkBot: () => Promise<{ ok: boolean; message?: string }>;
   readonly modelApiKey?: string;
@@ -54,12 +56,17 @@ export interface HealthDeps {
   readonly now?: () => Date;
 }
 
+/**
+ * Баланс в ДОЛЛАРАХ. ⚠️ Валюта проверяется: у провайдера бывает счёт в юанях,
+ * и семь юаней, прочитанные как семь долларов, — это ровно тот инцидент, ради
+ * которого проверка и написана.
+ */
 export function parseBalanceUsd(value: unknown): number | undefined {
   const parsed = BalanceSchema.safeParse(value);
   if (!parsed.success) return undefined;
-  const usd =
-    parsed.data.balance_infos.find((info) => (info.currency ?? '').toUpperCase() === 'USD') ??
-    parsed.data.balance_infos[0];
+  const usd = parsed.data.balance_infos.find(
+    (info) => (info.currency ?? '').toUpperCase() === 'USD',
+  );
   if (usd?.total_balance === undefined) return undefined;
   const amount = typeof usd.total_balance === 'number' ? usd.total_balance : Number(usd.total_balance);
   return Number.isFinite(amount) ? amount : undefined;
@@ -77,9 +84,19 @@ async function checkModel(deps: HealthDeps): Promise<HealthItem> {
   if (!answer.ok) {
     return { name: 'Модель', level: 'red', reason: `баланс не прочитался: ${answer.reason}` };
   }
+  const available = BalanceSchema.safeParse(answer.value);
+  if (available.success && available.data.is_available === false) {
+    // Провайдер сам говорит «счётом пользоваться нельзя»: спорить с ним по
+    // сумме незачем.
+    return { name: 'Модель', level: 'red', reason: 'провайдер отвечает: счёт недоступен' };
+  }
   const balance = parseBalanceUsd(answer.value);
   if (balance === undefined) {
-    return { name: 'Модель', level: 'red', reason: 'ответ о балансе не разобрался' };
+    return {
+      name: 'Модель',
+      level: 'red',
+      reason: 'баланса в долларах в ответе нет (счёт в другой валюте или дрейф контракта)',
+    };
   }
   if (balance < MODEL_BALANCE_FLOOR_USD) {
     return {
@@ -125,19 +142,24 @@ export async function check(deps: HealthDeps): Promise<HealthStatus> {
     items.push({ name: 'База', level: 'red', reason: `не отвечает: ${String(error)}` });
   }
 
-  const cutoff = new Date(at.getTime() - STUCK_GENERATING_MINUTES * 60 * 1000).toISOString();
-  // «Завис» считается по времени ВХОДА в статус, а не по правке строки:
-  // правка могла быть и вчера, а статус — со вчера же.
-  const stuckLinted = deps.store.posts.stuckInStatus('linted', cutoff);
-  const stuckDraft = deps.store.posts.stuckInStatus('draft', cutoff);
-  const stuck = [...stuckLinted, ...stuckDraft];
+  // ⚠️ Зависшим считается ДИАЛОГ в состоянии «собираю», а не пост в статусе
+  // `draft`. Пост живёт в `draft` всё время, пока бот ждёт от владельца
+  // рубрику и угол, а срок ожидания — сутки: по статусу «красно» загоралось
+  // бы на нормальном ожидании человека, и «снова зелено» не приходило бы
+  // никогда. Конвейер же в `post.generating` дольше четверти часа — это уже
+  // зависший шаг.
+  const flow = deps.store.flow.get(deps.ownerId);
+  const generatingSince =
+    flow?.state === 'post.generating' ? new Date(flow.updatedAt).getTime() : undefined;
+  const stuckMinutes =
+    generatingSince === undefined ? 0 : (at.getTime() - generatingSince) / (60 * 1000);
   items.push(
-    stuck.length === 0
-      ? { name: 'Очередь', level: 'green', reason: 'зависших постов нет' }
+    stuckMinutes < STUCK_GENERATING_MINUTES
+      ? { name: 'Очередь', level: 'green', reason: 'конвейер не завис' }
       : {
           name: 'Очередь',
           level: 'red',
-          reason: `постов в работе дольше ${STUCK_GENERATING_MINUTES} минут: ${stuck.length}`,
+          reason: `шаг конвейера идёт ${Math.round(stuckMinutes)} минут при потолке ${STUCK_GENERATING_MINUTES}`,
         },
   );
 

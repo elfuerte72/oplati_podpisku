@@ -137,8 +137,10 @@ export function createTicker(deps: TickerDeps): Ticker {
     const week = mskWeekKey(at);
     // Дедуп по НЕДЕЛЕ: прогонов в понедельник несколько, сводка одна.
     if (deps.store.settings.get(SETTINGS_WEEKLY_LAST_WEEK, DaySetting) === week) return;
-    deps.store.settings.set(SETTINGS_WEEKLY_LAST_WEEK, DaySetting, week);
+    // Неделя занимается ПОСЛЕ доставки: один сбой Telegram в понедельник утром
+    // иначе означает «сводки за эту неделю не будет вовсе».
     await deps.sendWeekly();
+    deps.store.settings.set(SETTINGS_WEEKLY_LAST_WEEK, DaySetting, week);
   }
 
   async function runOnce(): Promise<{ polled: number; saved: number; ranked: number; skipped?: string }> {

@@ -485,3 +485,51 @@ describe('JSON-запрос к API', () => {
     expect(visited).toEqual(['https://api.example.com/v1/data']);
   });
 });
+
+describe('секреты на редиректе', () => {
+  it('на ЧУЖОЙ хост заголовок авторизации не переносится', async () => {
+    const seen: { url: string; auth: unknown }[] = [];
+    const spy: Fetcher = (url, init) => {
+      const headers = (init.headers ?? {}) as Record<string, string>;
+      seen.push({ url, auth: headers.authorization ?? headers['x-api-key'] });
+      if (url.startsWith('https://api.example.com')) {
+        return Promise.resolve(
+          new Response('', { status: 302, headers: { location: 'https://other.example.org/collect' } }),
+        );
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    };
+
+    await fetchJson('https://api.example.com/v1/data', {
+      fetcher: spy,
+      resolver: publicDns,
+      headers: { authorization: 'Bearer sk-SUPER-SECRET' },
+    });
+
+    expect(seen[0]?.auth).toBe('Bearer sk-SUPER-SECRET');
+    expect(seen[1]?.url).toBe('https://other.example.org/collect');
+    expect(seen[1]?.auth).toBeUndefined();
+  });
+
+  it('на ТОТ ЖЕ хост заголовок сохраняется: это обычный редирект внутри API', async () => {
+    const seen: unknown[] = [];
+    const spy: Fetcher = (url, init) => {
+      const headers = (init.headers ?? {}) as Record<string, string>;
+      seen.push(headers.authorization);
+      if (url.endsWith('/v1/data')) {
+        return Promise.resolve(
+          new Response('', { status: 302, headers: { location: 'https://api.example.com/v2/data' } }),
+        );
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    };
+
+    await fetchJson('https://api.example.com/v1/data', {
+      fetcher: spy,
+      resolver: publicDns,
+      headers: { authorization: 'Bearer sk-SUPER-SECRET' },
+    });
+
+    expect(seen[1]).toBe('Bearer sk-SUPER-SECRET');
+  });
+});

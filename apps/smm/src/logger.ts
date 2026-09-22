@@ -40,11 +40,30 @@ function isSecretKey(key: string): boolean {
   return SECRET_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
+/**
+ * Похожее на секрет ВНУТРИ строки. Поле чистится по ИМЕНИ, но токен приезжает
+ * и телом: `err.message` у grammY несёт адрес вида
+ * `https://api.telegram.org/bot<токен>/sendMessage`, и он уезжал в лог целиком.
+ */
+const SECRET_IN_TEXT: readonly RegExp[] = [
+  /bot\d{6,}:[A-Za-z0-9_-]{20,}/g,
+  /\bsk-[A-Za-z0-9_-]{10,}/g,
+  /\b(?:tvly|sc)-[A-Za-z0-9_-]{10,}/g,
+  /\b\d{6,}:[A-Za-z0-9_-]{30,}/g,
+];
+
+export function scrubText(text: string): string {
+  let out = text;
+  for (const pattern of SECRET_IN_TEXT) out = out.replace(pattern, REDACTED);
+  return out;
+}
+
 /** Глубже не ходим: дерево глубже пяти уровней в лог не пишем, а цикл повесил бы процесс. */
 const MAX_DEPTH = 6;
 
 function scrubValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
   if (depth > MAX_DEPTH) return '[Depth]';
+  if (typeof value === 'string') return scrubText(value);
   if (value === null || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
@@ -61,8 +80,9 @@ function scrubValue(value: unknown, depth: number, seen: WeakSet<object>): unkno
   }
   if (value instanceof Error) {
     out.type = value.name;
-    out.message = value.message;
-    out.stack = value.stack;
+    // Текст и стек тоже чистятся: токен в адресе запроса живёт именно там.
+    out.message = scrubText(value.message);
+    out.stack = value.stack === undefined ? undefined : scrubText(value.stack);
   }
   return out;
 }

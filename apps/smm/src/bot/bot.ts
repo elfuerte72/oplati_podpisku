@@ -140,8 +140,15 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   async function sendOps(text: string, options: { toRoot?: boolean }): Promise<{ ok: boolean; staleThread?: boolean }> {
     const chatId = deps.env.ops.chatId;
     if (opsApi === undefined || chatId === undefined) {
-      deps.logger.warn({ text }, 'ops-группа не настроена: сообщение о здоровье только в лог');
-      return { ok: true };
+      // Получателя в группе нет — пишем ВЛАДЕЛЬЦУ: молчание неотличимо от
+      // тишины, а у бота есть с ним личка (инвариант ops-группы прода).
+      try {
+        await bot.api.sendMessage(ownerChatId, text);
+        return { ok: true };
+      } catch (error) {
+        deps.logger.warn({ err: error }, 'сообщение о здоровье не доставлено владельцу');
+        return { ok: false };
+      }
     }
     try {
       await opsApi.sendMessage(chatId, text, {
@@ -160,6 +167,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   async function runHealth(): Promise<void> {
     const status = await check({
       store: deps.store,
+      ownerId: deps.env.ownerId,
       checkBot: async () => {
         try {
           // Свой короткий поводок: сторож не должен висеть на Telegram.
@@ -189,8 +197,11 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   let pendingCallback: ((text?: string) => Promise<void>) | undefined;
 
   const ports: BotPorts = {
-    async send(text, keyboard) {
+    async send(text, keyboard, options) {
       const message = await bot.api.sendMessage(ownerChatId, text, {
+        // Разметку просит вызывающий: обычные вопросы бота — простой текст,
+        // а отчёт свёрстан HTML и без этого показывал владельцу сырые теги.
+        ...(options?.html === true ? { parse_mode: 'HTML' as const } : {}),
         ...(toReplyMarkup(keyboard) === undefined ? {} : { reply_markup: toReplyMarkup(keyboard) }),
         link_preview_options: { is_disabled: true },
       });
@@ -299,7 +310,14 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   /** Подписчиков спрашиваем у Telegram: в базе их нет и быть не может. */
   async function subscribers(): Promise<number | undefined> {
     try {
-      return await bot.api.getChatMemberCount(deps.env.channelId);
+      // Свой короткий поводок: без него дефолт grammY — 500 с, и `/stats`
+      // столько же молчит, а недельная сводка держит весь тикер.
+      return await Promise.race([
+        bot.api.getChatMemberCount(deps.env.channelId),
+        new Promise<number>((_, reject) =>
+          setTimeout(() => reject(new Error('getChatMemberCount не ответил за 5 с')), 5000).unref?.(),
+        ),
+      ]);
     } catch (error) {
       // Бот мог не быть админом канала — отчёт из-за этого не пропадает.
       deps.logger.warn({ err: error }, 'число подписчиков не получено');
@@ -388,7 +406,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       return;
     }
     if (event.kind === 'command' && event.command === '/stats') {
-      await ports.send(await statsText('30d'));
+      await ports.send(await statsText('30d'), undefined, { html: true });
       return;
     }
     await engine.handle(event);

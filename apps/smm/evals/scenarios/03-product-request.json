@@ -7,7 +7,7 @@
     {
       "command": "/post",
       "args": "напиши про новую кнопку в Оплатишке",
-      "expectSendContains": "Шаг не прошёл"
+      "expectSendContains": "про продукт Оплатишки пишет человек"
     }
   ]
 }

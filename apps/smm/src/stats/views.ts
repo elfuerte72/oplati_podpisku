@@ -1,6 +1,7 @@
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
 import type { Logger } from '../logger.ts';
 import { fetchText, type HttpOptions } from '../sources/http.ts';
+import { parseViews, widgetBlocks, widgetViews } from '../sources/poll/telegram-widget.ts';
 import type { Store } from '../store/index.ts';
 
 /**
@@ -14,32 +15,26 @@ import type { Store } from '../store/index.ts';
  * ровно то, что нам нужно: текст поста мы и так знаем.
  */
 
-/** Счётчик витрины: «1.2K», «12.3K», «1M», «834». */
-export function parseViews(raw: string): number | undefined {
-  const match = /^([\d\s.,]+)\s*([KMkmКМ])?$/.exec(raw.trim());
-  if (match === null) return undefined;
-  const digits = (match[1] ?? '').replace(/\s/g, '').replace(',', '.');
-  const value = Number(digits);
-  if (!Number.isFinite(value)) return undefined;
-  const suffix = (match[2] ?? '').toUpperCase();
-  const factor = suffix === 'K' || suffix === 'К' ? 1000 : suffix === 'M' || suffix === 'М' ? 1_000_000 : 1;
-  return Math.round(value * factor);
-}
-
-/** Пары «номер поста → просмотры» с витрины. */
+/**
+ * Пары «номер поста → просмотры» с витрины.
+ *
+ * ⚠️ Разбор блоков и счётчика живёт в `sources/poll/telegram-widget.ts`: две
+ * реализации одного и того же уже успели разойтись (одна резала пробелы
+ * внутри числа, другая нет) — это зеркало, заведённое без нужды.
+ */
 export function parseWidgetViews(html: string): Map<number, number> {
   const out = new Map<number, number>();
-  for (const block of html.split(/<div class="tgme_widget_message[ "]/).slice(1)) {
+  for (const block of widgetBlocks(html)) {
     const id = Number(/data-post="[^"]*\/(\d+)"/.exec(block)?.[1]);
     if (!Number.isInteger(id)) continue;
-    const raw = /<span class="tgme_widget_message_views">([^<]+)<\/span>/.exec(block)?.[1];
-    if (raw === undefined) continue;
-    const views = parseViews(raw);
+    const views = widgetViews(block);
     if (views === undefined) continue;
     out.set(id, views);
   }
   return out;
 }
+
+export { parseViews };
 
 export interface CollectViewsDeps {
   readonly store: Store;
@@ -83,6 +78,12 @@ export async function collectViews(deps: CollectViewsDeps): Promise<CollectViews
   }
 
   const views = parseWidgetViews(page.text);
+  // ⚠️ Витрина отдаёт СТРАНИЦУ последних сообщений, а не весь канал. Пост,
+  // уехавший за её границу по возрасту, отсутствует на ней всегда — и без
+  // этой отсечки сторож хоронил бы канал по мере роста (`withdrawn`
+  // терминален, вернуть пост нечем, а владельцу уходит DM на каждый).
+  const onPage = [...views.keys()];
+  const oldestOnPage = onPage.length === 0 ? undefined : Math.min(...onPage);
   const published = deps.store.posts.listByStatus(['published'], { limit: 200 });
   const withdrawn: string[] = [];
   let recorded = 0;
@@ -97,6 +98,10 @@ export async function collectViews(deps: CollectViewsDeps): Promise<CollectViews
       recorded += 1;
       continue;
     }
+
+    // Старше самого старого поста НА СТРАНИЦЕ — значит кончилась страница, а
+    // не пост удалён. Пустая страница тоже ничего не доказывает.
+    if (oldestOnPage === undefined || messageId < oldestOnPage) continue;
 
     const publishedAt = post.publishedAt === undefined ? undefined : new Date(post.publishedAt);
     const ageHours =
