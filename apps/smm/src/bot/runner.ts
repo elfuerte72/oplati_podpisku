@@ -95,7 +95,15 @@ function reviewContextOf(post: Post, store: Store, dossier?: Dossier): ReviewCon
   };
 }
 
-function failed(step: PipelineStep, reason: string, message: string, at: string, postId?: string): DialogEvent {
+type FailedEvent = Extract<DialogEvent, { kind: 'pipeline_failed' }>;
+
+function failedEvent(
+  step: PipelineStep,
+  reason: string,
+  message: string,
+  at: string,
+  postId?: string,
+): FailedEvent {
   return { kind: 'pipeline_failed', step, reason, message, at, ...(postId === undefined ? {} : { postId }) };
 }
 
@@ -103,6 +111,25 @@ export function createRunner(deps: RunnerDeps): Runner {
   const config = deps.config ?? smmConfig;
   const now = deps.now ?? ((): Date => new Date());
   const at = (): string => now().toISOString();
+
+  /**
+   * Сбой шага с отпечатком УЖЕ НАПИСАННОГО тела, если оно есть: по нему
+   * автомат решает, предлагать ли «Показать как есть», и им же помечает
+   * кнопки — иначе подтверждение публикации не сойдётся с текстом.
+   */
+  function failed(
+    step: PipelineStep,
+    reason: string,
+    message: string,
+    when: string,
+    postId?: string,
+  ): FailedEvent {
+    const event = failedEvent(step, reason, message, when, postId);
+    if (postId === undefined) return event;
+    const post = deps.store.posts.get(postId);
+    const textSha = post?.body === undefined || post.body === '' ? undefined : post.textSha;
+    return textSha === undefined ? event : { ...event, textSha };
+  }
 
   /** Досье поста: оно уже лежит в строке, разбирать статью заново незачем. */
   function dossierOf(post: Post): Dossier | undefined {

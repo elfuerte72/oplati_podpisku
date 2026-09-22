@@ -132,6 +132,13 @@ export interface PostsRepo {
   /** Правка полей БЕЗ статуса. Статус двигает только `transition`. */
   patch(id: string, patch: PostPatch): Post | undefined;
   transition(input: TransitionInput): TransitionResult;
+  /**
+   * Запись решения БЕЗ смены статуса: выбор рубрики и угла — след в журнале,
+   * а не шаг машины. Раньше это делалось самопереходом `status → status`, и
+   * на черновике он бросал («переход draft → draft не разрешён») прямо в
+   * горячем пути диалога, гася все эффекты после себя.
+   */
+  note(id: string, decision: DecisionInput): boolean;
   listByStatus(statuses: readonly PostStatus[], options?: { limit?: number }): Post[];
   /**
    * Последние вышедшие посты площадки (включая снятые владельцем), свежие
@@ -337,6 +344,13 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
         if (post === undefined) throw new Error(`пост ${id} исчез внутри транзакции`);
         return { ok: true, post };
       });
+    },
+
+    note(id, decision) {
+      const exists = db.get<{ id: string }>('SELECT id FROM posts WHERE id = ?', id);
+      if (exists === undefined) return false;
+      addDecision(id, decision, nowIso());
+      return true;
     },
 
     listByStatus(statuses, options = {}) {

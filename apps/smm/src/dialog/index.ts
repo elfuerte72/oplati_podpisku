@@ -1,5 +1,5 @@
 export { transition } from './machine.ts';
-export { buildCallback, parseCallback, stampOf, CALLBACK_MAX_BYTES } from './callback.ts';
+export { buildCallback, parseCallback, stampOf, CALLBACK_MAX_BYTES, NO_POST_ID } from './callback.ts';
 export { TEXTS } from './texts.ts';
 export {
   angleKeyboard,

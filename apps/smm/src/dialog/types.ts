@@ -133,6 +133,12 @@ export type DialogEvent =
       readonly reason: string;
       readonly message: string;
       readonly postId?: string;
+      /**
+       * Отпечаток УЖЕ НАПИСАННОГО тела, если оно есть. По нему собирается
+       * кнопка «Показать как есть»: раньше в неё уходил отпечаток последнего
+       * ВОПРОСА, и подтверждение публикации потом не сходилось с текстом.
+       */
+      readonly textSha?: string;
       readonly at: string;
     }
   | { readonly kind: 'timer_fired'; readonly postId: string; readonly at: string }

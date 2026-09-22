@@ -1,5 +1,5 @@
 import { RUBRIC_KEYS, type RubricKey } from '../config/smm.config.ts';
-import { parseCallback, stampOf } from './callback.ts';
+import { NO_POST_ID, parseCallback, stampOf } from './callback.ts';
 import {
   angleKeyboard,
   editChoiceKeyboard,
@@ -205,13 +205,16 @@ function handleCallback(
   }
 
   const currentStamp = state.payload?.stamp;
-  const samePost = state.postId !== undefined && state.postId === parsed.id;
+  const samePost =
+    state.postId === undefined ? parsed.id === NO_POST_ID : state.postId === parsed.id;
   if (!samePost || currentStamp === undefined || currentStamp !== parsed.stamp) {
     // Чужой пост или чужой отпечаток: кнопка из старого сообщения.
     return stale(event, state);
   }
 
-  const postId = parsed.id;
+  // Кнопка «поста ещё нет» несёт метку, а не идентификатор: подставлять её
+  // дальше нельзя — шаг стал бы искать пост с именем `new`.
+  const postId = parsed.id === NO_POST_ID ? (state.postId ?? '') : parsed.id;
   const payload = state.payload ?? {};
   const answer: Effect = { type: 'answer_callback' };
 
@@ -224,13 +227,22 @@ function handleCallback(
       }
       if (!parsed.action.startsWith('pick.') || candidate === undefined) return stale(event, state);
       return {
-        state: { name: 'post.generating', postId, payload, expiresAt: expiresAt(ctx) },
+        state: {
+          name: 'post.generating',
+          ...(postId === '' ? {} : { postId }),
+          payload,
+          expiresAt: expiresAt(ctx),
+        },
         effects: [
           answer,
           ...(event.messageId === undefined
             ? []
             : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
-          { type: 'run', step: 'source', args: { input: candidate.url, postId } },
+          {
+            type: 'run',
+            step: 'source',
+            args: { input: candidate.url, ...(postId === '' ? {} : { postId }) },
+          },
           { type: 'send', text: TEXTS.working },
         ],
       };
@@ -509,7 +521,11 @@ function handleCallback(
       if (parsed.action === 'show') {
         return {
           state: { name: 'post.previewed', postId, payload, expiresAt: expiresAt(ctx) },
-          effects: [answer, { type: 'preview', postId }],
+          effects: [
+            answer,
+            { type: 'preview', postId },
+            { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(postId, parsed.stamp) },
+          ],
         };
       }
       if (parsed.action === 'drop') {
@@ -531,12 +547,12 @@ function handlePipelineDone(
   const outcome = event.outcome;
 
   if (outcome.kind === 'candidates') {
-    const postId = state.postId ?? 'pick';
+    // Пост создаётся ПОСЛЕ выбора: до него в кнопке стоит метка «поста нет».
     const stamp = stampOf(outcome.candidates);
     return {
       state: {
         name: 'post.await_source_pick',
-        postId,
+        ...(state.postId === undefined ? {} : { postId: state.postId }),
         payload: withPayload(state, { candidates: outcome.candidates, stamp }),
         expiresAt: expiresAt(ctx),
       },
@@ -544,7 +560,7 @@ function handlePipelineDone(
         {
           type: 'send',
           text: TEXTS.askSourcePick,
-          keyboard: sourcePickKeyboard(postId, stamp, outcome.candidates),
+          keyboard: sourcePickKeyboard(state.postId ?? NO_POST_ID, stamp, outcome.candidates),
         },
       ],
     };
@@ -647,7 +663,14 @@ function handlePipelineDone(
       payload: withPayload(state, { stamp }),
       expiresAt: expiresAt(ctx),
     },
-    effects: [{ type: 'preview', postId: outcome.postId }],
+    // Превью — это САМ ПОСТ (как он уйдёт в канал), а кнопки живут отдельным
+    // сообщением: у поста своя клавиатура рендера (кнопка продукта), и
+    // подмешивать в неё «Опубликовать» значило бы показывать владельцу не то,
+    // что увидит читатель.
+    effects: [
+      { type: 'preview', postId: outcome.postId },
+      { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(outcome.postId, stamp) },
+    ],
   };
 }
 
@@ -685,7 +708,10 @@ export function transition(
       if (postId === undefined) {
         return idleWith([{ type: 'send', text: TEXTS.stepFailed(event.message) }]);
       }
-      const stamp = state.payload?.stamp ?? stampOf(event.message);
+      // Отпечаток — от ТЕКСТА, а не от вопроса: кнопка «Показать как есть»
+      // ведёт к публикации, а право на неё сверяется по отпечатку тела.
+      const hasText = event.textSha !== undefined && event.textSha !== '';
+      const stamp = hasText ? (event.textSha ?? '').slice(0, 8) : stampOf(event.message);
       return {
         state: {
           name: 'post.failed',
@@ -697,7 +723,7 @@ export function transition(
           {
             type: 'send',
             text: TEXTS.stepFailed(event.message),
-            keyboard: failedKeyboard(postId, stamp),
+            keyboard: failedKeyboard(postId, stamp, hasText),
           },
         ],
       };

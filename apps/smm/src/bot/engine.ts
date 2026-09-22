@@ -191,12 +191,11 @@ export function createEngine(deps: EngineDeps): Engine {
     }
 
     // Прочие решения (рубрика, угол) — просто строка журнала рядом с постом.
-    deps.store.posts.transition({
-      id: postId,
-      from: [post.status],
-      to: post.status,
-      decision: { kind, actor: 'owner', actorId: deps.ownerId, payload },
-    });
+    // Именно строка, а не самопереход статуса: `transition` бросает на
+    // переход, не описанный в машине, а на черновике `draft → draft` таким и
+    // был — исключение гасило все эффекты после решения, и владелец не
+    // получал следующий вопрос.
+    deps.store.posts.note(postId, { kind, actor: 'owner', actorId: deps.ownerId, payload });
   }
 
   async function handleOnce(event: DialogEvent, depth: number): Promise<void> {
@@ -221,7 +220,16 @@ export function createEngine(deps: EngineDeps): Engine {
     // немедленно, и оно обязано увидеть уже новое состояние.
     write(result.state);
 
+    // Шаг конвейера идёт ПОСЛЕДНИМ, каким бы по счёту его ни поставил автомат.
+    // Он живёт минуту и возвращает событие, которое доигрывается здесь же, —
+    // поэтому всё, что стоит за ним в списке (в том числе «Собираю»),
+    // доезжало до владельца уже ПОСЛЕ готового поста.
+    const steps = result.effects.filter((effect) => effect.type === 'run');
     for (const effect of result.effects) {
+      if (effect.type === 'run') continue;
+      await applyEffect(effect);
+    }
+    for (const effect of steps) {
       const next = await applyEffect(effect);
       if (next !== undefined) await handleOnce(next, depth + 1);
     }

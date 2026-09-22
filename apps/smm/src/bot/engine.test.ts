@@ -348,3 +348,125 @@ describe('отметка о публикации в Threads', () => {
     expect(calls.filter((call) => call.kind === 'run')).toHaveLength(0);
   });
 });
+
+describe('журнальные решения', () => {
+  it('выбор рубрики на ЧЕРНОВИКЕ не роняет обработку: эффекты после него доходят', async () => {
+    const { store, engine, calls } = setup({ produce: undefined });
+    const post = store.posts.create({ platform: 'telegram' });
+    const stamp = 'questio1';
+    store.flow.set(OWNER, {
+      state: 'post.await_rubric',
+      postId: post.id,
+      payload: { stamp, angles: [{ title: 'Угол', idea: 'идея' }] },
+    });
+
+    await engine.handle({ kind: 'callback', data: buildCallback('rub.news', post.id, stamp), at: NOW });
+
+    // Статус не двигается: рубрика — запись в журнале, а не шаг машины.
+    expect(store.posts.get(post.id)?.status).toBe('draft');
+    expect(store.posts.decisions(post.id).some((decision) => decision.kind === 'rubric')).toBe(true);
+    // Вопрос про угол обязан дойти: раньше исключение гасило всё после решения.
+    const sends = calls.filter((call) => call.kind === 'send');
+    expect(sends.length).toBeGreaterThan(0);
+  });
+});
+
+describe('порядок эффектов', () => {
+  it('«Собираю» приходит ДО результата шага, а не после него', async () => {
+    const { store, engine, calls } = setup({
+      source: {
+        kind: 'pipeline_done',
+        outcome: { kind: 'article', postId: 'p-1', title: 'Заголовок' },
+        at: NOW,
+      },
+    });
+    void store;
+
+    await engine.handle({ kind: 'command', command: '/post', args: 'https://example.com/a', at: NOW });
+
+    const order = calls.map((call) => call.kind);
+    expect(order.indexOf('send')).toBeLessThan(order.indexOf('run'));
+  });
+});
+
+describe('счастливый путь целиком', () => {
+  it('от /post до подтверждения публикации: каждый шаг получает кнопки', async () => {
+    const store = openStore({ path: ':memory:' });
+    const post = store.posts.create({ platform: 'telegram', rubric: 'news', layout: 'a' });
+    store.posts.transition({ id: post.id, from: ['draft'], to: 'linted', decision: { kind: 'lint', actor: 'code' } });
+    store.posts.transition({ id: post.id, from: ['linted'], to: 'reviewed', decision: { kind: 'judge', actor: 'model' } });
+    store.posts.patch(post.id, { body: '# Заголовок\n\nтело поста' });
+    const textSha = store.posts.get(post.id)?.textSha ?? '';
+
+    const { ports, calls } = fakePorts({
+      source: { kind: 'pipeline_done', outcome: { kind: 'article', postId: post.id, title: 'Заголовок' }, at: NOW },
+      plan: {
+        kind: 'pipeline_done',
+        outcome: {
+          kind: 'plan',
+          postId: post.id,
+          rubric: 'news',
+          angles: [{ title: 'Угол', idea: 'идея' }],
+        },
+        at: NOW,
+      },
+      produce: {
+        kind: 'pipeline_done',
+        outcome: { kind: 'post', postId: post.id, textSha, verdict: 'pass' },
+        at: NOW,
+      },
+    });
+    // Показ превью — ФАКТ, от которого отсчитывается право на публикацию:
+    // в живом контуре его фиксирует исполнитель, здесь — двойник.
+    const previewing: BotPorts = {
+      ...ports,
+      preview(postId: string) {
+        calls.push({ kind: 'preview', value: postId });
+        store.posts.transition({
+          id: postId,
+          from: ['reviewed', 'previewed'],
+          to: 'previewed',
+          decision: { kind: 'preview', actor: 'code' },
+        });
+        return Promise.resolve();
+      },
+    };
+    const engine = createEngine({ store, ports: previewing, logger: silent(), ownerId: OWNER, undoSeconds: 60 });
+
+    await engine.handle({ kind: 'command', command: '/post', args: 'https://example.com/a', at: NOW });
+    expect(engine.current().name).toBe('post.await_rubric');
+
+    const rubricKeyboard = lastKeyboard(calls);
+    await engine.handle({ kind: 'callback', data: dataOf(rubricKeyboard, 0), at: NOW, messageId: 1 });
+    expect(engine.current().name).toBe('post.await_angle');
+
+    const angleKeyboard = lastKeyboard(calls);
+    await engine.handle({ kind: 'callback', data: dataOf(angleKeyboard, 0), at: NOW, messageId: 2 });
+    expect(engine.current().name).toBe('post.previewed');
+    expect(calls.some((call) => call.kind === 'preview')).toBe(true);
+
+    // Под превью обязаны быть кнопки: иначе опубликовать нечем.
+    const previewButtons = lastKeyboard(calls);
+    await engine.handle({ kind: 'callback', data: dataOf(previewButtons, 0), at: NOW, messageId: 3 });
+
+    expect(store.posts.get(post.id)?.status).toBe('approved');
+    expect(store.posts.isApprovedForPublish(post.id, OWNER)).toBe(true);
+    expect(calls.some((call) => call.kind === 'schedule_publish')).toBe(true);
+  });
+});
+
+/** Клавиатура последнего сообщения владельцу. */
+function lastKeyboard(calls: readonly Recorded[]): Keyboard {
+  const sends = calls.filter((call) => call.kind === 'send');
+  for (let index = sends.length - 1; index >= 0; index -= 1) {
+    const value = sends[index]?.value as { keyboard?: Keyboard } | undefined;
+    if (value?.keyboard !== undefined) return value.keyboard;
+  }
+  throw new Error('владельцу не пришло ни одной кнопки');
+}
+
+function dataOf(keyboard: Keyboard, index: number): string {
+  const button = keyboard.rows.flat()[index];
+  if (button?.data === undefined) throw new Error('кнопка без действия');
+  return button.data;
+}

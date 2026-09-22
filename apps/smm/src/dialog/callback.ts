@@ -11,6 +11,12 @@ import { createHash } from 'node:crypto';
  */
 
 export const CALLBACK_NS = 'p';
+/**
+ * Место поста в кнопке, когда поста ЕЩЁ НЕТ: выбор первоисточника идёт до
+ * создания черновика. Раньше сюда подставлялась строка-заглушка, и шаг
+ * источника потом искал по ней несуществующий пост.
+ */
+export const NO_POST_ID = 'new';
 export const CALLBACK_MAX_BYTES = 64;
 export const STAMP_LENGTH = 8;
 

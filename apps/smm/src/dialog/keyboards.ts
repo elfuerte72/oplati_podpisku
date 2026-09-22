@@ -116,10 +116,12 @@ export function publishedKeyboard(postId: string, stamp: string): Keyboard {
   return { rows: [[{ text: TEXTS.buttons.threadsVersion, data: buildCallback('thr', postId, stamp) }]] };
 }
 
-export function failedKeyboard(postId: string, stamp: string): Keyboard {
+export function failedKeyboard(postId: string, stamp: string, hasText = true): Keyboard {
   return {
     rows: [
-      [{ text: TEXTS.buttons.showAsIs, data: buildCallback('show', postId, stamp) }],
+      // Шаг мог упасть ДО того, как появился текст: тогда «Показать как есть»
+      // показал бы пустоту и увёл бы в превью без тела.
+      ...(hasText ? [[{ text: TEXTS.buttons.showAsIs, data: buildCallback('show', postId, stamp) }]] : []),
       [{ text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) }],
     ],
   };

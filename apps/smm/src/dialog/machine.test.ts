@@ -315,7 +315,7 @@ describe('счастливый путь', () => {
     );
     expect(result.state.name).toBe('post.previewed');
     expect(result.state.payload?.stamp).toBe('abcdef12');
-    expect(result.effects).toEqual([{ type: 'preview', postId: POST_ID }]);
+    expect(result.effects[0]).toEqual({ type: 'preview', postId: POST_ID });
   });
 
   it('не прошедший проверку пост показывает оценку и две кнопки', () => {
@@ -399,6 +399,104 @@ describe('публикация и окно отмены', () => {
     };
     const result = transition(state, callback('cancel', POST_ID, 'abcdef12'), ctx());
     expect(result.state.name).toBe('post.previewed');
+  });
+});
+
+describe('выбор первоисточника', () => {
+  const CANDIDATES = [
+    { url: 'https://a.example.com/1', title: 'Первый' },
+    { url: 'https://b.example.com/2', title: 'Второй' },
+  ];
+
+  function awaitingPick(): { state: FlowState; stamp: string } {
+    const result = transition(
+      { name: 'post.generating' },
+      { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates: CANDIDATES }, at: NOW },
+      ctx(),
+    );
+    return { state: result.state, stamp: result.state.payload?.stamp ?? '' };
+  }
+
+  it('поста ещё нет, поэтому id в состоянии не выдумывается', () => {
+    expect(awaitingPick().state.postId).toBeUndefined();
+  });
+
+  it('клик по кандидату запускает разбор ссылки БЕЗ ссылки на несуществующий пост', () => {
+    const { state, stamp } = awaitingPick();
+    const send = transition(
+      { name: 'post.generating' },
+      { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates: CANDIDATES }, at: NOW },
+      ctx(),
+    ).effects.find((effect) => effect.type === 'send');
+    const data = send?.type === 'send' ? (send.keyboard?.rows[0]?.[0]?.data ?? '') : '';
+
+    const result = transition(state, { kind: 'callback', data, at: NOW, messageId: 42 }, ctx());
+    expect(result.state.name).toBe('post.generating');
+    const run = result.effects.find((effect) => effect.type === 'run');
+    expect(run).toMatchObject({ step: 'source', args: { input: CANDIDATES[0]?.url } });
+    expect(run?.type === 'run' && run.args?.postId).toBeUndefined();
+    expect(stamp).not.toBe('');
+  });
+});
+
+describe('превью и кнопки под ним', () => {
+  it('готовый пост показывается И получает кнопки: публиковать иначе нечем', () => {
+    const result = transition(
+      { name: 'post.generating', postId: POST_ID },
+      {
+        kind: 'pipeline_done',
+        outcome: { kind: 'post', postId: POST_ID, textSha: 'abcdef1234', verdict: 'pass' },
+        at: NOW,
+      },
+      ctx(),
+    );
+    expect(result.state.name).toBe('post.previewed');
+    expect(types(result.effects)).toEqual(['preview', 'send']);
+    const send = result.effects.find((effect) => effect.type === 'send');
+    const rows = send?.type === 'send' ? (send.keyboard?.rows ?? []) : [];
+    expect(rows.flat().map((button) => button.text)).toContain(TEXTS.buttons.publish);
+    // Отпечаток кнопки — от ТЕКСТА: по нему сверяется право на публикацию.
+    expect(rows.flat()[0]?.data).toContain('abcdef12');
+  });
+
+  it('«Показать как есть» тоже даёт кнопки', () => {
+    const state: FlowState = {
+      name: 'post.failed',
+      postId: POST_ID,
+      payload: { stamp: 'abcdef12', judgeSummary: 'слабый крючок' },
+    };
+    const result = transition(state, callback('show', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('post.previewed');
+    const send = result.effects.find((effect) => effect.type === 'send');
+    expect(send?.type === 'send' && send.keyboard?.rows.flat().map((b) => b.text)).toContain(
+      TEXTS.buttons.publish,
+    );
+  });
+
+  it('сбой шага помечает пост отпечатком ТЕКСТА, а не вопроса', () => {
+    const state: FlowState = {
+      name: 'post.generating',
+      postId: POST_ID,
+      payload: { stamp: 'questio1' },
+    };
+    const result = transition(
+      state,
+      { kind: 'pipeline_failed', step: 'produce', reason: 'judge', message: 'слабо', postId: POST_ID, textSha: 'abcdef1234', at: NOW },
+      ctx(),
+    );
+    expect(result.state.payload?.stamp).toBe('abcdef12');
+  });
+
+  it('без текста «Показать как есть» не предлагается: показывать нечего', () => {
+    const result = transition(
+      { name: 'post.generating', postId: POST_ID },
+      { kind: 'pipeline_failed', step: 'source', reason: 'timeout', message: 'источник молчит', postId: POST_ID, at: NOW },
+      ctx(),
+    );
+    const send = result.effects.find((effect) => effect.type === 'send');
+    const labels = send?.type === 'send' ? (send.keyboard?.rows.flat().map((b) => b.text) ?? []) : [];
+    expect(labels).not.toContain(TEXTS.buttons.showAsIs);
+    expect(labels).toContain(TEXTS.buttons.drop);
   });
 });
 
