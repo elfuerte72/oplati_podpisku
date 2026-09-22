@@ -20,6 +20,7 @@ import { ideaItems, ideasEmptyText } from './ideas-view.ts';
 import { queueEmptyText, queueItems } from './queue-view.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createRunner } from './runner.ts';
+import { runPolling, type PollingState } from './polling.ts';
 import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
 import { buildReport, renderReport, type ReportPeriod } from '../stats/report.ts';
 import { collectViews } from '../stats/views.ts';
@@ -168,6 +169,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     const status = await check({
       store: deps.store,
       ownerId: deps.env.ownerId,
+      polling,
       checkBot: async () => {
         try {
           // Свой короткий поводок: сторож не должен висеть на Telegram.
@@ -192,6 +194,8 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   }
 
   let healthTimer: NodeJS.Timeout | undefined;
+  /** Идёт ли приём команд. Проверка здоровья читает это, а не «сервис поднят». */
+  const polling: PollingState = { running: false, reason: 'ещё не запускался' };
 
   /** Ответ на текущее нажатие: id колбэка живёт только внутри обработки апдейта. */
   let pendingCallback: ((text?: string) => Promise<void>) | undefined;
@@ -463,9 +467,25 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       deps.logger.info({ commands: COMMANDS.length }, 'бот слушает');
       // `bot.start()` не возвращает управление, пока бот работает: запускаем
       // без ожидания, иначе сборка приложения не завершится.
-      void bot.start({ drop_pending_updates: true }).catch((error: unknown) => {
-        deps.logger.error({ err: error }, 'long polling остановился');
-      });
+      //
+      // ⚠️ Через `runPolling`, а не напрямую: при выкате старый контейнер живёт
+      // рядом с новым, Telegram отдаёт `getUpdates` одному, и проигравший
+      // получает 409. Раньше цикл на этом останавливался — сервис `1/1`,
+      // здоровье зелёное, а бот команды не принимал вовсе.
+      void runPolling(
+        {
+          start: () => bot.start({ drop_pending_updates: true }),
+          logger: deps.logger,
+          onGiveUp: async (reason) => {
+            await sendOps(
+              ['[SMM] Бот не принимает команды', '', `Причина: ${reason}`, '',
+               'Что делать: перезапустить приложение oplatishka-smm в Dokploy.'].join('\n'),
+              {},
+            );
+          },
+        },
+        polling,
+      );
     },
     async stop() {
       if (healthTimer !== undefined) {

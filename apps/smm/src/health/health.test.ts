@@ -118,6 +118,29 @@ describe('баланс и валюта', () => {
   });
 });
 
+describe('приём команд', () => {
+  it('остановленный long polling — КРАСНО, даже когда всё остальное зелено', async () => {
+    const store = openStore({ path: ':memory:' });
+    const status = await check({
+      ...baseDeps(store, balance('5.0')),
+      polling: { running: false, reason: 'другой экземпляр держит getUpdates' },
+    });
+    const item = status.items.find((row) => row.name === 'Приём команд');
+    expect(item?.level).toBe('red');
+    expect(item?.reason).toContain('getUpdates');
+    expect(status.level).toBe('red');
+    store.close();
+  });
+
+  it('идущий polling — зелено', async () => {
+    const store = openStore({ path: ':memory:' });
+    const status = await check({ ...baseDeps(store, balance('5.0')), polling: { running: true } });
+    expect(status.items.find((row) => row.name === 'Приём команд')?.level).toBe('green');
+    expect(status.level).toBe('green');
+    store.close();
+  });
+});
+
 describe('сообщение о здоровье', () => {
   function notifier(store: Store, sink: { text: string; toRoot?: boolean }[], fail = false): NotifyDeps {
     return {
