@@ -1,6 +1,7 @@
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
 import { RankSchema, type RankItem } from '../llm/schemas.ts';
 import type { Item } from '../sources/poll/types.ts';
+import { normalizeUrl } from '../url.ts';
 import { rankInput } from './inputs.ts';
 import { logStepDone, logStepFailed, logStepStarted } from './steps.ts';
 import type { PipelineDeps } from './types.ts';
@@ -27,21 +28,6 @@ export interface RankContext {
 export interface RankedItem {
   readonly item: Item;
   readonly rank: RankItem;
-}
-
-/** Нормализация адреса для сравнения: хвосты трекинга не должны мешать дедупу. */
-export function normalizeUrl(raw: string): string {
-  try {
-    const url = new URL(raw);
-    url.hash = '';
-    for (const key of [...url.searchParams.keys()]) {
-      if (/^(utm_|yclid|gclid|fbclid|erid)/i.test(key)) url.searchParams.delete(key);
-    }
-    const path = url.pathname.replace(/\/+$/, '');
-    return `${url.host.toLowerCase().replace(/^www\./, '')}${path}${url.search}`;
-  } catch {
-    return raw.trim().toLowerCase();
-  }
 }
 
 /**

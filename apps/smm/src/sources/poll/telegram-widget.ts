@@ -30,19 +30,57 @@ function messageBlocks(html: string): string[] {
   return html.split(/<div class="tgme_widget_message[ "]/).slice(1);
 }
 
+/**
+ * Разметка СВОЕГО текста поста.
+ *
+ * ⚠️ Берётся `js-message_text`, а не первый попавшийся `..._message_text`: у
+ * поста-ответа первым идёт цитата (`js-message_reply_text`), и парсер по
+ * первому совпадению читал чужой пост вместо нашего — вместе с его ссылками и
+ * без меток рекламы, которые стоят в собственном тексте (ревью 22.09.2026,
+ * живые `meduzalive` и `tginfo`).
+ */
+function ownTextHtml(block: string): string {
+  const opening = /<div class="[^"]*\bjs-message_text\b[^"]*"[^>]*>/.exec(block);
+  if (opening === null) return '';
+  const start = opening.index + opening[0].length;
+
+  // Внутри текста поста бывают вложенные `div` (опросы, цитаты, спойлеры):
+  // режем по ПАРНОМУ закрывающему тегу, а не по первому встречному.
+  let depth = 1;
+  const tags = /<\/?div\b[^>]*>/g;
+  tags.lastIndex = start;
+  for (let match = tags.exec(block); match !== null; match = tags.exec(block)) {
+    depth += match[0].startsWith('</') ? -1 : 1;
+    if (depth === 0) return block.slice(start, match.index);
+  }
+  return block.slice(start);
+}
+
 function textOf(block: string): string {
-  const match = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(block);
-  return decodeEntities((match?.[1] ?? '').replace(/<[^>]+>/g, ' '));
+  return decodeEntities(ownTextHtml(block).replace(/<[^>]+>/g, ' '));
 }
 
 function linksOf(block: string): string[] {
-  const text = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(block)?.[1] ?? '';
+  const text = ownTextHtml(block);
   const out: string[] = [];
   for (const match of text.matchAll(/<a[^>]+href="([^"]+)"/gi)) {
     const href = decodeEntities(match[1] ?? '');
     if (href.startsWith('http')) out.push(href);
   }
   return out;
+}
+
+/** Просмотры поста: единственный доступный счётчик охвата у чужого канала. */
+function viewsOf(block: string): number | undefined {
+  const raw = /<span class="tgme_widget_message_views">([^<]+)<\/span>/.exec(block)?.[1];
+  if (raw === undefined) return undefined;
+  const match = /^([\d.,]+)\s*([KMКМ])?$/i.exec(raw.trim());
+  if (match === null) return undefined;
+  const value = Number((match[1] ?? '').replace(',', '.'));
+  if (!Number.isFinite(value)) return undefined;
+  const suffix = (match[2] ?? '').toUpperCase();
+  const factor = suffix === 'K' || suffix === 'К' ? 1000 : suffix === 'M' || suffix === 'М' ? 1_000_000 : 1;
+  return Math.round(value * factor);
 }
 
 function publishedAtOf(block: string): string | undefined {
@@ -69,7 +107,11 @@ export async function telegramWidget(
 
   const items: Item[] = [];
   const seen = new Set<string>();
-  for (const block of messageBlocks(page.text).slice(-(options.limit ?? 20))) {
+  const limit = options.limit ?? 20;
+  // ⚠️ `slice(-0)` — это весь массив, а не пустой: нулевой потолок нужно
+  // обрабатывать явно.
+  const blocks = limit <= 0 ? [] : messageBlocks(page.text).slice(-limit);
+  for (const block of blocks) {
     const text = textOf(block);
     const links = linksOf(block);
     const haystack = `${text} ${links.join(' ')}`;
@@ -82,11 +124,13 @@ export async function telegramWidget(
     seen.add(source);
 
     const publishedAt = publishedAtOf(block);
+    const views = viewsOf(block);
     items.push({
       sourceKind: 'telegram',
       sourceRef: clean,
       url: source,
       ...(publishedAt === undefined ? {} : { publishedAt }),
+      ...(views === undefined ? {} : { views }),
     });
   }
   return { ok: true, items };

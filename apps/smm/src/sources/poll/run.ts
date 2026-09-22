@@ -19,7 +19,21 @@ import type { Item, PollResult, SourceKind } from './types.ts';
 export interface PollTask {
   readonly kind: SourceKind;
   readonly ref: string;
+  /** Платный источник: его опрос стоит кредит и потому проходит через сито. */
+  readonly paid?: boolean;
   run(): Promise<PollResult>;
+}
+
+/**
+ * Память о платных опросах: «когда последний раз ходили к провайдеру».
+ *
+ * ⚠️ Кредиты ScrapeCreators не возобновляются, а прогонов в сутки семь. Без
+ * этого сита каждый X-аккаунт, сабреддит и запрос Threads жгли бы семь
+ * кредитов в день вместо двух.
+ */
+export interface PaidPollMemory {
+  lastRunAt(key: string): string | undefined;
+  remember(key: string, atIso: string): void;
 }
 
 export interface PollOptions extends HttpOptions {
@@ -28,6 +42,9 @@ export interface PollOptions extends HttpOptions {
   readonly scrapeCreatorsApiKey?: string;
   /** С какого момента твит считается свежим: ручка X отдаёт популярные. */
   readonly xSince?: Date;
+  /** Память платных опросов. Не задана — сито выключено (тесты). */
+  readonly memory?: PaidPollMemory;
+  readonly now?: () => Date;
 }
 
 export interface PollRunResult {
@@ -58,14 +75,15 @@ export function pollTasks(options: PollOptions): PollTask[] {
     tasks.push({
       kind: 'x',
       ref: handle,
+      paid: true,
       run: () => xUser(handle, { ...paid, ...(options.xSince === undefined ? {} : { since: options.xSince }) }),
     });
   }
   for (const name of config.sources.subreddits) {
-    tasks.push({ kind: 'reddit', ref: name, run: () => redditPosts(name, paid) });
+    tasks.push({ kind: 'reddit', ref: name, paid: true, run: () => redditPosts(name, paid) });
   }
   for (const query of config.sources.threadsQueries) {
-    tasks.push({ kind: 'threads', ref: query, run: () => threadsSearch(query, paid) });
+    tasks.push({ kind: 'threads', ref: query, paid: true, run: () => threadsSearch(query, paid) });
   }
   return tasks;
 }
@@ -76,19 +94,37 @@ export async function pollAll(options: PollOptions): Promise<PollRunResult> {
   const failures: { kind: SourceKind; ref: string; reason: string }[] = [];
   let credits = 0;
 
+  const now = options.now ?? ((): Date => new Date());
+  const cacheMs = (options.config ?? smmConfig).sources.cacheHours * 60 * 60 * 1000;
+
   for (const task of tasks) {
+    const key = `${task.kind}:${task.ref}`;
+    if (task.paid === true && options.memory !== undefined) {
+      const last = options.memory.lastRunAt(key);
+      const passed = last === undefined ? Infinity : now().getTime() - new Date(last).getTime();
+      if (Number.isFinite(passed) && passed < cacheMs) {
+        options.logger.info({ source: task.kind, ref: task.ref }, 'платный источник ещё свеж: кредит не тратим');
+        continue;
+      }
+    }
     options.logger.info({ source: task.kind, ref: task.ref }, 'опрос источника начат');
     const result = await task.run();
     if (!result.ok) {
       // Не бросаем и не прерываемся: следующий источник живёт своей жизнью.
+      // Причина идёт ВМЕСТЕ с сообщением: «contract» без текста разбирать
+      // нечем, а тело ответа провайдера как раз в нём.
       options.logger.warn(
-        { source: task.kind, ref: task.ref, reason: result.reason },
+        { source: task.kind, ref: task.ref, reason: result.reason, message: result.message },
         'опрос источника не удался',
       );
       failures.push({ kind: task.kind, ref: task.ref, reason: result.reason });
       continue;
     }
     credits += result.credits ?? 0;
+    // Успешный платный опрос запоминается: следующий прогон в окне кэша его
+    // пропустит. Неудачный НЕ запоминается — иначе сбой провайдера означал бы
+    // полсуток тишины по этому источнику.
+    if (task.paid === true) options.memory?.remember(key, now().toISOString());
     items.push(...result.items);
     options.logger.info(
       { source: task.kind, ref: task.ref, items: result.items.length, credits: result.credits ?? 0 },

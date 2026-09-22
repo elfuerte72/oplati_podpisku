@@ -132,7 +132,10 @@ describe('кнопки дайджеста', () => {
     expect(calls.find((call) => call.kind === 'run')).toMatchObject({
       value: { step: 'source', args: { itemId: ids.hot } },
     });
-    expect(store.items.findById(ids.hot)?.verdict).toBe('written');
+    // ⚠️ Отметку «написали» ставит сам шаг источника: двойник шагов его не
+    // исполняет, поэтому тема остаётся нерешённой — и это правильно, статья
+    // ещё не открылась.
+    expect(store.items.findById(ids.hot)?.verdict).toBeUndefined();
     store.close();
   });
 

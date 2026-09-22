@@ -157,3 +157,50 @@ export const THREADS_RESPONSE = {
     },
   ],
 };
+
+/**
+ * Витрина с постом-ОТВЕТОМ: первым в блоке идёт цитата чужого поста, своим
+ * текстом — второй div, а внутри него ещё один вложенный (опрос). На такой
+ * разметке парсер по первому совпадению читал цитату вместо поста (ревью
+ * 22.09.2026, живые `meduzalive` и `tginfo`).
+ */
+export const TELEGRAM_REPLY_HTML = `<!doctype html>
+<html><body><section class="tgme_channel_history">
+  <div class="tgme_widget_message" data-post="chan/500">
+    <a class="tgme_widget_message_reply">
+      <div class="tgme_widget_message_text js-message_reply_text">
+        Цитата чужого поста со ссылкой
+        <a href="https://old-news.example.com/court">старая новость</a>
+      </div>
+    </a>
+    <div class="tgme_widget_message_text js-message_text">
+      Промокод на курс по нейросетям, налетай.
+      <div class="tgme_widget_message_poll">вложенный блок опроса</div>
+      <a href="https://course.example.com/?utm_source=tg_chan&amp;erid=2Vtzq">записаться</a>
+    </div>
+    <div class="tgme_widget_message_footer">
+      <span class="tgme_widget_message_views">5.1K</span>
+      <a class="tgme_widget_message_date" href="https://t.me/chan/500">
+        <time datetime="2026-09-21T11:00:00+00:00">11:00</time>
+      </a>
+    </div>
+  </div>
+
+  <div class="tgme_widget_message" data-post="chan/501">
+    <a class="tgme_widget_message_reply">
+      <div class="tgme_widget_message_text js-message_reply_text">
+        Цитата: <a href="https://quoted.example.com/old">чужая ссылка</a>
+      </div>
+    </a>
+    <div class="tgme_widget_message_text js-message_text">
+      Свой текст поста.
+      <a href="https://blog.example.com/own-source">первоисточник</a>
+    </div>
+    <div class="tgme_widget_message_footer">
+      <span class="tgme_widget_message_views">834</span>
+      <a class="tgme_widget_message_date" href="https://t.me/chan/501">
+        <time datetime="2026-09-21T12:00:00+00:00">12:00</time>
+      </a>
+    </div>
+  </div>
+</section></body></html>`;

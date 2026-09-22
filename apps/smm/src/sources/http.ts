@@ -383,23 +383,29 @@ export async function fetchJson<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const checked = checkUrl(url);
-    if (!('url' in checked)) return checked;
-    // Тот же гейт, что у страниц: адрес API приходит из конфига, но проверка
-    // стоит здесь, а не в вере в конфиг.
-    const resolved = await checkResolves(checked.url, options.resolver ?? systemResolver);
-    if (resolved !== undefined) return resolved;
-    const response = await fetcher(checked.url.toString(), {
-      method: options.method ?? 'GET',
-      signal: controller.signal,
-      headers: {
-        'user-agent': config.http.userAgent,
-        accept: 'application/json',
-        ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
-        ...options.headers,
+    // ⚠️ Редиректы считаем САМИ, как у страниц: иначе редирект уводит запрос
+    // вместе с заголовком `x-api-key` на чужой адрес мимо всех проверок.
+    const attempt = await request(
+      url,
+      {
+        method: options.method ?? 'GET',
+        signal: controller.signal,
+        headers: {
+          'user-agent': config.http.userAgent,
+          accept: 'application/json',
+          ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
+          ...options.headers,
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-    });
+      {
+        maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
+        fetcher,
+        resolver: options.resolver ?? systemResolver,
+      },
+    );
+    if ('ok' in attempt && attempt.ok === false) return attempt;
+    const { response } = attempt as RawResponse;
     // Тело читается ДО проверки статуса: у ошибки провайдера в теле лежит
     // причина, и она нужна в логе.
     const { bytes } = await readLimited(

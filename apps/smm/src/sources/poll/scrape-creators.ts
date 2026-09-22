@@ -21,6 +21,9 @@ export interface ScrapeCreatorsOptions extends HttpOptions {
   readonly apiKey?: string;
 }
 
+// ⚠️ Массив записей ОБЯЗАТЕЛЕН в каждой схеме. С `.default([])` смена формы
+// ответа («posts» стало «data.children») проходила молча: кредит списан,
+// элементов ноль, в логе это неотличимо от «сегодня ничего не нашлось».
 const EnvelopeSchema = z.object({
   success: z.boolean().optional(),
   credits_charged: z.number().nonnegative().optional(),
@@ -36,8 +39,7 @@ const RedditSchema = EnvelopeSchema.extend({
         created_at_iso: z.string().trim().optional(),
         over_18: z.boolean().optional(),
       }),
-    )
-    .default([]),
+    ),
 });
 
 const XSchema = EnvelopeSchema.extend({
@@ -52,8 +54,7 @@ const XSchema = EnvelopeSchema.extend({
           })
           .optional(),
       }),
-    )
-    .default([]),
+    ),
 });
 
 const ThreadsSchema = EnvelopeSchema.extend({
@@ -64,8 +65,7 @@ const ThreadsSchema = EnvelopeSchema.extend({
         taken_at: z.number().int().nonnegative().optional(),
         user: z.object({ username: z.string().trim().optional() }).optional(),
       }),
-    )
-    .default([]),
+    ),
 });
 
 async function call<S extends z.ZodTypeAny>(
@@ -92,7 +92,7 @@ async function call<S extends z.ZodTypeAny>(
   if (!parsed.success) {
     return { ok: false, reason: 'contract', message: `ответ ${path} не разобрался схемой` };
   }
-  const credits = (answer.value as { credits_charged?: number }).credits_charged ?? 1;
+  const credits = parsed.data.credits_charged ?? 1;
   return { ok: true, value: parsed.data, credits };
 }
 
@@ -152,14 +152,17 @@ export async function xUser(handle: string, options: XUserOptions = {}): Promise
     if (url === undefined || url === '') continue;
     const created = tweet.legacy?.created_at;
     const at = created === undefined ? undefined : new Date(created);
-    if (at !== undefined && !Number.isNaN(at.getTime()) && at.getTime() < since) continue;
+    const known = at !== undefined && !Number.isNaN(at.getTime());
+    // ⚠️ Твит без читаемой даты при заданной отсечке ОТБРАСЫВАЕТСЯ, а не
+    // пропускается: ручка отдаёт «100 самых популярных», и без даты в ленту
+    // идей приезжает прошлогоднее.
+    if (options.since !== undefined && !known) continue;
+    if (known && at.getTime() < since) continue;
     items.push({
       sourceKind: 'x',
       sourceRef: handle,
       url,
-      ...(at === undefined || Number.isNaN(at.getTime())
-        ? {}
-        : { publishedAt: at.toISOString() }),
+      ...(known ? { publishedAt: at.toISOString() } : {}),
     });
   }
   return { ok: true, items, credits: answer.credits };

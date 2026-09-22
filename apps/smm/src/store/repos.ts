@@ -3,6 +3,7 @@ import type { ZodType } from 'zod';
 import type { Db, SqlValue } from './db.ts';
 import type { OnCorruptJson } from './posts.ts';
 import type { FlowRow, Item, NewItem, UsageByRole, UsageInput, UsageSummary } from './types.ts';
+import { normalizeUrl } from '../url.ts';
 import { ulid } from './ulid.ts';
 
 // ------------------------------------------------------------------ flow
@@ -88,7 +89,13 @@ export interface ItemsRepo {
   findByUrl(url: string): Item | undefined;
   /** Элемент по id: его называет кнопка дайджеста идей. */
   findById(id: string): Item | undefined;
-  listRecent(options?: { sinceIso?: string; limit?: number; onlyUnjudged?: boolean }): Item[];
+  listRecent(options?: {
+    sinceIso?: string;
+    limit?: number;
+    onlyUnjudged?: boolean;
+    /** Только неоценённые: пачка, упавшая из-за модели, должна вернуться. */
+    onlyUnranked?: boolean;
+  }): Item[];
   /** false — элемента с таким id нет: молча промахнуться нельзя. */
   markVerdict(id: string, verdict: NonNullable<Item['verdict']>): boolean;
   setRank(id: string, rank: unknown): boolean;
@@ -125,9 +132,9 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
     upsertByUrl(item) {
       const at = now().toISOString();
       db.run(
-        `INSERT INTO items (id, source_kind, source_ref, url, title, published_at, seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (url) DO UPDATE SET
+        `INSERT INTO items (id, source_kind, source_ref, url, url_key, title, published_at, seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (url_key) DO UPDATE SET
            title = COALESCE(excluded.title, items.title),
            published_at = COALESCE(excluded.published_at, items.published_at),
            seen_at = excluded.seen_at`,
@@ -135,6 +142,7 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
         item.sourceKind,
         item.sourceRef ?? null,
         item.url,
+        normalizeUrl(item.url),
         item.title ?? null,
         item.publishedAt ?? null,
         at,
@@ -149,7 +157,8 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
     },
 
     findByUrl(url) {
-      const row = db.get<ItemDbRow>('SELECT * FROM items WHERE url = ?', url);
+      // Поиск по КЛЮЧУ: тот же материал с чужим `utm_source` — это он же.
+      const row = db.get<ItemDbRow>('SELECT * FROM items WHERE url_key = ?', normalizeUrl(url));
       return row === undefined ? undefined : toItem(row);
     },
     listRecent(options = {}) {
@@ -157,11 +166,13 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
         `SELECT * FROM items
           WHERE (? IS NULL OR seen_at >= ?)
             AND (? = 0 OR verdict IS NULL)
+            AND (? = 0 OR rank IS NULL)
           ORDER BY COALESCE(published_at, seen_at) DESC, id DESC
           LIMIT ?`,
         options.sinceIso ?? null,
         options.sinceIso ?? null,
         options.onlyUnjudged === true ? 1 : 0,
+        options.onlyUnranked === true ? 1 : 0,
         options.limit ?? 50,
       );
       return rows.map(toItem);

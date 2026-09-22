@@ -228,7 +228,9 @@ function handleCallback(
         },
         effects: [
           { type: 'answer_callback' },
-          { type: 'item_verdict', itemId, verdict: 'written' },
+          // ⚠️ Отметку «написали» ставит САМ ШАГ после удачного разбора
+          // источника: статья может не открыться, и помеченная тема из
+          // дайджеста уже не вернулась бы.
           // Источник уже известен: вопрос «дай ссылку» владельцу не задаём.
           { type: 'run', step: 'source', args: { itemId, platform: 'telegram' } },
           { type: 'send', text: TEXTS.working },

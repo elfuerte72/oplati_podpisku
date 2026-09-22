@@ -8,6 +8,7 @@ import {
   HN_TOP_STORIES,
   REDDIT_RESPONSE,
   RSS_XML,
+  TELEGRAM_REPLY_HTML,
   TELEGRAM_WIDGET_HTML,
   THREADS_RESPONSE,
   X_RESPONSE,
@@ -63,12 +64,40 @@ describe('витрина Telegram-канала', () => {
     expect(serialized).not.toContain('мысли вслух');
   });
 
-  it('рекламный пост отсеивается по метке, а не по тексту одной приметы', async () => {
+  it('рекламный пост отсеивается вместе со своим адресом с хвостом', async () => {
     const { fetcher } = serve({ 'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML });
     const result = await telegramWidget('ainews', { fetcher, resolver: publicDns });
-    expect(result.ok && result.items.map((item) => item.url)).not.toContain(
-      'https://course.example.com/',
-    );
+    // ⚠️ Сравнение по НАЧАЛУ адреса: у рекламной ссылки хвост `utm_source` и
+    // `erid`, и точное сравнение с голым адресом проходило всегда.
+    const urls = result.ok ? result.items.map((item) => item.url) : [];
+    expect(urls.some((url) => url.startsWith('https://course.example.com'))).toBe(false);
+  });
+
+  it('у поста-ОТВЕТА читается свой текст, а не цитата', async () => {
+    const { fetcher } = serve({ 'https://t.me/s/chan': TELEGRAM_REPLY_HTML });
+    const result = await telegramWidget('chan', { fetcher, resolver: publicDns });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const urls = result.items.map((item) => item.url);
+    // Реклама в СВОЁМ тексте ловится (раньше метки искались в цитате).
+    expect(urls.some((url) => url.startsWith('https://course.example.com/'))).toBe(false);
+    // Ссылка из цитаты первоисточником не считается.
+    expect(urls).not.toContain('https://old-news.example.com/court');
+    expect(urls).not.toContain('https://quoted.example.com/old');
+    expect(urls).toEqual(['https://blog.example.com/own-source']);
+  });
+
+  it('просмотры с витрины доезжают до элемента', async () => {
+    const { fetcher } = serve({ 'https://t.me/s/chan': TELEGRAM_REPLY_HTML });
+    const result = await telegramWidget('chan', { fetcher, resolver: publicDns });
+    expect(result.ok && result.items[0]?.views).toBe(834);
+  });
+
+  it('нулевой потолок означает «ничего», а не «всё»', async () => {
+    const { fetcher } = serve({ 'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML });
+    const result = await telegramWidget('ainews', { fetcher, resolver: publicDns, limit: 0 });
+    expect(result.ok && result.items).toEqual([]);
   });
 
   it('канал без витрины — отказ, а не пустой список', async () => {
@@ -94,6 +123,21 @@ describe('RSS', () => {
     // Сущности в заголовке раскрыты, элемент без даты не теряется.
     expect(result.items[1]?.title).toBe('Заметка без даты & со ссылкой');
     expect(result.items[1]?.publishedAt).toBeUndefined();
+  });
+
+  it('у ленты есть потолок: шестисот элементов за прогон не бывает', async () => {
+    const many = [
+      '<?xml version="1.0"?><rss><channel>',
+      ...Array.from(
+        { length: 100 },
+        (_, index) =>
+          `<item><title>Тема ${index}</title><link>https://blog.example.com/${index}</link></item>`,
+      ),
+      '</channel></rss>',
+    ].join('');
+    const { fetcher } = serve({ 'https://blog.example.com/big': many });
+    const result = await rssFeed('https://blog.example.com/big', { fetcher, resolver: publicDns });
+    expect(result.ok && result.items.length).toBe(20);
   });
 
   it('понимает Atom: ссылка живёт в атрибуте', async () => {
@@ -173,6 +217,40 @@ describe('ScrapeCreators', () => {
     expect(JSON.stringify(result.ok && result.items)).not.toContain('текст чужого поста');
   });
 
+  it('дрейф контракта — ОТКАЗ, а не пустой список за списанный кредит', async () => {
+    const { fetcher } = serve({
+      // Форма самого Reddit вместо формы провайдера: так выглядит смена
+      // контракта, которую раньше проглатывал `.default([])`.
+      'https://api.scrapecreators.com/v1/reddit/subreddit': {
+        success: true,
+        credits_charged: 1,
+        data: { children: [{ title: 'Тема' }] },
+      },
+    });
+    const result = await redditPosts('singularity', { apiKey: 'sc-test', fetcher, resolver: publicDns });
+    expect(result).toMatchObject({ ok: false, reason: 'contract' });
+  });
+
+  it('твит без читаемой даты при заданной отсечке отбрасывается', async () => {
+    const { fetcher } = serve({
+      'https://api.scrapecreators.com/v1/twitter/user-tweets': {
+        success: true,
+        credits_charged: 1,
+        tweets: [
+          { url: 'https://x.com/openai/status/1', legacy: { created_at: 'мусор' } },
+          { url: 'https://x.com/openai/status/2' },
+        ],
+      },
+    });
+    const result = await xUser('openai', {
+      apiKey: 'sc-test',
+      fetcher,
+      resolver: publicDns,
+      since: new Date('2026-09-01T00:00:00.000Z'),
+    });
+    expect(result.ok && result.items).toEqual([]);
+  });
+
   it('без ключа источник не опрашивается вовсе', async () => {
     const { fetcher, calls } = serve({});
     const result = await redditPosts('singularity', { fetcher, resolver: publicDns });
@@ -206,10 +284,52 @@ describe('прогон по всем источникам', () => {
     expect(result.failures.map((failure) => failure.ref)).toContain('topstories');
   });
 
-  it('источники без ключа и без списка просто не опрашиваются', () => {
+  it('платный источник не опрашивается дважды в окне кэша', async () => {
+    const { fetcher, calls } = serve({
+      'https://api.scrapecreators.com/v1/reddit/subreddit': REDDIT_RESPONSE,
+    });
     const logger = createLogger({ level: 'fatal', stream: { write() {} } });
-    const tasks = pollTasks({ logger });
-    // По умолчанию списки пусты: остаётся только бесплатный Hacker News.
-    expect(tasks.map((task) => task.kind)).toEqual(['hn']);
+    const config: SmmConfig = {
+      ...smmConfig,
+      sources: { ...smmConfig.sources, subreddits: ['singularity'] },
+    };
+    const remembered = new Map<string, string>();
+    const memory = {
+      lastRunAt: (key: string) => remembered.get(key),
+      remember: (key: string, at: string) => {
+        remembered.set(key, at);
+      },
+    };
+    const at = new Date('2026-09-22T10:00:00.000Z');
+    const options = {
+      config,
+      logger,
+      fetcher,
+      resolver: publicDns,
+      scrapeCreatorsApiKey: 'sc-test',
+      memory,
+      now: () => at,
+    };
+
+    await pollAll(options);
+    await pollAll(options);
+    const paidCalls = calls.filter((url) => url.includes('scrapecreators'));
+    expect(paidCalls).toHaveLength(1);
+
+    // Через тринадцать часов окно кэша прошло — идём снова.
+    const later = new Date(at.getTime() + 13 * 60 * 60 * 1000);
+    await pollAll({ ...options, now: () => later });
+    expect(calls.filter((url) => url.includes('scrapecreators'))).toHaveLength(2);
+  });
+
+  it('по умолчанию опрашиваются только бесплатные источники', () => {
+    const logger = createLogger({ level: 'fatal', stream: { write() {} } });
+    const kinds = new Set(pollTasks({ logger }).map((task) => task.kind));
+    // Платные списки пусты до слова владельца: кредиты тратим по его выбору.
+    expect(kinds.has('hn')).toBe(true);
+    expect(kinds.has('rss')).toBe(true);
+    expect(kinds.has('x')).toBe(false);
+    expect(kinds.has('reddit')).toBe(false);
+    expect(kinds.has('threads')).toBe(false);
   });
 });

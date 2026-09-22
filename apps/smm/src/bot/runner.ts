@@ -216,6 +216,8 @@ export function createRunner(deps: RunnerDeps): Runner {
     // Текст статьи кладётся в досье-заготовку: следующий шаг разбирает его
     // моделью, и качать страницу заново не придётся.
     deps.store.posts.patch(post.id, { dossier: { article } });
+    // Идея дошла до поста — вот теперь она решена.
+    if (itemId !== undefined) deps.store.items.markVerdict(itemId, 'written');
     await saveCover(post.id, article);
     return {
       kind: 'pipeline_done',

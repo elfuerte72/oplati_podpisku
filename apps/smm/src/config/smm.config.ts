@@ -532,9 +532,17 @@ export const smmConfig: SmmConfig = {
     bot: { text: 'Оплатить подписку', url: 'https://t.me/oplatishkaa_bot?start=channel' },
   },
   sources: {
-    // Списки наполняет тикет 10; пустой список означает «источник не опрашиваем».
+    // ⚠️ Пустой список означает «источник не опрашиваем». Ленты ниже проверены
+    // живым запросом 22.09.2026; каналы, аккаунты X, сабреддиты и запросы
+    // Threads — редакторский выбор владельца, и до его слова они пусты:
+    // выдуманный канал в конфиге выглядит как рабочий источник, а отдаёт
+    // только строку «опрос не удался» каждые два часа.
     telegramChannels: [],
-    rss: [],
+    rss: [
+      'https://openai.com/news/rss.xml',
+      'https://blog.google/technology/ai/rss/',
+      'https://huggingface.co/blog/feed.xml',
+    ],
     xAccounts: [],
     subreddits: [],
     threadsQueries: [],

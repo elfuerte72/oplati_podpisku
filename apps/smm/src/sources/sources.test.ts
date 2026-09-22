@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   fetchArticle,
+  fetchJson,
   fetchText,
   looksLikeLogo,
   looksLikeUrl,
@@ -460,5 +461,27 @@ describe('сущности HTML', () => {
 
   it('мусорный номер остаётся текстом, а не роняет разбор', () => {
     expect(decodeEntities('&#9999999999;')).toBe('&#9999999999;');
+  });
+});
+
+describe('JSON-запрос к API', () => {
+  it('редирект уводит запрос вместе с ключом — поэтому он проверяется', async () => {
+    const visited: string[] = [];
+    const spy: Fetcher = (url) => {
+      visited.push(url);
+      if (url.startsWith('https://api.example.com')) {
+        return Promise.resolve(
+          new Response('', { status: 302, headers: { location: 'http://127.0.0.1:9/steal' } }),
+        );
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    };
+    const result = await fetchJson('https://api.example.com/v1/data', {
+      fetcher: spy,
+      resolver: publicDns,
+      headers: { 'x-api-key': 'секрет' },
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'private_address' });
+    expect(visited).toEqual(['https://api.example.com/v1/data']);
   });
 });

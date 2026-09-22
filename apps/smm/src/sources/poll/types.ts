@@ -13,6 +13,8 @@ export interface Item {
   readonly url: string;
   readonly title?: string;
   readonly publishedAt?: string;
+  /** Просмотры у источника, если он их показывает: витрина Telegram. */
+  readonly views?: number;
 }
 
 export const SOURCE_KINDS = [

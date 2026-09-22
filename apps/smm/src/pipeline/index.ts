@@ -1,5 +1,5 @@
 export { advise, advisePlan, type PlanAdvice } from './advise.ts';
-export { rankItems, coveredByUrl, normalizeUrl, RANK_BATCH, type RankContext, type RankedItem } from './rank.ts';
+export { rankItems, coveredByUrl, RANK_BATCH, type RankContext, type RankedItem } from './rank.ts';
 export {
   dossierInput,
   judgeInput,

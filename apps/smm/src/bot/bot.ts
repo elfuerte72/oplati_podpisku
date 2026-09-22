@@ -335,8 +335,11 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, command.endsWith('on'));
     } else if (command.startsWith('digest ')) {
       const hour = Number(command.slice('digest '.length));
-      if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
-        await ports.send('Час дайджеста — целое число от 0 до 23 по Москве.');
+      const { fromHour, toHour } = config.sources.pollWindowMsk;
+      // ⚠️ Час обязан попадать в окно опроса: вне его прогона не бывает, и
+      // дайджест не ушёл бы никогда при бодром «включён, 23:00» на экране.
+      if (!Number.isInteger(hour) || hour < fromHour || hour >= toHour) {
+        await ports.send(`Час дайджеста — целое число от ${fromHour} до ${toHour - 1} по Москве: вне этого окна бот источники не опрашивает.`);
         return;
       }
       deps.store.settings.set(SETTINGS_DIGEST_HOUR, DigestHour, hour);

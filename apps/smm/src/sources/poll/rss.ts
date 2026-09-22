@@ -44,12 +44,22 @@ function dateOf(block: string): string | undefined {
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
 }
 
-export async function rssFeed(url: string, options: HttpOptions = {}): Promise<PollResult> {
+export interface RssOptions extends HttpOptions {
+  /**
+   * Сколько элементов брать. ⚠️ Потолок обязателен: живой `openai.com/news/rss.xml`
+   * отдаёт больше шестисот записей за вызов, и без отсечки один прогон резал
+   * бы их на три десятка ПЛАТНЫХ пачек ранжирования.
+   */
+  readonly limit?: number;
+}
+
+export async function rssFeed(url: string, options: RssOptions = {}): Promise<PollResult> {
   const page = await fetchText(url, options);
   if (!page.ok) return { ok: false, reason: page.reason, message: page.message };
 
   const items: Item[] = [];
-  for (const block of blocks(page.text)) {
+  const limit = options.limit ?? 20;
+  for (const block of blocks(page.text).slice(0, Math.max(0, limit))) {
     const link = linkOf(block);
     if (link === undefined || !link.startsWith('http')) continue;
     const title = tagText(block, 'title');

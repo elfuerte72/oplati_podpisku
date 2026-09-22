@@ -174,6 +174,72 @@ describe('прогон тикера', () => {
   });
 });
 
+describe('доранжирование', () => {
+  it('элемент, чью пачку не осилила модель, оценивается в следующем прогоне', async () => {
+    const at = new Date('2026-09-22T07:00:00.000Z');
+    const store = openStore({ path: ':memory:' });
+    const fetcher = serve({ 'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML });
+
+    function tickerWith(answers: Partial<Record<ModelRole, unknown[]>>) {
+      return createTicker({
+        store,
+        pipeline: { model: fakeModel(answers), logger: silent() },
+        http: { fetcher, resolver: publicDns },
+        logger: silent(),
+        config: CONFIG,
+        sendDigest: () => Promise.resolve(),
+        now: () => at,
+      });
+    }
+
+    // Первый прогон: модель недоступна — элемент сохранён, но без оценки.
+    const first = await tickerWith({}).runOnce();
+    expect(first.saved).toBe(1);
+    expect(first.ranked).toBe(0);
+
+    // Второй прогон: ничего нового не пришло, а оценка всё равно ставится.
+    const second = await tickerWith({
+      rank: [
+        [
+          {
+            url: 'https://blog.example.com/gemini-memory',
+            relevance: 4,
+            reader_action: true,
+            already_covered: false,
+          },
+        ],
+      ],
+    }).runOnce();
+    expect(second.saved).toBe(0);
+    expect(second.ranked).toBe(1);
+    store.close();
+  });
+
+  it('один материал из двух лент — ОДНА строка: хвосты трекинга не в счёт', async () => {
+    const at = new Date('2026-09-22T07:00:00.000Z');
+    const store = openStore({ path: ':memory:' });
+    store.items.upsertByUrl({
+      sourceKind: 'rss',
+      url: 'https://blog.example.com/gemini-memory?utm_source=habr',
+      title: 'Тот же материал',
+    });
+    const ticker = createTicker({
+      store,
+      pipeline: { model: fakeModel({}), logger: silent() },
+      http: { fetcher: serve({ 'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML }), resolver: publicDns },
+      logger: silent(),
+      config: CONFIG,
+      sendDigest: () => Promise.resolve(),
+      now: () => at,
+    });
+
+    const result = await ticker.runOnce();
+    expect(result.saved).toBe(0);
+    expect(store.items.listRecent({ limit: 50 })).toHaveLength(1);
+    store.close();
+  });
+});
+
 describe('недельная сводка', () => {
   // 2026-09-21 — понедельник; 08:00 UTC = 11:00 МСК.
   const MONDAY = new Date('2026-09-21T08:00:00.000Z');

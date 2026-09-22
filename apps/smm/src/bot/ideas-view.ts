@@ -1,8 +1,9 @@
-import { smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
+import { z } from 'zod';
+
+import { RUBRIC_KEYS, smmConfig, type SmmConfig } from '../config/smm.config.ts';
 import { buildCallback } from '../dialog/callback.ts';
 import { TEXTS } from '../dialog/texts.ts';
 import type { Keyboard } from '../dialog/types.ts';
-import type { RankItem } from '../llm/schemas.ts';
 import type { Store } from '../store/index.ts';
 import type { Item } from '../store/types.ts';
 
@@ -20,8 +21,24 @@ export interface IdeaLine {
   readonly keyboard: Keyboard;
 }
 
-function rankOf(item: Item): Partial<RankItem> {
-  return (item.rank ?? {}) as Partial<RankItem>;
+/**
+ * Оценка идеи из колонки JSON. Разбирается схемой, а не приведением: строку
+ * пишет наш код, но правка базы руками — обычное дело, и негодная оценка не
+ * должна ронять дайджест.
+ */
+const StoredRank = z
+  .object({
+    rubric: z.enum(RUBRIC_KEYS).optional(),
+    relevance: z.number().int().min(1).max(5).optional(),
+    reader_action: z.boolean().optional(),
+    already_covered: z.boolean().optional(),
+    why: z.string().optional(),
+  })
+  .partial();
+
+function rankOf(item: Item): z.infer<typeof StoredRank> {
+  const parsed = StoredRank.safeParse(item.rank ?? {});
+  return parsed.success ? parsed.data : {};
 }
 
 /** Оценка для сортировки: неоценённое идёт ниже оценённого, но не пропадает. */
@@ -46,7 +63,7 @@ export function ideaItems(
     .slice(0, config.sources.digestTopN)
     .map((item) => {
       const rank = rankOf(item);
-      const rubric = rank.rubric === undefined ? undefined : config.rubrics[rank.rubric as RubricKey];
+      const rubric = rank.rubric === undefined ? undefined : config.rubrics[rank.rubric];
       const parts = [
         item.title ?? item.url,
         [
