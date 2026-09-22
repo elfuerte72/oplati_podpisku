@@ -23,10 +23,19 @@ const MSK_OFFSET_HOURS = 3;
 export const SETTINGS_DIGEST_ENABLED = 'digest.enabled';
 export const SETTINGS_DIGEST_HOUR = 'digest.hour';
 export const SETTINGS_DIGEST_LAST_DAY = 'digest.lastDay';
+export const SETTINGS_VIEWS_LAST_RUN = 'views.lastRun';
+export const SETTINGS_WEEKLY_LAST_WEEK = 'weekly.lastWeek';
+
+/** Просмотры собираются реже опроса источников: цифра меняется медленно. */
+export const VIEWS_EVERY_HOURS = 6;
+/** Недельная сводка — понедельник, 10:00 МСК. */
+export const WEEKLY_DAY = 1;
+export const WEEKLY_HOUR = 10;
 
 const BooleanSetting = z.boolean();
 const HourSetting = z.number().int().min(0).max(23);
 const DaySetting = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const IsoSetting = z.string().min(1);
 
 export function mskHour(at: Date): number {
   return (at.getUTCHours() + MSK_OFFSET_HOURS) % 24;
@@ -36,6 +45,22 @@ export function mskHour(at: Date): number {
 export function mskDay(at: Date): string {
   const shifted = new Date(at.getTime() + MSK_OFFSET_HOURS * 60 * 60 * 1000);
   return shifted.toISOString().slice(0, 10);
+}
+
+/** Номер недели по Москве: ключ дедупа недельной сводки. */
+export function mskWeekKey(at: Date): string {
+  const shifted = new Date(at.getTime() + MSK_OFFSET_HOURS * 60 * 60 * 1000);
+  const day = (shifted.getUTCDay() + 6) % 7;
+  // Понедельник этой недели: сводка одна на неделю, в какой бы день её ни
+  // отправили.
+  const monday = new Date(shifted.getTime() - day * 24 * 60 * 60 * 1000);
+  return monday.toISOString().slice(0, 10);
+}
+
+/** День недели по Москве: 1 — понедельник. */
+export function mskWeekday(at: Date): number {
+  const shifted = new Date(at.getTime() + MSK_OFFSET_HOURS * 60 * 60 * 1000);
+  return shifted.getUTCDay() === 0 ? 7 : shifted.getUTCDay();
 }
 
 export function isWithinWindow(at: Date, config: SmmConfig = smmConfig): boolean {
@@ -54,6 +79,10 @@ export interface TickerDeps {
   readonly http?: Pick<HttpOptions, 'fetcher' | 'resolver'>;
   /** Отправка дайджеста владельцу: сам текст собирает бот. */
   readonly sendDigest: () => Promise<void>;
+  /** Сбор просмотров с витрины: раз в несколько часов, своим расписанием. */
+  readonly collectViews?: () => Promise<void>;
+  /** Недельная сводка в тему «Отчёты»: понедельник, 10:00 МСК. */
+  readonly sendWeekly?: () => Promise<void>;
   readonly now?: () => Date;
 }
 
@@ -79,6 +108,28 @@ export function createTicker(deps: TickerDeps): Ticker {
     if (deps.store.settings.get(SETTINGS_DIGEST_LAST_DAY, DaySetting) === today) return;
     deps.store.settings.set(SETTINGS_DIGEST_LAST_DAY, DaySetting, today);
     await deps.sendDigest();
+  }
+
+  /** Просмотры собираются по своему расписанию, а не с каждым опросом. */
+  async function maybeCollectViews(at: Date): Promise<void> {
+    if (deps.collectViews === undefined) return;
+    const last = deps.store.settings.get(SETTINGS_VIEWS_LAST_RUN, IsoSetting);
+    if (last !== undefined) {
+      const passed = at.getTime() - new Date(last).getTime();
+      if (Number.isFinite(passed) && passed < VIEWS_EVERY_HOURS * 60 * 60 * 1000) return;
+    }
+    deps.store.settings.set(SETTINGS_VIEWS_LAST_RUN, IsoSetting, at.toISOString());
+    await deps.collectViews();
+  }
+
+  async function maybeSendWeekly(at: Date): Promise<void> {
+    if (deps.sendWeekly === undefined) return;
+    if (mskWeekday(at) !== WEEKLY_DAY || mskHour(at) < WEEKLY_HOUR) return;
+    const week = mskWeekKey(at);
+    // Дедуп по НЕДЕЛЕ: прогонов в понедельник несколько, сводка одна.
+    if (deps.store.settings.get(SETTINGS_WEEKLY_LAST_WEEK, DaySetting) === week) return;
+    deps.store.settings.set(SETTINGS_WEEKLY_LAST_WEEK, DaySetting, week);
+    await deps.sendWeekly();
   }
 
   async function runOnce(): Promise<{ polled: number; saved: number; ranked: number; skipped?: string }> {
@@ -135,6 +186,8 @@ export function createTicker(deps: TickerDeps): Ticker {
       }
     }
 
+    await maybeCollectViews(at);
+    await maybeSendWeekly(at);
     await maybeSendDigest(at);
     deps.logger.info(
       { polled: poll.items.length, saved: fresh.length, ranked, failures: poll.failures.length, credits: poll.credits },

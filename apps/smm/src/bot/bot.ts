@@ -21,6 +21,8 @@ import { queueEmptyText, queueItems } from './queue-view.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createRunner } from './runner.ts';
 import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
+import { buildReport, renderReport, type ReportPeriod } from '../stats/report.ts';
+import { collectViews } from '../stats/views.ts';
 import { createPublishTimers } from './timers.ts';
 
 /**
@@ -171,6 +173,30 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     logger: deps.logger,
     config,
     sendDigest: handleIdeas,
+    http: {},
+    collectViews: async () => {
+      const result = await collectViews({
+        store: deps.store,
+        logger: deps.logger,
+        channelUsername: deps.env.channelUsername,
+        config,
+      });
+      // Снятые посты — это событие для владельца, а не строка в логе: пост
+      // пропал из канала, и знать об этом он должен.
+      for (const postId of result.withdrawn) {
+        await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала: помечен снятым.`);
+      }
+    },
+    sendWeekly: async () => {
+      const text = await statsText('7d');
+      const target = deps.env.groupId ?? ownerChatId;
+      await bot.api.sendMessage(target, text, {
+        parse_mode: 'HTML',
+        ...(deps.env.groupId !== undefined && deps.env.groupThreadReports !== undefined
+          ? { message_thread_id: deps.env.groupThreadReports }
+          : {}),
+      });
+    },
     ...(deps.env.scrapeCreatorsApiKey === undefined
       ? {}
       : { scrapeCreatorsApiKey: deps.env.scrapeCreatorsApiKey }),
@@ -208,6 +234,28 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       return;
     }
     for (const item of items) await ports.send(item.line, item.keyboard);
+  }
+
+  /** Подписчиков спрашиваем у Telegram: в базе их нет и быть не может. */
+  async function subscribers(): Promise<number | undefined> {
+    try {
+      return await bot.api.getChatMemberCount(deps.env.channelId);
+    } catch (error) {
+      // Бот мог не быть админом канала — отчёт из-за этого не пропадает.
+      deps.logger.warn({ err: error }, 'число подписчиков не получено');
+      return undefined;
+    }
+  }
+
+  async function statsText(period: ReportPeriod): Promise<string> {
+    const count = await subscribers();
+    const report = buildReport({
+      store: deps.store,
+      period,
+      config,
+      ...(count === undefined ? {} : { subscribers: count }),
+    });
+    return renderReport(report);
   }
 
   async function handleIdeas(): Promise<void> {
@@ -277,9 +325,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       return;
     }
     if (event.kind === 'command' && event.command === '/stats') {
-      // Счётчики — отдельный тикет; до него команда отвечает словами, а не
-      // тишиной: молчащий бот неотличим от сломанного.
-      await ports.send('Статистику ещё не считаю.');
+      await ports.send(await statsText('30d'));
       return;
     }
     await engine.handle(event);

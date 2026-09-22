@@ -1,6 +1,6 @@
 import type { ZodType } from 'zod';
 
-import type { Db } from './db.ts';
+import type { Db, SqlValue } from './db.ts';
 import type { OnCorruptJson } from './posts.ts';
 import type { FlowRow, Item, NewItem, UsageByRole, UsageInput, UsageSummary } from './types.ts';
 import { ulid } from './ulid.ts';
@@ -356,6 +356,187 @@ export function createOfftopicRepo(db: Db, now: () => Date): OfftopicRepo {
       return db
         .all<{ title: string }>('SELECT title FROM offtopic ORDER BY id DESC LIMIT ?', limit)
         .map((row) => row.title);
+    },
+  };
+}
+
+/**
+ * Просмотры и сторож снятых постов (тикет 11).
+ *
+ * Витрина канала — единственный доступный счётчик: Bot API просмотры своего
+ * поста не отдаёт. Цифра добирается день-два, поэтому храним СНИМКИ.
+ */
+export interface ViewsRepo {
+  record(postId: string, views: number): void;
+  /** Последний снимок поста. */
+  latest(postId: string): { views: number; takenAt: string } | undefined;
+  /** Лучший и средний по постам, опубликованным в окне. */
+  summary(sinceIso: string): { average: number; best?: { postId: string; views: number }; counted: number };
+  /** Пост не найден на витрине: счётчик пропусков растёт. Возвращает новое число. */
+  missed(postId: string): number;
+  /** Пост снова виден: счётчик пропусков обнуляется. */
+  seen(postId: string): void;
+}
+
+export function createViewsRepo(db: Db, now: () => Date): ViewsRepo {
+  return {
+    record(postId, views) {
+      if (!Number.isInteger(views) || views < 0) {
+        throw new Error(`views: ожидается целое неотрицательное, получено ${String(views)}`);
+      }
+      db.run(
+        'INSERT INTO views_snapshots (post_id, views, taken_at) VALUES (?, ?, ?)',
+        postId,
+        views,
+        now().toISOString(),
+      );
+    },
+
+    latest(postId) {
+      const row = db.get<{ views: number; taken_at: string }>(
+        'SELECT views, taken_at FROM views_snapshots WHERE post_id = ? ORDER BY taken_at DESC, id DESC LIMIT 1',
+        postId,
+      );
+      return row === undefined ? undefined : { views: row.views, takenAt: row.taken_at };
+    },
+
+    summary(sinceIso) {
+      // По ПОСЛЕДНЕМУ снимку каждого поста: снимков у поста много, и сумма по
+      // всем строкам считала бы один пост несколько раз.
+      const rows = db.all<{ post_id: string; views: number }>(
+        `SELECT s.post_id AS post_id, MAX(s.views) AS views
+           FROM views_snapshots s
+           JOIN posts p ON p.id = s.post_id
+          WHERE p.published_at IS NOT NULL AND p.published_at >= ?
+          GROUP BY s.post_id`,
+        sinceIso,
+      );
+      if (rows.length === 0) return { average: 0, counted: 0 };
+      const total = rows.reduce((sum, row) => sum + row.views, 0);
+      const best = rows.reduce((top, row) => (row.views > top.views ? row : top), rows[0]!);
+      return {
+        average: Math.round(total / rows.length),
+        best: { postId: best.post_id, views: best.views },
+        counted: rows.length,
+      };
+    },
+
+    missed(postId) {
+      const at = now().toISOString();
+      db.run(
+        `INSERT INTO withdraw_watch (post_id, misses, updated_at) VALUES (?, 1, ?)
+         ON CONFLICT (post_id) DO UPDATE SET misses = misses + 1, updated_at = excluded.updated_at`,
+        postId,
+        at,
+      );
+      const row = db.get<{ misses: number }>('SELECT misses FROM withdraw_watch WHERE post_id = ?', postId);
+      return row?.misses ?? 0;
+    },
+
+    seen(postId) {
+      db.run('DELETE FROM withdraw_watch WHERE post_id = ?', postId);
+    },
+  };
+}
+
+/**
+ * Выборки для статистики (тикет 11). Живут в репозитории, а не в `src/stats`:
+ * правило «SQL только в store» держит отчёт чистой функцией над данными.
+ */
+export interface StatsRepo {
+  countPublished(options?: { sinceIso?: string; platform?: string }): number;
+  countByStatus(statuses: readonly string[]): number;
+  /** Сколько постов каждой рубрики вышло с момента. */
+  rubricCounts(sinceIso: string): { rubric: string; count: number }[];
+  /** Сколько постов с каким уровнем рекламы вышло с момента. */
+  ctaCounts(sinceIso: string): { cta: string; count: number }[];
+  /**
+   * Средняя оценка редактора отдельно у вышедших и у похороненных постов.
+   * Это калибровка: если снятые владельцем посты редактор хвалил, спорят не
+   * владелец с редактором, а редактор с читателем.
+   */
+  judgeMeans(limit?: number): { published: number | null; rejected: number | null };
+}
+
+export function createStatsRepo(db: Db): StatsRepo {
+  return {
+    countPublished(options = {}) {
+      const where: string[] = ["status IN ('published', 'withdrawn', 'posted')"];
+      const params: SqlValue[] = [];
+      if (options.platform !== undefined) {
+        where.push('platform = ?');
+        params.push(options.platform);
+      }
+      if (options.sinceIso !== undefined) {
+        where.push('published_at IS NOT NULL AND published_at >= ?');
+        params.push(options.sinceIso);
+      }
+      const row = db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM posts WHERE ${where.join(' AND ')}`,
+        ...params,
+      );
+      return row?.n ?? 0;
+    },
+
+    countByStatus(statuses) {
+      if (statuses.length === 0) return 0;
+      const placeholders = statuses.map(() => '?').join(', ');
+      const row = db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM posts WHERE status IN (${placeholders})`,
+        ...statuses,
+      );
+      return row?.n ?? 0;
+    },
+
+    rubricCounts(sinceIso) {
+      return db.all<{ rubric: string; count: number }>(
+        `SELECT COALESCE(rubric, 'без рубрики') AS rubric, COUNT(*) AS count
+           FROM posts
+          WHERE status IN ('published', 'withdrawn') AND published_at >= ?
+          GROUP BY rubric
+          ORDER BY count DESC`,
+        sinceIso,
+      );
+    },
+
+    ctaCounts(sinceIso) {
+      return db.all<{ cta: string; count: number }>(
+        `SELECT cta, COUNT(*) AS count
+           FROM posts
+          WHERE status IN ('published', 'withdrawn') AND published_at >= ?
+          GROUP BY cta`,
+        sinceIso,
+      );
+    },
+
+    judgeMeans(limit = 500) {
+      // Оценка лежит в JSON-колонке: разбираем в JS, а не в SQL — сборка
+      // SQLite в рантайме не обязана нести расширение JSON1.
+      const rows = db.all<{ status: string; judge: string | null }>(
+        `SELECT status, judge FROM posts
+          WHERE judge IS NOT NULL AND status IN ('published', 'withdrawn', 'rejected')
+          ORDER BY created_at DESC LIMIT ?`,
+        limit,
+      );
+      const buckets: Record<'published' | 'rejected', number[]> = { published: [], rejected: [] };
+      for (const row of rows) {
+        if (row.judge === null) continue;
+        let mean: unknown;
+        try {
+          mean = (JSON.parse(row.judge) as { mean?: unknown }).mean;
+        } catch {
+          // Негодный JSON в колонке — это симптом ручной правки базы, но
+          // ронять отчёт из-за одной строки незачем: о нём уже сообщает
+          // `onCorruptJson` на чтении поста.
+          continue;
+        }
+        if (typeof mean !== 'number' || !Number.isFinite(mean)) continue;
+        if (row.status === 'published') buckets.published.push(mean);
+        else buckets.rejected.push(mean);
+      }
+      const average = (values: number[]): number | null =>
+        values.length === 0 ? null : Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
+      return { published: average(buckets.published), rejected: average(buckets.rejected) };
     },
   };
 }

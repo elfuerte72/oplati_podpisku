@@ -6,11 +6,15 @@ import { createPostsRepo, type OnCorruptJson, type PostsRepo } from './posts.ts'
 import {
   createFlowRepo,
   createItemsRepo,
+  createViewsRepo,
+  createStatsRepo,
   createOfftopicRepo,
   createSettingsRepo,
   createUsageRepo,
   type FlowRepo,
   type ItemsRepo,
+  type ViewsRepo,
+  type StatsRepo,
   type OfftopicRepo,
   type SettingsRepo,
   type UsageRepo,
@@ -37,6 +41,8 @@ export interface Store {
   readonly posts: PostsRepo;
   readonly flow: FlowRepo;
   readonly items: ItemsRepo;
+  readonly views: ViewsRepo;
+  readonly stats: StatsRepo;
   readonly usage: UsageRepo;
   readonly settings: SettingsRepo;
   readonly offtopic: OfftopicRepo;
@@ -102,6 +108,8 @@ export function openStore(options: OpenStoreOptions): Store {
     posts: createPostsRepo(db, now, options.onCorruptJson),
     flow: createFlowRepo(db, now, options.onCorruptJson),
     items: createItemsRepo(db, now),
+    views: createViewsRepo(db, now),
+    stats: createStatsRepo(db),
     usage: createUsageRepo(db, now),
     settings: createSettingsRepo(db, now),
     offtopic: createOfftopicRepo(db, now),

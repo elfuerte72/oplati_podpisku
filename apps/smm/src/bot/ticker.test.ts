@@ -60,9 +60,11 @@ const CONFIG: SmmConfig = {
   },
 };
 
-function setup(options: { now: Date; answers?: Partial<Record<ModelRole, unknown[]>> }) {
+function setup(options: { now: Date; answers?: Partial<Record<ModelRole, unknown[]>>; weekly?: boolean; views?: boolean }) {
   const store = openStore({ path: ':memory:' });
   const digests: number[] = [];
+  const weeklies: number[] = [];
+  const viewRuns: number[] = [];
   const fetcher = serve({
     'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML,
     'https://blog.example.com/feed': RSS_XML,
@@ -77,9 +79,25 @@ function setup(options: { now: Date; answers?: Partial<Record<ModelRole, unknown
       digests.push(1);
       return Promise.resolve();
     },
+    ...(options.weekly === true
+      ? {
+          sendWeekly: () => {
+            weeklies.push(1);
+            return Promise.resolve();
+          },
+        }
+      : {}),
+    ...(options.views === true
+      ? {
+          collectViews: () => {
+            viewRuns.push(1);
+            return Promise.resolve();
+          },
+        }
+      : {}),
     now: () => options.now,
   });
-  return { store, ticker, digests };
+  return { store, ticker, digests, weeklies, viewRuns };
 }
 
 describe('окно опроса', () => {
@@ -152,6 +170,46 @@ describe('прогон тикера', () => {
     store.settings.set(SETTINGS_DIGEST_HOUR, z.number().int(), 12);
     await ticker.runOnce();
     expect(digests).toHaveLength(0);
+    store.close();
+  });
+});
+
+describe('недельная сводка', () => {
+  // 2026-09-21 — понедельник; 08:00 UTC = 11:00 МСК.
+  const MONDAY = new Date('2026-09-21T08:00:00.000Z');
+
+  it('уходит ОДИН раз при трёх прогонах в понедельник', async () => {
+    const { ticker, weeklies, store } = setup({ now: MONDAY, weekly: true });
+    await ticker.runOnce();
+    await ticker.runOnce();
+    await ticker.runOnce();
+    expect(weeklies).toHaveLength(1);
+    store.close();
+  });
+
+  it('во вторник не уходит', async () => {
+    const tuesday = new Date('2026-09-22T08:00:00.000Z');
+    const { ticker, weeklies, store } = setup({ now: tuesday, weekly: true });
+    await ticker.runOnce();
+    expect(weeklies).toHaveLength(0);
+    store.close();
+  });
+
+  it('до 10:00 МСК понедельника не уходит', async () => {
+    const early = new Date('2026-09-21T05:00:00.000Z');
+    const { ticker, weeklies, store } = setup({ now: early, weekly: true });
+    await ticker.runOnce();
+    expect(weeklies).toHaveLength(0);
+    store.close();
+  });
+});
+
+describe('сбор просмотров', () => {
+  it('идёт по своему расписанию, а не с каждым опросом источников', async () => {
+    const { ticker, viewRuns, store } = setup({ now: new Date('2026-09-22T07:00:00.000Z'), views: true });
+    await ticker.runOnce();
+    await ticker.runOnce();
+    expect(viewRuns).toHaveLength(1);
     store.close();
   });
 });
