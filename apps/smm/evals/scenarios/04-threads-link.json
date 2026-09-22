@@ -1,0 +1,118 @@
+{
+  "name": "Пост площадки отдаётся человеку, а не публикуется",
+  "why": "Публикует на Threads владелец: у бота нет ни разметки, ни публикации без App Review.",
+  "model": {
+    "dossier": [
+      {
+        "title": "Google открыла память Gemini бесплатным пользователям",
+        "facts": [
+          {
+            "statement": "Память включена всем бесплатным аккаунтам",
+            "quote": "memory is now available to all users, including the free tier",
+            "url": "https://blog.example.com/gemini-memory"
+          },
+          {
+            "statement": "Помощник помнит прошлые разговоры без напоминаний",
+            "quote": "Gemini can recall details from past conversations automatically"
+          }
+        ],
+        "numbers": [
+          {
+            "value": "2",
+            "unit": "недели",
+            "what": "сколько заняло раскатывание"
+          }
+        ],
+        "dates": [
+          {
+            "date": "2026-09-18",
+            "what": "объявление в блоге"
+          }
+        ],
+        "reader_new": "Не нужно пересказывать вчерашний разговор заново",
+        "works_in_russia": "unknown",
+        "how_to_pay": "unknown"
+      }
+    ],
+    "plan": [
+      {
+        "rubric": "news",
+        "angles": [
+          {
+            "title": "Память Gemini включена всем",
+            "idea": "Что изменилось и где это видно",
+            "reader_action": false
+          },
+          {
+            "title": "Проверь память в своём аккаунте",
+            "idea": "Где нажать и как убедиться",
+            "reader_action": true
+          },
+          {
+            "title": "Чем это отличается от истории чатов",
+            "idea": "Разница на бытовом примере",
+            "reader_action": false
+          }
+        ],
+        "nothing_changes": false
+      }
+    ],
+    "threads": [
+      {
+        "hook": "Память Gemini включили всем, кто не платит",
+        "pieces": [
+          "Память Gemini включили всем, кто не платит.\n\nРаньше помощник забывал вчерашний разговор, теперь помнит сам. Проверяется за минуту: спроси о том, что обсуждал неделю назад."
+        ],
+        "tag": "gemini",
+        "link": "https://blog.example.com/gemini-memory"
+      }
+    ],
+    "judge": [
+      {
+        "scores": {
+          "so_what": 5,
+          "voice": 5,
+          "clarity": 5,
+          "headline": 5,
+          "structure": 5,
+          "facts": 5,
+          "texture": 5
+        },
+        "red_lines": "pass",
+        "notes": [],
+        "weakest": "",
+        "fixes": []
+      }
+    ]
+  },
+  "pages": {
+    "https://example.com/post": "<!doctype html>\n<html lang=\"en\">\n<head>\n  <title>Google rolls out Gemini memory to everyone | Example Blog</title>\n  <meta property=\"og:title\" content=\"Google открыла память Gemini всем\">\n  <meta property=\"og:site_name\" content=\"Example Blog\">\n  <meta property=\"og:image\" content=\"/images/cover-gemini.jpg\">\n  <meta property=\"og:image:width\" content=\"1200\">\n  <meta property=\"og:image:height\" content=\"630\">\n  <meta property=\"article:published_time\" content=\"2026-09-18T10:00:00Z\">\n</head>\n<body>\n  <nav><a href=\"/\">Главная</a> <a href=\"/about\">О нас</a></nav>\n  <header><h1>Example Blog</h1></header>\n  <article>\n    <p>Google открыла память Gemini всем пользователям, включая бесплатные аккаунты. Раньше функция работала только у подписки, и разговор приходилось пересказывать заново.</p>\n    <p>Память включается в настройках профиля и работает во всех регионах, где доступен сам помощник. В блоге компании сказано, что раскатывание заняло две недели.</p>\n    <p>Короткая подпись.</p>\n  </article>\n  <aside><p>Читайте также совсем другую статью про погоду и её влияние на всё сразу.</p></aside>\n  <footer><p>Все права защищены, и это тоже длинный текст, который в статью не входит.</p></footer>\n  <script>var tracker = {a: 1};</script>\n</body>\n</html>"
+  },
+  "steps": [
+    {
+      "command": "/threads",
+      "args": "https://example.com/post",
+      "expectState": "post.await_rubric",
+      "liveArgs": "https://en.wikipedia.org/wiki/ChatGPT"
+    },
+    {
+      "click": "rub.news",
+      "expectState": "post.await_angle"
+    },
+    {
+      "click": "ang.0",
+      "expectState": "threads.previewed",
+      "expectButtons": [
+        "Открыть в Threads"
+      ],
+      "expectPostStatus": "handed",
+      "expectChannelPost": false
+    },
+    {
+      "click": "posted",
+      "expectState": "idle",
+      "expectPostStatus": "posted",
+      "expectChannelPost": false
+    }
+  ]
+}

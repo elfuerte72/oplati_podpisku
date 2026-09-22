@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Пакет собирается в dist и запускается обычным node, а не бандлером Next.
+    // Импорты пишутся с расширением `.ts`, а `rewriteRelativeImportExtensions`
+    // переписывает их в `.js` на выходе tsc: тогда один и тот же исходник
+    // запускается и как есть (`node --watch src/main.ts`, Node сам снимает типы),
+    // и собранным. Со спецификаторами `.js` первое не работает вовсе — Node не
+    // подменяет `.js` на `.ts`, и скрипт `dev` был мёртвым.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "evals/**/*", "vitest.config.ts"]
+}

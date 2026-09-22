@@ -62,6 +62,64 @@ permissions:
   contents: read
 
 jobs:
+  # Что именно изменилось в пуше. Веб и бот живут в одном репозитории, но это
+  # РАЗНЫЕ приложения Dokploy: правка бота не должна пересобирать прод с живыми
+  # платежами, а правка веба — трогать бота.
+  #
+  # ⚠️ Не определили (force-push, первый коммит, мелкий clone) — деплоим ОБА:
+  # лишняя сборка дешевле невыкаченного исправления.
+  changes:
+    name: Что изменилось
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      smm: ${{ steps.filter.outputs.smm }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Нужны оба конца диапазона: сравниваем before..sha.
+          fetch-depth: 0
+
+      - name: Разобрать диапазон пуша
+        id: filter
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          files=''
+          if [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            files=$(git diff --name-only "$BEFORE" "$SHA" 2>/dev/null || echo '')
+          fi
+          if [ -z "$files" ]; then
+            echo "Диапазон не разобрался — деплоим оба приложения."
+            echo 'web=true' >> "$GITHUB_OUTPUT"
+            echo 'smm=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$files"
+          smm=false
+          web=false
+          while IFS= read -r file; do
+            case "$file" in
+              apps/smm/*) smm=true ;;
+              # ⚠️ Документация не пересобирает НИЧЕГО. CLAUDE.md требует вести
+              # CHANGELOG обязательно, мержи squash — значит типовой PR это
+              # «код + доки» одним пушем, и без этой ветки каждая запись в
+              # журнале пересобирала бы прод с живыми платежами.
+              docs/*|*.md|.scratch/*) ;;
+              # Общее (корневые конфиги, lock-файл, workflow) касается обоих.
+              apps/*|packages/*) web=true ;;
+              *) web=true; smm=true ;;
+            esac
+          done <<EOF
+          $files
+          EOF
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "smm=$smm" >> "$GITHUB_OUTPUT"
+          echo "Итог: web=$web, smm=$smm"
+
   gate:
     name: Gate (typecheck + tests + lint + build)
     runs-on: ubuntu-latest
@@ -105,7 +163,8 @@ jobs:
 
   deploy:
     name: Trigger Dokploy
-    needs: gate
+    needs: [gate, changes]
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Точечно шире глобального `contents: read` — нужно шагу выравнивания dev,
@@ -436,6 +495,113 @@ jobs:
           # Bot API (протух токен, бот заблокирован), то есть молчащий алёрт
           # выглядел бы как отправленный — ровно та слепота, от которой этот шаг
           # и заведён. Находка CodeRabbit на PR #115.
+          thread_arg=()
+          if [ -n "${THREAD_ID:-}" ]; then
+            thread_arg=(--data-urlencode "message_thread_id=${THREAD_ID}")
+          fi
+          curl -sS --fail-with-body --connect-timeout 10 --max-time 30 \
+            -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            "${thread_arg[@]}" \
+            --data-urlencode "text=${text}" \
+            -o /dev/null -w 'Telegram HTTP %{http_code}\n' || echo "::warning::Алёрт отправить не удалось."
+
+  # Бот SMM — ОТДЕЛЬНОЕ приложение Dokploy (`oplatishka-smm`, Франкфурт, тот же
+  # VPS). Свой job, а не шаг в общем: у бота свой образ, свой том с SQLite и
+  # свой токен деплоя. Правка веба сюда не доходит, правка бота не пересобирает
+  # прод с живыми платежами — условие считает job `changes`.
+  deploy-smm:
+    name: Trigger Dokploy (SMM bot)
+    needs: [gate, changes]
+    if: needs.changes.outputs.smm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Deploy
+        env:
+          # Один токен на оба контура: у бота dev-стенда нет — тестовый канал и
+          # группа задаются переменными окружения самого приложения.
+          TOKEN: ${{ secrets.DOKPLOY_SMM_WEBHOOK }}
+          PANEL: ${{ vars.DOKPLOY_PANEL_URL || 'https://dokploy.mxpkn8ns.ru' }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_NAME" != "main" ]; then
+            echo "Ветка $REF_NAME: бот собирается только с main."
+            exit 0
+          fi
+          if [ -z "${TOKEN:-}" ]; then
+            # ⚠️ Именно error: зелёный workflow при невыкаченном боте — это
+            # пункт 3 из шапки этого файла («Он молчал при отказе»).
+            echo "::error::Секрет DOKPLOY_SMM_WEBHOOK не задан — бот SMM НЕ пересобран."
+            exit 1
+          fi
+          # Контракт вебхука — тот же, что у веба (см. шапку файла): заголовок
+          # X-GitHub-Event и ветка в теле обязательны, иначе 301.
+          attempt=0
+          max=10
+          while :; do
+            attempt=$((attempt + 1))
+            rc=0
+            code=$(curl -sS -o /tmp/smm-resp.txt -w '%{http_code}' --connect-timeout 10 --max-time 60 \
+              -X POST "$PANEL/api/deploy/$TOKEN" \
+              -H 'X-GitHub-Event: push' \
+              -H 'Content-Type: application/json' \
+              -d "$(jq -nc --arg ref "$REF" '{ref: $ref}')") || rc=$?
+
+            if [ "$rc" -ne 0 ]; then
+              echo "Попытка $attempt/$max: сбой транспорта (curl exit $rc)."
+            else
+              echo "Попытка $attempt/$max: HTTP $code"
+              cat /tmp/smm-resp.txt || true
+              echo
+              [ "$code" = "200" ] && break
+              case "$code" in
+                4*|3*)
+                  echo "::error::Dokploy отказал (HTTP $code) — это конфигурация, не транспорт."
+                  exit 1
+                  ;;
+              esac
+            fi
+
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::Не удалось дозвониться до Dokploy за $max попыток. Бот НЕ пересобран."
+              exit 1
+            fi
+            echo "Ждём 45 с и пробуем снова."
+            sleep 45
+          done
+          echo "Сборка бота запущена. Прогресс — в панели Dokploy."
+
+      # ⚠️ Проверить обновление снаружи у бота НЕЧЕМ: HTTP-эндпоинта он не
+      # поднимает (long polling, а не webhook), а `getMe` отвечает одинаково у
+      # любой версии. Поэтому job подтверждает только ПРИНЯТЫЙ триггер, а
+      # доказательство выката читается в логе контейнера: строка «бот слушает»
+      # пишется при старте (`src/bot/bot.ts`).
+      - name: Как проверить выкат
+        run: |
+          echo "Бот не отвечает по HTTP: смотри лог приложения oplatishka-smm в Dokploy."
+          echo "Признак живого старта — строки «бот слушает» и «тикер источников запущен»."
+
+      # Провал выката бота виден иначе только тому, кто откроет Actions. У
+      # веб-деплоя такой шаг есть с PR #115 — у бота он нужен ровно так же.
+      - name: Сообщить о провале в Telegram
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.DEPLOY_ALERT_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.DEPLOY_ALERT_CHAT_ID }}
+          THREAD_ID: ${{ secrets.DEPLOY_ALERT_THREAD_ID }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::Секреты DEPLOY_ALERT_* не заданы — алёрт не отправлен."
+            exit 0
+          fi
+          text="Деплой НЕ прошёл: SMM-бот (oplatishka-smm), ветка $REF_NAME, коммит $SHA. Бот остался на прежней версии. Лог: $RUN_URL"
           thread_arg=()
           if [ -n "${THREAD_ID:-}" ]; then
             thread_arg=(--data-urlencode "message_thread_id=${THREAD_ID}")
