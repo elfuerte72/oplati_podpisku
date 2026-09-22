@@ -98,7 +98,7 @@ export function threadsPreviewKeyboard(
   return {
     rows: [
       ...(open === undefined ? [] : [[open]]),
-      [{ text: 'Выложил', data: buildCallback('posted', postId, stamp) }],
+      [{ text: TEXTS.buttons.posted, data: buildCallback('posted', postId, stamp) }],
       [
         { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
         { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },

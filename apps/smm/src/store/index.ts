@@ -100,7 +100,7 @@ export function openStore(options: OpenStoreOptions): Store {
 
   return {
     posts: createPostsRepo(db, now, options.onCorruptJson),
-    flow: createFlowRepo(db, now),
+    flow: createFlowRepo(db, now, options.onCorruptJson),
     items: createItemsRepo(db, now),
     usage: createUsageRepo(db, now),
     settings: createSettingsRepo(db, now),

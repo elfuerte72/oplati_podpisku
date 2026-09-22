@@ -43,7 +43,7 @@ export function queueItems(store: Store, limit = 10): QueueItem[] {
               // МИМО автомата, состояние диалога при этом `idle`, и обычная
               // кнопка не прошла бы сверку «тот ли это пост».
               {
-                text: 'Показать',
+                text: TEXTS.buttons.showAsIs,
                 // Площадку несёт САМА кнопка: у поста Threads свой экран и
                 // кнопка «Выложил», а не «Опубликовать» в канал.
                 data: buildCallback(post.platform === 'threads' ? 'q.tshow' : 'q.show', post.id, stamp),

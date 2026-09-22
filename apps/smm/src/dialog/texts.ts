@@ -51,6 +51,8 @@ export const TEXTS = {
     moreAngles: 'Другие углы',
     skip: 'Пропустить',
     posted: 'Выложил',
+    openThreads: 'Открыть в Threads',
+    copyText: 'Скопировать текст',
     threadsVersion: 'Версия для Threads',
   },
 } as const;

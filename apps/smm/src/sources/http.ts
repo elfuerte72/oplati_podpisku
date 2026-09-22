@@ -385,6 +385,10 @@ export async function fetchJson<T>(
   try {
     const checked = checkUrl(url);
     if (!('url' in checked)) return checked;
+    // Тот же гейт, что у страниц: адрес API приходит из конфига, но проверка
+    // стоит здесь, а не в вере в конфиг.
+    const resolved = await checkResolves(checked.url, options.resolver ?? systemResolver);
+    if (resolved !== undefined) return resolved;
     const response = await fetcher(checked.url.toString(), {
       method: options.method ?? 'GET',
       signal: controller.signal,

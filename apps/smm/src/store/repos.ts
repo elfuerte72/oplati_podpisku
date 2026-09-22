@@ -1,13 +1,14 @@
 import type { ZodType } from 'zod';
 
 import type { Db } from './db.ts';
+import type { OnCorruptJson } from './posts.ts';
 import type { FlowRow, Item, NewItem, UsageByRole, UsageInput, UsageSummary } from './types.ts';
 import { ulid } from './ulid.ts';
 
 // ------------------------------------------------------------------ flow
 
 export interface FlowRepo {
-  /** Строка диалога с посчитанным признаком «срок ожидания истёк». */
+  /** Строка диалога: срок хранится как есть, вывод о нём делает автомат. */
   get(ownerId: number): FlowRow | undefined;
   set(ownerId: number, row: Omit<FlowRow, 'updatedAt'>): FlowRow;
   clear(ownerId: number): void;
@@ -21,16 +22,19 @@ interface FlowDbRow {
   updated_at: string;
 }
 
-function parseJson(raw: string | null): unknown {
+function parseJson(raw: string | null, onCorrupt?: OnCorruptJson): unknown {
   if (raw === null) return undefined;
   try {
     return JSON.parse(raw);
-  } catch {
+  } catch (error) {
+    // Молчать нельзя: без payload у владельца перестают работать ВСЕ кнопки
+    // («Кнопка устарела» на каждое нажатие), а причина не видна ниоткуда.
+    onCorrupt?.(`состояние диалога: payload не разобрался как JSON (${String(error)})`);
     return undefined;
   }
 }
 
-export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
+export function createFlowRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJson): FlowRepo {
   return {
     get(ownerId) {
       const row = db.get<FlowDbRow>('SELECT * FROM flow WHERE owner_id = ?', ownerId);
@@ -41,7 +45,7 @@ export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
       return {
         state: row.state,
         postId: row.post_id ?? undefined,
-        payload: parseJson(row.payload),
+        payload: parseJson(row.payload, onCorrupt),
         expiresAt: row.expires_at ?? undefined,
         updatedAt: row.updated_at,
       };

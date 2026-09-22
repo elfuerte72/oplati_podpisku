@@ -103,3 +103,13 @@ export const THREADS_POST = {
   tag: 'gemini',
   link: 'https://blog.example.com/gemini-memory',
 } as const;
+
+/** Одиночный пост площадки: дефолтный случай тикета, а не цепочка. */
+export const THREADS_SINGLE_POST = {
+  hook: 'Память Gemini включили всем, кто не платит',
+  pieces: [
+    'Память Gemini включили всем, кто не платит.\n\nРаньше помощник забывал вчерашний разговор, теперь помнит сам. Проверяется за минуту: спроси о том, что обсуждал неделю назад.',
+  ],
+  tag: 'gemini',
+  link: 'https://blog.example.com/gemini-memory',
+} as const;

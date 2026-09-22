@@ -21,6 +21,14 @@ import type {
 export function threadsBody(post: ThreadsPost): string {
   const separator = `\n${smmConfig.threads.separator}\n`;
   const pieces = [...post.pieces];
+  // Крючок обязан БЫТЬ в тексте, а не только в поле ответа: в ленте видна
+  // первая строка, и пока поле никто не сверял, пост мог уехать без крючка,
+  // который модель придумала. Совпадает — ничего не делаем.
+  const first = pieces[0] ?? '';
+  const hook = post.hook.trim();
+  if (hook !== '' && !first.trim().startsWith(hook.slice(0, 40))) {
+    pieces[0] = `${hook}\n\n${first}`.trim();
+  }
   if (post.link !== undefined && post.link !== '') {
     // Ссылка живёт в ПОСЛЕДНЕМ ОТВЕТЕ: пост со ссылкой в первой части
     // собирает меньше реакций, а реакции и есть охват.

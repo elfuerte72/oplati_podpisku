@@ -195,13 +195,44 @@ describe('кнопки', () => {
   });
 
   it('на КАЖДЫЙ колбэк есть ответ', () => {
-    const states: FlowState[] = STATES.map((name) => ({
-      name,
-      postId: POST_ID,
-      payload: { stamp: 'stamp123', angles: ANGLES, candidates: [{ url: 'https://a', title: 'т' }] },
-    }));
+    // ⚠️ Список действий обязан быть ПОЛНЫМ: Telegram крутит часики до минуты,
+    // если ответа нет, и кнопка выглядит зависшей. Новое действие в автомате
+    // дописывается сюда же — иначе канарейка его не видит.
+    const actions = [
+      'pub',
+      'edit',
+      'angle',
+      'drop',
+      'cancel',
+      'show',
+      'more',
+      'back',
+      'posted',
+      'thr',
+      'q.show',
+      'q.tshow',
+      'q.drop',
+      'edit.say',
+      'edit.own',
+      'ang.0',
+      'rub.news',
+      'pick.0',
+    ];
+    const platforms: (undefined | 'telegram' | 'threads')[] = [undefined, 'telegram', 'threads'];
+    const states: FlowState[] = STATES.flatMap((name) =>
+      platforms.map((platform) => ({
+        name,
+        postId: POST_ID,
+        payload: {
+          stamp: 'stamp123',
+          angles: ANGLES,
+          candidates: [{ url: 'https://a', title: 'т' }],
+          ...(platform === undefined ? {} : { platform }),
+        },
+      })),
+    );
     for (const state of states) {
-      for (const action of ['pub', 'edit', 'angle', 'drop', 'cancel', 'show', 'more', 'ang.0', 'rub.news', 'pick.0']) {
+      for (const action of actions) {
         const result = transition(state, callback(action), ctx());
         expect(types(result.effects)[0], `${state.name}/${action}`).toBe('answer_callback');
       }

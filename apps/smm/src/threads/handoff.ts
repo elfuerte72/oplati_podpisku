@@ -1,4 +1,5 @@
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { TEXTS } from '../dialog/texts.ts';
 import { threadsPieces } from '../lint/threads.ts';
 import { threadsIntentUrl } from './intent.ts';
 
@@ -54,10 +55,10 @@ export function threadsHandoff(input: ThreadsHandoffInput): HandoffMessage[] {
     kind: 'text',
     text: `${head.join('\n')}\n\n${first}`,
     button: fits
-      ? { text: 'Открыть в Threads', url: intent }
+      ? { text: TEXTS.buttons.openThreads, url: intent }
       : // Адрес не влез (кириллица в percent-encoding это шесть знаков на
         // букву) — даём кнопку копирования, а не битую ссылку.
-        { text: 'Скопировать текст', copyText: first },
+        { text: TEXTS.buttons.copyText, copyText: first },
   });
 
   if (input.imagePath !== undefined) {

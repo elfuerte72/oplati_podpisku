@@ -9,7 +9,7 @@ import { ARTICLE_HTML } from '../sources/fixtures.ts';
 import type { Fetcher } from '../sources/index.ts';
 import type { Model, ModelResult } from '../llm/model.ts';
 import { smmConfig, type ModelRole } from '../config/smm.config.ts';
-import { DOSSIER, GOOD_DRAFT, judgePass, THREADS_POST } from '../pipeline/fixtures.ts';
+import { DOSSIER, GOOD_DRAFT, judgePass, THREADS_POST, THREADS_SINGLE_POST } from '../pipeline/fixtures.ts';
 import type { SendApi, SendOptions } from '../render/send.ts';
 import { openStore, textShaOf, type Store } from '../store/index.ts';
 import type { HandoffMessage } from '../threads/handoff.ts';
@@ -276,6 +276,17 @@ describe('ветка Threads', () => {
       judge: [judgePass(smmConfig.judge.threads.criteria)],
     });
   }
+
+  it('ОДИНОЧНЫЙ пост со ссылкой проходит линт: это дефолтный случай', async () => {
+    const { store, runner } = setup({
+      threads: [THREADS_SINGLE_POST],
+      judge: [judgePass(smmConfig.judge.threads.criteria)],
+    });
+    const post = store.posts.create({ platform: 'threads', dossier: DOSSIER });
+    const event = await runner.runStep('produce', { postId: post.id, rubric: 'news', angle: 'память всем' });
+    expect(event).toMatchObject({ kind: 'pipeline_done', outcome: { verdict: 'pass' } });
+    store.close();
+  });
 
   it('пост площадки пишется своей ролью и получает исход с платформой', async () => {
     const { store, runner } = threadsSetup();
