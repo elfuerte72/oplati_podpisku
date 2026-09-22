@@ -5,7 +5,7 @@ import type { DialogEvent, Keyboard, PipelineStep } from '../dialog/types.ts';
 import { createLogger } from '../logger.ts';
 import { openStore, textShaOf, type Store } from '../store/index.ts';
 import { createEngine } from './engine.ts';
-import type { BotPorts } from './ports.ts';
+import type { BotPorts, PreviewResult } from './ports.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createPublishTimers } from './timers.ts';
 
@@ -21,7 +21,10 @@ interface Recorded {
   readonly value?: unknown;
 }
 
-function fakePorts(steps: Partial<Record<PipelineStep, DialogEvent | undefined>> = {}): {
+function fakePorts(
+  steps: Partial<Record<PipelineStep, DialogEvent | undefined>> = {},
+  previewResult: PreviewResult = { ok: true },
+): {
   ports: BotPorts;
   calls: Recorded[];
 } {
@@ -41,7 +44,7 @@ function fakePorts(steps: Partial<Record<PipelineStep, DialogEvent | undefined>>
     },
     preview(postId: string) {
       calls.push({ kind: 'preview', value: postId });
-      return Promise.resolve();
+      return Promise.resolve(previewResult);
     },
     runStep(step: PipelineStep, args: Record<string, unknown>) {
       calls.push({ kind: 'run', value: { step, args } });
@@ -428,7 +431,7 @@ describe('счастливый путь целиком', () => {
           to: 'previewed',
           decision: { kind: 'preview', actor: 'code' },
         });
-        return Promise.resolve();
+        return Promise.resolve({ ok: true });
       },
     };
     const engine = createEngine({ store, ports: previewing, logger: silent(), ownerId: OWNER, undoSeconds: 60 });
@@ -470,3 +473,34 @@ function dataOf(keyboard: Keyboard, index: number): string {
   if (button?.data === undefined) throw new Error('кнопка без действия');
   return button.data;
 }
+
+describe('сбой показа', () => {
+  it('не молчит: владелец получает причину и кнопки', async () => {
+    const store = openStore({ path: ':memory:' });
+    const post = store.posts.create({ platform: 'telegram', rubric: 'news', layout: 'a' });
+    const { ports, calls } = fakePorts(
+      {
+        produce: {
+          kind: 'pipeline_done',
+          outcome: { kind: 'post', postId: post.id, textSha: 'abcdef1234', verdict: 'pass' },
+          at: NOW,
+        },
+      },
+      { ok: false, message: 'негодная разметка' },
+    );
+    const engine = createEngine({ store, ports, logger: silent(), ownerId: OWNER, undoSeconds: 60 });
+    store.flow.set(OWNER, {
+      state: 'post.await_angle',
+      postId: post.id,
+      payload: { stamp: 'q1', angles: [{ title: 'Угол', idea: 'идея' }] },
+    });
+
+    await engine.handle({ kind: 'callback', data: buildCallback('ang.0', post.id, 'q1'), at: NOW });
+
+    expect(engine.current().name).toBe('post.failed');
+    const texts = calls
+      .filter((call) => call.kind === 'send')
+      .map((call) => (call.value as { text: string }).text);
+    expect(texts.some((text) => text.includes('негодная разметка'))).toBe(true);
+  });
+});

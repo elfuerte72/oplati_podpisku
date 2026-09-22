@@ -233,6 +233,27 @@ describe('шаг написания', () => {
   });
 });
 
+describe('гонка публикации', () => {
+  it('два одновременных вызова отправляют пост в канал ОДИН раз', async () => {
+    const { store, runner, sent } = setup();
+    const postId = readyPost(store);
+    await runner.preview(postId);
+    const post = store.posts.get(postId);
+    store.posts.transition({
+      id: postId,
+      from: ['previewed'],
+      to: 'approved',
+      decision: { kind: 'approve', actor: 'owner', actorId: OWNER, textSha: post?.textSha ?? '' },
+    });
+
+    const [first, second] = await Promise.all([runner.publish(postId), runner.publish(postId)]);
+
+    expect(sent.filter((item) => item.chatId === CHANNEL)).toHaveLength(1);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    store.close();
+  });
+});
+
 describe('ветка Threads', () => {
   function threadsSetup() {
     return setup({

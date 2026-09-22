@@ -187,6 +187,38 @@ function handleCallback(
   const parsed = parseCallback(event.data);
   if (parsed === undefined) return stale(event, state);
 
+  if (parsed.action === 'q.show' || parsed.action === 'q.drop') {
+    // Кнопки из `/queue`: список печатается мимо автомата, поэтому пост
+    // называет сама кнопка. Единственный гейт — занятость.
+    if (state.name !== 'idle') {
+      return { state, effects: [{ type: 'answer_callback', text: TEXTS.notNow }] };
+    }
+    if (parsed.action === 'q.drop') {
+      return idleWith([
+        { type: 'answer_callback' },
+        { type: 'decision', postId: parsed.id, kind: 'reject' },
+        { type: 'send', text: TEXTS.dropped },
+      ]);
+    }
+    return {
+      state: {
+        name: 'post.previewed',
+        postId: parsed.id,
+        payload: { stamp: parsed.stamp },
+        expiresAt: expiresAt(ctx),
+      },
+      effects: [
+        { type: 'answer_callback' },
+        { type: 'preview', postId: parsed.id },
+        {
+          type: 'send',
+          text: TEXTS.previewReady,
+          keyboard: previewKeyboard(parsed.id, parsed.stamp),
+        },
+      ],
+    };
+  }
+
   if (parsed.action === 'thr') {
     // Кнопка живёт под ОПУБЛИКОВАННЫМ постом и переживает диалог: сверять её с
     // текущим состоянием нечем, пост называет она сама. Поэтому единственный
@@ -710,6 +742,11 @@ export function transition(
       }
       // Отпечаток — от ТЕКСТА, а не от вопроса: кнопка «Показать как есть»
       // ведёт к публикации, а право на неё сверяется по отпечатку тела.
+      if (event.reason === 'nothing_changes') {
+        // Это не поломка, а вывод: тема не стоит поста. Под неё написан свой
+        // текст с предложением дать другую ссылку.
+        return idleWith([{ type: 'send', text: TEXTS.nothingChanges(event.message) }]);
+      }
       const hasText = event.textSha !== undefined && event.textSha !== '';
       const stamp = hasText ? (event.textSha ?? '').slice(0, 8) : stampOf(event.message);
       return {

@@ -11,6 +11,7 @@ import { renderPost, type RenderablePost } from '../render/render.ts';
 import { sendPost, type SendApi, type SendTarget } from '../render/send.ts';
 import { resolveSource, type ResolveOptions } from '../sources/resolve.ts';
 import type { Article } from '../sources/article.ts';
+import type { PreviewResult } from './ports.ts';
 import type { Store } from '../store/index.ts';
 import type { Post } from '../store/types.ts';
 import type { Dossier } from '../llm/schemas.ts';
@@ -49,7 +50,7 @@ export interface RunnerDeps {
 export interface Runner {
   runStep(step: PipelineStep, args: Record<string, unknown>): Promise<DialogEvent | undefined>;
   /** Показать пост владельцу ровно так, как он уйдёт в канал. */
-  preview(postId: string): Promise<void>;
+  preview(postId: string): Promise<PreviewResult>;
   /** Опубликовать: ПОСЛЕ проверки права по журналу решений. */
   publish(postId: string): Promise<{ ok: boolean; message?: string }>;
 }
@@ -414,7 +415,10 @@ export function createRunner(deps: RunnerDeps): Runner {
     return { ok: true, messageId: sent.messageId };
   }
 
-  return {
+  /** Посты, которые прямо сейчас уходят в канал: замок на время отправки. */
+  const publishing = new Set<string>();
+
+  const runner: Runner = {
     async runStep(step, args) {
       switch (step) {
         case 'source':
@@ -460,7 +464,9 @@ export function createRunner(deps: RunnerDeps): Runner {
         case 'publish': {
           const postId = asString(args.postId);
           if (postId === undefined) return undefined;
-          const result = await this.publish(postId);
+          // Именно `runner.publish`, а не `this`: вызов через порт мог бы
+          // потерять получателя, и замок публикации оказался бы ни при чём.
+          const result = await runner.publish(postId);
           if (!result.ok) {
             return failed('publish', 'publish_refused', result.message ?? 'публикация не состоялась', at(), postId);
           }
@@ -480,7 +486,7 @@ export function createRunner(deps: RunnerDeps): Runner {
 
     async preview(postId) {
       const post = deps.store.posts.get(postId);
-      if (post === undefined) return;
+      if (post === undefined) return { ok: false, message: 'пост не нашёлся' };
 
       if (post.platform === 'threads') {
         // Публикует человек: бот отдаёт текст, кнопку Web Intent и картинку
@@ -495,6 +501,7 @@ export function createRunner(deps: RunnerDeps): Runner {
             : {}),
           config,
         });
+        if ((post.body ?? '') === '') return { ok: false, message: 'у поста нет текста' };
         await deps.handoff(messages, { postId, stamp: (post.textSha ?? '').slice(0, 8) });
         deps.store.posts.transition({
           id: postId,
@@ -502,11 +509,11 @@ export function createRunner(deps: RunnerDeps): Runner {
           to: 'handed',
           decision: { kind: 'preview', actor: 'code' },
         });
-        return;
+        return { ok: true };
       }
 
       const result = await send(post, { chatId: deps.ownerChatId });
-      if (!result.ok) return;
+      if (!result.ok) return { ok: false, message: result.message ?? 'пост не отправился' };
       // Показ превью — это ФАКТ: от него отсчитывается право на публикацию.
       deps.store.posts.transition({
         id: postId,
@@ -514,9 +521,24 @@ export function createRunner(deps: RunnerDeps): Runner {
         to: 'previewed',
         decision: { kind: 'preview', actor: 'code' },
       });
+      return { ok: true };
     },
 
     async publish(postId) {
+      // ⚠️ Замок ДО проверки права: между чтением гейта и ответом Telegram
+      // пост ничем не занят, и два вызова успевают отправить его дважды. В
+      // канал пост уходит один раз и навсегда — отменить это нечем.
+      if (publishing.has(postId)) return { ok: false, message: 'публикация уже идёт' };
+      publishing.add(postId);
+      try {
+        return await publishOnce(postId);
+      } finally {
+        publishing.delete(postId);
+      }
+    },
+  };
+
+  async function publishOnce(postId: string): Promise<{ ok: boolean; message?: string }> {
       const post = deps.store.posts.get(postId);
       if (post === undefined) return { ok: false, message: 'пост не нашёлся' };
 
@@ -546,6 +568,7 @@ export function createRunner(deps: RunnerDeps): Runner {
         deps.logger.error({ postId, actual: moved.actual }, 'пост опубликован, но статус не перешёл');
       }
       return { ok: true };
-    },
-  };
+  }
+
+  return runner;
 }

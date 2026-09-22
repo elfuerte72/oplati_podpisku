@@ -86,6 +86,7 @@ export type PipelineStep =
   | 'revise'
   | 'owner_text'
   | 'publish'
+  | 'preview'
   | 'queue'
   | 'stats'
   | 'settings'

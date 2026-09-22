@@ -139,7 +139,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       await pendingCallback(text);
     },
     async preview(postId) {
-      await runner.preview(postId);
+      return runner.preview(postId);
     },
     async runStep(step, args) {
       return runner.runStep(step, args);
@@ -205,7 +205,8 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     const event: DialogEvent = text.startsWith('/')
       ? {
           kind: 'command',
-          command: text.split(/\s+/)[0]?.split('@')[0] ?? text,
+          // Регистр не значит ничего: `/QUEUE` с телефона — обычное дело.
+          command: (text.split(/\s+/)[0]?.split('@')[0] ?? text).toLowerCase(),
           args: text.slice(text.split(/\s+/)[0]?.length ?? 0).trim(),
           at,
         }
@@ -217,6 +218,12 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     }
     if (event.kind === 'command' && event.command === '/settings') {
       await handleSettings();
+      return;
+    }
+    if (event.kind === 'command' && event.command === '/stats') {
+      // Счётчики — отдельный тикет; до него команда отвечает словами, а не
+      // тишиной: молчащий бот неотличим от сломанного.
+      await ports.send('Статистику ещё не считаю.');
       return;
     }
     await engine.handle(event);

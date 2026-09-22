@@ -84,9 +84,20 @@ export function createEngine(deps: EngineDeps): Engine {
       case 'answer_callback':
         await deps.ports.answerCallback(effect.text);
         return undefined;
-      case 'preview':
-        await deps.ports.preview(effect.postId);
-        return undefined;
+      case 'preview': {
+        const shown = await deps.ports.preview(effect.postId);
+        if (shown.ok) return undefined;
+        // Показ не состоялся: владельцу это событие, а не тишина. Состояние
+        // уедет в «пост не прошёл» вместе с причиной.
+        return {
+          kind: 'pipeline_failed',
+          step: 'preview',
+          reason: 'preview_failed',
+          message: shown.message,
+          postId: effect.postId,
+          at: new Date().toISOString(),
+        };
+      }
       case 'persist': {
         deps.store.posts.patch(effect.postId, effect.patch as PostPatch);
         return undefined;
@@ -225,9 +236,17 @@ export function createEngine(deps: EngineDeps): Engine {
     // поэтому всё, что стоит за ним в списке (в том числе «Собираю»),
     // доезжало до владельца уже ПОСЛЕ готового поста.
     const steps = result.effects.filter((effect) => effect.type === 'run');
+    let interrupted: DialogEvent | undefined;
     for (const effect of result.effects) {
       if (effect.type === 'run') continue;
-      await applyEffect(effect);
+      const next = await applyEffect(effect);
+      // Сбой показа доигрывается ПОСЛЕ списка: состояние уже записано, и
+      // событие обязано увидеть именно его.
+      if (next !== undefined) interrupted = next;
+    }
+    if (interrupted !== undefined) {
+      await handleOnce(interrupted, depth + 1);
+      return;
     }
     for (const effect of steps) {
       const next = await applyEffect(effect);

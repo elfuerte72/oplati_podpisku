@@ -500,6 +500,55 @@ describe('превью и кнопки под ним', () => {
   });
 });
 
+describe('кнопки из /queue', () => {
+  it('«Показать» возвращает к посту вместе с кнопками', () => {
+    const result = transition({ name: 'idle' }, callback('q.show', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('post.previewed');
+    expect(result.state.payload?.stamp).toBe('abcdef12');
+    expect(types(result.effects)).toEqual(['answer_callback', 'preview', 'send']);
+    const send = result.effects.find((effect) => effect.type === 'send');
+    expect(send?.type === 'send' && send.keyboard?.rows.flat().map((b) => b.text)).toContain(
+      TEXTS.buttons.publish,
+    );
+  });
+
+  it('«Снять» из списка хоронит пост', () => {
+    const result = transition({ name: 'idle' }, callback('q.drop', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('idle');
+    expect(result.effects.find((effect) => effect.type === 'decision')).toMatchObject({
+      kind: 'reject',
+      postId: POST_ID,
+    });
+  });
+
+  it('не перебивает начатый пост', () => {
+    const state = previewed('abcdef12');
+    const result = transition(state, callback('q.show', 'другой', 'ffffffff'), ctx());
+    expect(result.state).toEqual(state);
+    expect(result.effects).toEqual([{ type: 'answer_callback', text: TEXTS.notNow }]);
+  });
+});
+
+describe('тема не стоит поста', () => {
+  it('«ничего не меняется» говорится своими словами, а не «шаг не прошёл»', () => {
+    const result = transition(
+      { name: 'post.generating', postId: POST_ID },
+      {
+        kind: 'pipeline_failed',
+        step: 'plan',
+        reason: 'nothing_changes',
+        message: 'цена та же, доступ тот же',
+        postId: POST_ID,
+        at: NOW,
+      },
+      ctx(),
+    );
+    expect(result.state.name).toBe('idle');
+    expect(sends(result.effects)[0]).toContain('цена та же');
+    expect(sends(result.effects)[0]).not.toContain('Шаг не прошёл');
+  });
+});
+
 describe('Threads', () => {
   function threadsPreviewed(stamp = 'abcdef12'): FlowState {
     return {
