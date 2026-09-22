@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 
 import { z } from 'zod';
 
-import { Bot, InputFile, type Context } from 'grammy';
+import { Api, Bot, InputFile, type Context } from 'grammy';
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from 'grammy/types';
 
 import type { SmmEnv } from '../config/env.ts';
@@ -23,6 +23,8 @@ import { createRunner } from './runner.ts';
 import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
 import { buildReport, renderReport, type ReportPeriod } from '../stats/report.ts';
 import { collectViews } from '../stats/views.ts';
+import { check } from '../health/check.ts';
+import { notifyIfRed } from '../health/notify.ts';
 import { createPublishTimers } from './timers.ts';
 
 /**
@@ -47,6 +49,9 @@ export interface SmmBot {
   /** Для тестов и eval: обработать событие в обход Telegram. */
   readonly engine: Engine;
 }
+
+/** Как часто сторож здоровья ходит по проверкам. */
+const HEALTH_EVERY_MS = 60 * 60 * 1000;
 
 const DigestEnabled = z.boolean();
 const DigestHour = z.number().int().min(0).max(23);
@@ -124,6 +129,61 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       config,
     },
   });
+
+  /**
+   * Бот ВХОДА: все машинные сообщения в ops-группу уходят от него, а не от
+   * бота канала — это правило ops-группы прода. Без токена сторож здоровья
+   * только пишет в лог.
+   */
+  const opsApi = deps.env.ops.botToken === undefined ? undefined : new Api(deps.env.ops.botToken);
+
+  async function sendOps(text: string, options: { toRoot?: boolean }): Promise<{ ok: boolean; staleThread?: boolean }> {
+    const chatId = deps.env.ops.chatId;
+    if (opsApi === undefined || chatId === undefined) {
+      deps.logger.warn({ text }, 'ops-группа не настроена: сообщение о здоровье только в лог');
+      return { ok: true };
+    }
+    try {
+      await opsApi.sendMessage(chatId, text, {
+        ...(options.toRoot === true || deps.env.ops.threadErrors === undefined
+          ? {}
+          : { message_thread_id: deps.env.ops.threadErrors }),
+      });
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.logger.warn({ err: error }, 'сообщение в ops-группу не доставлено');
+      return { ok: false, staleThread: /message thread not found/i.test(message) };
+    }
+  }
+
+  async function runHealth(): Promise<void> {
+    const status = await check({
+      store: deps.store,
+      checkBot: async () => {
+        try {
+          // Свой короткий поводок: сторож не должен висеть на Telegram.
+          // Гонка с таймером, а не `signal`: у grammY свой тип сигнала, и
+          // родной `AbortSignal` в него не подставляется.
+          await Promise.race([
+            bot.api.getMe(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('getMe не ответил за 5 с')), 5000).unref?.(),
+            ),
+          ]);
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, message: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      ...(deps.env.model.apiKey === undefined ? {} : { modelApiKey: deps.env.model.apiKey }),
+      ...(deps.env.tavilyApiKey === undefined ? {} : { tavilyApiKey: deps.env.tavilyApiKey }),
+    });
+    await notifyIfRed(status, { store: deps.store, logger: deps.logger, send: sendOps });
+    deps.logger.info({ level: status.level }, 'проверка здоровья завершена');
+  }
+
+  let healthTimer: NodeJS.Timeout | undefined;
 
   /** Ответ на текущее нажатие: id колбэка живёт только внутри обработки апдейта. */
   let pendingCallback: ((text?: string) => Promise<void>) | undefined;
@@ -368,6 +428,17 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         await bot.api.sendMessage(ownerChatId, recovery.message);
       }
       ticker.start();
+      // Здоровье проверяется СРАЗУ при старте и дальше раз в час: инцидент
+      // 08.09.2026 (счёт провайдера в минусе) сутки жил незамеченным.
+      void runHealth().catch((error: unknown) => {
+        deps.logger.error({ err: error }, 'проверка здоровья сорвалась');
+      });
+      healthTimer = setInterval(() => {
+        void runHealth().catch((error: unknown) => {
+          deps.logger.error({ err: error }, 'проверка здоровья сорвалась');
+        });
+      }, HEALTH_EVERY_MS);
+      healthTimer.unref?.();
       deps.logger.info({ commands: COMMANDS.length }, 'бот слушает');
       // `bot.start()` не возвращает управление, пока бот работает: запускаем
       // без ожидания, иначе сборка приложения не завершится.
@@ -376,6 +447,10 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       });
     },
     async stop() {
+      if (healthTimer !== undefined) {
+        clearInterval(healthTimer);
+        healthTimer = undefined;
+      }
       ticker.stop();
       timers.stopAll();
       await bot.stop();

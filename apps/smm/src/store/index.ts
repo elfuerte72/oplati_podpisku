@@ -50,6 +50,8 @@ export interface Store {
   readonly applied: readonly AppliedMigration[];
   /** Прямой доступ — только для проверки здоровья. Выборки живут в репозиториях. */
   readonly db: Db;
+  /** База отвечает? Один короткий запрос для сторожа здоровья. */
+  ping(): boolean;
   transaction<T>(fn: () => T): T;
   close(): void;
 }
@@ -115,6 +117,7 @@ export function openStore(options: OpenStoreOptions): Store {
     offtopic: createOfftopicRepo(db, now),
     applied,
     db,
+    ping: () => db.get<{ n: number }>('SELECT 1 AS n')?.n === 1,
     transaction: (fn) => db.transaction(fn),
     close: () => db.close(),
   };

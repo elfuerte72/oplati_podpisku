@@ -136,3 +136,36 @@ describe('scrubSecrets', () => {
     expect(cleaned.ApiKey).toBe(REDACTED);
   });
 });
+
+describe('канарейка лога прогонов', () => {
+  it('тело поста и ключи не уезжают в лог даже целым объектом', () => {
+    const lines: string[] = [];
+    const logger = createLogger({
+      level: 'info',
+      stream: {
+        write(line: string) {
+          lines.push(line);
+        },
+      },
+    });
+
+    logger.info(
+      {
+        postId: 'p1',
+        role: 'write',
+        usdMicros: 1234,
+        env: { apiKey: 'sk-secret-value', botToken: '123:AAA' },
+        scrapeCreatorsApiKey: 'sc-secret',
+      },
+      'шаг конвейера завершён',
+    );
+
+    const line = lines[0] ?? '';
+    expect(line).not.toContain('sk-secret-value');
+    expect(line).not.toContain('123:AAA');
+    expect(line).not.toContain('sc-secret');
+    // Факты остаются полями, а не текстом сообщения.
+    expect(line).toContain('"postId":"p1"');
+    expect(line).toContain('"usdMicros":1234');
+  });
+});
