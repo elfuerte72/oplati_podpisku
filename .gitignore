@@ -44,3 +44,9 @@ skills-lock.json
 # Локальные настройки Claude Code — внутри env-секреты (DOKPLOY_API_KEY и пр.).
 # Глобальный ~/.config/git/ignore их тоже ловит, но он не переезжает с репозиторием.
 .claude/settings.local.json
+
+# SMM-бот: локальное состояние (SQLite и скачанные картинки) и его env.
+# На проде это том Dokploy `smm-data`, в репозитории ему места нет.
+# `dist/` и `.env` уже закрыты паттернами выше — здесь только то, чего там нет.
+apps/smm/data/
+apps/smm/.env.*
