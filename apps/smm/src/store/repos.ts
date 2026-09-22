@@ -7,8 +7,9 @@ import { ulid } from './ulid.ts';
 // ------------------------------------------------------------------ flow
 
 export interface FlowRepo {
+  /** Строка диалога с посчитанным признаком «срок ожидания истёк». */
   get(ownerId: number): FlowRow | undefined;
-  set(ownerId: number, row: Omit<FlowRow, 'updatedAt'>): FlowRow;
+  set(ownerId: number, row: Omit<FlowRow, 'updatedAt' | 'expired'>): FlowRow;
   clear(ownerId: number): void;
 }
 
@@ -34,12 +35,17 @@ export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
     get(ownerId) {
       const row = db.get<FlowDbRow>('SELECT * FROM flow WHERE owner_id = ?', ownerId);
       if (row === undefined) return undefined;
+      // Протухание считается ЗДЕСЬ: иначе каждый вызывающий сравнивал бы срок
+      // сам, и одно из трёх мест это забыло бы (в проде так и вышло с лениво
+      // истёкшей сессией помощника).
+      const expired = row.expires_at !== null && row.expires_at <= now().toISOString();
       return {
         state: row.state,
         postId: row.post_id ?? undefined,
         payload: parseJson(row.payload),
         expiresAt: row.expires_at ?? undefined,
         updatedAt: row.updated_at,
+        expired,
       };
     },
     set(ownerId, row) {
@@ -60,7 +66,7 @@ export function createFlowRepo(db: Db, now: () => Date): FlowRepo {
         row.expiresAt ?? null,
         at,
       );
-      return { ...row, updatedAt: at };
+      return { ...row, updatedAt: at, expired: false };
     },
     clear(ownerId) {
       db.run('DELETE FROM flow WHERE owner_id = ?', ownerId);
@@ -79,8 +85,9 @@ export interface ItemsRepo {
   upsertByUrl(item: NewItem): Item;
   findByUrl(url: string): Item | undefined;
   listRecent(options?: { sinceIso?: string; limit?: number; onlyUnjudged?: boolean }): Item[];
-  markVerdict(id: string, verdict: NonNullable<Item['verdict']>): void;
-  setRank(id: string, rank: unknown): void;
+  /** false — элемента с таким id нет: молча промахнуться нельзя. */
+  markVerdict(id: string, verdict: NonNullable<Item['verdict']>): boolean;
+  setRank(id: string, rank: unknown): boolean;
 }
 
 interface ItemDbRow {
@@ -151,10 +158,10 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
       return rows.map(toItem);
     },
     markVerdict(id, verdict) {
-      db.run('UPDATE items SET verdict = ? WHERE id = ?', verdict, id);
+      return db.run('UPDATE items SET verdict = ? WHERE id = ?', verdict, id).changes > 0;
     },
     setRank(id, rank) {
-      db.run('UPDATE items SET rank = ? WHERE id = ?', JSON.stringify(rank), id);
+      return db.run('UPDATE items SET rank = ? WHERE id = ?', JSON.stringify(rank), id).changes > 0;
     },
   };
   return repo;
@@ -172,6 +179,19 @@ export interface UsageRepo {
 export function createUsageRepo(db: Db, now: () => Date): UsageRepo {
   return {
     add(entry) {
+      // «Деньги — integer в минимальных единицах» проверяется, а не
+      // округляется: передадут доллары (0.00045) — в базу лёг бы ноль, и
+      // месячный счёт занизился бы молча.
+      for (const [field, value] of Object.entries({
+        inputTokens: entry.inputTokens,
+        outputTokens: entry.outputTokens,
+        cacheHitTokens: entry.cacheHitTokens,
+        usdMicros: entry.usdMicros,
+      })) {
+        if (!Number.isInteger(value) || value < 0) {
+          throw new Error(`usage.${field}: ожидается целое неотрицательное, получено ${String(value)}`);
+        }
+      }
       db.run(
         `INSERT INTO usage (post_id, role, model, input_tokens, output_tokens, cache_hit_tokens,
            usd_micros, is_peak, price_known, created_at)
@@ -179,17 +199,21 @@ export function createUsageRepo(db: Db, now: () => Date): UsageRepo {
         entry.postId ?? null,
         entry.role,
         entry.model,
-        Math.round(entry.inputTokens),
-        Math.round(entry.outputTokens),
-        Math.round(entry.cacheHitTokens),
-        Math.round(entry.usdMicros),
+        entry.inputTokens,
+        entry.outputTokens,
+        entry.cacheHitTokens,
+        entry.usdMicros,
         entry.isPeak ? 1 : 0,
         entry.priceKnown ? 1 : 0,
         now().toISOString(),
       );
     },
     sumByMonth(month) {
-      if (!/^\d{4}-\d{2}$/.test(month)) throw new Error(`месяц ожидается как yyyy-mm, а не «${month}»`);
+      // Проверяется и диапазон: `2026-13` дал бы январь следующего года, и
+      // сводка молча посчитала бы чужой месяц.
+      if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) {
+        throw new Error(`месяц ожидается как yyyy-mm (01-12), а не «${month}»`);
+      }
       const [yearRaw, monthRaw] = month.split('-');
       const year = Number(yearRaw);
       const monthIndex = Number(monthRaw) - 1;
@@ -312,8 +336,9 @@ export function createOfftopicRepo(db: Db, now: () => Date): OfftopicRepo {
     add(title) {
       const trimmed = title.trim();
       if (trimmed === '') return;
+      // OR IGNORE: повторное «не по теме» на ту же тему — обычное дело.
       db.run(
-        'INSERT INTO offtopic (title, created_at) VALUES (?, ?)',
+        'INSERT OR IGNORE INTO offtopic (title, created_at) VALUES (?, ?)',
         trimmed,
         now().toISOString(),
       );

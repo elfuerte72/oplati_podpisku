@@ -1,8 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { migrate, openDb, type AppliedMigration, type Db } from './db.ts';
-import { createPostsRepo, type PostsRepo } from './posts.ts';
+import { migrate, MigrationError, openDb, type AppliedMigration, type Db } from './db.ts';
+import { createPostsRepo, type OnCorruptJson, type PostsRepo } from './posts.ts';
 import {
   createFlowRepo,
   createItemsRepo,
@@ -17,8 +17,21 @@ import {
 } from './repos.ts';
 
 export * from './types.ts';
-export { POST_STATUSES, IN_PROGRESS_STATUSES, isTerminal, type PostStatus } from './post-state.ts';
-export { ulid } from './ulid.ts';
+export {
+  allowedTransitions,
+  DECISION_KINDS,
+  IN_PROGRESS_STATUSES,
+  isTerminal,
+  isTransitionAllowed,
+  POST_STATUSES,
+  type DecisionActor,
+  type DecisionKind,
+  type PostStatus,
+} from './post-state.ts';
+export { matchesSha8, sha8Of, SHA8_LENGTH, textShaOf } from './text-sha.ts';
+export { ulid, ulidTime } from './ulid.ts';
+export { MigrationError } from './db.ts';
+export type { OnCorruptJson } from './posts.ts';
 
 export interface Store {
   readonly posts: PostsRepo;
@@ -29,7 +42,7 @@ export interface Store {
   readonly offtopic: OfftopicRepo;
   /** Применённые при открытии миграции: их печатает строка старта. */
   readonly applied: readonly AppliedMigration[];
-  /** Прямой доступ — только для проверки здоровья и статистики просмотров. */
+  /** Прямой доступ — только для проверки здоровья. Выборки живут в репозиториях. */
   readonly db: Db;
   transaction<T>(fn: () => T): T;
   close(): void;
@@ -39,6 +52,12 @@ export interface OpenStoreOptions {
   readonly path: string;
   /** Часы. Тесты замораживают время, чтобы проверять окна и порядок решений. */
   readonly now?: () => Date;
+  /**
+   * Куда сообщать о негодном JSON в колонке. Поле, которое не разобралось,
+   * не роняет показ поста, но и молчать о нём нельзя: записывает его только
+   * наш код, значит это симптом ручной правки базы.
+   */
+  readonly onCorruptJson?: OnCorruptJson;
 }
 
 export class StoreOpenError extends Error {
@@ -68,10 +87,19 @@ export function openStore(options: OpenStoreOptions): Store {
     throw new StoreOpenError(`база ${options.path} не открылась: ${String(error)}`);
   }
 
-  const applied = migrate(db, now);
+  let applied: readonly AppliedMigration[];
+  try {
+    applied = migrate(db, now);
+  } catch (error) {
+    db.close();
+    // Причина миграции уже объяснена в MigrationError; заворачивать её второй
+    // раз незачем, но закрыть базу обязаны — иначе файл остаётся заблокирован.
+    if (error instanceof MigrationError) throw error;
+    throw new StoreOpenError(`миграции не применились: ${String(error)}`);
+  }
 
   return {
-    posts: createPostsRepo(db, now),
+    posts: createPostsRepo(db, now, options.onCorruptJson),
     flow: createFlowRepo(db, now),
     items: createItemsRepo(db, now),
     usage: createUsageRepo(db, now),

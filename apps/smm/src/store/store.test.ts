@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { migrate, openDb } from './db.ts';
-import { openStore, type Store } from './index.ts';
+import { matchesSha8, openStore, sha8Of, textShaOf, type Store } from './index.ts';
+
+/** Telegram id владельца в тестах: гейт публикации сверяет именно его. */
+const OWNER = 379_336_096;
 
 /** Часы, которыми управляет тест: окна, порядок решений и метки времени проверяются, а не угадываются. */
 function clock(startIso: string) {
@@ -77,7 +80,7 @@ describe('переходы поста', () => {
       from: ['draft'],
       to: 'linted',
       decision: { kind: 'lint', actor: 'code', payload: { errors: 0 } },
-      patch: { body: '# Заголовок', textSha: 'sha1' },
+      patch: { body: '# Заголовок' },
     });
 
     expect(result.ok).toBe(true);
@@ -155,7 +158,7 @@ describe('переходы поста', () => {
       from: ['reviewed'],
       to: 'previewed',
       decision: { kind: 'preview', actor: 'code' },
-      patch: { textSha: 'sha1' },
+      patch: { body: 'тело поста' },
     });
     expect(store.posts.get(post.id)?.previewedAt).toBe('2026-09-22T10:01:00.000Z');
 
@@ -164,7 +167,7 @@ describe('переходы поста', () => {
       id: post.id,
       from: ['previewed'],
       to: 'approved',
-      decision: { kind: 'approve', actor: 'owner', textSha: 'sha1' },
+      decision: { kind: 'approve', actor: 'owner', actorId: OWNER, textSha: textShaOf('тело поста') },
     });
     time.tick(60_000);
     store.posts.transition({
@@ -182,7 +185,7 @@ describe('переходы поста', () => {
 });
 
 describe('гейт публикации', () => {
-  function previewedPost(store: Store, sha = 'sha1') {
+  function previewedPost(store: Store, body = 'тело поста'): string {
     const post = store.posts.create({ platform: 'telegram' });
     store.posts.transition({ id: post.id, from: ['draft'], to: 'linted', decision: { kind: 'lint', actor: 'code' } });
     store.posts.transition({ id: post.id, from: ['linted'], to: 'reviewed', decision: { kind: 'judge', actor: 'model' } });
@@ -191,79 +194,111 @@ describe('гейт публикации', () => {
       from: ['reviewed'],
       to: 'previewed',
       decision: { kind: 'preview', actor: 'code' },
-      patch: { body: 'тело', textSha: sha },
+      patch: { body },
     });
     return post.id;
   }
 
+  function approve(store: Store, id: string, sha: string, actorId = OWNER) {
+    return store.posts.transition({
+      id,
+      from: ['previewed'],
+      to: 'approved',
+      decision: { kind: 'approve', actor: 'owner', actorId, textSha: sha },
+    });
+  }
+
+  it('отпечаток считает хранилище из тела, а не вызывающий', () => {
+    const { store } = freshStore();
+    const id = previewedPost(store, 'первое тело');
+    expect(store.posts.get(id)?.textSha).toBe(textShaOf('первое тело'));
+    store.posts.patch(id, { body: 'второе тело' });
+    expect(store.posts.get(id)?.textSha).toBe(textShaOf('второе тело'));
+  });
+
   it('без решения владельца публиковать нельзя', () => {
     const { store } = freshStore();
     const id = previewedPost(store);
-    expect(store.posts.isApprovedForPublish(id)).toBe(false);
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
   });
 
   it('approve от владельца с тем же отпечатком после превью — можно', () => {
     const { store, time } = freshStore();
     const id = previewedPost(store);
     time.tick(5000);
-    store.posts.transition({
-      id,
-      from: ['previewed'],
-      to: 'approved',
-      decision: { kind: 'approve', actor: 'owner', textSha: 'sha1' },
-    });
-    expect(store.posts.isApprovedForPublish(id)).toBe(true);
+    approve(store, id, textShaOf('тело поста'));
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(true);
   });
 
   it('approve с ЧУЖИМ отпечатком не считается', () => {
     // Владелец нажал «Опубликовать» под старым текстом, а после этого пост
     // переписали: подтверждение относилось к другим словам.
     const { store, time } = freshStore();
-    const id = previewedPost(store, 'sha1');
+    const id = previewedPost(store);
     time.tick(5000);
-    store.posts.transition({
-      id,
-      from: ['previewed'],
-      to: 'approved',
-      decision: { kind: 'approve', actor: 'owner', textSha: 'sha-старый' },
-    });
-    expect(store.posts.isApprovedForPublish(id)).toBe(false);
+    approve(store, id, textShaOf('какой-то другой текст'));
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
   });
 
-  it('правка текста после подтверждения снимает право на публикацию', () => {
+  it('правка ТЕЛА после подтверждения снимает право на публикацию', () => {
+    // Главный инвариант: отпечаток производный, поэтому забыть его обновить
+    // невозможно — правка тела обнуляет подтверждение механически.
     const { store, time } = freshStore();
-    const id = previewedPost(store, 'sha1');
+    const id = previewedPost(store);
     time.tick(1000);
-    store.posts.transition({
-      id,
-      from: ['previewed'],
-      to: 'approved',
-      decision: { kind: 'approve', actor: 'owner', textSha: 'sha1' },
-    });
-    expect(store.posts.isApprovedForPublish(id)).toBe(true);
-    store.posts.patch(id, { body: 'другое тело', textSha: 'sha2' });
-    expect(store.posts.isApprovedForPublish(id)).toBe(false);
+    approve(store, id, textShaOf('тело поста'));
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(true);
+    store.posts.patch(id, { body: 'совсем другое тело' });
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
+  });
+
+  it('подтверждение владельца не может менять тело тем же переходом', () => {
+    const { store } = freshStore();
+    const id = previewedPost(store);
+    expect(() =>
+      store.posts.transition({
+        id,
+        from: ['previewed'],
+        to: 'approved',
+        decision: { kind: 'approve', actor: 'owner', actorId: OWNER, textSha: textShaOf('подменённое тело') },
+        patch: { body: 'подменённое тело' },
+      }),
+    ).toThrowError(/не может менять тело/);
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
   });
 
   it('решение, записанное ДО показа превью, не считается', () => {
-    // Повторный показ превью обновляет previewed_at: старое «да» устаревает.
+    // Повторный показ превью обновляет момент показа: старое «да» устаревает.
     const { store, time } = freshStore();
-    const id = previewedPost(store, 'sha1');
+    const id = previewedPost(store);
     time.tick(1000);
-    store.posts.transition({
-      id,
-      from: ['previewed'],
-      to: 'approved',
-      decision: { kind: 'approve', actor: 'owner', textSha: 'sha1' },
-    });
+    approve(store, id, textShaOf('тело поста'));
     time.tick(1000);
     store.posts.transition({
       id,
       from: ['approved'],
       to: 'previewed',
-      decision: { kind: 'cancel', actor: 'owner' },
+      decision: { kind: 'cancel', actor: 'owner', actorId: OWNER },
     });
-    expect(store.posts.isApprovedForPublish(id)).toBe(false);
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
+  });
+
+  it('решение в ту же миллисекунду, что превью, не проходит', () => {
+    // Сравниваются id решений, а не метки времени: замороженные часы и
+    // быстрый процесс не должны открывать дорогу в канал.
+    const { store } = freshStore();
+    const id = previewedPost(store);
+    approve(store, id, textShaOf('тело поста'));
+    // approve записан ПОСЛЕ превью по id, поэтому проходит...
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(true);
+    // ...а показ превью заново снова его обнуляет, хотя время то же.
+    store.posts.transition({
+      id,
+      from: ['approved'],
+      to: 'previewed',
+      decision: { kind: 'preview', actor: 'code' },
+    });
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
   });
 
   it('approve не от владельца (например от кода) не считается', () => {
@@ -274,9 +309,42 @@ describe('гейт публикации', () => {
       id,
       from: ['previewed'],
       to: 'approved',
-      decision: { kind: 'approve', actor: 'code', textSha: 'sha1' },
+      decision: { kind: 'approve', actor: 'code', textSha: textShaOf('тело поста') },
     });
-    expect(store.posts.isApprovedForPublish(id)).toBe(false);
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
+  });
+
+  it('approve от ЧУЖОГО telegram id не считается', () => {
+    // Метки actor='owner' недостаточно: её пишет любой вызывающий.
+    const { store, time } = freshStore();
+    const id = previewedPost(store);
+    time.tick(1000);
+    approve(store, id, textShaOf('тело поста'), 999_999);
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
+  });
+
+  it('снятый пост не считается подтверждённым', () => {
+    const { store, time } = freshStore();
+    const id = previewedPost(store);
+    time.tick(1000);
+    approve(store, id, textShaOf('тело поста'));
+    store.posts.transition({
+      id,
+      from: ['approved'],
+      to: 'rejected',
+      decision: { kind: 'reject', actor: 'owner', actorId: OWNER },
+    });
+    expect(store.posts.isApprovedForPublish(id, OWNER)).toBe(false);
+  });
+
+  it('префикс отпечатка из кнопки сопоставляется с текстом поста', () => {
+    const { store } = freshStore();
+    const id = previewedPost(store);
+    const post = store.posts.get(id);
+    expect(matchesSha8(post?.textSha, sha8Of(post?.textSha ?? ''))).toBe(true);
+    expect(matchesSha8(post?.textSha, 'deadbeef')).toBe(false);
+    // Префикс не той длины — не совпадение: в кнопке ровно восемь знаков.
+    expect(matchesSha8(post?.textSha, (post?.textSha ?? '').slice(0, 4))).toBe(false);
   });
 });
 
@@ -293,13 +361,13 @@ describe('выборки постов', () => {
         from: ['reviewed'],
         to: 'previewed',
         decision: { kind: 'preview', actor: 'code' },
-        patch: { textSha: `sha${i}` },
+        patch: { body: `тело ${i}` },
       });
       store.posts.transition({
         id: post.id,
         from: ['previewed'],
         to: 'approved',
-        decision: { kind: 'approve', actor: 'owner', textSha: `sha${i}` },
+        decision: { kind: 'approve', actor: 'owner', actorId: OWNER, textSha: textShaOf(`тело ${i}`) },
       });
       store.posts.transition({
         id: post.id,
@@ -329,10 +397,14 @@ describe('выборки постов', () => {
     expect(store.posts.listByStatus([])).toEqual([]);
   });
 
-  it('зависший в статусе пост находится по времени входа', () => {
+  it('зависший в статусе пост находится по времени ВХОДА в статус', () => {
     const { store, time } = freshStore();
     const post = store.posts.create({ platform: 'telegram' });
-    time.tick(20 * 60_000);
+    time.tick(10 * 60_000);
+    // Правка поста НЕ прячет зависание: иначе один patch посреди зависшего
+    // конвейера делал бы его невидимым для проверки здоровья.
+    store.posts.patch(post.id, { dossier: { facts: [] } });
+    time.tick(10 * 60_000);
     const cutoff = new Date(Date.parse('2026-09-22T10:00:00.000Z') + 15 * 60_000).toISOString();
     expect(store.posts.stuckInStatus('draft', cutoff).map((p) => p.id)).toEqual([post.id]);
     const earlier = new Date(Date.parse('2026-09-22T09:59:00.000Z')).toISOString();
@@ -379,6 +451,7 @@ describe('состояние диалога', () => {
     // Перезапись не оставляет прежний срок: иначе новое ожидание унаследовало бы
     // чужой дедлайн.
     expect(row?.expiresAt).toBeUndefined();
+    expect(row?.expired).toBe(false);
     store.flow.clear(1);
     expect(store.flow.get(1)).toBeUndefined();
   });

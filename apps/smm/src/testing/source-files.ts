@@ -84,6 +84,15 @@ const IMPORT_PATTERNS = [
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
 
+/**
+ * Код без комментариев. Канарейкам по тексту нужен именно он: объяснение
+ * правила в комментарии («прямой UPDATE posts SET status запрещён») иначе
+ * само считается нарушением этого правила.
+ */
+export function codeWithoutComments(code: string): string {
+  return code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
 export function importsOf(code: string): string[] {
   const out = new Set<string>();
   for (const pattern of IMPORT_PATTERNS) {

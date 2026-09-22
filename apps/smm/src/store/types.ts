@@ -17,6 +17,11 @@ export interface Post {
   readonly sourceTitle?: string;
   readonly dossier?: unknown;
   readonly body?: string;
+  /**
+   * Отпечаток тела: производное, которое считает ХРАНИЛИЩЕ при записи тела.
+   * Наружу отдаётся только для чтения — подтверждение владельца и оценка
+   * редактора относятся к нему.
+   */
   readonly textSha?: string;
   readonly imagePath?: string;
   /** Текст владельца дословно: редактор его не смотрит, линт смотрит. */
@@ -34,6 +39,9 @@ export interface Post {
   readonly previewedAt?: string;
   readonly publishedAt?: string;
   readonly withdrawnAt?: string;
+  readonly rejectedAt?: string;
+  /** Когда пост вошёл в текущий статус. По нему ищется зависший конвейер. */
+  readonly statusChangedAt: string;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -65,8 +73,8 @@ export interface PostPatch {
   readonly sourceUrl?: string;
   readonly sourceTitle?: string;
   readonly dossier?: unknown;
+  /** Тело поста. Отпечаток (`textSha`) пересчитывает хранилище той же записью. */
   readonly body?: string;
-  readonly textSha?: string;
   readonly imagePath?: string;
   readonly ownerText?: boolean;
   readonly judge?: unknown;
@@ -83,6 +91,8 @@ export interface PostPatch {
 export interface DecisionInput {
   readonly kind: DecisionKind;
   readonly actor: DecisionActor;
+  /** Telegram id нажавшего. Обязателен у решений владельца: гейт сверяет его. */
+  readonly actorId?: number;
   readonly textSha?: string;
   readonly payload?: unknown;
 }
@@ -113,6 +123,12 @@ export interface FlowRow {
   readonly payload?: unknown;
   readonly expiresAt?: string;
   readonly updatedAt: string;
+  /**
+   * Срок ожидания истёк. Считается ПРИ ЧТЕНИИ: истёкшее ожидание замечает
+   * следующее входящее, и оставлять этот вывод каждому вызывающему — способ
+   * забыть его в одном месте из трёх.
+   */
+  readonly expired: boolean;
 }
 
 export interface Item {

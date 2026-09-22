@@ -6,7 +6,14 @@
 CREATE TABLE posts (
   id TEXT PRIMARY KEY,
   platform TEXT NOT NULL CHECK (platform IN ('telegram', 'threads')),
-  status TEXT NOT NULL,
+  -- Список статусов закрыт схемой, а не только кодом: строка со статусом
+  -- «опубликован-как-нибудь» ломала бы и гейт публикации, и статистику.
+  -- Расширение списка — новая миграция с пересозданием таблицы (в SQLite
+  -- ALTER TABLE не умеет менять CHECK).
+  status TEXT NOT NULL CHECK (status IN (
+    'draft', 'linted', 'reviewed', 'previewed', 'approved',
+    'published', 'handed', 'posted', 'rejected', 'withdrawn'
+  )),
   rubric TEXT,
   layout TEXT,
   angle TEXT,
@@ -38,24 +45,44 @@ CREATE TABLE posts (
   -- иначе перезапуск процесса в это окно незаметно публикует или теряет пост.
   publish_at TEXT,
   previewed_at TEXT,
+  -- Решение, которым пост показали владельцу. Гейт публикации сравнивает
+  -- ИДЕНТИФИКАТОРЫ решений, а не метки времени: последовательность id
+  -- монотонна и не зависит ни от формата времени, ни от хода часов.
+  previewed_decision_id INTEGER,
   published_at TEXT,
   withdrawn_at TEXT,
+  -- Снятый черновик и удалённый из канала пост — разные вещи: общая колонка
+  -- превращала бы статистику снятий с витрины в статистику черновиков.
+  rejected_at TEXT,
+  -- Время ВХОДА В СТАТУС. Мерить зависание по updated_at нельзя: его двигает
+  -- любая правка поста, и зависший конвейер с одной правкой становится
+  -- невидимым (грабли findStuckInFulfillmentOrders в проде).
+  status_changed_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX posts_status_idx ON posts (status, updated_at);
+CREATE INDEX posts_status_idx ON posts (status, status_changed_at);
 CREATE INDEX posts_published_idx ON posts (platform, published_at);
-CREATE INDEX posts_message_idx ON posts (channel_message_id);
+-- Один пост на сообщение канала: без UNIQUE сборщик просмотров и
+-- withdraw-детектор могли бы пометить снятым не тот пост.
+CREATE UNIQUE INDEX posts_message_idx ON posts (channel_message_id)
+  WHERE channel_message_id IS NOT NULL;
 
 -- Журнал решений: append-only. Гейт публикации читает именно его, а не поля
 -- поста: клик по кнопке — факт, а поле можно перезаписать чем угодно.
 CREATE TABLE decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   post_id TEXT,
-  kind TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN (
+    'approve', 'cancel', 'reject', 'edit', 'owner_text', 'angle', 'rubric',
+    'threads_posted', 'withdraw', 'publish', 'preview', 'lint', 'judge'
+  )),
   text_sha TEXT,
   actor TEXT NOT NULL CHECK (actor IN ('owner', 'code', 'model')),
+  -- Telegram id того, кто нажал. Метки `actor='owner'` недостаточно: её пишет
+  -- любой вызывающий, а гейт публикации обязан быть проверяем в самой базе.
+  actor_id INTEGER,
   payload TEXT,
   created_at TEXT NOT NULL
 );
@@ -136,6 +163,8 @@ CREATE TABLE settings (
 -- ранжирования, чтобы такое больше не предлагалось.
 CREATE TABLE offtopic (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
+  -- UNIQUE: дубли ушли бы в промпт ранжирования несколько раз и выели место
+  -- под сами темы.
+  title TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );

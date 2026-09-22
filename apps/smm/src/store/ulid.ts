@@ -51,7 +51,15 @@ function bumpRandom(chars: string): string {
   return randomChars();
 }
 
+/** Потолок времени, которое влезает в десять знаков base32 (примерно 10889 год). */
+const MAX_TIME = 32 ** 10 - 1;
+
 export function ulid(now: number = Date.now()): string {
+  if (!Number.isInteger(now) || now < 0 || now > MAX_TIME) {
+    // Обратные часы и мусор в аргументе иначе дают строку из `undefined`,
+    // которая станет первичным ключом и сломает сортировку навсегда.
+    throw new Error(`ULID: время должно быть целым от 0 до ${MAX_TIME}, получено ${String(now)}`);
+  }
   if (now === lastMs) {
     lastRandom = bumpRandom(lastRandom);
   } else {
@@ -63,6 +71,9 @@ export function ulid(now: number = Date.now()): string {
 
 /** Время создания из id. Нужно тестам и разбору: id несёт метку времени. */
 export function ulidTime(id: string): number {
+  // Длина и регистр проверяются тоже: обрезок «01» раньше разбирался в число,
+  // а валидный id в нижнем регистре — падал.
+  if (id.length !== TIME_LEN + RANDOM_LEN) throw new Error(`не ULID: ${id}`);
   let value = 0;
   for (const char of id.slice(0, TIME_LEN)) {
     const index = ALPHABET.indexOf(char);

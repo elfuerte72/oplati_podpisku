@@ -28,9 +28,10 @@ export interface Db {
   get<T>(sql: string, ...params: SqlValue[]): T | undefined;
   all<T>(sql: string, ...params: SqlValue[]): T[];
   /**
-   * Транзакция. Вложенный вызов не открывает вторую (SQLite их не умеет) —
-   * переиспользует текущую, поэтому репозитории можно свободно складывать:
-   * переход поста и строка решения обязаны быть в ОДНОЙ транзакции.
+   * Транзакция. Вложенный вызов открывает SAVEPOINT, а не «переиспользует
+   * текущую»: пойманная внутри ошибка обязана откатывать ИМЕННО вложенную
+   * часть, иначе вызывающий считает, что вложенное откатилось, а полузапись
+   * остаётся закоммиченной.
    */
   transaction<T>(fn: () => T): T;
   close(): void;
@@ -51,9 +52,13 @@ export function openDb(path: string): Db {
   // Для :memory: WAL не поддерживается, и это не повод падать.
   if (path !== ':memory:') raw.exec('PRAGMA journal_mode = WAL');
   raw.exec('PRAGMA busy_timeout = 5000');
+  // Прагма стоит на будущее: внешних ключей в схеме НЕТ намеренно. Каскад по
+  // `decisions` был бы DELETE, а его отвергает append-only триггер; посты же
+  // никто не удаляет.
   raw.exec('PRAGMA foreign_keys = ON');
 
   let depth = 0;
+  let closed = false;
 
   const db: Db = {
     exec(sql) {
@@ -71,21 +76,33 @@ export function openDb(path: string): Db {
       return rows<T>(raw.prepare(sql).all(...params));
     },
     transaction<T>(fn: () => T): T {
-      if (depth > 0) return fn();
-      raw.exec('BEGIN');
+      const nested = depth > 0;
+      const savepoint = `sp_${depth}`;
+      raw.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
       depth += 1;
       try {
         const result = fn();
-        raw.exec('COMMIT');
+        raw.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
         return result;
       } catch (error) {
-        raw.exec('ROLLBACK');
+        try {
+          raw.exec(nested ? `ROLLBACK TO ${savepoint}` : 'ROLLBACK');
+          if (nested) raw.exec(`RELEASE ${savepoint}`);
+        } catch (rollbackError) {
+          // Откат сам бросает, если транзакции уже нет (например, COMMIT
+          // отказал). Подменять исходную ошибку нельзя — она объясняет причину.
+          throw new AggregateError([error, rollbackError], 'откат транзакции не удался');
+        }
         throw error;
       } finally {
         depth -= 1;
       }
     },
     close() {
+      // Идемпотентно: жизненным циклом базы владеет один вызывающий, но второй
+      // close не должен ронять остановку процесса.
+      if (closed) return;
+      closed = true;
       raw.close();
     },
   };
@@ -96,6 +113,10 @@ export function openDb(path: string): Db {
 export interface AppliedMigration {
   readonly name: string;
   readonly appliedAt: string;
+}
+
+export class MigrationError extends Error {
+  override readonly name = 'MigrationError';
 }
 
 /**
@@ -123,10 +144,21 @@ export function migrate(db: Db, now: () => Date = () => new Date()): AppliedMigr
     const appliedAt = now().toISOString();
     // Каждый файл — своя транзакция: упавшая миграция не уносит применённые,
     // а журнал пишется в ней же, иначе он разошёлся бы со схемой.
-    db.transaction(() => {
-      db.exec(sql);
-      db.run('INSERT INTO migrations (name, applied_at) VALUES (?, ?)', file, appliedAt);
-    });
+    try {
+      db.transaction(() => {
+        db.exec(sql);
+        db.run('INSERT INTO migrations (name, applied_at) VALUES (?, ?)', file, appliedAt);
+      });
+    } catch (error) {
+      // Самая частая причина здесь — журнал разошёлся со схемой (том из
+      // прошлой жизни, ручная правка, два контейнера на одном томе в окне
+      // редеплоя). Сырой «table posts already exists» этого не объясняет.
+      throw new MigrationError(
+        `миграция ${file} не применилась: ${String(error)}. ` +
+          'Если таблицы уже есть, значит журнал migrations разошёлся со схемой: ' +
+          'разбирать руками, а не подставлять IF NOT EXISTS.',
+      );
+    }
     applied.push({ name: file, appliedAt });
   }
   return applied;
