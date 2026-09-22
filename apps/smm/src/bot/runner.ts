@@ -165,7 +165,14 @@ export function createRunner(deps: RunnerDeps): Runner {
   }
 
   async function stepSource(args: Record<string, unknown>): Promise<DialogEvent | undefined> {
-    const input = asString(args.input);
+    // Идея из `/ideas` приходит идентификатором: адрес берём из базы, чтобы он
+    // не ездил в кнопке (64 байта на всё) и не мог быть подменён.
+    const itemId = asString(args.itemId);
+    const fromItem = itemId === undefined ? undefined : deps.store.items.findById(itemId);
+    if (itemId !== undefined && fromItem === undefined) {
+      return failed('source', 'no_item', 'тема не нашлась', at());
+    }
+    const input = asString(args.input) ?? fromItem?.url;
     if (input === undefined) return failed('source', 'empty_input', 'пустой ввод', at());
     const platform = args.platform === 'threads' ? 'threads' : 'telegram';
 

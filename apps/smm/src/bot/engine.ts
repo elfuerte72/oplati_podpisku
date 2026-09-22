@@ -105,6 +105,20 @@ export function createEngine(deps: EngineDeps): Engine {
           at: new Date().toISOString(),
         };
       }
+      case 'item_verdict': {
+        const item = deps.store.items.findById(effect.itemId);
+        if (item === undefined) {
+          deps.logger.warn({ itemId: effect.itemId }, 'решение по несуществующей идее');
+          return undefined;
+        }
+        deps.store.items.markVerdict(effect.itemId, effect.verdict);
+        if (effect.verdict === 'offtopic') {
+          // Исключение ранжирования: без заголовка запоминать нечего, а
+          // адресом такое сравнение не делается.
+          deps.store.offtopic.add(item.title ?? item.url);
+        }
+        return undefined;
+      }
       case 'persist': {
         deps.store.posts.patch(effect.postId, effect.patch as PostPatch);
         return undefined;

@@ -199,6 +199,45 @@ function handleCallback(
   const parsed = parseCallback(event.data);
   if (parsed === undefined) return stale(event, state);
 
+  if (parsed.action.startsWith('i.')) {
+    // Кнопки дайджеста идей: пост ещё не начат, тему называет сама кнопка.
+    if (state.name !== 'idle') {
+      return { state, effects: [{ type: 'answer_callback', text: TEXTS.notNow }] };
+    }
+    const itemId = parsed.id;
+    if (parsed.action === 'i.skip') {
+      return idleWith([
+        { type: 'answer_callback', text: TEXTS.ideaSkipped },
+        { type: 'item_verdict', itemId, verdict: 'skipped' },
+      ]);
+    }
+    if (parsed.action === 'i.off') {
+      // «Не по теме» — это память на будущее: тема уходит в исключения
+      // ранжирования, иначе завтра её предложат снова.
+      return idleWith([
+        { type: 'answer_callback', text: TEXTS.ideaOfftopic },
+        { type: 'item_verdict', itemId, verdict: 'offtopic' },
+      ]);
+    }
+    if (parsed.action === 'i.write') {
+      return {
+        state: {
+          name: 'post.generating',
+          payload: { platform: 'telegram' },
+          expiresAt: expiresAt(ctx),
+        },
+        effects: [
+          { type: 'answer_callback' },
+          { type: 'item_verdict', itemId, verdict: 'written' },
+          // Источник уже известен: вопрос «дай ссылку» владельцу не задаём.
+          { type: 'run', step: 'source', args: { itemId, platform: 'telegram' } },
+          { type: 'send', text: TEXTS.working },
+        ],
+      };
+    }
+    return stale(event, state);
+  }
+
   if (parsed.action === 'q.show' || parsed.action === 'q.tshow' || parsed.action === 'q.drop') {
     // Кнопки из `/queue`: список печатается мимо автомата, поэтому пост
     // называет сама кнопка. Единственный гейт — занятость.

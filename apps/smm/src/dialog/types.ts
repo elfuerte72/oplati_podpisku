@@ -182,6 +182,15 @@ export type Effect =
   | { readonly type: 'cancel_publish'; readonly postId: string }
   | { readonly type: 'persist'; readonly postId: string; readonly patch: Record<string, unknown> }
   | {
+      /**
+       * Решение владельца по идее из `/ideas`. Отдельный эффект, а не решение
+       * по посту: поста ещё нет, а тема уже отвергнута.
+       */
+      readonly type: 'item_verdict';
+      readonly itemId: string;
+      readonly verdict: 'written' | 'skipped' | 'offtopic';
+    }
+  | {
       readonly type: 'decision';
       readonly postId: string;
       readonly kind: DecisionEffectKind;

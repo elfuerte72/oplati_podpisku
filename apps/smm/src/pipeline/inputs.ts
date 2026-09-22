@@ -207,3 +207,41 @@ export function threadsInput(input: {
     JSON.stringify(input.dossier, null, 2),
   ].join('\n');
 }
+
+/**
+ * Вход роли `rank`. Числа и списки собираются ЗДЕСЬ, а не в промпте: рубрики
+ * канала, наши посты за окно и темы «не по теме» — данные, и меняются они
+ * настройкой, а не правкой формулировок.
+ */
+export function rankInput(input: {
+  items: readonly { url: string; title?: string; sourceKind: string; sourceRef?: string; publishedAt?: string }[];
+  published?: readonly { title: string; url?: string }[];
+  offtopic?: readonly string[];
+  config?: SmmConfig;
+}): string {
+  const config = input.config ?? smmConfig;
+  const parts = ['Рубрики канала:', rubricList(config), ''];
+
+  parts.push('Темы на оценку:');
+  for (const item of input.items) {
+    const where = item.sourceRef === undefined ? item.sourceKind : `${item.sourceKind}/${item.sourceRef}`;
+    const when = item.publishedAt === undefined ? '' : ` · ${item.publishedAt.slice(0, 10)}`;
+    parts.push(`- ${item.url} · ${item.title ?? 'без заголовка'} · ${where}${when}`);
+  }
+
+  const published = input.published ?? [];
+  if (published.length > 0) {
+    parts.push('', 'Наши посты за последние два месяца:');
+    for (const post of published) {
+      parts.push(`- ${post.title}${post.url === undefined ? '' : ` · ${post.url}`}`);
+    }
+  }
+
+  const offtopic = input.offtopic ?? [];
+  if (offtopic.length > 0) {
+    parts.push('', 'Владелец отметил как «не по теме» (похожее — relevance 1):');
+    for (const title of offtopic) parts.push(`- ${title}`);
+  }
+
+  return parts.join('\n');
+}

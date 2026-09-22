@@ -86,6 +86,8 @@ export interface ItemsRepo {
    */
   upsertByUrl(item: NewItem): Item;
   findByUrl(url: string): Item | undefined;
+  /** Элемент по id: его называет кнопка дайджеста идей. */
+  findById(id: string): Item | undefined;
   listRecent(options?: { sinceIso?: string; limit?: number; onlyUnjudged?: boolean }): Item[];
   /** false — элемента с таким id нет: молча промахнуться нельзя. */
   markVerdict(id: string, verdict: NonNullable<Item['verdict']>): boolean;
@@ -141,6 +143,11 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
       if (stored === undefined) throw new Error(`элемент ${item.url} не записался`);
       return stored;
     },
+    findById(id) {
+      const row = db.get<ItemDbRow>('SELECT * FROM items WHERE id = ?', id);
+      return row === undefined ? undefined : toItem(row);
+    },
+
     findByUrl(url) {
       const row = db.get<ItemDbRow>('SELECT * FROM items WHERE url = ?', url);
       return row === undefined ? undefined : toItem(row);

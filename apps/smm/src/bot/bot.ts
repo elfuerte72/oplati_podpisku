@@ -1,5 +1,7 @@
 import { dirname, join } from 'node:path';
 
+import { z } from 'zod';
+
 import { Bot, InputFile, type Context } from 'grammy';
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from 'grammy/types';
 
@@ -14,9 +16,11 @@ import { grammyApi } from '../render/send.ts';
 import type { Store } from '../store/index.ts';
 import { createEngine, type Engine } from './engine.ts';
 import type { BotPorts } from './ports.ts';
+import { ideaItems, ideasEmptyText } from './ideas-view.ts';
 import { queueEmptyText, queueItems } from './queue-view.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createRunner } from './runner.ts';
+import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
 import { createPublishTimers } from './timers.ts';
 
 /**
@@ -41,6 +45,9 @@ export interface SmmBot {
   /** Для тестов и eval: обработать событие в обход Telegram. */
   readonly engine: Engine;
 }
+
+const DigestEnabled = z.boolean();
+const DigestHour = z.number().int().min(0).max(23);
 
 const COMMANDS = [
   { command: 'post', description: 'новый пост в канал' },
@@ -158,6 +165,17 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     },
   };
 
+  const ticker = createTicker({
+    store: deps.store,
+    pipeline: deps.pipeline,
+    logger: deps.logger,
+    config,
+    sendDigest: handleIdeas,
+    ...(deps.env.scrapeCreatorsApiKey === undefined
+      ? {}
+      : { scrapeCreatorsApiKey: deps.env.scrapeCreatorsApiKey }),
+  });
+
   const engine = createEngine({
     store: deps.store,
     ports,
@@ -192,13 +210,43 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     for (const item of items) await ports.send(item.line, item.keyboard);
   }
 
-  async function handleSettings(): Promise<void> {
+  async function handleIdeas(): Promise<void> {
+    const lines = ideaItems(deps.store, { config });
+    if (lines.length === 0) {
+      await ports.send(ideasEmptyText());
+      return;
+    }
+    for (const idea of lines) await ports.send(idea.line, idea.keyboard);
+  }
+
+  async function handleSettings(args: string): Promise<void> {
+    // Две настройки живут в БАЗЕ, потому что их меняет владелец на ходу:
+    // ежедневный дайджест и его час. Остальное — переменные окружения.
+    const command = args.trim().toLowerCase();
+    if (command === 'digest on' || command === 'digest off') {
+      deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, command.endsWith('on'));
+    } else if (command.startsWith('digest ')) {
+      const hour = Number(command.slice('digest '.length));
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+        await ports.send('Час дайджеста — целое число от 0 до 23 по Москве.');
+        return;
+      }
+      deps.store.settings.set(SETTINGS_DIGEST_HOUR, DigestHour, hour);
+      deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, true);
+    } else if (command !== '') {
+      await ports.send('Не понял. Дайджест: /settings digest on | off | <час 0-23>');
+      return;
+    }
+
+    const enabled = deps.store.settings.get(SETTINGS_DIGEST_ENABLED, DigestEnabled) ?? false;
+    const hour = deps.store.settings.get(SETTINGS_DIGEST_HOUR, DigestHour) ?? 10;
     const lines = [
       'Настройки:',
+      `Ежедневный дайджест: ${enabled ? `включён, ${hour}:00 МСК` : 'выключен'}`,
       `Окно отмены: ${deps.env.publishUndoSeconds} с`,
       `Канал: ${deps.env.channelUsername}`,
       `Модель автора: ${deps.env.model.writer}`,
-      'Меняются переменными окружения приложения.',
+      'Дайджест: /settings digest on | off | <час 0-23>. Остальное — переменные окружения.',
     ];
     await ports.send(lines.join('\n'));
   }
@@ -220,8 +268,12 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       await handleQueue();
       return;
     }
+    if (event.kind === 'command' && event.command === '/ideas') {
+      await handleIdeas();
+      return;
+    }
     if (event.kind === 'command' && event.command === '/settings') {
-      await handleSettings();
+      await handleSettings(event.args);
       return;
     }
     if (event.kind === 'command' && event.command === '/stats') {
@@ -269,6 +321,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       if (recovery.message !== undefined) {
         await bot.api.sendMessage(ownerChatId, recovery.message);
       }
+      ticker.start();
       deps.logger.info({ commands: COMMANDS.length }, 'бот слушает');
       // `bot.start()` не возвращает управление, пока бот работает: запускаем
       // без ожидания, иначе сборка приложения не завершится.
@@ -277,6 +330,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       });
     },
     async stop() {
+      ticker.stop();
       timers.stopAll();
       await bot.stop();
     },

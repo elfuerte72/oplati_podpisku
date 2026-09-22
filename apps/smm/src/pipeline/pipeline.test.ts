@@ -6,7 +6,8 @@ import type { Model, ModelResult } from '../llm/model.ts';
 import type { ModelRole } from '../config/smm.config.ts';
 import { advise, advisePlan, buildDossier, plan, producePost, review, revisePost, trimArticle } from './index.ts';
 import { threadsBody } from './threads.ts';
-import { reviseInput } from './inputs.ts';
+import { rankInput, reviseInput } from './inputs.ts';
+import { rankItems, RANK_BATCH } from './rank.ts';
 import { lintThreads } from '../lint/threads.ts';
 import {
   DOSSIER,
@@ -493,5 +494,78 @@ describe('круг правок', () => {
     const channel = reviseInput({ body: 'текст', problems: 'коротко', layout: 'a' });
     expect(channel).toContain('Раскладка А');
     expect(channel).not.toContain(smmConfig.threads.separator);
+  });
+});
+
+describe('ранжирование идей', () => {
+  const items = [
+    { sourceKind: 'rss' as const, url: 'https://blog.example.com/a?utm_source=tg_x', title: 'Первая' },
+    { sourceKind: 'hn' as const, url: 'https://blog.example.com/b', title: 'Вторая' },
+  ];
+
+  it('совпадение с опубликованным ставится КОДОМ, без вызова модели', async () => {
+    const { model, calls } = fakeModel({});
+    const result = await rankItems(
+      [items[0]!],
+      { published: [{ title: 'Наш пост', url: 'https://blog.example.com/a' }] },
+      deps(model),
+    );
+    expect(result[0]?.rank.already_covered).toBe(true);
+    expect(result[0]?.rank.relevance).toBe(1);
+    expect(calls).toEqual([]);
+  });
+
+  it('остальное уходит модели и раскладывается обратно по адресу', async () => {
+    const { model, calls } = fakeModel({
+      rank: [
+        [
+          {
+            url: 'https://blog.example.com/b',
+            rubric: 'news',
+            relevance: 4,
+            reader_action: true,
+            already_covered: false,
+          },
+        ],
+      ],
+    });
+    const result = await rankItems([items[1]!], {}, deps(model));
+    expect(result).toHaveLength(1);
+    expect(result[0]?.rank.relevance).toBe(4);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('«не по теме» и наши посты доезжают до промпта', () => {
+    const text = rankInput({
+      items,
+      published: [{ title: 'Старый пост', url: 'https://blog.example.com/old' }],
+      offtopic: ['курсы по нейросетям'],
+    });
+    expect(text).toContain('курсы по нейросетям');
+    expect(text).toContain('Старый пост');
+    expect(text).toContain('https://blog.example.com/b');
+  });
+
+  it('пачка, которую модель не осилила, не роняет остальные', async () => {
+    const many = Array.from({ length: RANK_BATCH + 1 }, (_, index) => ({
+      sourceKind: 'rss' as const,
+      url: `https://blog.example.com/${index}`,
+      title: `Тема ${index}`,
+    }));
+    const { model } = fakeModel({
+      rank: [
+        new Error('провал первой пачки'),
+        [
+          {
+            url: `https://blog.example.com/${RANK_BATCH}`,
+            relevance: 3,
+            reader_action: false,
+            already_covered: false,
+          },
+        ],
+      ],
+    });
+    const result = await rankItems(many, {}, deps(model));
+    expect(result).toHaveLength(1);
   });
 });
