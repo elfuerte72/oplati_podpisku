@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval:llm": "node evals/llm-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",
