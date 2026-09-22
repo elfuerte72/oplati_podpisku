@@ -26,6 +26,9 @@ export const TEXTS = {
   askEditText: 'Скажи, что поменять.',
   askOwnerText: 'Пришли свой текст: уйдёт дословно, редактор его не смотрит.',
   dropped: 'Снял.',
+  published: 'Опубликовал.',
+  threadsReady: 'Пост для Threads готов. Выложи кнопкой и отметь «Выложил».',
+  threadsPosted: 'Отметил как выложенный.',
   cancelled: 'Отменил.',
   stale: 'Кнопка устарела.',
   notNow: 'Сейчас другой шаг.',
@@ -47,6 +50,8 @@ export const TEXTS = {
     showAsIs: 'Показать как есть',
     moreAngles: 'Другие углы',
     skip: 'Пропустить',
+    posted: 'Выложил',
+    threadsVersion: 'Версия для Threads',
   },
 } as const;
 

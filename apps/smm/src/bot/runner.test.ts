@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { createLogger } from '../logger.ts';
 import type { Model, ModelResult } from '../llm/model.ts';
-import type { ModelRole } from '../config/smm.config.ts';
-import { DOSSIER, GOOD_DRAFT, judgePass } from '../pipeline/fixtures.ts';
+import { smmConfig, type ModelRole } from '../config/smm.config.ts';
+import { DOSSIER, GOOD_DRAFT, judgePass, THREADS_POST } from '../pipeline/fixtures.ts';
 import type { SendApi, SendOptions } from '../render/send.ts';
 import { openStore, textShaOf, type Store } from '../store/index.ts';
-import { createRunner } from './runner.ts';
+import type { HandoffMessage } from '../threads/handoff.ts';
+import { createRunner, type HandoffTarget } from './runner.ts';
 
 const OWNER = 379_336_096;
 const CHANNEL = '-1004257122135';
@@ -59,11 +60,21 @@ function fakeApi(): { api: SendApi; sent: Sent[] } {
   return { api, sent };
 }
 
+interface HandedOff {
+  readonly messages: readonly HandoffMessage[];
+  readonly target: HandoffTarget;
+}
+
 function setup(answers: Partial<Record<ModelRole, unknown[]>> = {}) {
   const store = openStore({ path: ':memory:' });
   const { api, sent } = fakeApi();
+  const handed: HandedOff[] = [];
   const runner = createRunner({
     store,
+    handoff(messages, target) {
+      handed.push({ messages, target });
+      return Promise.resolve();
+    },
     pipeline: { model: fakeModel(answers), logger: silent() },
     api,
     logger: silent(),
@@ -71,7 +82,7 @@ function setup(answers: Partial<Record<ModelRole, unknown[]>> = {}) {
     ownerChatId: OWNER,
     channelId: CHANNEL,
   });
-  return { store, runner, sent };
+  return { store, runner, sent, handed };
 }
 
 function readyPost(store: Store, body = GOOD_DRAFT): string {
@@ -219,5 +230,68 @@ describe('шаг написания', () => {
     expect(event).toMatchObject({ kind: 'pipeline_failed', reason: 'model_failed' });
     expect(store.posts.get(post.id)?.status).toBe('draft');
     store.close();
+  });
+});
+
+describe('ветка Threads', () => {
+  function threadsSetup() {
+    return setup({
+      threads: [THREADS_POST],
+      judge: [judgePass(smmConfig.judge.threads.criteria)],
+    });
+  }
+
+  it('пост площадки пишется своей ролью и получает исход с платформой', async () => {
+    const { store, runner } = threadsSetup();
+    const post = store.posts.create({ platform: 'threads', dossier: DOSSIER });
+    const event = await runner.runStep('produce', { postId: post.id, rubric: 'news', angle: 'память всем' });
+    expect(event).toMatchObject({
+      kind: 'pipeline_done',
+      outcome: { kind: 'post', platform: 'threads', verdict: 'pass' },
+    });
+    const stored = store.posts.get(post.id);
+    // Рекламы у площадки нет: призыв выключается кодом, а не просьбой к модели.
+    expect(stored?.cta).toBe('none');
+    expect(stored?.tag).toBe('gemini');
+    expect(stored?.body).toContain(THREADS_POST.link);
+  });
+
+  it('превью площадки уходит ПЕРЕДАЧЕЙ, а не отправкой поста', async () => {
+    const { store, runner, sent, handed } = threadsSetup();
+    const post = store.posts.create({ platform: 'threads', dossier: DOSSIER });
+    await runner.runStep('produce', { postId: post.id, rubric: 'news', angle: 'память всем' });
+    await runner.preview(post.id);
+
+    expect(sent).toHaveLength(0);
+    expect(handed).toHaveLength(1);
+    const first = handed[0]?.messages[0];
+    expect(first?.button?.url).toContain('threads.com/intent/post');
+    expect(handed[0]?.target.stamp).toBe((store.posts.get(post.id)?.textSha ?? '').slice(0, 8));
+    expect(store.posts.get(post.id)?.status).toBe('handed');
+  });
+
+  it('«Версия для Threads» берёт СОХРАНЁННОЕ досье, источник заново не читается', async () => {
+    const { store, runner } = threadsSetup();
+    const parent = store.posts.create({
+      platform: 'telegram',
+      rubric: 'news',
+      dossier: DOSSIER,
+      sourceUrl: 'https://blog.example.com/gemini-memory',
+    });
+    store.posts.patch(parent.id, { angle: 'память всем', body: GOOD_DRAFT });
+
+    const event = await runner.runStep('threads', { parentPostId: parent.id });
+    expect(event).toMatchObject({ kind: 'pipeline_done', outcome: { platform: 'threads' } });
+    const childId = event?.kind === 'pipeline_done' && event.outcome.kind === 'post' ? event.outcome.postId : '';
+    const child = store.posts.get(childId);
+    expect(child?.platform).toBe('threads');
+    expect(child?.parentPostId).toBe(parent.id);
+  });
+
+  it('пост без досье не превращается в версию для Threads молча', async () => {
+    const { store, runner } = threadsSetup();
+    const parent = store.posts.create({ platform: 'telegram', rubric: 'news' });
+    const event = await runner.runStep('threads', { parentPostId: parent.id });
+    expect(event).toMatchObject({ kind: 'pipeline_failed', step: 'threads', reason: 'no_dossier' });
   });
 });

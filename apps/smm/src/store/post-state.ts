@@ -30,7 +30,9 @@ export type PostStatus = (typeof POST_STATUSES)[number];
  * - `approved → previewed` — это «Отменить» в окне ожидания;
  * - возврат в `draft` разрешён с любого шага до публикации: это круг правок и
  *   «Другой угол»;
- * - `previewed → previewed` — повторный показ того же поста из `/queue`;
+ * - `previewed → previewed` и `handed → handed` — повторный показ того же
+ *   поста из `/queue`: передача Threads это несколько сообщений подряд, и
+ *   оборванная на середине повторяется целиком;
  * - `handed` и `posted` — путь Threads: публикует человек, бот только отдаёт
  *   ему готовый текст и фиксирует факт.
  */
@@ -41,7 +43,7 @@ export const allowedTransitions: Record<PostStatus, readonly PostStatus[]> = {
   previewed: ['approved', 'previewed', 'handed', 'draft', 'rejected'],
   approved: ['published', 'previewed', 'rejected'],
   published: ['withdrawn'],
-  handed: ['posted', 'draft', 'rejected'],
+  handed: ['posted', 'handed', 'draft', 'rejected'],
   posted: ['withdrawn'],
   rejected: [],
   withdrawn: [],

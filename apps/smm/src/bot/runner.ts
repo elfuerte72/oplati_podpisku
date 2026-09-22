@@ -4,6 +4,8 @@ import { formatJudge, type JudgeVerdict } from '../llm/judge.ts';
 import { formatLint } from '../lint/report.ts';
 import type { Logger } from '../logger.ts';
 import { buildDossier, plan, producePost, revisePost, type PipelineDeps } from '../pipeline/index.ts';
+import { produceThreadsPost } from '../pipeline/threads.ts';
+import { threadsHandoff, type HandoffMessage } from '../threads/handoff.ts';
 import type { HistoryPost, ReviewContext } from '../pipeline/types.ts';
 import { renderPost, type RenderablePost } from '../render/render.ts';
 import { sendPost, type SendApi, type SendTarget } from '../render/send.ts';
@@ -19,8 +21,20 @@ import type { Dossier } from '../llm/schemas.ts';
  * выбирает автомат, а не шаг.
  */
 
+export interface HandoffTarget {
+  readonly postId: string;
+  /** Отпечаток текста: кнопки устаревают вместе с ним. */
+  readonly stamp: string;
+}
+
 export interface RunnerDeps {
   readonly store: Store;
+  /**
+   * Как отдать владельцу пост для Threads: несколько сообщений подряд, первое
+   * с кнопкой Web Intent. Отдельный порт, потому что это не «отправить пост»,
+   * а передача работы человеку.
+   */
+  readonly handoff: (messages: readonly HandoffMessage[], target: HandoffTarget) => Promise<void>;
   readonly pipeline: PipelineDeps;
   readonly api: SendApi;
   readonly logger: Logger;
@@ -238,6 +252,49 @@ export function createRunner(deps: RunnerDeps): Runner {
     const layout = layoutFor(rubric).key;
     deps.store.posts.patch(postId, { rubric, angle, layout });
 
+    if (post.platform === 'threads') {
+      const adapted = await produceThreadsPost(
+        {
+          platform: 'threads',
+          dossier,
+          rubric,
+          angle,
+          hasImage: post.imagePath !== undefined,
+          postId,
+          ...(post.sourceUrl === undefined ? {} : { sourceUrl: post.sourceUrl }),
+          history: historyOf(deps.store, 'threads'),
+          channelPrevious: historyOf(deps.store, 'telegram'),
+        },
+        deps.pipeline,
+      );
+      if (!adapted.ok) return failed('produce', adapted.reason, adapted.message, at(), postId);
+
+      deps.store.posts.patch(postId, {
+        cta: 'none',
+        ...(adapted.value.tag === undefined ? {} : { tag: adapted.value.tag }),
+      });
+      storeReviewed(post, adapted.value.body, adapted.value.lint, adapted.value.judge, adapted.value.rounds, false);
+      const stored = deps.store.posts.get(postId);
+      const threadsSummary = [
+        adapted.value.judge === undefined ? '' : formatJudge(adapted.value.judge),
+        formatLint(adapted.value.lint),
+      ]
+        .filter((part) => part !== '')
+        .join('\n');
+      return {
+        kind: 'pipeline_done',
+        at: at(),
+        outcome: {
+          kind: 'post',
+          postId,
+          platform: 'threads',
+          textSha: stored?.textSha ?? '',
+          verdict: adapted.value.verdict,
+          ...(adapted.value.verdict === 'fail' ? { summary: threadsSummary } : {}),
+        },
+      };
+    }
+
     const produced = await producePost(
       {
         platform: post.platform,
@@ -247,7 +304,6 @@ export function createRunner(deps: RunnerDeps): Runner {
         hasImage: post.imagePath !== undefined,
         postId,
         history: historyOf(deps.store, post.platform),
-        ...(post.platform === 'threads' ? { channelPrevious: historyOf(deps.store, 'telegram') } : {}),
       },
       deps.pipeline,
     );
@@ -348,6 +404,32 @@ export function createRunner(deps: RunnerDeps): Runner {
           return stepRevise(args, false);
         case 'owner_text':
           return stepRevise(args, true);
+        case 'threads': {
+          // «Версия для Threads» под опубликованным постом канала: берём ГОТОВОЕ
+          // досье, статью заново не качаем.
+          const parentId = asString(args.parentPostId);
+          if (parentId === undefined) return failed('threads', 'no_post', 'пост не назван', at());
+          const parent = deps.store.posts.get(parentId);
+          if (parent === undefined) return failed('threads', 'no_post', 'пост не нашёлся', at());
+          const parentDossier = dossierOf(parent);
+          if (parentDossier === undefined || !('facts' in (parentDossier as object))) {
+            return failed('threads', 'no_dossier', 'у поста нет досье', at(), parentId);
+          }
+          const created = deps.store.posts.create({
+            platform: 'threads',
+            parentPostId: parentId,
+            dossier: parentDossier,
+            ...(parent.rubric === undefined ? {} : { rubric: parent.rubric }),
+            ...(parent.sourceUrl === undefined ? {} : { sourceUrl: parent.sourceUrl }),
+            ...(parent.sourceTitle === undefined ? {} : { sourceTitle: parent.sourceTitle }),
+          });
+          return stepProduce({
+            postId: created.id,
+            rubric: parent.rubric ?? 'news',
+            angle: parent.angle ?? '',
+          });
+        }
+
         case 'publish': {
           const postId = asString(args.postId);
           if (postId === undefined) return undefined;
@@ -355,7 +437,12 @@ export function createRunner(deps: RunnerDeps): Runner {
           if (!result.ok) {
             return failed('publish', 'publish_refused', result.message ?? 'публикация не состоялась', at(), postId);
           }
-          return undefined;
+          const published = deps.store.posts.get(postId);
+          return {
+            kind: 'pipeline_done',
+            at: at(),
+            outcome: { kind: 'published', postId, textSha: published?.textSha ?? '' },
+          };
         }
         default:
           // Команды `/queue`, `/stats`, `/settings` обслуживает бот: у них нет
@@ -367,6 +454,30 @@ export function createRunner(deps: RunnerDeps): Runner {
     async preview(postId) {
       const post = deps.store.posts.get(postId);
       if (post === undefined) return;
+
+      if (post.platform === 'threads') {
+        // Публикует человек: бот отдаёт текст, кнопку Web Intent и картинку
+        // отдельным сообщением — приложить её кнопка не может.
+        const judge = post.judge as { verdict?: string; mean?: number; weakest?: string } | undefined;
+        const messages = threadsHandoff({
+          body: post.body ?? '',
+          ...(post.tag === undefined ? {} : { tag: post.tag }),
+          ...(post.imagePath === undefined ? {} : { imagePath: post.imagePath }),
+          ...(judge?.verdict === 'fail'
+            ? { judgeNote: `Редактор считает слабым (${judge.mean}/5): ${judge.weakest ?? ''}` }
+            : {}),
+          config,
+        });
+        await deps.handoff(messages, { postId, stamp: (post.textSha ?? '').slice(0, 8) });
+        deps.store.posts.transition({
+          id: postId,
+          from: ['reviewed', 'previewed', 'handed'],
+          to: 'handed',
+          decision: { kind: 'preview', actor: 'code' },
+        });
+        return;
+      }
+
       const result = await send(post, { chatId: deps.ownerChatId });
       if (!result.ok) return;
       // Показ превью — это ФАКТ: от него отсчитывается право на публикацию.

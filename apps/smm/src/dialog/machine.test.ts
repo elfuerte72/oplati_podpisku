@@ -402,6 +402,104 @@ describe('публикация и окно отмены', () => {
   });
 });
 
+describe('Threads', () => {
+  function threadsPreviewed(stamp = 'abcdef12'): FlowState {
+    return {
+      name: 'threads.previewed',
+      postId: POST_ID,
+      payload: { stamp, angles: ANGLES, rubric: 'news', anglesShown: 1 },
+      expiresAt: '2026-09-23T10:00:00.000Z',
+    };
+  }
+
+  it('/threads заводит пост ПЛОЩАДКИ, а не канала', () => {
+    const result = transition({ name: 'idle' }, command('/threads', 'https://example.com/a'), ctx());
+    expect(result.state.name).toBe('post.generating');
+    expect(result.effects[0]).toMatchObject({
+      type: 'run',
+      step: 'source',
+      args: { input: 'https://example.com/a', platform: 'threads' },
+    });
+  });
+
+  it('готовый пост площадки отдаётся исполнителю целиком: одного сообщения мало', () => {
+    const result = transition(
+      { name: 'post.generating', postId: POST_ID },
+      {
+        kind: 'pipeline_done',
+        outcome: { kind: 'post', postId: POST_ID, platform: 'threads', textSha: 'abcdef1234', verdict: 'pass' },
+        at: NOW,
+      },
+      ctx(),
+    );
+    expect(result.state.name).toBe('threads.previewed');
+    expect(result.effects).toEqual([{ type: 'preview', postId: POST_ID }]);
+  });
+
+  it('«Выложил» ФИКСИРУЕТ факт и не публикует: публикует человек', () => {
+    const result = transition(threadsPreviewed(), callback('posted', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('idle');
+    expect(types(result.effects)).not.toContain('run');
+    expect(types(result.effects)).not.toContain('schedule_publish');
+    expect(result.effects.find((effect) => effect.type === 'decision')).toMatchObject({
+      kind: 'threads_posted',
+      textSha: 'abcdef12',
+    });
+    expect(sends(result.effects)[0]).toBe(TEXTS.threadsPosted);
+  });
+
+  it('после публикации в канал предлагается версия для площадки', () => {
+    const result = transition(
+      { name: 'idle' },
+      { kind: 'pipeline_done', outcome: { kind: 'published', postId: POST_ID, textSha: 'abcdef1234' }, at: NOW },
+      ctx(),
+    );
+    expect(result.state.name).toBe('idle');
+    const send = result.effects.find((effect) => effect.type === 'send');
+    expect(send?.type === 'send' && send.keyboard?.rows[0]?.[0]?.text).toBe(TEXTS.buttons.threadsVersion);
+  });
+
+  it('«Версия для Threads» работает из простоя и берёт пост из самой кнопки', () => {
+    const result = transition({ name: 'idle' }, callback('thr', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('post.generating');
+    expect(result.effects).toContainEqual({
+      type: 'run',
+      step: 'threads',
+      args: { parentPostId: POST_ID },
+    });
+  });
+
+  it('«Версия для Threads» не перебивает начатый пост', () => {
+    const state = previewed('abcdef12');
+    const result = transition(state, callback('thr', 'другой', 'ffffffff'), ctx());
+    expect(result.state).toEqual(state);
+    expect(result.effects).toEqual([{ type: 'answer_callback', text: TEXTS.notNow }]);
+  });
+
+  it('«Правки» и «Другой угол» ведут туда же, куда у поста канала', () => {
+    const edit = transition(threadsPreviewed(), callback('edit', POST_ID, 'abcdef12'), ctx());
+    expect(edit.state.name).toBe('post.await_edit_choice');
+
+    const angle = transition(threadsPreviewed(), callback('angle', POST_ID, 'abcdef12'), ctx());
+    expect(angle.state.name).toBe('post.await_angle');
+  });
+
+  it('«Снять» хоронит пост площадки', () => {
+    const result = transition(threadsPreviewed(), callback('drop', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('idle');
+    expect(result.effects.find((effect) => effect.type === 'decision')).toMatchObject({ kind: 'reject' });
+  });
+
+  it('кнопка под старым текстом не срабатывает', () => {
+    const result = transition(threadsPreviewed('abcdef12'), callback('posted', POST_ID, 'ffffffff'), ctx());
+    expect(result.state.name).toBe('threads.previewed');
+    expect(types(result.effects)).not.toContain('decision');
+    expect(result.effects.find((effect) => effect.type === 'answer_callback')).toMatchObject({
+      text: TEXTS.stale,
+    });
+  });
+});
+
 describe('истечение вопроса', () => {
   it('текст после суток молчания получает подсказку, а состояние сбрасывается', () => {
     const state: FlowState = {

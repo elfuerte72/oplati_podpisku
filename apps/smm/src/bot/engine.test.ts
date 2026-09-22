@@ -307,3 +307,44 @@ describe('цепочка событий', () => {
     store.close();
   });
 });
+
+describe('отметка о публикации в Threads', () => {
+  /** Пост площадки, отданный владельцу: следующий шаг — его слово «выложил». */
+  function handedPost(store: Store, body = 'Пост для площадки'): string {
+    const post = store.posts.create({ platform: 'threads', rubric: 'news' });
+    store.posts.transition({ id: post.id, from: ['draft'], to: 'linted', decision: { kind: 'lint', actor: 'code' } });
+    store.posts.transition({ id: post.id, from: ['linted'], to: 'reviewed', decision: { kind: 'judge', actor: 'model' } });
+    store.posts.transition({
+      id: post.id,
+      from: ['reviewed'],
+      to: 'handed',
+      decision: { kind: 'preview', actor: 'code' },
+      patch: { body },
+    });
+    return post.id;
+  }
+
+  it('«Выложил» двигает статус в posted и пишет решение владельца', async () => {
+    const { store, engine } = setup();
+    const postId = handedPost(store);
+    const stamp = (store.posts.get(postId)?.textSha ?? '').slice(0, 8);
+    store.flow.set(OWNER, { state: 'threads.previewed', postId, payload: { stamp } });
+
+    await engine.handle({ kind: 'callback', data: buildCallback('posted', postId, stamp), at: NOW });
+
+    expect(store.posts.get(postId)?.status).toBe('posted');
+    const decisions = store.posts.decisions(postId);
+    expect(decisions.some((decision) => decision.kind === 'threads_posted')).toBe(true);
+  });
+
+  it('пост в канал бот не отправляет: публиковал человек', async () => {
+    const { store, engine, calls } = setup();
+    const postId = handedPost(store);
+    const stamp = (store.posts.get(postId)?.textSha ?? '').slice(0, 8);
+    store.flow.set(OWNER, { state: 'threads.previewed', postId, payload: { stamp } });
+
+    await engine.handle({ kind: 'callback', data: buildCallback('posted', postId, stamp), at: NOW });
+
+    expect(calls.filter((call) => call.kind === 'run')).toHaveLength(0);
+  });
+});

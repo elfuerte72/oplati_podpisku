@@ -22,6 +22,12 @@ export const STATES = [
   'post.await_owner_text',
   'post.publish_pending',
   'post.failed',
+  /**
+   * Превью Threads. Отдельное состояние, а не флаг у `post.previewed`: там
+   * кнопка публикует в канал, здесь — фиксирует, что владелец выложил пост
+   * руками. Один и тот же экран с двумя смыслами — способ однажды нажать не то.
+   */
+  'threads.previewed',
 ] as const;
 
 export type StateName = (typeof STATES)[number];
@@ -100,7 +106,15 @@ export type PipelineOutcome =
       readonly postId: string;
       readonly textSha: string;
       readonly verdict: 'pass' | 'fail';
+      /** Площадка: у Threads своё превью и своя кнопка. */
+      readonly platform?: 'telegram' | 'threads';
       readonly summary?: string;
+    }
+  | {
+      /** Пост ушёл в канал: отсюда предлагается версия для Threads. */
+      readonly kind: 'published';
+      readonly postId: string;
+      readonly textSha: string;
     };
 
 export type DialogEvent =
@@ -126,7 +140,12 @@ export type DialogEvent =
 
 export interface KeyboardButton {
   readonly text: string;
-  readonly data: string;
+  /** Кнопка-действие: данные уходят колбэком. */
+  readonly data?: string;
+  /** Кнопка-ссылка: открывает адрес (Web Intent Threads). */
+  readonly url?: string;
+  /** Кнопка копирования: запасной путь, когда адрес не влез в лимит. */
+  readonly copyText?: string;
 }
 
 export interface Keyboard {

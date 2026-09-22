@@ -159,6 +159,26 @@ export function createEngine(deps: EngineDeps): Engine {
       return;
     }
 
+    if (kind === 'threads_posted') {
+      // Публикацию на площадке делает человек: бот фиксирует ЕГО слово, и
+      // статус двигается только из «отдано владельцу».
+      const result = deps.store.posts.transition({
+        id: postId,
+        from: ['handed'],
+        to: 'posted',
+        decision: {
+          kind: 'threads_posted',
+          actor: 'owner',
+          actorId: deps.ownerId,
+          ...(post.textSha === undefined ? {} : { textSha: post.textSha }),
+        },
+      });
+      if (!result.ok) {
+        deps.logger.warn({ postId, actual: result.actual }, 'отметка о публикации в Threads не состоялась');
+      }
+      return;
+    }
+
     if (kind === 'cancel') {
       const result = deps.store.posts.transition({
         id: postId,

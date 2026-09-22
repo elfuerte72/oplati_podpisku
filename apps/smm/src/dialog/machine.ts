@@ -8,6 +8,7 @@ import {
   publishPendingKeyboard,
   rubricKeyboard,
   sourcePickKeyboard,
+  publishedKeyboard,
 } from './keyboards.ts';
 import { TEXTS } from './texts.ts';
 import type {
@@ -185,6 +186,23 @@ function handleCallback(
 ): Transition {
   const parsed = parseCallback(event.data);
   if (parsed === undefined) return stale(event, state);
+
+  if (parsed.action === 'thr') {
+    // Кнопка живёт под ОПУБЛИКОВАННЫМ постом и переживает диалог: сверять её с
+    // текущим состоянием нечем, пост называет она сама. Поэтому единственный
+    // гейт — занятость: начатый пост чужой кнопкой не перебивается.
+    if (state.name !== 'idle') {
+      return { state, effects: [{ type: 'answer_callback', text: TEXTS.notNow }] };
+    }
+    return {
+      state: { name: 'post.generating', expiresAt: expiresAt(ctx) },
+      effects: [
+        { type: 'answer_callback' },
+        { type: 'run', step: 'threads', args: { parentPostId: parsed.id } },
+        { type: 'send', text: TEXTS.working },
+      ],
+    };
+  }
 
   const currentStamp = state.payload?.stamp;
   const samePost = state.postId !== undefined && state.postId === parsed.id;
@@ -426,6 +444,67 @@ function handleCallback(
       };
     }
 
+    case 'threads.previewed': {
+      if (parsed.action === 'posted') {
+        // Публикует ЧЕЛОВЕК: кнопка фиксирует факт, а не отправляет пост.
+        return idleWith([
+          answer,
+          { type: 'decision', postId, kind: 'threads_posted', textSha: parsed.stamp },
+          ...(event.messageId === undefined
+            ? []
+            : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
+          { type: 'send', text: TEXTS.threadsPosted },
+        ]);
+      }
+      if (parsed.action === 'edit') {
+        return {
+          state: { name: 'post.await_edit_choice', postId, payload, expiresAt: expiresAt(ctx) },
+          effects: [
+            answer,
+            { type: 'send', text: TEXTS.askEditChoice, keyboard: editChoiceKeyboard(postId, parsed.stamp) },
+          ],
+        };
+      }
+      if (parsed.action === 'angle') {
+        const angles = payload.angles ?? [];
+        if (angles.length === 0) {
+          return {
+            state: { name: 'post.generating', postId, payload, expiresAt: expiresAt(ctx) },
+            effects: [
+              answer,
+              { type: 'run', step: 'angles', args: { postId, seenAngles: payload.seenAngles ?? [] } },
+              { type: 'send', text: TEXTS.working },
+            ],
+          };
+        }
+        const stamp = stampOf({ angles, again: true });
+        return {
+          state: {
+            name: 'post.await_angle',
+            postId,
+            payload: withPayload(state, { stamp }),
+            expiresAt: expiresAt(ctx),
+          },
+          effects: [
+            answer,
+            {
+              type: 'send',
+              text: TEXTS.askAngle,
+              keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
+            },
+          ],
+        };
+      }
+      if (parsed.action === 'drop') {
+        return idleWith([
+          answer,
+          { type: 'decision', postId, kind: 'reject' },
+          { type: 'send', text: TEXTS.dropped },
+        ]);
+      }
+      return stale(event, state);
+    }
+
     case 'post.failed': {
       if (parsed.action === 'show') {
         return {
@@ -512,7 +591,35 @@ function handlePipelineDone(
     };
   }
 
+  if (outcome.kind === 'published') {
+    return {
+      state: { name: 'idle' },
+      effects: [
+        {
+          type: 'send',
+          text: TEXTS.published,
+          keyboard: publishedKeyboard(outcome.postId, outcome.textSha.slice(0, 8)),
+        },
+      ],
+    };
+  }
+
   // Пост написан и проверен.
+  if (outcome.platform === 'threads' && outcome.verdict === 'pass') {
+    const stamp = outcome.textSha.slice(0, 8);
+    return {
+      state: {
+        name: 'threads.previewed',
+        postId: outcome.postId,
+        payload: withPayload(state, { stamp }),
+        expiresAt: expiresAt(ctx),
+      },
+      // Само превью собирает исполнитель: у площадки это несколько сообщений
+      // (текст с кнопкой, картинка, части цепочки), а не одно.
+      effects: [{ type: 'preview', postId: outcome.postId }],
+    };
+  }
+
   if (outcome.verdict === 'fail') {
     const stamp = outcome.textSha.slice(0, 8);
     return {

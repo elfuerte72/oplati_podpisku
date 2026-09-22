@@ -1,7 +1,7 @@
 import { RUBRIC_KEYS, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import { buildCallback } from './callback.ts';
 import { TEXTS } from './texts.ts';
-import type { AngleOption, Keyboard, SourceCandidate } from './types.ts';
+import type { AngleOption, Keyboard, KeyboardButton, SourceCandidate } from './types.ts';
 
 /** Клавиатуры — функции от состояния: один вопрос, один набор кнопок. */
 
@@ -82,6 +82,38 @@ export function editChoiceKeyboard(postId: string, stamp: string): Keyboard {
 
 export function publishPendingKeyboard(postId: string, stamp: string): Keyboard {
   return { rows: [[{ text: TEXTS.buttons.cancel, data: buildCallback('cancel', postId, stamp) }]] };
+}
+
+/**
+ * Превью Threads: публикует ЧЕЛОВЕК, поэтому первой кнопкой идёт ссылка
+ * Web Intent, а «Выложил» только фиксирует факт.
+ */
+export function threadsPreviewKeyboard(
+  postId: string,
+  stamp: string,
+  // ⚠️ Кнопку строит ОДНО место — сборка передачи (`threads/handoff.ts`):
+  // адрес Web Intent обязан совпадать с тем, по которому линт проверял длину.
+  open?: KeyboardButton,
+): Keyboard {
+  return {
+    rows: [
+      ...(open === undefined ? [] : [[open]]),
+      [{ text: 'Выложил', data: buildCallback('posted', postId, stamp) }],
+      [
+        { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
+        { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },
+      ],
+      [{ text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) }],
+    ],
+  };
+}
+
+/**
+ * Под опубликованным постом канала: та же тема на площадке пишется по ТОМУ ЖЕ
+ * досье, и предложить это стоит сразу, пока владелец здесь.
+ */
+export function publishedKeyboard(postId: string, stamp: string): Keyboard {
+  return { rows: [[{ text: TEXTS.buttons.threadsVersion, data: buildCallback('thr', postId, stamp) }]] };
 }
 
 export function failedKeyboard(postId: string, stamp: string): Keyboard {

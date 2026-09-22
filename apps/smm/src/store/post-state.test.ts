@@ -20,6 +20,8 @@ describe('машина статусов поста', () => {
     expect(isTransitionAllowed('draft', 'linted')).toBe(true);
     expect(isTransitionAllowed('reviewed', 'handed')).toBe(true);
     expect(isTransitionAllowed('handed', 'posted')).toBe(true);
+    // Передача Threads это несколько сообщений: оборванную повторяем целиком.
+    expect(isTransitionAllowed('handed', 'handed')).toBe(true);
   });
 
   it('из любого неопубликованного статуса можно снять пост', () => {

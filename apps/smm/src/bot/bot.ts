@@ -1,7 +1,9 @@
-import { Bot, type Context } from 'grammy';
+import { Bot, InputFile, type Context } from 'grammy';
+import type { InlineKeyboardButton, InlineKeyboardMarkup } from 'grammy/types';
 
 import type { SmmEnv } from '../config/env.ts';
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { threadsPreviewKeyboard } from '../dialog/keyboards.ts';
 import type { DialogEvent, Keyboard } from '../dialog/types.ts';
 import { TEXTS } from '../dialog/texts.ts';
 import type { Logger } from '../logger.ts';
@@ -48,13 +50,23 @@ const COMMANDS = [
   { command: 'cancel', description: 'снять текущий пост' },
 ];
 
-function toReplyMarkup(keyboard?: Keyboard) {
+/**
+ * Клавиатура автомата в разметку Bot API. Три вида кнопок: действие
+ * (`callback_data`), ссылка (Web Intent Threads) и копирование текста —
+ * последнее нужно, когда адрес intent не влез в лимит.
+ */
+function toReplyMarkup(keyboard?: Keyboard): InlineKeyboardMarkup | undefined {
   if (keyboard === undefined) return undefined;
-  return {
-    inline_keyboard: keyboard.rows.map((row) =>
-      row.map((button) => ({ text: button.text, callback_data: button.data })),
-    ),
-  };
+  const rows = keyboard.rows.map((row) =>
+    row.map((button): InlineKeyboardButton => {
+      if (button.url !== undefined) return { text: button.text, url: button.url };
+      if (button.copyText !== undefined) {
+        return { text: button.text, copy_text: { text: button.copyText } };
+      }
+      return { text: button.text, callback_data: button.data ?? '' };
+    }),
+  );
+  return { inline_keyboard: rows };
 }
 
 export function createSmmBot(deps: SmmBotDeps): SmmBot {
@@ -66,6 +78,27 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   const timers = createPublishTimers({ logger: deps.logger });
   const runner = createRunner({
     store: deps.store,
+    async handoff(messages, target) {
+      // Пост Threads уходит владельцу НЕСКОЛЬКИМИ сообщениями подряд: кнопки
+      // автомата вешаются на первое — то, где лежит сам пост.
+      for (const message of messages) {
+        if (message.kind === 'photo' && message.photoPath !== undefined) {
+          await bot.api.sendPhoto(ownerChatId, new InputFile(message.photoPath), {
+            caption: message.text,
+          });
+          continue;
+        }
+        const keyboard =
+          message.button === undefined
+            ? undefined
+            : threadsPreviewKeyboard(target.postId, target.stamp, message.button);
+        await bot.api.sendMessage(ownerChatId, message.text, {
+          ...(message.html === true ? { parse_mode: 'HTML' as const } : {}),
+          ...(keyboard === undefined ? {} : { reply_markup: toReplyMarkup(keyboard) }),
+          link_preview_options: { is_disabled: true },
+        });
+      }
+    },
     pipeline: deps.pipeline,
     api,
     logger: deps.logger,

@@ -114,21 +114,13 @@ describe('fetchText', () => {
         // Второй кусок не приходит никогда.
       },
     });
-    const slow: Fetcher = (_url, init) => {
-      const signal = init.signal;
-      if (signal != null) {
-        signal.addEventListener('abort', () => {
-          try {
-            void slowBody.cancel();
-          } catch {
-            // Поток уже закрыт: гасить нечего.
-          }
-        });
-      }
-      return Promise.resolve(
+    // Двойник НЕ реагирует на `signal` намеренно: проверяется, что дедлайн
+    // держит наш код, а не добрая воля транспорта. Гасить поток тут нельзя —
+    // он захвачен читателем, и `cancel()` отвечает отказом в пустоту.
+    const slow: Fetcher = () =>
+      Promise.resolve(
         new Response(slowBody, { status: 200, headers: { 'content-type': 'text/html' } }),
       );
-    };
     const started = Date.now();
     const result = await fetchText('https://example.com/slow', { fetcher: slow, timeoutMs: 120 });
     expect(result.ok).toBe(false);
