@@ -73,10 +73,11 @@ describe('витрина Telegram-канала', () => {
   it('рекламный пост отсеивается вместе со своим адресом с хвостом', async () => {
     const { fetcher } = serve({ 'https://t.me/s/ainews': TELEGRAM_WIDGET_HTML });
     const result = await telegramWidget('ainews', { fetcher, resolver: publicDns });
-    // ⚠️ Сравнение по НАЧАЛУ адреса: у рекламной ссылки хвост `utm_source` и
-    // `erid`, и точное сравнение с голым адресом проходило всегда.
-    const urls = result.ok ? result.items.map((item) => item.url) : [];
-    expect(urls.some((url) => url.startsWith('https://course.example.com'))).toBe(false);
+    // ⚠️ Сверка по ХОСТУ: у рекламной ссылки хвост `utm_source` и `erid`, и
+    // точное сравнение с голым адресом проходило всегда, а сравнение по
+    // началу строки учит плохому («похоже на адрес» ≠ «это адрес»).
+    const hosts = result.ok ? result.items.map((item) => new URL(item.url).host) : [];
+    expect(hosts).not.toContain('course.example.com');
   });
 
   it('у поста-ОТВЕТА читается свой текст, а не цитата', async () => {

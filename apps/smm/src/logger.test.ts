@@ -57,23 +57,55 @@ describe('createLogger', () => {
 
   it('весь разобранный env не утекает ни одним секретом', () => {
     // Самый естественный вызов при диагностике старта — залогировать env целиком.
+    //
+    // ⚠️ В лог уходит ДВОЙНИК той же формы, а не результат `loadEnv`: разбор
+    // env — признанный источник секретов, и запись его в лог анализатор
+    // справедливо считает утечкой (CodeQL на PR #235), даже когда значения
+    // выдуманные. Форма двойника сверяется с настоящим env ниже — разойдутся,
+    // и канарейка это поймает.
+    const secrets = {
+      botToken: 'BOTTOKEN-123',
+      modelApiKey: 'MODELKEY-456',
+      opsBotToken: 'OPSTOKEN-789',
+      tavilyApiKey: 'TAVILY-000',
+      scrapeCreatorsApiKey: 'SCRAPE-111',
+    };
+    const envLike = {
+      botToken: secrets.botToken,
+      ownerId: 1,
+      channelId: '-100123',
+      channelUsername: 'ooplatishka',
+      model: { apiKey: secrets.modelApiKey, writer: 'deepseek-flash' },
+      ops: { botToken: secrets.opsBotToken, chatId: '-100999' },
+      tavilyApiKey: secrets.tavilyApiKey,
+      scrapeCreatorsApiKey: secrets.scrapeCreatorsApiKey,
+    };
+
     const { logger, out } = capture();
-    const env = loadEnv({
-      SMM_BOT_TOKEN: 'BOTTOKEN-123',
+    logger.info({ env: envLike }, 'старт');
+    const line = out();
+    for (const secret of Object.values(secrets)) {
+      expect(line).not.toContain(secret);
+    }
+
+    // Двойник обязан повторять форму настоящего env: иначе он проверяет
+    // выдуманный объект, а поле с ключом уезжает в лог незамеченным.
+    const real = loadEnv({
+      SMM_BOT_TOKEN: 'x',
       SMM_OWNER_ID: '1',
       SMM_CHANNEL_ID: '-100123',
       SMM_CHANNEL_USERNAME: 'ooplatishka',
-      SMM_MODEL_API_KEY: 'MODELKEY-456',
-      OPS_BOT_TOKEN: 'OPSTOKEN-789',
+      SMM_MODEL_API_KEY: 'y',
+      OPS_BOT_TOKEN: 'z',
       OPS_GROUP_CHAT_ID: '-100999',
-      TAVILY_API_KEY: 'TAVILY-000',
-      SCRAPECREATORS_API_KEY: 'SCRAPE-111',
+      TAVILY_API_KEY: 'a',
+      SCRAPECREATORS_API_KEY: 'b',
     });
-    logger.info({ env }, 'старт');
-    const line = out();
-    for (const secret of ['BOTTOKEN-123', 'MODELKEY-456', 'OPSTOKEN-789', 'TAVILY-000', 'SCRAPE-111']) {
-      expect(line).not.toContain(secret);
+    for (const key of Object.keys(envLike)) {
+      expect(Object.keys(real), `в env нет поля ${key}`).toContain(key);
     }
+    expect(Object.keys(real.model)).toContain('apiKey');
+    expect(Object.keys(real.ops)).toContain('botToken');
   });
 
   it('тело поста в лог не уходит', () => {
