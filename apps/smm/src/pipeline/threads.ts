@@ -22,10 +22,18 @@ export function threadsBody(post: ThreadsPost): string {
   const separator = `\n${smmConfig.threads.separator}\n`;
   const pieces = [...post.pieces];
   if (post.link !== undefined && post.link !== '') {
-    // Ссылка живёт в ПОСЛЕДНЕЙ части: пост со ссылкой в первой собирает меньше
-    // реакций, а реакции и есть охват.
-    const last = pieces.pop() ?? '';
-    pieces.push(`${last}\n${post.link}`.trim());
+    // Ссылка живёт в ПОСЛЕДНЕМ ОТВЕТЕ: пост со ссылкой в первой части
+    // собирает меньше реакций, а реакции и есть охват.
+    //
+    // ⚠️ У одиночного поста последняя часть — она же первая, и приклеенная
+    // ссылка делала его негодным по собственному правилу линта: дефолтный
+    // случай тикета гарантированно сжигал круг правок, а модель правила текст,
+    // в который ссылку добавил код. Поэтому ссылка становится ОТВЕТОМ.
+    if (pieces.length <= 1) pieces.push(post.link);
+    else {
+      const last = pieces.pop() ?? '';
+      pieces.push(`${last}\n${post.link}`.trim());
+    }
   }
   return pieces.join(separator);
 }

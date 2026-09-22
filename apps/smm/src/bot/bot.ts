@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+
 import { Bot, InputFile, type Context } from 'grammy';
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from 'grammy/types';
 
@@ -106,6 +108,8 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     ownerChatId,
     channelId: deps.env.channelId,
     config,
+    // Обложки живут рядом с базой: один том в Dokploy, один бэкап.
+    mediaDir: join(dirname(deps.env.dbPath), 'media'),
     resolve: {
       ...(deps.env.tavilyApiKey === undefined ? {} : { tavilyApiKey: deps.env.tavilyApiKey }),
       config,

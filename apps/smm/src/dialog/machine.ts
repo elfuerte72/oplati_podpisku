@@ -9,6 +9,7 @@ import {
   rubricKeyboard,
   sourcePickKeyboard,
   publishedKeyboard,
+  threadsPreviewKeyboard,
 } from './keyboards.ts';
 import { TEXTS } from './texts.ts';
 import type {
@@ -16,6 +17,7 @@ import type {
   Effect,
   FlowPayload,
   FlowState,
+  Platform,
   Transition,
   TransitionContext,
 } from './types.ts';
@@ -103,12 +105,12 @@ function handleCommand(
     const input = event.args.trim();
     if (input === '') {
       return {
-        state: { name: 'post.await_input', payload: { ...{} }, expiresAt: expiresAt(ctx) },
+        state: { name: 'post.await_input', payload: { platform }, expiresAt: expiresAt(ctx) },
         effects: [{ type: 'send', text: TEXTS.askSource }],
       };
     }
     return {
-      state: { name: 'post.generating', expiresAt: expiresAt(ctx) },
+      state: { name: 'post.generating', payload: { platform }, expiresAt: expiresAt(ctx) },
       effects: [
         { type: 'run', step: 'source', args: { input, platform } },
         { type: 'send', text: TEXTS.working },
@@ -139,15 +141,25 @@ function handleText(
 
   switch (state.name) {
     case 'post.await_input':
-    case 'post.await_source_pick':
+    case 'post.await_source_pick': {
       // Ссылка вместо кнопки — тот же ответ на тот же вопрос «дай источник».
+      const platform = state.payload?.platform;
       return {
-        state: { name: 'post.generating', expiresAt: expiresAt(ctx) },
+        state: {
+          name: 'post.generating',
+          ...(state.payload === undefined ? {} : { payload: state.payload }),
+          expiresAt: expiresAt(ctx),
+        },
         effects: [
-          { type: 'run', step: 'source', args: { input: text } },
+          {
+            type: 'run',
+            step: 'source',
+            args: { input: text, ...(platform === undefined ? {} : { platform }) },
+          },
           { type: 'send', text: TEXTS.working },
         ],
       };
+    }
     case 'post.await_edit_text':
       return {
         state: {
@@ -187,7 +199,7 @@ function handleCallback(
   const parsed = parseCallback(event.data);
   if (parsed === undefined) return stale(event, state);
 
-  if (parsed.action === 'q.show' || parsed.action === 'q.drop') {
+  if (parsed.action === 'q.show' || parsed.action === 'q.tshow' || parsed.action === 'q.drop') {
     // Кнопки из `/queue`: список печатается мимо автомата, поэтому пост
     // называет сама кнопка. Единственный гейт — занятость.
     if (state.name !== 'idle') {
@@ -200,23 +212,12 @@ function handleCallback(
         { type: 'send', text: TEXTS.dropped },
       ]);
     }
-    return {
-      state: {
-        name: 'post.previewed',
-        postId: parsed.id,
-        payload: { stamp: parsed.stamp },
-        expiresAt: expiresAt(ctx),
-      },
-      effects: [
-        { type: 'answer_callback' },
-        { type: 'preview', postId: parsed.id },
-        {
-          type: 'send',
-          text: TEXTS.previewReady,
-          keyboard: previewKeyboard(parsed.id, parsed.stamp),
-        },
-      ],
-    };
+    // Площадку называет САМА кнопка: список печатается мимо автомата, и
+    // состояния, из которого её можно было бы прочитать, тут нет.
+    const platform: Platform = parsed.action === 'q.tshow' ? 'threads' : 'telegram';
+    return previewTransition(parsed.id, parsed.stamp, platform, { platform }, ctx, [
+      { type: 'answer_callback' },
+    ]);
   }
 
   if (parsed.action === 'thr') {
@@ -273,7 +274,11 @@ function handleCallback(
           {
             type: 'run',
             step: 'source',
-            args: { input: candidate.url, ...(postId === '' ? {} : { postId }) },
+            args: {
+              input: candidate.url,
+              ...(postId === '' ? {} : { postId }),
+              ...(payload.platform === undefined ? {} : { platform: payload.platform }),
+            },
           },
           { type: 'send', text: TEXTS.working },
         ],
@@ -456,6 +461,21 @@ function handleCallback(
         };
       }
       if (parsed.action === 'back') {
+        // Сам пост показывать заново незачем — он выше в переписке. Возвращаем
+        // только кнопки, и кнопки ТОЙ площадки, с которой ушли в правки.
+        if (payload.platform === 'threads') {
+          return {
+            state: { name: 'threads.previewed', postId, payload, expiresAt: expiresAt(ctx) },
+            effects: [
+              answer,
+              {
+                type: 'send',
+                text: TEXTS.threadsReady,
+                keyboard: threadsPreviewKeyboard(postId, parsed.stamp),
+              },
+            ],
+          };
+        }
         return {
           state: { name: 'post.previewed', postId, payload, expiresAt: expiresAt(ctx) },
           effects: [
@@ -551,14 +571,7 @@ function handleCallback(
 
     case 'post.failed': {
       if (parsed.action === 'show') {
-        return {
-          state: { name: 'post.previewed', postId, payload, expiresAt: expiresAt(ctx) },
-          effects: [
-            answer,
-            { type: 'preview', postId },
-            { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(postId, parsed.stamp) },
-          ],
-        };
+        return previewTransition(postId, parsed.stamp, payload.platform, payload, ctx, [answer]);
       }
       if (parsed.action === 'drop') {
         return idleWith([answer, { type: 'decision', postId, kind: 'reject' }, { type: 'send', text: TEXTS.dropped }]);
@@ -569,6 +582,44 @@ function handleCallback(
     default:
       return stale(event, state);
   }
+}
+
+/**
+ * Экран готового поста: у площадки он свой (несколько сообщений и кнопка
+ * «Выложил»), у канала — пост плюс клавиатура публикации. Площадка берётся из
+ * СОСТОЯНИЯ: исход шага её называет не всегда (круг правок, «Показать как
+ * есть»), и выбирать экран по нему значило бы предлагать выложить пост
+ * площадки в канал.
+ */
+function previewTransition(
+  postId: string,
+  stamp: string,
+  platform: Platform | undefined,
+  payload: FlowPayload,
+  ctx: TransitionContext,
+  before: readonly Effect[] = [],
+): Transition {
+  if (platform === 'threads') {
+    return {
+      state: {
+        name: 'threads.previewed',
+        postId,
+        payload: { ...payload, stamp, platform },
+        expiresAt: expiresAt(ctx),
+      },
+      // Превью площадки собирает исполнитель: это несколько сообщений, и
+      // кнопки живут на первом из них.
+      effects: [...before, { type: 'preview', postId }],
+    };
+  }
+  return {
+    state: { name: 'post.previewed', postId, payload: { ...payload, stamp }, expiresAt: expiresAt(ctx) },
+    effects: [
+      ...before,
+      { type: 'preview', postId },
+      { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(postId, stamp) },
+    ],
+  };
 }
 
 function handlePipelineDone(
@@ -652,21 +703,7 @@ function handlePipelineDone(
     };
   }
 
-  // Пост написан и проверен.
-  if (outcome.platform === 'threads' && outcome.verdict === 'pass') {
-    const stamp = outcome.textSha.slice(0, 8);
-    return {
-      state: {
-        name: 'threads.previewed',
-        postId: outcome.postId,
-        payload: withPayload(state, { stamp }),
-        expiresAt: expiresAt(ctx),
-      },
-      // Само превью собирает исполнитель: у площадки это несколько сообщений
-      // (текст с кнопкой, картинка, части цепочки), а не одно.
-      effects: [{ type: 'preview', postId: outcome.postId }],
-    };
-  }
+  const platform = outcome.platform ?? state.payload?.platform;
 
   if (outcome.verdict === 'fail') {
     const stamp = outcome.textSha.slice(0, 8);
@@ -674,7 +711,7 @@ function handlePipelineDone(
       state: {
         name: 'post.failed',
         postId: outcome.postId,
-        payload: withPayload(state, { stamp, judgeSummary: outcome.summary ?? '' }),
+        payload: withPayload(state, { stamp, judgeSummary: outcome.summary ?? '', ...(platform === undefined ? {} : { platform }) }),
         expiresAt: expiresAt(ctx),
       },
       effects: [
@@ -687,23 +724,17 @@ function handlePipelineDone(
     };
   }
 
-  const stamp = outcome.textSha.slice(0, 8);
-  return {
-    state: {
-      name: 'post.previewed',
-      postId: outcome.postId,
-      payload: withPayload(state, { stamp }),
-      expiresAt: expiresAt(ctx),
-    },
-    // Превью — это САМ ПОСТ (как он уйдёт в канал), а кнопки живут отдельным
-    // сообщением: у поста своя клавиатура рендера (кнопка продукта), и
-    // подмешивать в неё «Опубликовать» значило бы показывать владельцу не то,
-    // что увидит читатель.
-    effects: [
-      { type: 'preview', postId: outcome.postId },
-      { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(outcome.postId, stamp) },
-    ],
-  };
+  // Превью канала — это САМ ПОСТ (как он уйдёт в канал), а кнопки живут
+  // отдельным сообщением: у поста своя клавиатура рендера (кнопка продукта), и
+  // подмешивать в неё «Опубликовать» значило бы показывать владельцу не то,
+  // что увидит читатель.
+  return previewTransition(
+    outcome.postId,
+    outcome.textSha.slice(0, 8),
+    platform,
+    withPayload(state, {}),
+    ctx,
+  );
 }
 
 export function transition(

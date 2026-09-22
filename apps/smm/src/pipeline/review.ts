@@ -62,6 +62,7 @@ async function revise(
       body,
       problems,
       layout: ctx.layout,
+      platform: ctx.platform,
       config,
       ...(ctx.dossier === undefined ? {} : { dossier: ctx.dossier }),
     }),
@@ -130,6 +131,21 @@ export async function review(
   let body = draft;
   let rounds = 0;
 
+  // --- текст владельца уходит ДОСЛОВНО: модель его не переписывает.
+  // ⚠️ Гейт стоит ПЕРВЫМ, а не после круга правок по линту: ниже он спасал
+  // текст только от редактора, а негодный по линту текст владельца модель всё
+  // равно переписывала — при обещании «уйдёт дословно» на экране. Линт при
+  // этом считается: владельцу говорят, что не так, и он решает сам.
+  if (ctx.ownerText === true) {
+    const ownLint = runLint(body, ctx, config);
+    return {
+      ok: true,
+      value: lintPassed(ownLint)
+        ? { body, lint: ownLint, rounds, verdict: 'pass' }
+        : { body, lint: ownLint, rounds, verdict: 'fail', failedBy: 'lint' },
+    };
+  }
+
   // --- первый гейт: линт. Круг правок по нему ровно один.
   let lint = runLint(body, ctx, config);
   if (!lintPassed(lint)) {
@@ -146,11 +162,6 @@ export async function review(
         value: { body, lint, rounds, verdict: 'fail', failedBy: 'lint' },
       };
     }
-  }
-
-  // --- текст владельца дословно: редактор его не смотрит.
-  if (ctx.ownerText === true) {
-    return { ok: true, value: { body, lint, rounds, verdict: 'pass' } };
   }
 
   // --- второй гейт: редактор. До двух кругов правок.

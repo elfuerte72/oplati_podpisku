@@ -50,7 +50,18 @@ export interface AngleOption {
   readonly idea: string;
 }
 
+/** Куда пишется пост: у площадок разные экраны и разные кнопки. */
+export type Platform = 'telegram' | 'threads';
+
 export interface FlowPayload {
+  /**
+   * Площадка начатого поста. ⚠️ Живёт ЗДЕСЬ, а не только в аргументе первого
+   * шага: экран превью, «Назад» из правок, «Показать как есть» и кнопка из
+   * `/queue` выбирают вид по ней. Пока её тут не было, `/threads` без ссылки,
+   * `/threads` по теме и любой круг правок отдавали пост площадки с кнопкой
+   * «Опубликовать» — то есть предлагали выложить его в канал.
+   */
+  readonly platform?: Platform;
   /**
    * Отпечаток вопроса или текста на момент показа кнопок. Нажатие с чужим
    * отпечатком — это клик по старому сообщению: такие кнопки не работают.
@@ -108,7 +119,7 @@ export type PipelineOutcome =
       readonly textSha: string;
       readonly verdict: 'pass' | 'fail';
       /** Площадка: у Threads своё превью и своя кнопка. */
-      readonly platform?: 'telegram' | 'threads';
+      readonly platform?: Platform;
       readonly summary?: string;
     }
   | {

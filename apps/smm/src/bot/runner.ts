@@ -10,6 +10,7 @@ import type { HistoryPost, ReviewContext } from '../pipeline/types.ts';
 import { renderPost, type RenderablePost } from '../render/render.ts';
 import { sendPost, type SendApi, type SendTarget } from '../render/send.ts';
 import { resolveSource, type ResolveOptions } from '../sources/resolve.ts';
+import { saveImage } from '../sources/article.ts';
 import type { Article } from '../sources/article.ts';
 import type { PreviewResult } from './ports.ts';
 import type { Store } from '../store/index.ts';
@@ -44,6 +45,8 @@ export interface RunnerDeps {
   readonly channelId: string;
   readonly config?: SmmConfig;
   readonly resolve?: ResolveOptions;
+  /** Куда класть обложки постов. По умолчанию рядом с базой. */
+  readonly mediaDir?: string;
   readonly now?: () => Date;
 }
 
@@ -140,6 +143,27 @@ export function createRunner(deps: RunnerDeps): Runner {
     return post.dossier === undefined ? undefined : (post.dossier as Dossier);
   }
 
+  /**
+   * Обложка поста. Сбой скачивания пост НЕ роняет: картинка — украшение, а
+   * текст уже написан. Без этого шага `imagePath` не писал никто, и пост
+   * канала всегда уходил без картинки, а передача Threads — без сообщения
+   * «приложи сама».
+   */
+  async function saveCover(postId: string, article: Article): Promise<void> {
+    if (article.ogImage === undefined || article.ogImage === '') return;
+    const saved = await saveImage(article.ogImage, {
+      dir: deps.mediaDir ?? 'data/media',
+      name: postId,
+      config,
+      ...(deps.resolve?.fetcher === undefined ? {} : { fetcher: deps.resolve.fetcher }),
+    });
+    if (!saved.ok) {
+      deps.logger.warn({ postId, reason: saved.reason }, 'обложка не сохранилась');
+      return;
+    }
+    deps.store.posts.patch(postId, { imagePath: saved.path });
+  }
+
   async function stepSource(args: Record<string, unknown>): Promise<DialogEvent | undefined> {
     const input = asString(args.input);
     if (input === undefined) return failed('source', 'empty_input', 'пустой ввод', at());
@@ -185,6 +209,7 @@ export function createRunner(deps: RunnerDeps): Runner {
     // Текст статьи кладётся в досье-заготовку: следующий шаг разбирает его
     // моделью, и качать страницу заново не придётся.
     deps.store.posts.patch(post.id, { dossier: { article } });
+    await saveCover(post.id, article);
     return {
       kind: 'pipeline_done',
       at: at(),
@@ -365,6 +390,7 @@ export function createRunner(deps: RunnerDeps): Runner {
       outcome: {
         kind: 'post',
         postId,
+        platform: post.platform,
         textSha: fresh?.textSha ?? '',
         verdict: produced.value.verdict,
         ...(produced.value.verdict === 'fail' ? { summary } : {}),
@@ -405,6 +431,9 @@ export function createRunner(deps: RunnerDeps): Runner {
       outcome: {
         kind: 'post',
         postId,
+        // Площадку называет и круг правок: без неё автомат отдавал бы
+        // переписанный пост Threads с кнопкой публикации в канал.
+        platform: post.platform,
         textSha: fresh?.textSha ?? '',
         verdict: revised.value.verdict,
         ...(revised.value.verdict === 'fail' ? { summary } : {}),

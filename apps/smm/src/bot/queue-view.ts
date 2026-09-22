@@ -42,7 +42,12 @@ export function queueItems(store: Store, limit = 10): QueueItem[] {
               // ⚠️ Свои действия, а не `show`/`drop` превью: список печатается
               // МИМО автомата, состояние диалога при этом `idle`, и обычная
               // кнопка не прошла бы сверку «тот ли это пост».
-              { text: 'Показать', data: buildCallback('q.show', post.id, stamp) },
+              {
+                text: 'Показать',
+                // Площадку несёт САМА кнопка: у поста Threads свой экран и
+                // кнопка «Выложил», а не «Опубликовать» в канал.
+                data: buildCallback(post.platform === 'threads' ? 'q.tshow' : 'q.show', post.id, stamp),
+              },
               { text: TEXTS.buttons.drop, data: buildCallback('q.drop', post.id, stamp) },
             ],
           ],

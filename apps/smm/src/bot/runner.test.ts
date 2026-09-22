@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { createLogger } from '../logger.ts';
+import { ARTICLE_HTML } from '../sources/fixtures.ts';
+import type { Fetcher } from '../sources/index.ts';
 import type { Model, ModelResult } from '../llm/model.ts';
 import { smmConfig, type ModelRole } from '../config/smm.config.ts';
 import { DOSSIER, GOOD_DRAFT, judgePass, THREADS_POST } from '../pipeline/fixtures.ts';
@@ -65,7 +71,12 @@ interface HandedOff {
   readonly target: HandoffTarget;
 }
 
-function setup(answers: Partial<Record<ModelRole, unknown[]>> = {}) {
+interface SetupExtras {
+  readonly mediaDir?: string;
+  readonly fetcher?: Fetcher;
+}
+
+function setup(answers: Partial<Record<ModelRole, unknown[]>> = {}, extras: SetupExtras = {}) {
   const store = openStore({ path: ':memory:' });
   const { api, sent } = fakeApi();
   const handed: HandedOff[] = [];
@@ -81,6 +92,10 @@ function setup(answers: Partial<Record<ModelRole, unknown[]>> = {}) {
     ownerId: OWNER,
     ownerChatId: OWNER,
     channelId: CHANNEL,
+    ...(extras.mediaDir === undefined ? {} : { mediaDir: extras.mediaDir }),
+    ...(extras.fetcher === undefined
+      ? {}
+      : { resolve: { fetcher: extras.fetcher, resolver: () => Promise.resolve(['93.184.216.34']) } }),
   });
   return { store, runner, sent, handed };
 }
@@ -314,5 +329,52 @@ describe('ветка Threads', () => {
     const parent = store.posts.create({ platform: 'telegram', rubric: 'news' });
     const event = await runner.runStep('threads', { parentPostId: parent.id });
     expect(event).toMatchObject({ kind: 'pipeline_failed', step: 'threads', reason: 'no_dossier' });
+  });
+});
+
+describe('обложка поста', () => {
+  function pages(): Fetcher {
+    return (url) => {
+      if (url.endsWith('/cover-gemini.jpg')) {
+        return Promise.resolve(
+          new Response(new Uint8Array([1, 2, 3, 4]), {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(ARTICLE_HTML, { status: 200, headers: { 'content-type': 'text/html' } }),
+      );
+    };
+  }
+
+  it('картинка источника сохраняется и попадает в пост', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smm-runner-'));
+    const { store, runner } = setup({}, { mediaDir: dir, fetcher: pages() });
+
+    const event = await runner.runStep('source', { input: 'https://example.com/post' });
+    const postId = event?.kind === 'pipeline_done' && event.outcome.kind === 'article' ? event.outcome.postId : '';
+    const saved = store.posts.get(postId)?.imagePath;
+    expect(saved).toBeDefined();
+    expect(readFileSync(String(saved)).byteLength).toBe(4);
+    store.close();
+  });
+
+  it('несохранившаяся картинка НЕ роняет шаг: текст уже есть', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'smm-runner-'));
+    const broken: Fetcher = (url) =>
+      url.endsWith('/cover-gemini.jpg')
+        ? Promise.resolve(new Response('нет', { status: 404 }))
+        : Promise.resolve(
+            new Response(ARTICLE_HTML, { status: 200, headers: { 'content-type': 'text/html' } }),
+          );
+    const { store, runner } = setup({}, { mediaDir: dir, fetcher: broken });
+
+    const event = await runner.runStep('source', { input: 'https://example.com/post' });
+    expect(event).toMatchObject({ kind: 'pipeline_done', outcome: { kind: 'article' } });
+    const postId = event?.kind === 'pipeline_done' && event.outcome.kind === 'article' ? event.outcome.postId : '';
+    expect(store.posts.get(postId)?.imagePath).toBeUndefined();
+    store.close();
   });
 });

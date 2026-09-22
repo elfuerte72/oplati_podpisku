@@ -5,6 +5,9 @@ import { createLogger } from '../logger.ts';
 import type { Model, ModelResult } from '../llm/model.ts';
 import type { ModelRole } from '../config/smm.config.ts';
 import { advise, advisePlan, buildDossier, plan, producePost, review, revisePost, trimArticle } from './index.ts';
+import { threadsBody } from './threads.ts';
+import { reviseInput } from './inputs.ts';
+import { lintThreads } from '../lint/threads.ts';
 import {
   DOSSIER,
   DRAFT_WITH_LINT_ERROR,
@@ -305,13 +308,16 @@ describe('проверка черновика', () => {
     expect(calls).toEqual([]);
   });
 
-  it('текст владельца всё равно проходит линт', async () => {
-    const { model } = fakeModel({ revise: [DRAFT_WITH_LINT_ERROR] });
+  it('текст владельца всё равно проходит линт — но модель его НЕ переписывает', async () => {
+    const { model, calls } = fakeModel({ revise: [DRAFT_WITH_LINT_ERROR] });
     const result = await review(DRAFT_WITH_LINT_ERROR, reviewCtx({ ownerText: true }), deps(model));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.verdict).toBe('fail');
     expect(result.value.failedBy).toBe('lint');
+    // Текст остался тем же, что прислал владелец: круга правок не было.
+    expect(result.value.body).toBe(DRAFT_WITH_LINT_ERROR);
+    expect(calls).toEqual([]);
   });
 });
 
@@ -398,5 +404,78 @@ describe('совет плану', () => {
     // Рубрика «Как этим пользоваться» в плане есть, а в истории её нет.
     expect(advice?.rubricDeficit.join(' ')).toContain('Как этим пользоваться');
     expect(advice?.doNotRepeat.length).toBeGreaterThan(0);
+  });
+});
+
+describe('сборка поста площадки', () => {
+  it('одиночный пост со ссылкой НЕ получает её в первую часть', () => {
+    const body = threadsBody({
+      hook: 'Крючок',
+      pieces: ['Крючок. Короткий пост одной частью.'],
+      link: 'https://example.com/a',
+    });
+    const lint = lintThreads(body, { cta: 'none' });
+    expect(lint.errors.map((error) => error.code)).not.toContain('threads_link_first');
+    // Ссылка уходит ответом: так её видит и площадка, и читатель.
+    expect(body.split(smmConfig.threads.separator)[0]).not.toContain('https://example.com/a');
+    expect(body).toContain('https://example.com/a');
+  });
+
+  it('в цепочке ссылка остаётся в последней части', () => {
+    const body = threadsBody({
+      hook: 'Крючок',
+      pieces: ['Первая часть.', 'Вторая часть.'],
+      link: 'https://example.com/a',
+    });
+    const pieces = body.split(`\n${smmConfig.threads.separator}\n`);
+    expect(pieces).toHaveLength(2);
+    expect(pieces[1]).toContain('https://example.com/a');
+  });
+});
+
+describe('текст владельца', () => {
+  it('уходит дословно даже когда не проходит линт: модель его не трогает', async () => {
+    const calls: ModelRole[] = [];
+    const model: Model = {
+      json(role) {
+        calls.push(role);
+        return Promise.resolve({ ok: false, reason: 'api_error', message: 'модель звать не должны' });
+      },
+      markdown(role) {
+        calls.push(role);
+        return Promise.resolve({ ok: false, reason: 'api_error', message: 'модель звать не должны' });
+      },
+    };
+    const own = DRAFT_WITH_LINT_ERROR;
+    const result = await revisePost(
+      {
+        body: GOOD_DRAFT,
+        context: { platform: 'telegram', rubric: 'news', layout: 'a', cta: 'none', hasImage: false },
+      },
+      { kind: 'owner_text', text: own },
+      { model, logger: createLogger({ level: 'fatal', stream: { write() {} } }) },
+    );
+    expect(result.ok && result.value.body).toBe(own);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('круг правок', () => {
+  it('посту площадки даются границы ПЛОЩАДКИ, а не раскладки канала', () => {
+    const own = reviseInput({
+      body: 'текст',
+      problems: 'коротко',
+      layout: 'a',
+      platform: 'threads',
+    });
+    expect(own).toContain(String(smmConfig.threads.pieceLimit));
+    expect(own).toContain(smmConfig.threads.separator);
+    expect(own).not.toContain('Раскладка А');
+  });
+
+  it('посту канала — границы его раскладки', () => {
+    const channel = reviseInput({ body: 'текст', problems: 'коротко', layout: 'a' });
+    expect(channel).toContain('Раскладка А');
+    expect(channel).not.toContain(smmConfig.threads.separator);
   });
 });

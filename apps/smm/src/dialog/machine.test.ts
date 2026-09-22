@@ -439,6 +439,95 @@ describe('выбор первоисточника', () => {
   });
 });
 
+describe('площадка живёт в состоянии диалога', () => {
+  const CANDIDATES = [
+    { url: 'https://a.example.com/1', title: 'Первый' },
+    { url: 'https://b.example.com/2', title: 'Второй' },
+  ];
+
+  it('/threads без ссылки помнит площадку до ответа владельца', () => {
+    const asked = transition({ name: 'idle' }, command('/threads'), ctx());
+    expect(asked.state.name).toBe('post.await_input');
+
+    const answered = transition(asked.state, text('https://example.com/a'), ctx());
+    expect(answered.effects.find((effect) => effect.type === 'run')).toMatchObject({
+      step: 'source',
+      args: { input: 'https://example.com/a', platform: 'threads' },
+    });
+  });
+
+  it('/threads с темой помнит площадку после выбора первоисточника', () => {
+    const asked = transition({ name: 'idle' }, command('/threads', 'нейросети'), ctx());
+    const listed = transition(
+      asked.state,
+      { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates: CANDIDATES }, at: NOW },
+      ctx(),
+    );
+    const send = listed.effects.find((effect) => effect.type === 'send');
+    const data = send?.type === 'send' ? (send.keyboard?.rows[0]?.[0]?.data ?? '') : '';
+
+    const picked = transition(listed.state, { kind: 'callback', data, at: NOW }, ctx());
+    expect(picked.effects.find((effect) => effect.type === 'run')).toMatchObject({
+      step: 'source',
+      args: { platform: 'threads' },
+    });
+  });
+
+  it('после правок пост площадки возвращается к «Выложил», а не к публикации в канал', () => {
+    const state: FlowState = {
+      name: 'post.generating',
+      postId: POST_ID,
+      payload: { stamp: 'q1', platform: 'threads' },
+    };
+    const result = transition(
+      state,
+      {
+        kind: 'pipeline_done',
+        outcome: { kind: 'post', postId: POST_ID, textSha: 'abcdef1234', verdict: 'pass' },
+        at: NOW,
+      },
+      ctx(),
+    );
+    expect(result.state.name).toBe('threads.previewed');
+  });
+
+  it('«Назад» из правок возвращает на экран площадки', () => {
+    const state: FlowState = {
+      name: 'post.await_edit_choice',
+      postId: POST_ID,
+      payload: { stamp: 'abcdef12', platform: 'threads' },
+    };
+    const result = transition(state, callback('back', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('threads.previewed');
+  });
+
+  it('«Показать как есть» у поста площадки ведёт к «Выложил»', () => {
+    const state: FlowState = {
+      name: 'post.failed',
+      postId: POST_ID,
+      payload: { stamp: 'abcdef12', platform: 'threads', judgeSummary: 'слабый крючок' },
+    };
+    const result = transition(state, callback('show', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('threads.previewed');
+    // Клавиатуру площадки рисует передача: второго сообщения с «Опубликовать» быть не должно.
+    const labels = result.effects
+      .filter((effect) => effect.type === 'send')
+      .flatMap((effect) => (effect.type === 'send' ? (effect.keyboard?.rows.flat() ?? []) : []))
+      .map((button) => button.text);
+    expect(labels).not.toContain(TEXTS.buttons.publish);
+  });
+
+  it('«Показать» из /queue для поста площадки не даёт кнопку публикации в канал', () => {
+    const result = transition({ name: 'idle' }, callback('q.tshow', POST_ID, 'abcdef12'), ctx());
+    expect(result.state.name).toBe('threads.previewed');
+    const labels = result.effects
+      .filter((effect) => effect.type === 'send')
+      .flatMap((effect) => (effect.type === 'send' ? (effect.keyboard?.rows.flat() ?? []) : []))
+      .map((button) => button.text);
+    expect(labels).not.toContain(TEXTS.buttons.publish);
+  });
+});
+
 describe('превью и кнопки под ним', () => {
   it('готовый пост показывается И получает кнопки: публиковать иначе нечем', () => {
     const result = transition(

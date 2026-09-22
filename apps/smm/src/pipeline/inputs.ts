@@ -107,13 +107,27 @@ export function reviseInput(input: {
   body: string;
   problems: string;
   layout: LayoutKey;
+  /** Площадка: у Threads другие границы и своя форма цепочки. */
+  platform?: 'telegram' | 'threads';
   dossier?: Dossier;
   config?: SmmConfig;
 }): string {
   const config = input.config ?? smmConfig;
   const layout = config.layouts[input.layout];
+  const limits = config.threads;
+  // ⚠️ Границы берутся ПО ПЛОЩАДКЕ. Пост Threads раскладки не имеет, и
+  // правка по правилам канала («от 400 до 700 знаков», «структуру раскладки
+  // не меняешь») схлопывала цепочку и выводила части за лимит площадки.
+  const frame =
+    input.platform === 'threads'
+      ? [
+          `Пост для Threads: части разделены строкой «${limits.separator}», каждая до ${limits.pieceLimit} знаков ` +
+            `(первая лучше всего читается до ${limits.postTarget}, ответы — до ${limits.replyTarget}).`,
+          'Разметки нет: ни заголовков, ни звёздочек, ни списков. Число частей и ссылку в последней не меняй.',
+        ]
+      : [`Раскладка ${layout.letter}, от ${layout.minChars} до ${layout.maxChars} видимых знаков.`];
   const parts = [
-    `Раскладка ${layout.letter}, от ${layout.minChars} до ${layout.maxChars} видимых знаков.`,
+    ...frame,
     '',
     'Замечания, которые надо исправить (и только их):',
     input.problems,
