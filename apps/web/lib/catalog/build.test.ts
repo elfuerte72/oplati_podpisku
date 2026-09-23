@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCatalogService,
+  cheapestTierKopecks,
   computeTotalKopecks,
   filterCatalogForDisplay,
   groupCatalog,
@@ -279,5 +280,38 @@ describe('groupCatalog', () => {
     ]);
     expect(groups.map((g) => g.category)).toEqual(['ai', 'mystery']);
     expect(groups[1]?.label).toBe('mystery');
+  });
+});
+
+describe('cheapestTierKopecks — «от N ₽» на плитке Mini App', () => {
+  function svc(tiers: { totalKopecks: number }[], customAmount = false) {
+    return {
+      slug: 's',
+      name: 'S',
+      category: 'ai',
+      requiresKyc: false,
+      customAmount,
+      instructions: null,
+      tiers: tiers.map((t, i) => ({
+        name: `T${i}`,
+        period: 'month' as const,
+        usdCents: 1000 * (i + 1),
+        totalKopecks: t.totalKopecks,
+      })),
+    };
+  }
+
+  it('минимум уже посчитанных тарифов — та же оценка, что в строке тарифа', () => {
+    expect(cheapestTierKopecks(svc([{ totalKopecks: 213_200 }, { totalKopecks: 85_300 }]))).toBe(
+      85_300,
+    );
+  });
+
+  it('своя сумма — цены нет', () => {
+    expect(cheapestTierKopecks(svc([], true))).toBeNull();
+  });
+
+  it('тарифов нет — цены нет', () => {
+    expect(cheapestTierKopecks(svc([]))).toBeNull();
   });
 });

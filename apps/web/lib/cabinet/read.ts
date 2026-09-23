@@ -10,6 +10,7 @@ import {
   getServicesByIds,
   getUserProfileById,
   findCardsByUserIdForCabinet,
+  findOrderIdsWithEvent,
   findPaymentsByOrderId,
   findPromoRedemptionByOrderId,
   findPromoRedemptionsByOrderIds,
@@ -50,6 +51,7 @@ import {
   ORDER_STATUS_LABELS,
   PAYMENT_STATUS_LABELS,
   PURCHASED_STATUSES,
+  SUBSCRIPTION_ACTIVATED_EVENT,
   isPayableStatus,
   type CabinetProfile,
   type CabinetSnapshot,
@@ -142,6 +144,7 @@ function mapOrderSummary(
   serviceName: string | null,
   bonus: OrderRedemptionView | null = null,
   promo: OrderPromoView | null = null,
+  subscriptionActivated = false,
 ): OrderSummary {
   return {
     orderId: order.id,
@@ -155,6 +158,8 @@ function mapOrderSummary(
     payable: isPayableStatus(order.status),
     bonus,
     promo,
+    cardId: order.cardId ?? null,
+    subscriptionActivated,
   };
 }
 
@@ -307,10 +312,13 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
   // N+1. Выключенная фича базу не трогает вовсе, но уже занятые баллы
   // продолжают показываться — гасить фичу не значит скрыть чужие деньги.
   const orderIds = orders.map((o) => o.id);
-  const [redemptions, promoRedemptions] = await Promise.all([
+  const [redemptions, promoRedemptions, subscriptionActivatedIds] = await Promise.all([
     findRedemptionsByOrderIds(db, orderIds),
     // Скидки по промокодам — той же пачкой и по той же причине (трек promo-codes).
     findPromoRedemptionsByOrderIds(db, orderIds),
+    // «Подписка оформлена» — для вкладки «Карта» (трек miniapp-tabs, тикет 06):
+    // по нему гаснет «Остался один шаг». Той же пачкой, без N+1.
+    findOrderIdsWithEvent(db, { orderIds, eventType: SUBSCRIPTION_ACTIVATED_EVENT }),
   ]);
 
   const orderSummaries = orders.map((o) =>
@@ -319,6 +327,7 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
       o.serviceId ? serviceNameById.get(o.serviceId) ?? null : null,
       mapRedemption(redemptions.get(o.id)),
       mapPromoRedemption(promoRedemptions.get(o.id)),
+      subscriptionActivatedIds.has(o.id),
     ),
   );
 
@@ -446,7 +455,13 @@ export async function buildOrderDetail(userId: string, orderId: string): Promise
   };
 
   return {
-    ...mapOrderSummary(order, serviceName, mapRedemption(redemption), promoView),
+    ...mapOrderSummary(
+      order,
+      serviceName,
+      mapRedemption(redemption),
+      promoView,
+      events.some((e) => e.eventType === SUBSCRIPTION_ACTIVATED_EVENT),
+    ),
     bonusOffer: await buildOrderBonusView(order, promoView?.discountKopecks ?? 0),
     promoInputEnabled: isPromoEnabled(),
     originalAmount: order.originalAmount,

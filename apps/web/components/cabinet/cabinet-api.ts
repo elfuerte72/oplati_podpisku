@@ -1,7 +1,7 @@
 'use client';
 
 import { z } from 'zod';
-import { servicePaymentInstructions } from '@oplati/types';
+import { billingAddress as billingAddressSchema, servicePaymentInstructions } from '@oplati/types';
 
 import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { fetchWithTimeout } from '@/lib/http';
@@ -53,6 +53,14 @@ const orderSummarySchema = z.object({
     })
     .nullable()
     .optional(),
+  /**
+   * Карта, выданная по заказу, и отметка «Подписка оформлена» — по ним вкладка
+   * «Карта» собирает свои заказы и шаг 3 (трек miniapp-tabs, тикет 06).
+   * `.optional()` по той же причине, что у `bonus`: снапшот деплоя без полей
+   * просто не покажет «Остался один шаг», а не уронит кабинет.
+   */
+  cardId: z.string().nullable().optional(),
+  subscriptionActivated: z.boolean().optional(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */
@@ -72,7 +80,17 @@ const cardViewSchema = z.object({
 });
 
 const cardDetailsResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), number: z.string(), exp: z.string(), cvc: z.string() }),
+  z.object({
+    ok: z.literal(true),
+    number: z.string(),
+    exp: z.string(),
+    cvc: z.string(),
+    /**
+     * Адрес плательщика, закреплённый за клиентом (тикет 07). Необязательный:
+     * без него лист реквизитов показывает только номер, срок и CVC.
+     */
+    billingAddress: billingAddressSchema.optional(),
+  }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 

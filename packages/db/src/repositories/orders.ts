@@ -187,6 +187,31 @@ export async function getOrderEventsByOrderId(
 }
 
 /**
+ * Какие заказы из списка имеют событие данного типа — ОДНИМ запросом.
+ *
+ * Нужен снапшоту кабинета (трек miniapp-tabs, тикет 06): вкладка «Карта»
+ * решает по `subscription_activated`, показывать ли «Остался один шаг», а
+ * запрос на каждый заказ превратил бы снапшот в N+1. Read-only; пустой список
+ * в базу не ходит.
+ */
+export async function findOrderIdsWithEvent(
+  db: DB,
+  input: { orderIds: readonly string[]; eventType: string },
+): Promise<Set<string>> {
+  if (input.orderIds.length === 0) return new Set();
+  const rows = await db
+    .selectDistinct({ orderId: orderEvents.orderId })
+    .from(orderEvents)
+    .where(
+      and(
+        inArray(orderEvents.orderId, [...input.orderIds]),
+        eq(orderEvents.eventType, input.eventType),
+      ),
+    );
+  return new Set(rows.map((r) => r.orderId));
+}
+
+/**
  * Заказ под `SELECT ... FOR UPDATE` — для операций, которые принимают решение по
  * статусу заказа И трогают его платежи в одной транзакции.
  *

@@ -106,3 +106,42 @@ export function formatDeadlineWithYear(iso: string): string {
     return iso;
   }
 }
+
+/** Части даты по Москве — общие для коротких форматов вкладок Mini App. */
+function moscowParts(iso: string, options: Intl.DateTimeFormatOptions): string | null {
+  const date = parseIsoOrNull(iso);
+  if (!date) return null;
+  try {
+    return date.toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', ...options });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ISO-дата → «20 марта 2027» (МСК), без времени. «Действует до» карты на
+ * вкладке «Карта» (трек miniapp-tabs, тикет 06): срок в месяцах, и часы с
+ * минутами рядом с ним только шумят. Год обязателен — см. `formatDeadlineWithYear`.
+ */
+export function formatDateWithYear(iso: string): string {
+  const out = moscowParts(iso, { day: 'numeric', month: 'long', year: 'numeric' });
+  return out ? out.replace(/\s*г\.$/, '') : iso;
+}
+
+/** ISO-дата → «23 сентября» (МСК) — дата заказа в списке «Заказы по этой карте». */
+export function formatDayMonth(iso: string): string {
+  return moscowParts(iso, { day: 'numeric', month: 'long' }) ?? iso;
+}
+
+/**
+ * ISO-дата → «июля 2026» (МСК) — для строки «в Оплатишке с июля 2026» в профиле.
+ * Родительный падеж берётся у формата «день месяц» (у одного месяца Intl отдаёт
+ * именительный), день затем отрезается. Мусор — `null`: строку не рисуем.
+ */
+export function formatSinceMonth(iso: string): string | null {
+  const dayMonth = moscowParts(iso, { day: 'numeric', month: 'long' });
+  const year = moscowParts(iso, { year: 'numeric' });
+  if (!dayMonth || !year) return null;
+  const month = dayMonth.replace(/^\d+\s+/, '');
+  return `${month} ${year.replace(/\s*г\.$/, '')}`;
+}

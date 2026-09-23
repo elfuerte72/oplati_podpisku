@@ -137,6 +137,8 @@ function InputRow({
   field,
   normalize,
   action,
+  inputRef,
+  forcedError,
 }: {
   label: string;
   hint: string;
@@ -147,9 +149,16 @@ function InputRow({
   field: FieldState;
   normalize: (raw: string) => string | null;
   action?: React.ReactNode;
+  inputRef?: React.Ref<HTMLInputElement> | undefined;
+  /** Текст ошибки, показанный без «тронутости» поля (нажали «Оплатить» с пустым). */
+  forcedError?: string | null | undefined;
 }) {
   const [touched, setTouched] = useState(false);
-  const invalid = touched && normalize(field.value) === null;
+  const invalidByFormat = touched && normalize(field.value) === null;
+  const invalid = invalidByFormat || Boolean(forcedError);
+  // Пустое поле, тронутое и брошенное, — это «не заполнил», а не «ошибся в
+  // формате»: принудительный текст объясняет, зачем поле, точнее формата.
+  const errorText = forcedError && field.value.trim() === '' ? forcedError : invalidText;
   return (
     <div className="rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5">
       <label className="block">
@@ -157,6 +166,7 @@ function InputRow({
           {label}
         </span>
         <input
+          ref={inputRef}
           type={type}
           inputMode={type}
           autoComplete={autoComplete}
@@ -173,7 +183,7 @@ function InputRow({
       </label>
       {action}
       {invalid ? (
-        <p className="mt-1.5 font-body text-xs text-[var(--color-stamp)]">{invalidText}</p>
+        <p role="alert" className="mt-1.5 font-body text-xs text-[var(--color-stamp)]">{errorText}</p>
       ) : (
         <p className="mt-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">{hint}</p>
       )}
@@ -196,6 +206,12 @@ export function ContactCard({
   phoneRequiredFromRub,
   phoneSource,
   onRequestTelegramPhone,
+  emailLabel = 'Почта для связи по заказу',
+  emailHint = 'Если банк поставит платёж на проверку — напишет сюда. Спросим один раз.',
+  emailInputRef,
+  phoneInputRef,
+  emailError,
+  phoneError,
 }: {
   contacts: ContactsState;
   /** Показывать ли поле телефона (сумма от порога). */
@@ -206,6 +222,19 @@ export function ContactCard({
   phoneSource?: string | null | undefined;
   /** Mini App: «Взять из Telegram» (requestContact). Не задан → кнопки нет. */
   onRequestTelegramPhone?: (() => void) | undefined;
+  /**
+   * Подпись и подсказка поля почты. Mini App называет её «нужна для оплаты»
+   * (трек miniapp-tabs, тикет 05): кнопка «Оплатить» там больше не серая, и
+   * подпись заранее говорит, почему без почты счёта не будет. Сайт — прежние.
+   */
+  emailLabel?: string | undefined;
+  emailHint?: string | undefined;
+  /** Куда вести фокус, когда «Оплатить» нажали без контакта (тикет 05). */
+  emailInputRef?: React.Ref<HTMLInputElement> | undefined;
+  phoneInputRef?: React.Ref<HTMLInputElement> | undefined;
+  /** Текст «чего не хватает» — показывается сразу, без ухода из поля. */
+  emailError?: string | null | undefined;
+  phoneError?: string | null | undefined;
 }) {
   const { email, phone } = contacts;
   const emailActive = email.field.saved === null || email.field.editing;
@@ -225,14 +254,16 @@ export function ContactCard({
     <div className="space-y-2">
       {emailActive ? (
         <InputRow
-          label="Почта для связи по заказу"
-          hint="Если банк поставит платёж на проверку — напишет сюда. Спросим один раз."
+          label={emailLabel}
+          hint={emailHint}
           invalidText={EMAIL_INVALID_TEXT}
           type="email"
           placeholder="you@example.com"
           autoComplete="email"
           field={email.field}
           normalize={normalizeEmail}
+          inputRef={emailInputRef}
+          forcedError={emailError}
         />
       ) : (
         <CollapsedRow
@@ -258,6 +289,8 @@ export function ContactCard({
             field={phone.field}
             normalize={normalizePhone}
             action={telegramButton}
+            inputRef={phoneInputRef}
+            forcedError={phoneError}
           />
         ) : (
           <CollapsedRow

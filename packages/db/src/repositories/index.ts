@@ -199,6 +199,7 @@ export {
   getOrderById,
   getOrdersByUserId,
   getOrderEventsByOrderId,
+  findOrderIdsWithEvent,
   transitionOrder,
   transitionOrderDetailed,
   lockOrderForUpdate,

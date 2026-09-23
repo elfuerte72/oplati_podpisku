@@ -3,7 +3,9 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 
 import { getDb, findCardByIdForUser } from '@oplati/db';
+import type { BillingAddress } from '@oplati/types';
 
+import { resolveBillingAddressForUser } from '../billing-address.ts';
 import { getPaySpaceClient, isPaySpaceConfigured } from '../pay-space/index.ts';
 import { childLogger } from '../logger.ts';
 
@@ -17,12 +19,18 @@ import { childLogger } from '../logger.ts';
  *
  * Ownership: `findCardByIdForUser` отдаёт карту, только если она принадлежит
  * этому пользователю и не recycled (recycled-карта могла уйти другому клиенту).
+ *
+ * Вместе с реквизитами — адрес плательщика (трек miniapp-tabs, тикет 07): до
+ * этого он был только в сообщении бота, и в поддержку приходило «не удалось
+ * подтвердить платёжный адрес». Адрес тот же, что уходит в сообщении с картой
+ * (`resolveBillingAddressForUser`): у старых карт он закрепится при первом
+ * показе. Это не третий канал выдачи реквизитов — тот же показ в кабинете.
  */
 
 const log = childLogger('cabinet.card-secrets');
 
 export type CardSecretsResult =
-  | { ok: true; number: string; exp: string; cvc: string }
+  | { ok: true; number: string; exp: string; cvc: string; billingAddress: BillingAddress }
   | { ok: false; error: 'not_found' | 'unavailable' };
 
 export async function getCardSecretsForUser(
@@ -40,12 +48,18 @@ export async function getCardSecretsForUser(
     return { ok: false, error: 'unavailable' };
   }
 
+  // Адрес — параллельно с живым запросом к PaySpace: он не бросает никогда
+  // (сбой закрепления даёт адрес из того же пула), и ждать его после секретов
+  // значило бы удлинить и без того самый медленный экран кабинета.
+  const billingAddressPromise = resolveBillingAddressForUser(db, userId);
+
   try {
     const secrets = await getPaySpaceClient().getCardSecrets(card.providerCardId);
     // Номер группами по 4 для читабельности. Ничего из secrets НЕ логируем.
     const number = secrets.cardNo.replace(/(.{4})/g, '$1 ').trim();
+    const billingAddress = await billingAddressPromise;
     log.info({ event: 'cabinet.card_secrets.revealed', cardId });
-    return { ok: true, number, exp: secrets.expDate, cvc: secrets.cvv };
+    return { ok: true, number, exp: secrets.expDate, cvc: secrets.cvv, billingAddress };
   } catch {
     // НЕ передаём пойманную ошибку в лог/Sentry: при сбое парса контракта она
     // может нести сырое тело ответа с реквизитами. Только событие + cardId.

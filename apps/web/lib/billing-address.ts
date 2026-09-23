@@ -5,6 +5,7 @@ import * as Sentry from '@sentry/nextjs';
 import { getOrAssignUserBillingAddress, type DB } from '@oplati/db';
 import type { BillingAddress } from '@oplati/types';
 
+import { billingAddressFields } from './billing-address-fields.ts';
 import { childLogger } from './logger.ts';
 
 const log = childLogger('billing-address');
@@ -109,12 +110,7 @@ export async function resolveBillingAddressForUser(db: DB, userId: string): Prom
   return candidate;
 }
 
+/** Строки «Подпись: значение» для сообщения бота; словарь — `billingAddressFields`. */
 export function formatBillingAddressLines(address: BillingAddress): string[] {
-  return [
-    `Street address: ${address.streetLine1}`,
-    `City: ${address.city}`,
-    `State: ${address.state} (${address.stateCode})`,
-    `ZIP: ${address.postalCode}`,
-    `Country: ${address.country}`,
-  ];
+  return billingAddressFields(address).map((f) => `${f.label}: ${f.value}`);
 }

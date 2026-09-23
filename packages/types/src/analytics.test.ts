@@ -19,9 +19,33 @@ import {
 } from './analytics.ts';
 
 describe('реестр событий', () => {
-  it('21 собственное событие и 10 вех', () => {
-    expect(ANALYTICS_EVENT_NAMES).toHaveLength(21);
+  it('27 собственных событий и 10 вех', () => {
+    expect(ANALYTICS_EVENT_NAMES).toHaveLength(27);
     expect(Object.keys(ANALYTICS_MILESTONES)).toHaveLength(10);
+  });
+
+  it('события вкладок Mini App — клиентские, канал miniapp (трек miniapp-tabs, тикет 10)', () => {
+    const tabsEvents: AnalyticsEventName[] = [
+      'cabinet_tab_view',
+      'card_copy',
+      'pay_blocked_tap',
+      'card_next_step_view',
+      'intro_skip',
+      'intro_complete',
+    ];
+    for (const name of tabsEvents) {
+      expect(ANALYTICS_EVENTS[name].channel).toBe('miniapp');
+      expect(isClientTrackable(name)).toBe(true);
+    }
+    expect(ANALYTICS_EVENTS.cabinet_tab_view.props).toEqual(['tab', 'via']);
+    expect(ANALYTICS_EVENTS.card_copy.props).toEqual(['field', 'ok']);
+    expect(ANALYTICS_EVENTS.pay_blocked_tap.props).toEqual(['reason']);
+    expect(ANALYTICS_EVENTS.intro_skip.props).toEqual(['frame']);
+  });
+
+  it('«Подписка оформлена» — веха из order_events, телеметрией не дублируется', () => {
+    expect(ANALYTICS_EVENT_NAMES as readonly string[]).not.toContain('subscription_activated');
+    expect(ANALYTICS_EVENT_NAMES as readonly string[]).not.toContain('subscription_paid');
   });
 
   it('имена событий и вех не пересекаются', () => {
@@ -126,6 +150,17 @@ describe('sanitizeAnalyticsProps', () => {
     expect(sanitizeAnalyticsProps({ card_last4: '4417' })).toEqual({});
   });
 
+  it('копирование реквизитов пишет только имя поля и исход — ключей под значения нет', () => {
+    // card_copy (тикет 10): значение поля не передаётся никогда. Ключи, под
+    // которые его было бы естественно положить, в allowlist не заводятся.
+    for (const key of ['value', 'pan', 'cvc', 'exp', 'number', 'address', 'email', 'phone']) {
+      expect(ANALYTICS_PROP_KEYS as readonly string[]).not.toContain(key);
+    }
+    expect(
+      sanitizeAnalyticsProps({ field: 'number', ok: true, value: '5592 6801 0010 1726' }),
+    ).toEqual({ field: 'number', ok: true });
+  });
+
   it('булев false сохраняется (а не теряется как falsy)', () => {
     expect(sanitizeAnalyticsProps({ completed: false })).toEqual({ completed: false });
   });
@@ -209,7 +244,7 @@ describe('схема приёма', () => {
 describe('analyticsDictionaryRows', () => {
   it('отдаёт все события и вехи с описаниями', () => {
     const rows = analyticsDictionaryRows();
-    expect(rows).toHaveLength(21 + 10);
+    expect(rows).toHaveLength(27 + 10);
     for (const row of rows) {
       expect(row.description.length).toBeGreaterThan(20);
     }

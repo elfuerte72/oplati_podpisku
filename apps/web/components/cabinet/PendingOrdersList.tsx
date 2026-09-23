@@ -4,9 +4,10 @@ import { formatExpires, formatRub } from '@/components/comic/format';
 import { IconArrowRight } from '@/components/comic/icons';
 
 import type { OrderSummary } from './cabinet-api';
+import { ServiceInitial } from './ServiceInitial';
 
 /**
- * «Ждут оплаты» на главном экране кабинета (решение владельца 2026-09-07).
+ * «Ждут оплаты» на вкладке «Оплата» кабинета (решение владельца 2026-09-07).
  *
  * До этого списка заказов в кабинете не было вовсе: путь к заказу вёл только
  * через свежесозданный из каталога, и клиент, закрывший Mini App на полпути,
@@ -14,8 +15,8 @@ import type { OrderSummary } from './cabinet-api';
  * Полной истории покупок здесь по-прежнему нет: показываем ровно то, что ждёт
  * действия клиента.
  *
- * Пустой список не рисуем совсем — заглушка «заказов нет» на главном экране
- * только занимает место над картой.
+ * Пустой список не рисуем совсем — заглушка «заказов нет» только занимает место
+ * над каталогом.
  */
 export function PendingOrdersList({
   orders,
@@ -27,24 +28,25 @@ export function PendingOrdersList({
   if (orders.length === 0) return null;
 
   return (
-    <section className="space-y-2">
-      <h2 className="font-display text-sm font-bold text-[var(--text-muted)]">
-        Ждут оплаты ({orders.length})
+    <section className="flex flex-col gap-2">
+      <h2 className="font-body text-xs font-semibold uppercase tracking-[0.06em] text-[var(--text-muted)]">
+        Ждут оплаты{orders.length > 1 ? ` (${orders.length})` : ''}
       </h2>
       {orders.map((order) => (
         <button
           key={order.orderId}
           type="button"
           onClick={() => onOpen(order.orderId)}
-          className="flex w-full items-center gap-3 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-4 py-3 text-left shadow-[var(--shadow-comic)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
+          className="flex w-full items-center gap-3 rounded-2xl border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] px-3.5 py-3 text-left shadow-[3px_3px_0_var(--shadow-ink)] transition-transform active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
         >
+          <ServiceInitial name={order.service} />
           <span className="min-w-0 flex-1">
-            <span className="block truncate font-display text-[15px] font-bold text-[var(--text)]">
+            <span className="block truncate font-body text-[15px] font-semibold text-[var(--text)]">
               {order.service}
             </span>
-            <span className="mt-0.5 block font-body text-xs text-[var(--text-muted)]">
+            <span className="mt-0.5 block font-body text-[13px] text-[var(--text-muted)]">
               {order.amountKopecks !== null && (
-                <span className="font-display font-bold text-[var(--text)]">
+                <span className="text-[var(--text)]">
                   {/* Сумма К ОПЛАТЕ: полная цена заказа минус списанные баллы.
                       `amountKopecks` остаётся полной ценой (по ней сверяется
                       чек), поэтому здесь только вычитаем, никогда не наоборот. */}

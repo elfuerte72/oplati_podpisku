@@ -1,6 +1,52 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatDeadlineWithYear, formatExpires } from './format';
+import {
+  formatDateWithYear,
+  formatDayMonth,
+  formatDeadlineWithYear,
+  formatExpires,
+  formatSinceMonth,
+} from './format';
+
+/**
+ * Даты вкладок Mini App (трек miniapp-tabs): «Действует до» карты — без
+ * времени (тикет 06), заказы по карте — «23 сентября», профиль — «с июля 2026».
+ * Все по Москве, как остальные даты кабинета.
+ */
+describe('formatDateWithYear — «Действует до» без времени', () => {
+  it('день, месяц и год, без часов', () => {
+    expect(formatDateWithYear('2027-03-20T20:59:59.000Z')).toBe('20 марта 2027');
+  });
+
+  it('полночь UTC уже следующий день по Москве', () => {
+    expect(formatDateWithYear('2027-03-20T22:30:00.000Z')).toBe('21 марта 2027');
+  });
+
+  it('мусор возвращается как есть', () => {
+    expect(formatDateWithYear('мусор')).toBe('мусор');
+  });
+});
+
+describe('formatDayMonth — дата заказа в списке', () => {
+  it('день и месяц в родительном падеже', () => {
+    expect(formatDayMonth('2026-09-23T10:00:00.000Z')).toBe('23 сентября');
+  });
+});
+
+describe('formatSinceMonth — «в Оплатишке с июля 2026»', () => {
+  it('месяц в родительном падеже и год', () => {
+    expect(formatSinceMonth('2026-07-05T10:00:00.000Z')).toBe('июля 2026');
+    expect(formatSinceMonth('2026-05-31T10:00:00.000Z')).toBe('мая 2026');
+  });
+
+  it('конец месяца по UTC — уже следующий месяц по Москве', () => {
+    expect(formatSinceMonth('2026-07-31T22:00:00.000Z')).toBe('августа 2026');
+  });
+
+  it('мусор — null, строка профиля тогда не рисуется', () => {
+    expect(formatSinceMonth('мусор')).toBeNull();
+  });
+});
 
 /**
  * Регресс на находку владельца 2026-07-30: кабинет показывал «Действует до

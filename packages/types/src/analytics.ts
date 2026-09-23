@@ -140,6 +140,54 @@ export const ANALYTICS_EVENTS = {
     origin: 'client',
     props: ['slug', 'target'],
   },
+  // ── Вкладки Mini App (трек miniapp-tabs, тикет 10) ──────────────────────
+  cabinet_tab_view: {
+    title: 'Перешёл на вкладку кабинета',
+    description:
+      'Сменил вкладку Mini App: props.tab — куда (pay — «Оплата», card — «Карта», profile — «Профиль»), props.via — как: tap (нижняя панель), swipe (пальцем), auto (приложение само увело на «Карту» после оплаты). Первый показ «Оплаты» при входе сюда не пишется — его покрывает «Открыл личный кабинет».',
+    channel: 'miniapp',
+    origin: 'client',
+    props: ['tab', 'via'],
+  },
+  card_copy: {
+    title: 'Скопировал реквизит карты',
+    description:
+      'Нажал «Копировать» в листе реквизитов. props.field — что (number, exp, cvc или address — адрес плательщика), props.ok — сработал ли буфер (false — клиенту показана подсказка выделить вручную). Значение поля не передаётся никогда.',
+    channel: 'miniapp',
+    origin: 'client',
+    props: ['field', 'ok'],
+  },
+  pay_blocked_tap: {
+    title: 'Нажал «Оплатить» без контактов',
+    description:
+      'Нажал «Оплатить», не заполнив почту (props.reason = email) или телефон, нужный по сумме (phone). Экран показал, чего не хватает, и увёл к полю — счёт не выставлялся.',
+    channel: 'miniapp',
+    origin: 'client',
+    props: ['reason'],
+  },
+  card_next_step_view: {
+    title: 'Увидел «Остался один шаг»',
+    description:
+      'На вкладке «Карта» показана карточка «Оплати сервис этой картой» — карта выдана, подписка ещё не отмечена оформленной. Пишется раз за вход. Сравнивать с вехой «Подтвердил, что подписка работает».',
+    channel: 'miniapp',
+    origin: 'client',
+    props: [],
+  },
+  intro_skip: {
+    title: 'Пропустил онбординг кабинета',
+    description:
+      'Закрыл «Как это работает» до последнего кадра. props.frame — на каком кадре (с нуля).',
+    channel: 'miniapp',
+    origin: 'client',
+    props: ['frame'],
+  },
+  intro_complete: {
+    title: 'Досмотрел онбординг кабинета',
+    description: 'Пролистал «Как это работает» до конца и нажал последнюю кнопку.',
+    channel: 'miniapp',
+    origin: 'client',
+    props: [],
+  },
 
   // ── Общие для web и Mini App ────────────────────────────────────────────
   pay_link_click: {
@@ -153,7 +201,7 @@ export const ANALYTICS_EVENTS = {
   referral_link_share: {
     title: 'Поделился реф-ссылкой',
     description:
-      'Скопировал или отправил партнёрскую ссылку. props.action — что вышло: copy (в буфере), copy_failed (буфер отказал — в Telegram WebView это обычное дело, клиенту показана подсказка выделить ссылку), share (отправил через Telegram). props.surface — откуда: карточка главного меню Mini App (cabinet_home) или партнёрский экран (partner_cabinet; он же живёт на сайте /partner).',
+      'Скопировал или отправил партнёрскую ссылку. props.action — что вышло: copy (в буфере), copy_failed (буфер отказал — в Telegram WebView это обычное дело, клиенту показана подсказка выделить ссылку), share (отправил через Telegram). props.surface — откуда: вкладка «Профиль» Mini App (cabinet_profile, с 2026-09-23), карточка прежнего главного экрана Mini App (cabinet_home, до 2026-09-23) или партнёрский экран (partner_cabinet; он же живёт на сайте /partner).',
     // `web`, а не `miniapp`: партнёрский экран открывается и на сайте. Приём
     // помечает событие Mini App'ом сам, когда заявка канала подтверждена
     // подписью initData; со спекой `miniapp` заход с сайта записывался бы как
@@ -391,6 +439,15 @@ export const ANALYTICS_PROP_KEYS = [
   'gate',
   'stage',
   'count',
+  // Вкладки Mini App (трек miniapp-tabs, тикет 10). ⚠️ `field` — ИМЯ поля
+  // реквизитов (number/exp/cvc/address), а не его значение: значение не
+  // передаётся никогда, и ключей под него здесь нет.
+  'tab',
+  'via',
+  'field',
+  'ok',
+  'reason',
+  'frame',
 ] as const;
 
 export type AnalyticsPropKey = (typeof ANALYTICS_PROP_KEYS)[number];
