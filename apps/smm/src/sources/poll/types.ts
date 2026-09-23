@@ -24,6 +24,7 @@ export const SOURCE_KINDS = [
   'x',
   'threads',
   'reddit',
+  'forwardfuture',
 ] as const;
 
 export type SourceKind = (typeof SOURCE_KINDS)[number];

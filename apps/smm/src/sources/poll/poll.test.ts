@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { Fetcher } from '../http.ts';
 import {
   ATOM_XML,
+  FF_ARCHIVE_HTML,
+  FF_ISSUE_HTML,
   HN_ITEM_ASK,
   HN_ITEM_WITH_URL,
   HN_TOP_STORIES,
@@ -15,6 +17,7 @@ import {
 } from './fixtures.ts';
 import { smmConfig, type SmmConfig } from '../../config/smm.config.ts';
 import { createLogger } from '../../logger.ts';
+import { archiveIssues, FORWARD_FUTURE_ARCHIVE, forwardFuture, issueStories } from './forward-future.ts';
 import { hackerNews } from './hn.ts';
 import { pollAll, pollTasks } from './run.ts';
 import { rssFeed } from './rss.ts';
@@ -266,6 +269,111 @@ describe('ScrapeCreators', () => {
   });
 });
 
+/**
+ * Двойник по ТОЧНОМУ адресу. `serve` сверяет по началу пути, а у выпусков
+ * рассылки путь начинается с пути архива — там двойник отдал бы архив вместо
+ * выпуска, и тест проверял бы не то.
+ */
+function exact(pages: Record<string, string>): { fetcher: Fetcher; calls: string[] } {
+  const calls: string[] = [];
+  const fetcher: Fetcher = (url) => {
+    calls.push(url);
+    const body = pages[url];
+    if (body === undefined) return Promise.resolve(new Response('нет', { status: 404 }));
+    return Promise.resolve(new Response(body, { status: 200, headers: { 'content-type': 'text/html' } }));
+  };
+  return { fetcher, calls };
+}
+
+const FF_ISSUE_23 = 'https://forwardfuture.com/newsletter/daily/2026-09-23/anthropic-s-claude-5-5';
+const FF_ISSUE_22 = 'https://forwardfuture.com/newsletter/daily/2026-09-22/ai-laptops-un-ai-safeguards';
+
+describe('Forward Future', () => {
+  it('архив: свежие выпуски первыми, без повторов и без ссылки на сам архив', () => {
+    expect(archiveIssues(FF_ARCHIVE_HTML, 2)).toEqual([
+      { url: FF_ISSUE_23, date: '2026-09-23' },
+      { url: FF_ISSUE_22, date: '2026-09-22' },
+    ]);
+    expect(archiveIssues(FF_ARCHIVE_HTML, 0)).toEqual([]);
+  });
+
+  it('выпуск: новость — это заголовок и адрес первоисточника без меток рассылки', () => {
+    const stories = issueStories(FF_ISSUE_HTML);
+    expect(stories).toEqual([
+      // Из оглавления: заголовок и ссылка в одном `h3`. Повтор той же новости
+      // ниже («Read the full article») второй строки не даёт.
+      { url: 'https://www.axios.com/2026/09/21/apple-siri-settlement', title: 'Apple Faces Siri Settlement' },
+      // «→ Read the full article here» получает заголовок новости над собой.
+      { url: 'https://techcrunch.com/2026/09/21/googlebook/', title: 'Google Opens Preorders for $899 Googlebook' },
+      // Разорванная вёрсткой ссылка склеивается в один заголовок.
+      { url: 'https://techcrunch.com/2026/09/21/kairos/', title: 'Samsung Backs Kairos Reactor' },
+      { url: 'https://the-decoder.com/bytedance-dramagic/', title: 'ByteDance Launches Dramagic' },
+    ]);
+  });
+
+  // Регресс живых выпусков 22.09 и 23.09.2026: баннер рекламодателя стоит до
+  // первого раздела, и ссылка под ним — обычная `a.link`.
+  it('реклама выпадает по адресу: баннер в начале, раздел «Sponsored», платная метка', () => {
+    const urls = issueStories(FF_ISSUE_HTML).map((story) => story.url).join(' ');
+    expect(urls).not.toContain('eightsleep');
+    expect(urls).not.toContain('box.com');
+  });
+
+  it('платная метка в адресе работает и без рекламного раздела', () => {
+    const html = `<article><h2>Deal</h2><a class="link" href="https://vendor.example/p?utm_source=newsletter&amp;utm_medium=paidinfluencer">→ Read the full article here.</a></article>`;
+    expect(issueStories(html)).toEqual([]);
+  });
+
+  it('свои статьи сайта, страница канала и ссылки вне выпуска не берутся', () => {
+    const urls = issueStories(FF_ISSUE_HTML).map((story) => story.url).join(' ');
+    expect(urls).not.toContain('forwardfuture.com');
+    expect(urls).not.toContain('youtube.com');
+    expect(urls).not.toContain('example.com/menu');
+    expect(urls).not.toContain('outside-article');
+  });
+
+  it('прогон: элементы помечены источником и датой выпуска, повтор между выпусками схлопнут', async () => {
+    const { fetcher } = exact({
+      [FORWARD_FUTURE_ARCHIVE]: FF_ARCHIVE_HTML,
+      [FF_ISSUE_23]: FF_ISSUE_HTML,
+      [FF_ISSUE_22]: FF_ISSUE_HTML,
+    });
+    const result = await forwardFuture({ fetcher, resolver: publicDns, issues: 2 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(4);
+    expect(result.items[0]).toEqual({
+      sourceKind: 'forwardfuture',
+      sourceRef: '2026-09-23',
+      url: 'https://www.axios.com/2026/09/21/apple-siri-settlement',
+      title: 'Apple Faces Siri Settlement',
+      publishedAt: '2026-09-23T00:00:00.000Z',
+    });
+  });
+
+  it('один неоткрывшийся выпуск не роняет источник', async () => {
+    const { fetcher } = exact({ [FORWARD_FUTURE_ARCHIVE]: FF_ARCHIVE_HTML, [FF_ISSUE_22]: FF_ISSUE_HTML });
+    const result = await forwardFuture({ fetcher, resolver: publicDns, issues: 2 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.every((item) => item.sourceRef === '2026-09-22')).toBe(true);
+  });
+
+  it('сменившаяся вёрстка — отказ, а не тихая пустая лента', async () => {
+    const empty = exact({ [FORWARD_FUTURE_ARCHIVE]: '<html><body>redesign</body></html>' });
+    const noIssues = await forwardFuture({ fetcher: empty.fetcher, resolver: publicDns });
+    expect(noIssues).toMatchObject({ ok: false, reason: 'contract' });
+
+    const blank = exact({
+      [FORWARD_FUTURE_ARCHIVE]: FF_ARCHIVE_HTML,
+      [FF_ISSUE_23]: '<article>no stories</article>',
+      [FF_ISSUE_22]: '<article>no stories</article>',
+    });
+    const noStories = await forwardFuture({ fetcher: blank.fetcher, resolver: publicDns });
+    expect(noStories).toMatchObject({ ok: false, reason: 'contract' });
+  });
+});
+
 describe('прогон по всем источникам', () => {
   it('провал ОДНОГО источника не мешает остальным', async () => {
     const { fetcher } = serve({
@@ -335,8 +443,16 @@ describe('прогон по всем источникам', () => {
     // Платные списки пусты до слова владельца: кредиты тратим по его выбору.
     expect(kinds.has('hn')).toBe(true);
     expect(kinds.has('rss')).toBe(true);
+    expect(kinds.has('telegram')).toBe(true);
+    expect(kinds.has('forwardfuture')).toBe(true);
     expect(kinds.has('x')).toBe(false);
     expect(kinds.has('reddit')).toBe(false);
     expect(kinds.has('threads')).toBe(false);
+  });
+
+  it('Forward Future выключается нулём выпусков', () => {
+    const logger = createLogger({ level: 'fatal', stream: { write() {} } });
+    const config: SmmConfig = { ...smmConfig, sources: { ...smmConfig.sources, forwardFutureIssues: 0 } };
+    expect(pollTasks({ logger, config }).some((task) => task.kind === 'forwardfuture')).toBe(false);
   });
 });

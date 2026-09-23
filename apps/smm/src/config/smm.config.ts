@@ -425,6 +425,8 @@ export interface SmmConfig {
   readonly sources: {
     readonly telegramChannels: readonly string[];
     readonly rss: readonly string[];
+    /** Сколько последних выпусков рассылки Forward Future разбирать; 0 — не опрашиваем. */
+    readonly forwardFutureIssues: number;
     readonly xAccounts: readonly string[];
     readonly subreddits: readonly string[];
     readonly threadsQueries: readonly string[];
@@ -537,12 +539,18 @@ export const smmConfig: SmmConfig = {
     // Threads — редакторский выбор владельца, и до его слова они пусты:
     // выдуманный канал в конфиге выглядит как рабочий источник, а отдаёт
     // только строку «опрос не удался» каждые два часа.
-    telegramChannels: [],
+    // Каналы выбрал владелец 23.09.2026; витрины проверены живым разбором в тот
+    // же день (8 и 9 материалов со ссылкой на первоисточник за двое суток).
+    // Половина тем у обоих — для разработчиков: их отсеивает ранжирование.
+    telegramChannels: ['data_secrets', 'xor_journal'],
     rss: [
       'https://openai.com/news/rss.xml',
       'https://blog.google/technology/ai/rss/',
       'https://huggingface.co/blog/feed.xml',
     ],
+    // Рассылка выходит по будням; два выпуска закрывают понедельник после
+    // выходных и опрос, случившийся до утреннего выпуска.
+    forwardFutureIssues: 2,
     xAccounts: [],
     subreddits: [],
     threadsQueries: [],

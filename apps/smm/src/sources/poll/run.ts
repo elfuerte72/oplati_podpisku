@@ -1,6 +1,7 @@
 import { smmConfig, type SmmConfig } from '../../config/smm.config.ts';
 import type { Logger } from '../../logger.ts';
 import type { HttpOptions } from '../http.ts';
+import { forwardFuture } from './forward-future.ts';
 import { hackerNews } from './hn.ts';
 import { rssFeed } from './rss.ts';
 import { redditPosts, threadsSearch, xUser } from './scrape-creators.ts';
@@ -69,6 +70,13 @@ export function pollTasks(options: PollOptions): PollTask[] {
   }
   for (const url of config.sources.rss) {
     tasks.push({ kind: 'rss', ref: url, run: () => rssFeed(url, http) });
+  }
+  if (config.sources.forwardFutureIssues > 0) {
+    tasks.push({
+      kind: 'forwardfuture',
+      ref: 'newsletter/daily',
+      run: () => forwardFuture({ ...http, issues: config.sources.forwardFutureIssues }),
+    });
   }
   tasks.push({ kind: 'hn', ref: 'topstories', run: () => hackerNews(http) });
   for (const handle of config.sources.xAccounts) {

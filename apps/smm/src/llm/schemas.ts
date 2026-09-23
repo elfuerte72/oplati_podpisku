@@ -40,15 +40,33 @@ export const FactSchema = z.object({
  * запрос вместе с досье — в промпте его нет намеренно.
  */
 export const DOSSIER_FACTS_MAX = 8;
+export const DOSSIER_NUMBERS_MAX = 12;
+export const DOSSIER_DATES_MAX = 8;
+
+/**
+ * Список «не больше N»: лишнее ОТРЕЗАЕТСЯ, а не роняет шаг.
+ *
+ * ⚠️ Просьба в запросе потолок не держит: 23.09.2026 модель дважды подряд
+ * вернула больше восьми фактов при «не больше 8» в тексте, и владелец получил
+ * «Шаг не прошёл» вместо поста. Модель выписывает важное первым, поэтому хвост
+ * терять дешевле, чем весь пост. Потолок по `max_tokens` это не отменяет:
+ * оборванный ответ ловится отдельно (`stop_reason`), до схемы он не доходит.
+ */
+function capped<T extends z.ZodTypeAny>(item: T, max: number) {
+  return z.array(item).transform((list) => list.slice(0, max));
+}
 
 export const DossierSchema = z.object({
   title: shortText,
-  facts: z.array(FactSchema).min(1).max(DOSSIER_FACTS_MAX),
-  numbers: z
-    .array(z.object({ value: shortText, unit: z.string().trim().max(40).optional(), what: shortText }))
-    .max(12)
-    .default([]),
-  dates: z.array(z.object({ date: shortText, what: shortText })).max(8).default([]),
+  facts: z
+    .array(FactSchema)
+    .min(1)
+    .transform((list) => list.slice(0, DOSSIER_FACTS_MAX)),
+  numbers: capped(
+    z.object({ value: shortText, unit: z.string().trim().max(40).optional(), what: shortText }),
+    DOSSIER_NUMBERS_MAX,
+  ).default([]),
+  dates: capped(z.object({ date: shortText, what: shortText }), DOSSIER_DATES_MAX).default([]),
   /** Что из этого новое для читателя с телефоном. */
   reader_new: longText,
   /**
