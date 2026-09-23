@@ -213,7 +213,7 @@ async function issueInvoiceAfterContact(
       reply = `Номер сохранён. ${fulfillmentCapacityText(err.priceLockMinutesLeft)}`;
     } else if (err instanceof EmailRequiredError) {
       reply =
-        'Номер сохранён. Осталась почта: открой заказ в кабинете (кнопка «Личный кабинет» в /start-меню) и укажи её там.';
+        'Номер сохранён. Осталась почта: открой заказ в кабинете (кнопка «Открыть приложение» в /start) и укажи её там.';
     } else {
       Sentry.captureException(err, { tags: { source: 'telegram.contact', step: 'confirm' } });
     }

@@ -32,12 +32,20 @@ import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pa
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { getBot } from '../telegram/bot.ts';
 import {
+  BILLING_ADDRESS_HINT,
+  BILLING_ADDRESS_TITLE_HTML,
+  CARD_COPY_HINT,
   CARD_HOWTO_BUTTON,
+  CARD_IN_APP_BUTTON,
+  cardIssuedIntroHtml,
+  cardMessageFooter,
+  cardToppedUpIntroHtml,
+  openServiceButton,
   paymentRulesHtml,
-  SERVICE_PRICING_BUTTON,
 } from '../telegram/templates.ts';
-import { paymentInstructionUrl } from '../deployment-url.ts';
+import { miniAppUrl, paymentInstructionUrl } from '../deployment-url.ts';
 import { servicePricingUrl } from '../catalog/pricing-links.ts';
+import { servicePaymentInstructions } from '@oplati/types';
 
 /**
  * Job `issue-card` — выпускает (или переиспользует) виртуальную USD-карту
@@ -151,14 +159,15 @@ export async function issueCard(orderId: string): Promise<void> {
     return;
   }
 
-  // Прайс — необязательное обогащение финального сообщения. Ошибка lookup не
-  // должна блокировать выпуск уже оплаченной карты. Резолвим только ПОСЛЕ claim,
-  // чтобы проигравший конкурентный fulfillment не делал лишний запрос к БД.
-  let pricingUrl: string | null = null;
+  // Название сервиса и ссылка на его оформление — необязательное обогащение
+  // финального сообщения. Ошибка lookup не должна блокировать выпуск уже
+  // оплаченной карты: сообщение уйдёт с нейтральным «сервис» и без кнопки.
+  // Резолвим только ПОСЛЕ claim, чтобы проигравший конкурентный fulfillment не
+  // делал лишний запрос к БД.
+  let serviceInfo: CardServiceInfo = { name: null, url: null };
   if (order.serviceId) {
     try {
-      const service = await getServiceById(db, order.serviceId);
-      pricingUrl = servicePricingUrl(service?.slug);
+      serviceInfo = cardServiceInfo(await getServiceById(db, order.serviceId));
     } catch (err) {
       log.warn({ event: 'job.issue_card.pricing_link_lookup_failed', orderId, err });
     }
@@ -234,7 +243,7 @@ export async function issueCard(orderId: string): Promise<void> {
           telegramId: await resolveTelegramIdByUserId(order.userId),
           serviceShortId: order.shortId,
           priceUsdCents,
-          pricingUrl,
+          service: serviceInfo,
           // Тот же закреплённый адрес, что и при выпуске. Клиенту, получившему
           // карту ДО 2026-09-21, адрес выдавал генератор фейков — ему здесь
           // закрепится и впервые придёт настоящий.
@@ -421,7 +430,7 @@ export async function issueCard(orderId: string): Promise<void> {
           billingAddress: pendingCredentials.billingAddress,
           serviceShortId: order.shortId,
           priceUsdCents,
-          pricingUrl,
+          service: serviceInfo,
         });
       } catch (err) {
         log.error({ event: 'job.issue_card.credentials_send_failed', orderId, err });
@@ -505,7 +514,7 @@ export async function issueCard(orderId: string): Promise<void> {
           billingAddress: pendingCredentials.billingAddress,
           serviceShortId: order.shortId,
           priceUsdCents,
-          pricingUrl,
+          service: serviceInfo,
         });
         log.warn({ event: 'job.issue_card.credentials_rescued', orderId });
       } catch (sendErr) {
@@ -643,11 +652,36 @@ type SendCredentialsArgs = {
   cardType: string | null;
   billingAddress: BillingAddress;
   serviceShortId: string;
-  /** Цена сервиса в USD-центах (`order.originalAmount`) — «оплатить строго $X». */
+  /** Цена сервиса в USD-центах (`order.originalAmount`) — «оформи подписку за $X». */
   priceUsdCents: number;
-  /** Официальный прайс каталожного сервиса; null для custom/неизвестного. */
-  pricingUrl: string | null;
+  service: CardServiceInfo;
 };
+
+/**
+ * Что сообщение с картой знает о купленном сервисе. Обе части необязательны:
+ * у заказа вне каталога нет ни названия (свободное описание клиента в заголовок
+ * не годится), ни ссылки, и сообщение говорит нейтрально — «сервис».
+ */
+type CardServiceInfo = {
+  name: string | null;
+  /** Где оформлять: `payment_instructions.paymentUrl`, иначе официальный прайс. */
+  url: string | null;
+};
+
+/**
+ * Ссылка кнопки «Открыть <сервис>» — та же, что у кнопки «Перейти на сайт
+ * сервиса» в Mini App (`payment_instructions.paymentUrl`): чат и кабинет не
+ * должны вести клиента в разные места. Прайс — запасной вариант для сервиса без
+ * записи правил. Битая запись правил не прячет кнопку, а откатывает на прайс.
+ */
+function cardServiceInfo(
+  service: { name: string; slug: string; paymentInstructions?: unknown } | null,
+): CardServiceInfo {
+  if (!service) return { name: null, url: null };
+  const instructions = servicePaymentInstructions.safeParse(service.paymentInstructions);
+  const paymentUrl = instructions.success ? instructions.data.paymentUrl : undefined;
+  return { name: service.name, url: paymentUrl ?? servicePricingUrl(service.slug) };
+}
 
 /**
  * Отправка реквизитов карты пользователю в Telegram.
@@ -674,30 +708,34 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<boo
     const exp = `${String(args.expMonth).padStart(2, '0')}/${String(args.expYear).slice(-2)}`;
     const cardType = formatCardType(args.cardType);
     const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
+    // Порядок блоков — см. комментарий к шаблонам в templates.ts: что дали →
+    // что сделать → реквизиты → адрес → правила.
     const messageHtml = [
-      `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта выпущена.</b>`,
-      '',
-      paymentRulesHtml(args.priceUsdCents),
+      cardIssuedIntroHtml(args.service.name, args.priceUsdCents),
       '',
       '<b>Карта</b>',
       `<b>Номер:</b> <code>${escapeTelegramHtml(args.fullPan)}</code>`,
       `<b>Срок:</b> <code>${escapeTelegramHtml(exp)}</code>`,
       `<b>CVC:</b> <code>${escapeTelegramHtml(args.cvc)}</code>`,
-      `<b>Тип:</b> <code>${escapeTelegramHtml(cardType)}</code>`,
+      // «Тип: не указан» ничего клиенту не даёт — строку показываем, только
+      // когда провайдер назвал платёжную систему.
+      ...(cardType ? [`<b>Тип:</b> <code>${escapeTelegramHtml(cardType)}</code>`] : []),
+      CARD_COPY_HINT,
       '',
-      '<b>Billing address</b>',
+      BILLING_ADDRESS_TITLE_HTML,
       ...addressLines,
+      BILLING_ADDRESS_HINT,
       '',
-      'Если сервис попросит billing address, вводите адрес из блока выше.',
+      paymentRulesHtml(args.priceUsdCents),
       '',
-      'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
+      cardMessageFooter(args.serviceShortId),
     ].join('\n');
 
     // chat_id строкой — Bot API это принимает, Number() терял бы точность на
     // больших telegram_id.
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
       parse_mode: 'HTML',
-      reply_markup: buildCardActionKeyboard(args.pricingUrl),
+      reply_markup: buildCardActionKeyboard(args.service),
     });
     log.info({
       event: 'job.issue_card.credentials_sent',
@@ -722,14 +760,15 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<boo
 /**
  * Уведомление при ПОВТОРНОЙ оплате: активная карта клиента пополнена, новых
  * реквизитов нет (PAN тот же — у клиента уже есть). Шлём короткое подтверждение
- * с ценой и той же кнопкой-инструкцией, чтобы клиент оплатил по правильному
- * прайсу (раньше при топ-апе не уходило ничего, кроме «Оплата получена»).
+ * с ценой и кнопками, чтобы клиент оплатил по правильному прайсу (раньше при
+ * топ-апе не уходило ничего, кроме «Оплата получена»). Реквизиты — по кнопке
+ * «Карта в приложении»: повторять PAN в чате незачем.
  */
 async function sendTopupNotice(args: {
   telegramId: string | null;
   serviceShortId: string;
   priceUsdCents: number;
-  pricingUrl: string | null;
+  service: CardServiceInfo;
   billingAddress: BillingAddress;
 }): Promise<void> {
   if (!args.telegramId) {
@@ -742,22 +781,20 @@ async function sendTopupNotice(args: {
   try {
     const addressLines = formatBillingAddressLines(args.billingAddress).map(formatAddressLineHtml);
     const messageHtml = [
-      `<b>Готово, заказ ${escapeTelegramHtml(args.serviceShortId)} оплачен. Карта пополнена.</b>`,
-      'Плати той же картой, что и раньше — реквизиты уже у тебя (посмотреть можно в приложении).',
+      cardToppedUpIntroHtml(args.service.name, args.priceUsdCents),
+      '',
+      BILLING_ADDRESS_TITLE_HTML,
+      ...addressLines,
+      BILLING_ADDRESS_HINT,
       '',
       paymentRulesHtml(args.priceUsdCents),
       '',
-      '<b>Billing address</b>',
-      ...addressLines,
-      '',
-      'Если сервис попросит billing address, вводите адрес из блока выше.',
-      '',
-      'После оплаты подписки напишите сюда. Проверю, что всё прошло.',
+      cardMessageFooter(args.serviceShortId),
     ].join('\n');
 
     await getBot().api.sendMessage(args.telegramId, messageHtml, {
       parse_mode: 'HTML',
-      reply_markup: buildCardActionKeyboard(args.pricingUrl),
+      reply_markup: buildCardActionKeyboard(args.service),
     });
     log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
   } catch (err) {
@@ -796,10 +833,20 @@ function sanitizeSendError(err: unknown): Error {
   return err instanceof Error ? new Error(err.message) : new Error(String(err));
 }
 
-function buildCardActionKeyboard(pricingUrl: string | null): InlineKeyboard {
-  const keyboard = new InlineKeyboard().url(CARD_HOWTO_BUTTON, paymentInstructionUrl());
-  if (pricingUrl) keyboard.row().url(SERVICE_PRICING_BUTTON, pricingUrl);
-  return keyboard;
+/**
+ * Кнопки под сообщением с картой — в порядке следующих шагов клиента: открыть
+ * сервис и оплатить → посмотреть карту в приложении → если непонятно, пошаговая
+ * инструкция. web_app-кнопка допустима: сообщение уходит в личный чат с ботом.
+ */
+function buildCardActionKeyboard(service: CardServiceInfo): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (service.name && service.url) {
+    keyboard.url(openServiceButton(service.name), service.url).row();
+  }
+  return keyboard
+    .webApp(CARD_IN_APP_BUTTON, miniAppUrl())
+    .row()
+    .url(CARD_HOWTO_BUTTON, paymentInstructionUrl());
 }
 
 async function resolveTelegramIdByUserId(userId: string): Promise<string | null> {
@@ -831,8 +878,9 @@ async function readCardMetadataSafely(
   }
 }
 
-function formatCardType(cardType: string | null): string {
-  if (!cardType) return 'не указан';
+/** Платёжная система карты для клиента; `null` — провайдер её не назвал. */
+function formatCardType(cardType: string | null): string | null {
+  if (!cardType?.trim()) return null;
   const normalized = cardType.trim().toUpperCase();
   if (normalized === 'MC' || normalized === 'MASTERCARD' || normalized === 'MASTER CARD') return 'Mastercard';
   if (normalized === 'VISA') return 'Visa';

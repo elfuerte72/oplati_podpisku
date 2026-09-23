@@ -49,6 +49,11 @@ const h = vi.hoisted(() => {
       claimTransitioned: true,
       activeCard: null as Record<string, unknown> | null,
       serviceSlug: 'chatgpt-plus' as string | null,
+      serviceInstructions: {
+        requiresVpn: true,
+        vpnLocation: 'США',
+        paymentUrl: 'https://chatgpt.com/#pricing',
+      } as Record<string, unknown> | null,
     },
   };
 });
@@ -68,8 +73,17 @@ vi.mock('@oplati/db', () => ({
   setOrderCardId: vi.fn(async () => {}),
   appendOrderEvent: vi.fn(async () => {}),
   getUserTelegramId: vi.fn(async () => '12345'),
+  // Как настоящая строка каталога: название + правила оплаты со ссылкой на
+  // оформление (seed-catalog `usInstructions`). `serviceInstructions: null` —
+  // сервис без записи правил, кнопка откатывается на официальный прайс.
   getServiceById: vi.fn(async () =>
-    h.dbState.serviceSlug ? { slug: h.dbState.serviceSlug } : null,
+    h.dbState.serviceSlug
+      ? {
+          slug: h.dbState.serviceSlug,
+          name: 'ChatGPT',
+          paymentInstructions: h.dbState.serviceInstructions,
+        }
+      : null,
   ),
 }));
 
@@ -144,6 +158,11 @@ describe('issueCard', () => {
     h.dbState.claimTransitioned = true;
     h.dbState.activeCard = { ...activeCard };
     h.dbState.serviceSlug = 'chatgpt-plus';
+    h.dbState.serviceInstructions = {
+      requiresVpn: true,
+      vpnLocation: 'США',
+      paymentUrl: 'https://chatgpt.com/#pricing',
+    };
     h.topupMock.mockResolvedValue({
       cardId: 'pc-1',
       requestId: 'topup_order-1_card-1',
@@ -184,8 +203,14 @@ describe('issueCard', () => {
     expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
-      expect.stringContaining('Карта пополнена'),
+      expect.stringContaining('Карта для ChatGPT пополнена'),
       expect.objectContaining({ parse_mode: 'HTML', reply_markup: expect.anything() }),
+    );
+    // Реквизиты при пополнении — по кнопке, а не в тексте: PAN в чате не повторяем.
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('по кнопке «Карта в приложении»'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     // Закреплённый адрес приходит и при пополнении: клиент с картой, выпущенной
     // до 2026-09-21, получал адрес от генератора фейков и настоящий видит здесь
@@ -200,14 +225,24 @@ describe('issueCard', () => {
       expect.any(String),
       expect.objectContaining({
         reply_markup: expect.objectContaining({
-          inline_keyboard: expect.arrayContaining([
+          // Та же ссылка, что у «Перейти на сайт сервиса» в Mini App
+          // (`payment_instructions.paymentUrl`), а не прайс: чат и кабинет не
+          // должны вести клиента в разные места.
+          inline_keyboard: [
             [
               expect.objectContaining({
-                text: 'Открыть прайс сервиса',
-                url: 'https://openai.com/chatgpt/pricing/',
+                text: '🌐 Открыть ChatGPT',
+                url: 'https://chatgpt.com/#pricing',
               }),
             ],
-          ]),
+            [
+              expect.objectContaining({
+                text: '💳 Карта в приложении',
+                web_app: expect.objectContaining({ url: expect.stringMatching(/\/cabinet$/) }),
+              }),
+            ],
+            [expect.objectContaining({ text: '📖 Как оплатить — пошагово' })],
+          ],
         }),
       }),
     );
@@ -233,12 +268,19 @@ describe('issueCard', () => {
       expect.anything(),
       expect.objectContaining({ toStatus: 'completed' }),
     );
+    // Без названия сервиса текст говорит нейтрально, а не «для null».
+    expect(h.sendMessageMock).toHaveBeenCalledWith(
+      '12345',
+      expect.stringContaining('Карта для оплаты подписки пополнена'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
     expect(h.sendMessageMock).toHaveBeenCalledWith(
       '12345',
       expect.any(String),
       expect.objectContaining({
         reply_markup: expect.objectContaining({
           inline_keyboard: [
+            [expect.objectContaining({ text: '💳 Карта в приложении' })],
             [expect.objectContaining({ text: '📖 Как оплатить — пошагово' })],
           ],
         }),
@@ -558,18 +600,124 @@ describe('issueCard', () => {
       expect.any(String),
       expect.objectContaining({
         reply_markup: expect.objectContaining({
-          inline_keyboard: expect.arrayContaining([
+          // Та же ссылка, что у «Перейти на сайт сервиса» в Mini App
+          // (`payment_instructions.paymentUrl`), а не прайс: чат и кабинет не
+          // должны вести клиента в разные места.
+          inline_keyboard: [
             [
               expect.objectContaining({
-                text: 'Открыть прайс сервиса',
-                url: 'https://openai.com/chatgpt/pricing/',
+                text: '🌐 Открыть ChatGPT',
+                url: 'https://chatgpt.com/#pricing',
               }),
             ],
-          ]),
+            [
+              expect.objectContaining({
+                text: '💳 Карта в приложении',
+                web_app: expect.objectContaining({ url: expect.stringMatching(/\/cabinet$/) }),
+              }),
+            ],
+            [expect.objectContaining({ text: '📖 Как оплатить — пошагово' })],
+          ],
         }),
       }),
     );
     expect(db.transitionOrder).toHaveBeenCalledTimes(1); // → completed
+  });
+
+  describe('текст сообщения с новой картой (разбор пути клиента 2026-09-23)', () => {
+    async function sentCardMessage(): Promise<string> {
+      h.dbState.activeCard = null;
+      h.createCardMock.mockResolvedValue({
+        cardId: 'pc-new',
+        panMasked: '****1234',
+        pan: '4111111111111234',
+        expMonth: 12,
+        expYear: 2030,
+        cvc: '123',
+        balanceUsdCents: 2000,
+      });
+      await issueCard('order-1');
+      expect(h.sendMessageMock).toHaveBeenCalledTimes(1);
+      return String(h.sendMessageMock.mock.calls[0]?.[1]);
+    }
+
+    it('сначала что дали и что сделать самому, потом реквизиты, адрес и правила', async () => {
+      // Прежнее сообщение открывалось «Оплатить строго по цене $X» и правилами:
+      // клиент читал его как «доплатите» и ждал, что подписку подключат за него.
+      const text = await sentCardMessage();
+
+      const intro = text.indexOf('Карта для ChatGPT готова');
+      const ownStep = text.indexOf('Последний шаг делаешь ты');
+      const number = text.indexOf('<b>Номер:</b>');
+      const address = text.indexOf('Адрес плательщика');
+      const rules = text.indexOf('Чтобы оплата прошла с первого раза');
+      expect(text.startsWith('<b>Карта для ChatGPT готова.</b>')).toBe(true);
+      expect([intro, ownStep, number, address, rules].every((i) => i >= 0)).toBe(true);
+      expect(intro).toBeLessThan(ownStep);
+      expect(ownStep).toBeLessThan(number);
+      expect(number).toBeLessThan(address);
+      expect(address).toBeLessThan(rules);
+      expect(text).toContain('оформи подписку за $20 и заплати этой картой');
+    });
+
+    it('не обещает ответа в чате и не путает «ты» с «вы»', async () => {
+      // Бот на свободный текст отвечает «в переписке я не отвечаю»
+      // (BOT_AI_ENABLED выключен) — «напишите сюда, проверю» было ложным обещанием.
+      const text = await sentCardMessage();
+
+      expect(text).not.toContain('напишите');
+      expect(text).not.toContain('вводите');
+      expect(text).not.toContain('Оплатить строго');
+      expect(text).toContain('/support');
+      expect(text).toContain('Номер заказа: ORD-AAAAA');
+    });
+
+    it('страна выпуска карты не называется — «США» только у VPN и адреса', async () => {
+      const text = await sentCardMessage();
+
+      expect(text).not.toMatch(/карт[а-я]*\s+(США|американ)/i);
+    });
+
+    it('тип карты неизвестен → строки «Тип» нет, а не «не указан»', async () => {
+      h.getCardInfoMock.mockResolvedValue({
+        cardId: 'pc-new',
+        panMasked: '411111******1234',
+        statusCode: '1',
+        statusLabel: 'activated',
+        balanceUsdCents: 2400,
+        expDate: '12/30',
+        cardType: null,
+        productCode: 'SG_SUB',
+      });
+
+      const text = await sentCardMessage();
+
+      expect(text).not.toContain('Тип:');
+      expect(text).not.toContain('не указан');
+    });
+
+    it('у сервиса нет записи правил → кнопка ведёт на официальный прайс', async () => {
+      h.dbState.serviceInstructions = null;
+
+      await sentCardMessage();
+
+      expect(h.sendMessageMock).toHaveBeenCalledWith(
+        '12345',
+        expect.any(String),
+        expect.objectContaining({
+          reply_markup: expect.objectContaining({
+            inline_keyboard: expect.arrayContaining([
+              [
+                expect.objectContaining({
+                  text: '🌐 Открыть ChatGPT',
+                  url: 'https://openai.com/chatgpt/pricing/',
+                }),
+              ],
+            ]),
+          }),
+        }),
+      );
+    });
   });
 
   it('топ-ап отклонён провайдером (PaySpaceApiError) → карта в idle + выпуск НОВОЙ, заказ completed', async () => {

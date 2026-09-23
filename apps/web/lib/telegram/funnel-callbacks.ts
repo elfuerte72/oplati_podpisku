@@ -13,7 +13,7 @@ import { expiredSurveyAnswer, startSurveyAnswer } from '@oplati/types';
 import type { TelegramCallbackQuery } from '@oplati/types';
 
 import { notifyStaff } from '@/lib/alerts/notify-staff';
-import { miniAppUrl } from '@/lib/deployment-url';
+import { miniAppUrl, paymentInstructionUrl } from '@/lib/deployment-url';
 import { serverEnv } from '@/lib/env.server';
 import { getFunnelTexts, surveyAnswerKey, type FunnelTextValues } from '@/lib/funnel/texts';
 import { childLogger } from '@/lib/logger';
@@ -21,7 +21,12 @@ import { childLogger } from '@/lib/logger';
 import { sendSafely } from './send';
 import { openSupportEntry } from './support-entry';
 import { resolveCallbackContext } from './persist';
-import { START_SUPPORT_BUTTON, buildLowRatingStaffAlert } from './templates';
+import {
+  START_APP_BUTTON,
+  START_HOWTO_BUTTON,
+  START_SUPPORT_BUTTON,
+  buildLowRatingStaffAlert,
+} from './templates';
 
 /**
  * Кнопки воронки обратной связи — неймспейс `fb:*` в диспетчере апдейтов
@@ -38,7 +43,8 @@ import { START_SUPPORT_BUTTON, buildLowRatingStaffAlert } from './templates';
  *
  * Клиентские строки — через реестр `lib/funnel/texts.ts` (панель v2, ветка C):
  * подписи кнопок и реакции владелец правит без деплоя, здесь констант из
- * `templates.ts` нет (кроме кнопки «Поддержка» — она не строка воронки).
+ * `templates.ts` нет — кроме кнопок «Поддержка», «Открыть приложение» и «Как
+ * оплатить»: это подписи стартового меню, а не строки воронки.
  */
 
 const log = childLogger('telegram-funnel');
@@ -104,6 +110,21 @@ export function buildReferralNudgeKeyboard(texts: FunnelTextValues): InlineKeybo
     .text(texts['common.optout_button'], OPTOUT_CALLBACK);
 }
 
+/** Ответы опросов, означающие «не понял, как это работает». */
+const UNCLEAR_ANSWERS: ReadonlySet<string> = new Set(['howto', 'unclear']);
+
+function isUnclearAnswer(answer: string): boolean {
+  return UNCLEAR_ANSWERS.has(answer);
+}
+
+/** Кнопки под объяснением: сразу в приложение — и пошаговая инструкция. */
+export function buildUnclearReplyKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .webApp(START_APP_BUTTON, miniAppUrl())
+    .row()
+    .url(START_HOWTO_BUTTON, paymentInstructionUrl());
+}
+
 // ─── Обработчик нажатий ───────────────────────────────────────────────────
 
 /**
@@ -163,6 +184,14 @@ export async function handleFunnelCallback(
       // ответ уже записан, но клиент явно хочет в поддержку.
       if (parsed.data === 'other') {
         await openSupportEntry(cb, chatId, updateId);
+        return;
+      }
+      // «Непонятно» — клиент признался, что не понял схему: отвечаем
+      // объяснением и кнопками, а не общим «Спасибо» (разбор пути клиента
+      // 2026-09-23). Как и «Другое», и при повторном нажатии: это помощь по
+      // запросу, а не рассылка — бюджет касаний воронки она не тратит.
+      if (isUnclearAnswer(parsed.data)) {
+        await sendSafely(chatId, texts['common.unclear_reply'], updateId, buildUnclearReplyKeyboard());
         return;
       }
       if (inserted) {
