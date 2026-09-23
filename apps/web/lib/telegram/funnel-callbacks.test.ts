@@ -50,6 +50,7 @@ import { handleFunnelCallback } from './funnel-callbacks.ts';
 import {
   FUNNEL_OPTOUT_DONE_TEXT,
   FUNNEL_THANKS_TEXT,
+  FUNNEL_UNCLEAR_REPLY_TEXT,
   RATING_HIGH_TEXT,
   RATING_HIGH_TEXT_NO_LINK,
   RATING_LOW_TEXT,
@@ -133,6 +134,33 @@ describe('fb:exp / fb:st — ответы опросов', () => {
 
     expect(h.recordMock).toHaveBeenCalledTimes(1);
     expect(h.sendMock).not.toHaveBeenCalled();
+  });
+
+  it('«Непонятно» → объяснение трёх шагов с кнопками, а не общее «Спасибо»', async () => {
+    // Разбор пути клиента 2026-09-23: клиент признавался, что не понял схему,
+    // и получал «Спасибо! Теперь понятнее, что улучшать» — без объяснения.
+    for (const data of ['fb:exp:howto', 'fb:st:unclear']) {
+      h.sendMock.mockClear();
+      await callFb(data);
+
+      expect(h.sendMock).toHaveBeenCalledTimes(1);
+      const [, text, , keyboard] = h.sendMock.mock.calls[0] as [number, string, number, { inline_keyboard: unknown }];
+      expect(text).toBe(FUNNEL_UNCLEAR_REPLY_TEXT);
+      expect(text).toContain('Ты сам оформляешь подписку на сайте сервиса');
+      expect(text).not.toContain(FUNNEL_THANKS_TEXT);
+      expect(keyboard.inline_keyboard).toEqual([
+        [expect.objectContaining({ text: '📱 Открыть приложение', web_app: expect.anything() })],
+        [expect.objectContaining({ text: '📖 Как оплатить', url: expect.stringContaining('/payment-instruction.html') })],
+      ]);
+    }
+  });
+
+  it('«Непонятно» повторным нажатием объясняет снова — это помощь по запросу', async () => {
+    h.state.recordResult = false;
+
+    await callFb('fb:st:unclear');
+
+    expect(h.sendMock).toHaveBeenCalledWith(42, FUNNEL_UNCLEAR_REPLY_TEXT, 1001, expect.anything());
   });
 
   it('«Другое» ведёт в существующий support-флоу (правило В3)', async () => {

@@ -429,7 +429,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return (
       <CenteredNote
         title="Открой кабинет в Telegram"
-        text="Личный кабинет работает внутри Telegram. Открой бота и нажми кнопку меню «Кабинет»."
+        text="Личный кабинет работает внутри Telegram. Открой бота, отправь /start и нажми «Открыть приложение»."
       />
     );
   }

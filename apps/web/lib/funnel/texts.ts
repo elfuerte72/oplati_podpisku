@@ -12,6 +12,7 @@ import {
   FUNNEL_OPTOUT_DONE_TEXT,
   FUNNEL_PARTNER_BUTTON,
   FUNNEL_THANKS_TEXT,
+  FUNNEL_UNCLEAR_REPLY_TEXT,
   ORDER_RATING_TEXT,
   ORDER_RATING_TEXT_GENERIC,
   RATING_HIGH_TEXT,
@@ -81,6 +82,7 @@ export const FUNNEL_TEXT_KEYS = [
   'common.optout_button',
   'common.optout_done',
   'common.thanks',
+  'common.unclear_reply',
 ] as const;
 
 export type FunnelTextKey = (typeof FUNNEL_TEXT_KEYS)[number];
@@ -289,11 +291,22 @@ export const FUNNEL_TEXTS: readonly FunnelTextSpec[] = [
     group: 'common',
     kind: 'reply',
     title: 'Благодарность за ответ на опрос',
-    hint: 'После любой кнопки-причины, кроме «Другое» (оно ведёт в поддержку).',
+    hint: 'После любой кнопки-причины, кроме «Другое» (оно ведёт в поддержку) и «Непонятно» (там объяснение).',
     defaultValue: FUNNEL_THANKS_TEXT,
     placeholders: NO_PLACEHOLDERS,
     maxLength: TELEGRAM_MESSAGE_LIMIT,
     source: ['FUNNEL_THANKS_TEXT'],
+  },
+  {
+    key: 'common.unclear_reply',
+    group: 'common',
+    kind: 'reply',
+    title: 'Объяснение на «Непонятно»',
+    hint: 'После «Непонятно, как оплатить» и «Непонятно, как это работает». Под текстом — кнопки «Открыть приложение» и «Как оплатить». Страну выпуска карты не называть.',
+    defaultValue: FUNNEL_UNCLEAR_REPLY_TEXT,
+    placeholders: NO_PLACEHOLDERS,
+    maxLength: TELEGRAM_MESSAGE_LIMIT,
+    source: ['FUNNEL_UNCLEAR_REPLY_TEXT'],
   },
 ];
 

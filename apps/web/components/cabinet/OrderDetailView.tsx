@@ -105,10 +105,13 @@ function RubBreakdown({
   totalKopecks,
   cardIssueFeeKopecks,
   hasActiveCard,
+  paid,
 }: {
   totalKopecks: number;
   cardIssueFeeKopecks: number | null;
   hasActiveCard: boolean;
+  /** Заказ оплачен: итог — факт («Оплачено»), а не приглашение «к оплате». */
+  paid: boolean;
 }) {
   if (cardIssueFeeKopecks !== null && cardIssueFeeKopecks > 0) {
     return (
@@ -120,7 +123,7 @@ function RubBreakdown({
         </p>
         <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
         <div className="flex justify-between gap-4 font-display text-base font-bold">
-          <dt className="text-[var(--text)]">Итого к оплате</dt>
+          <dt className="text-[var(--text)]">{paid ? 'Оплачено' : 'Итого к оплате'}</dt>
           <dd className="text-[var(--text)]">{formatRub(totalKopecks)}</dd>
         </div>
       </>
@@ -129,7 +132,7 @@ function RubBreakdown({
   if (showCardAlreadyOwnedNote(cardIssueFeeKopecks, hasActiveCard)) {
     return (
       <>
-        <Row label="Сумма" value={formatRub(totalKopecks)} />
+        <Row label={paid ? 'Оплачено' : 'Сумма'} value={formatRub(totalKopecks)} />
         <div className="flex items-center gap-1.5 pt-0.5 font-body text-xs text-[var(--success)]">
           <IconCheck size={14} className="shrink-0" />
           <span>Карта уже есть — платишь только за подписку</span>
@@ -137,7 +140,7 @@ function RubBreakdown({
       </>
     );
   }
-  return <Row label="Сумма" value={formatRub(totalKopecks)} />;
+  return <Row label={paid ? 'Оплачено' : 'Сумма'} value={formatRub(totalKopecks)} />;
 }
 
 /**
@@ -152,11 +155,13 @@ function PriceBreakdown({
   cardIssueFeeKopecks,
   originalAmountUsdCents,
   hasActiveCard,
+  paid,
 }: {
   totalKopecks: number;
   cardIssueFeeKopecks: number | null;
   originalAmountUsdCents: number | null;
   hasActiveCard: boolean;
+  paid: boolean;
 }) {
   return (
     <>
@@ -169,7 +174,7 @@ function PriceBreakdown({
             </dd>
           </div>
           <p className="font-body text-xs text-[var(--text-muted)]">
-            столько вводишь на сайте сервиса — в долларах, по цене США
+            столько сервис спишет с виртуальной карты — в долларах, по цене США
           </p>
           <div className="my-1.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
         </>
@@ -178,6 +183,7 @@ function PriceBreakdown({
         totalKopecks={totalKopecks}
         cardIssueFeeKopecks={cardIssueFeeKopecks}
         hasActiveCard={hasActiveCard}
+        paid={paid}
       />
     </>
   );
@@ -431,7 +437,7 @@ function HowPriceComputed({
         {usdAmount !== null && (
           <li>
             Цена подписки — {formatUsd(usdAmount)}: столько стоит сервис в США,
-            эту сумму ты вводишь на его сайте.
+            столько он и спишет с виртуальной карты.
           </li>
         )}
         {rate && <li>Курс на момент заказа — 1 $ = {rate} ₽ (зафиксирован в заказе).</li>}
@@ -484,7 +490,9 @@ function afterCardStatus(order: OrderDetail): AfterCardStatus {
 
 const AFTER_CARD_STATUS_VIEW: Record<AfterCardStatus, { label: string; className: string }> = {
   awaiting_site_payment: {
-    label: 'Ожидает оплаты на сайте сервиса',
+    // Не «ожидает оплаты»: так же называется неоплаченный заказ («Ждёт
+    // оплаты»), а здесь речь о шаге, который клиент делает сам на сайте.
+    label: 'Осталось оплатить подписку',
     className: 'border-[var(--color-skin)] text-[var(--text)]',
   },
   subscription_paid: {
@@ -576,8 +584,9 @@ function AfterCardBlock({
       </div>
 
       <p className="mt-2 font-body text-sm leading-snug text-[var(--text-muted)]">
-        Карта выпущена и пополнена. Открой сайт сервиса, войди в свой аккаунт и введи
-        реквизиты карты — реквизиты на главном экране кабинета и в Telegram.
+        Карта выпущена и пополнена. Последний шаг делаешь ты: открой сайт сервиса, войди в
+        свой аккаунт, оформи подписку и заплати этой картой. Номер, срок и CVC — на главном
+        экране кабинета и в сообщении бота.
       </p>
 
       <ServiceInstructions instructions={order.instructions} className="mt-3" />
@@ -1068,10 +1077,11 @@ export function OrderDetailView({
               // жёстко форматирует в $, для не-USD валюты это был бы неверный
               // ярлык. Сейчас каталог всегда USD — проверка защитная.
               originalAmountUsdCents={order.originalCurrency === 'USD' ? order.originalAmount : null}
+              paid={order.paidAt !== null}
             />
           )}
           {order.paidAt && <Row label="Оплачен" value={formatExpires(order.paidAt)} />}
-          {order.fulfilledAt && <Row label="Выполнен" value={formatExpires(order.fulfilledAt)} />}
+          {order.fulfilledAt && <Row label="Карта выдана" value={formatExpires(order.fulfilledAt)} />}
         </dl>
 
         {order.amountKopecks !== null && (

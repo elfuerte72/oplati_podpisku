@@ -59,7 +59,8 @@ export function CardHero({
       <div className="flex aspect-[1.6/1] flex-col items-center justify-center gap-2 rounded-[var(--radius-card)] border-[2.5px] border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] p-5 text-center">
         <span className="font-display text-base font-bold text-[var(--text)]">Карты пока нет</span>
         <span className="font-body text-sm text-[var(--text-muted)]">
-          Появится после первой оплаты — реквизиты придут сюда, в Telegram.
+          Появится после первой оплаты заказа. Этой картой ты сам оплатишь подписку на сайте
+          сервиса — реквизиты придут сюда и в чат с ботом.
         </span>
       </div>
     );

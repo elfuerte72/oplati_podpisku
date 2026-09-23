@@ -145,7 +145,7 @@ lib/
                                   system-prompt + schema-dictionary (зеркало гранта роли, тест),
                                   ask (ход, кап, учёт логом), chat-state (состояние чата без React)
   funnel/                         воронка обратной связи: gate (привратник — единственная точка
-                                  отправки), texts (реестр 22 строк: дефолты из templates.ts,
+                                  отправки), texts (реестр 23 строк: дефолты из templates.ts,
                                   оверлей из БД с памяткой, рендер и валидация подстановок)
   telegram/                       grammY bot singleton, handle-update (роутер) + флоу: start-menu,
                                   link-flow, support-flow, catalog-callbacks, agent-dialog,
