@@ -1,4 +1,5 @@
-import { decodeEntities } from '../html.ts';
+import { TRACKING_PARAM, normalizeUrl } from '../../url.ts';
+import { decodeEntities, withoutTags } from '../html.ts';
 import { fetchText, type HttpOptions } from '../http.ts';
 import type { Item, PollResult } from './types.ts';
 
@@ -17,8 +18,8 @@ import type { Item, PollResult } from './types.ts';
  * - архив `/newsletter/daily` перечисляет выпуски от свежих к старым, и
  *   сегодняшний там есть раньше, чем в `sitemaps/newsletter-daily.xml`;
  * - в выпуске новости идут заголовками `h2`/`h3`, ссылка на первоисточник —
- *   `<a class="link">`; разделы подписаны `ff-briefing-section-heading`
- *   («HARDWARE», «NEWS»), рекламный — «Sponsored».
+ *   `<a class="link">`; подпись раздела — `h5` («HARDWARE», «NEWS»,
+ *   «Sponsored · POWERED BY BOX»), других `h4`–`h6` внутри `article` нет.
  */
 
 export const FORWARD_FUTURE_ARCHIVE = 'https://forwardfuture.com/newsletter/daily';
@@ -37,9 +38,16 @@ const OWN_HOST = /(^|\.)(forwardfuture\.(com|ai)|beehiiv\.com)$/i;
 /** Страница канала или профиля — не материал, а реклама автора. */
 const NOT_MATERIAL = /^https?:\/\/(www\.)?youtube\.com\/(channel\/|c\/|@)/i;
 
-/** Приметы рекламы: раздел выпуска или метка в ссылке. */
-const SPONSORED_SECTION = /sponsor|presented by|partner/i;
+/**
+ * Приметы рекламы: подпись раздела или метка в ссылке. «Powered by» стоит в
+ * списке сам по себе: подпись рекламного раздела — «Sponsored · POWERED BY X»,
+ * и порядок частей в ней — свойство вёрстки, а не контракт.
+ */
+const SPONSORED_SECTION = /sponsor|presented by|powered by|partner/i;
 const PAID_LINK = /[?&]utm_medium=[^&]*(paid|sponsor)/i;
+
+/** Баннер рекламодателя: картинка «Powered by …» внутри ссылки. */
+const SPONSOR_BANNER = /<img\b[^>]*\balt="[^"]*(powered by|presented by|sponsored)/i;
 
 /** Текст ссылки, который заголовком новости не является. */
 const GENERIC_ANCHOR = /^(→\s*)?(read (the )?(full )?(article|story|more)( here)?|here|link|source)\.?$/i;
@@ -64,15 +72,7 @@ export function archiveIssues(html: string, limit: number): Issue[] {
 }
 
 function plainText(html: string): string {
-  // ⚠️ Теги снимаются до неподвижности, как в разборе RSS: заголовок уходит и в
-  // промпт ранжирования, и в сообщение владельцу.
-  let stripped = html;
-  for (let pass = 0; pass < 5; pass += 1) {
-    const next = stripped.replace(/<[^>]+>/g, ' ');
-    if (next === stripped) break;
-    stripped = next;
-  }
-  return decodeEntities(stripped).replace(/\s+/g, ' ').trim();
+  return withoutTags(html, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** Адрес первоисточника без меток рассылки, или `undefined`, если это не он. */
@@ -83,7 +83,7 @@ function sourceUrl(rawHref: string): string | undefined {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
   if (OWN_HOST.test(url.hostname)) return undefined;
   for (const key of [...url.searchParams.keys()]) {
-    if (key.toLowerCase().startsWith('utm_')) url.searchParams.delete(key);
+    if (TRACKING_PARAM.test(key)) url.searchParams.delete(key);
   }
   url.hash = '';
   const clean = url.toString();
@@ -99,9 +99,6 @@ function isEditorialLink(attributes: string): boolean {
   return /\bclass="[^"]*\blink\b[^"]*"/i.test(attributes);
 }
 
-/** Баннер рекламодателя: картинка «Powered by …» внутри ссылки. */
-const SPONSOR_BANNER = /<img\b[^>]*\balt="[^"]*(powered by|presented by|sponsored)/i;
-
 export interface Story {
   readonly url: string;
   readonly title: string;
@@ -110,7 +107,7 @@ export interface Story {
 /**
  * Новости выпуска: заголовок и адрес первоисточника.
  *
- * Идём по разметке ПОДРЯД: заголовок раздела, заголовок новости, ссылка. Так
+ * Идём по разметке ПОДРЯД: подпись раздела, заголовок новости, ссылка. Так
  * ссылка «→ Read the full article here» получает заголовок новости над ней.
  *
  * ⚠️ Реклама отсекается по АДРЕСУ, а не по месту: рекламодатель выпуска стоит
@@ -118,7 +115,8 @@ export interface Story {
  * ссылка класса `link` («Shop the Pod»). Место её не выдаёт, а адрес тот же,
  * что в разделе «Sponsored» ниже и за картинкой «Powered by …». Поэтому адрес,
  * хоть раз замеченный рекламным, выпадает из выпуска целиком (живые выпуски
- * 22.09 и 23.09.2026: Box и Eight Sleep).
+ * 22.09 и 23.09.2026: Box и Eight Sleep). Сравнение — по `normalizeUrl`:
+ * баннер и раздел могут отличаться `www.` и косой чертой в конце.
  */
 export function issueStories(html: string): Story[] {
   const start = html.search(/<article\b/i);
@@ -127,71 +125,79 @@ export function issueStories(html: string): Story[] {
   const body = start >= 0 && end > start ? html.slice(start, end) : html;
 
   const tokens =
-    /class="[^"]*\bff-briefing-section-heading\b[^"]*"[^>]*>([\s\S]*?)<\/|<(h[23])\b[^>]*>([\s\S]*?)<\/\2>|<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+    /<(h[4-6])\b[^>]*>([\s\S]*?)<\/\1>|<(h[23])\b[^>]*>([\s\S]*?)<\/\3>|<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
 
   const stories: Story[] = [];
-  const byUrl = new Map<string, number>();
+  const byKey = new Map<string, number>();
   const sponsored = new Set<string>();
-  let section = '';
+  let sponsoredSection = false;
   let heading = '';
-  // Ссылку вёрстка иногда рвёт на два `a` с одним адресом («Samsung Backs
-  // Kairos» + «Reactor»): соседние куски склеиваются в один заголовок.
-  let previousUrl: string | undefined;
+  // Ссылку вёрстка иногда рвёт на два `a` с одним адресом подряд («Samsung
+  // Backs Kairos» + «Reactor»). Склеиваем ТОЛЬКО соседние куски: между двумя
+  // ссылками на один адрес с текстом посередине («Apple…» reports «Axios»)
+  // стоят разные подписи, и склейка испортила бы заголовок.
+  let previous: { key: string; end: number } | undefined;
 
-  const add = (href: string, title: string, attributes: string, inner: string): void => {
+  const add = (href: string, title: string, attributes: string, inner: string, at: { start: number; end: number }): void => {
     const url = sourceUrl(href);
-    if (url === undefined) {
-      previousUrl = undefined;
-      return;
-    }
+    const adjacent =
+      previous !== undefined && plainText(body.slice(previous.end, at.start)) === '' ? previous : undefined;
+    previous = undefined;
+    if (url === undefined) return;
+    const key = normalizeUrl(url);
     // Метку в адресе проверяем ПОСЛЕ раскодирования: в разметке `&amp;utm_medium=`,
     // и перед меткой стоит `;`, а не `&`.
-    if (SPONSORED_SECTION.test(section) || PAID_LINK.test(decodeEntities(href)) || SPONSOR_BANNER.test(inner)) {
-      sponsored.add(url);
+    if (sponsoredSection || PAID_LINK.test(decodeEntities(href)) || SPONSOR_BANNER.test(inner)) {
+      sponsored.add(key);
     }
-    if (!isEditorialLink(attributes) || title === '') {
-      previousUrl = undefined;
-      return;
-    }
-    const index = byUrl.get(url);
+    if (!isEditorialLink(attributes) || title === '') return;
+
+    const index = byKey.get(key);
     if (index !== undefined) {
       const earlier = stories[index];
-      if (url === previousUrl && earlier !== undefined && !earlier.title.endsWith(title)) {
-        stories[index] = { url, title: `${earlier.title} ${title}`.slice(0, 200) };
+      if (adjacent?.key === key && earlier !== undefined && !earlier.title.endsWith(title)) {
+        stories[index] = { url: earlier.url, title: `${earlier.title} ${title}`.slice(0, 200) };
       }
-      previousUrl = url;
-      return;
+    } else {
+      byKey.set(key, stories.length);
+      stories.push({ url, title: title.slice(0, 200) });
     }
-    byUrl.set(url, stories.length);
-    stories.push({ url, title: title.slice(0, 200) });
-    previousUrl = url;
+    previous = { key, end: at.end };
   };
 
   for (const match of body.matchAll(tokens)) {
-    const [, sectionHtml, headingTag, headingHtml, anchorAttributes, anchorHtml] = match;
+    const [whole, , sectionHtml, headingTag, headingHtml, anchorAttributes, anchorHtml] = match;
+    const at = { start: match.index, end: match.index + whole.length };
     if (sectionHtml !== undefined) {
-      section = plainText(sectionHtml);
-      previousUrl = undefined;
+      // Новый раздел — новый контекст: заголовок прошлой новости к ссылкам
+      // этого раздела отношения не имеет.
+      sponsoredSection = SPONSORED_SECTION.test(plainText(sectionHtml));
+      heading = '';
+      previous = undefined;
       continue;
     }
     if (headingTag !== undefined && headingHtml !== undefined) {
       heading = plainText(headingHtml);
-      previousUrl = undefined;
+      previous = undefined;
       // Оглавление выпуска — это `h3` со ссылкой ВНУТРИ: заголовок и адрес сразу.
       const inner = /<a\b([^>]*)>([\s\S]*?)<\/a>/i.exec(headingHtml);
       const href = inner?.[1] === undefined ? undefined : hrefOf(inner[1]);
-      if (inner?.[1] !== undefined && href !== undefined) add(href, heading, inner[1], inner[2] ?? '');
+      if (inner?.[1] !== undefined && href !== undefined) add(href, heading, inner[1], inner[2] ?? '', at);
+      previous = undefined;
       continue;
     }
     if (anchorAttributes !== undefined) {
       const href = hrefOf(anchorAttributes);
-      if (href === undefined) continue;
+      if (href === undefined) {
+        previous = undefined;
+        continue;
+      }
       const text = plainText(anchorHtml ?? '');
       const title = text === '' || GENERIC_ANCHOR.test(text) ? heading : text;
-      add(href, title, anchorAttributes, anchorHtml ?? '');
+      add(href, title, anchorAttributes, anchorHtml ?? '', at);
     }
   }
-  return stories.filter((story) => !sponsored.has(story.url));
+  return stories.filter((story) => !sponsored.has(normalizeUrl(story.url)));
 }
 
 export interface ForwardFutureOptions extends HttpOptions {
@@ -210,35 +216,36 @@ export async function forwardFuture(options: ForwardFutureOptions = {}): Promise
     return { ok: false, reason: 'contract', message: 'в архиве Forward Future не нашлось ни одного выпуска' };
   }
 
+  // Выпуски независимы: последовательно медленный сайт держал бы весь прогон
+  // источников до трёх сроков запроса подряд.
+  const pages = await Promise.all(
+    issues.map(async (issue) => ({ issue, page: await fetchText(issue.url, { ...options, maxBytes: ISSUE_MAX_BYTES }) })),
+  );
+
   const items: Item[] = [];
   const seen = new Set<string>();
-  const failures: string[] = [];
-  for (const issue of issues) {
-    const page = await fetchText(issue.url, { ...options, maxBytes: ISSUE_MAX_BYTES });
-    // Один неоткрывшийся выпуск из двух — не отказ источника: следующий прогон
-    // через два часа его доберёт. Отказом он становится, только если не
-    // разобрался НИ ОДИН (проверка ниже), и тогда причины уходят в лог.
+  const warnings: string[] = [];
+  // Свежий выпуск первым: новость из двух выпусков подписывается свежим.
+  for (const { issue, page } of pages) {
     if (!page.ok) {
-      failures.push(`${issue.date}: ${page.reason}`);
+      warnings.push(`${issue.date}: ${page.reason}`);
       continue;
     }
     const stories = issueStories(page.text);
-    if (stories.length === 0) failures.push(`${issue.date}: нет ни одной новости со ссылкой`);
+    if (stories.length === 0) warnings.push(`${issue.date}: нет ни одной новости со ссылкой`);
     for (const story of stories) {
-      if (seen.has(story.url)) continue;
-      seen.add(story.url);
-      items.push({
-        sourceKind: 'forwardfuture',
-        sourceRef: issue.date,
-        url: story.url,
-        title: story.title,
-        publishedAt: `${issue.date}T00:00:00.000Z`,
-      });
+      const key = normalizeUrl(story.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // ⚠️ `publishedAt` НЕ ставится: дата выпуска — не дата статьи, а хранилище
+      // обновляет `published_at` при каждом повторе адреса и затирало бы точное
+      // время той же статьи из RSS или канала.
+      items.push({ sourceKind: 'forwardfuture', sourceRef: issue.date, url: story.url, title: story.title });
     }
   }
 
   if (items.length === 0) {
-    return { ok: false, reason: 'contract', message: `выпуски не разобрались: ${failures.join('; ')}` };
+    return { ok: false, reason: 'contract', message: `выпуски не разобрались: ${warnings.join('; ')}` };
   }
-  return { ok: true, items };
+  return { ok: true, items, ...(warnings.length === 0 ? {} : { warnings }) };
 }

@@ -34,5 +34,16 @@ export type SourceKind = (typeof SOURCE_KINDS)[number];
  * регулярно, и один упавший не должен ронять прогон.
  */
 export type PollResult =
-  | { readonly ok: true; readonly items: readonly Item[]; readonly credits?: number }
+  | {
+      readonly ok: true;
+      readonly items: readonly Item[];
+      readonly credits?: number;
+      /**
+       * Частичный сбой, который источник целиком не роняет (один выпуск из
+       * двух не разобрался). Молчать о нём нельзя: сменившаяся вёрстка
+       * сначала ломает только свежий выпуск, и без строки в логе это видно
+       * лишь через сутки, когда отказывает уже весь источник.
+       */
+      readonly warnings?: readonly string[];
+    }
   | { readonly ok: false; readonly reason: string; readonly message: string };

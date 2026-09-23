@@ -128,6 +128,12 @@ export async function pollAll(options: PollOptions): Promise<PollRunResult> {
       failures.push({ kind: task.kind, ref: task.ref, reason: result.reason });
       continue;
     }
+    if (result.warnings !== undefined && result.warnings.length > 0) {
+      options.logger.warn(
+        { source: task.kind, ref: task.ref, warnings: result.warnings },
+        'опрос источника: часть не разобралась',
+      );
+    }
     credits += result.credits ?? 0;
     // Успешный платный опрос запоминается: следующий прогон в окне кэша его
     // пропустит. Неудачный НЕ запоминается — иначе сбой провайдера означал бы

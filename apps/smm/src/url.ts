@@ -10,14 +10,15 @@
  * конвейеру про хранилище знать нельзя (канарейка границ).
  */
 
-const TRACKING = /^(utm_|yclid|gclid|fbclid|erid|_openstat|ysclid)/i;
+/** Параметры меток и рекламы: смысла адреса они не несут. */
+export const TRACKING_PARAM = /^(utm_|yclid|gclid|fbclid|erid|_openstat|ysclid)/i;
 
 export function normalizeUrl(raw: string): string {
   try {
     const url = new URL(raw);
     url.hash = '';
     for (const key of [...url.searchParams.keys()]) {
-      if (TRACKING.test(key)) url.searchParams.delete(key);
+      if (TRACKING_PARAM.test(key)) url.searchParams.delete(key);
     }
     const host = url.host.toLowerCase().replace(/^www\./, '');
     const path = url.pathname.replace(/\/+$/, '');

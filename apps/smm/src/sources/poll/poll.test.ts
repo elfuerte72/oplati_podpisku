@@ -342,21 +342,61 @@ describe('Forward Future', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items).toHaveLength(4);
+    // Даты нет намеренно: дата выпуска — не дата статьи, а хранилище затирало
+    // бы ею точное время той же статьи из RSS.
     expect(result.items[0]).toEqual({
       sourceKind: 'forwardfuture',
       sourceRef: '2026-09-23',
       url: 'https://www.axios.com/2026/09/21/apple-siri-settlement',
       title: 'Apple Faces Siri Settlement',
-      publishedAt: '2026-09-23T00:00:00.000Z',
     });
+    expect(result.warnings).toBeUndefined();
   });
 
-  it('один неоткрывшийся выпуск не роняет источник', async () => {
+  it('один неоткрывшийся выпуск не роняет источник, но называется в warnings', async () => {
     const { fetcher } = exact({ [FORWARD_FUTURE_ARCHIVE]: FF_ARCHIVE_HTML, [FF_ISSUE_22]: FF_ISSUE_HTML });
     const result = await forwardFuture({ fetcher, resolver: publicDns, issues: 2 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.items.every((item) => item.sourceRef === '2026-09-22')).toBe(true);
+    expect(result.warnings).toEqual(['2026-09-23: http_error']);
+  });
+
+  it('подпись рекламного раздела ловится при любом порядке частей', () => {
+    const html = `<article>
+      <h5 class="ff-briefing-section-label"><span>POWERED BY BOX</span><span> · </span><span class="ff-briefing-ad-disclosure">Sponsored</span></h5>
+      <h2>Box</h2><a class="link" href="https://blog.box.com/x">Box</a>
+      <h5><span>NEWS</span></h5>
+      <h2>Real story</h2><a class="link" href="https://news.example/real">→ Read the full article here.</a>
+    </article>`;
+    expect(issueStories(html)).toEqual([{ url: 'https://news.example/real', title: 'Real story' }]);
+  });
+
+  it('рекламный адрес с www и косой чертой в конце — тот же адрес', () => {
+    const html = `<article>
+      <a href="https://www.sponsor.example/deal"><img alt="Powered by Sponsor" src="x.png"></a>
+      <p><a class="link" href="https://sponsor.example/deal/">Shop now</a></p>
+      <h2>Story</h2><a class="link" href="https://news.example/a">→ Read the full article here.</a>
+      <p><a class="link" href="https://www.news.example/a/">→ Read the full article here.</a></p>
+    </article>`;
+    // Реклама выпала, а одна новость с двумя написаниями адреса — одна строка.
+    expect(issueStories(html)).toEqual([{ url: 'https://news.example/a', title: 'Story' }]);
+  });
+
+  it('заголовок прошлой новости не переезжает в новый раздел', () => {
+    const html = `<article>
+      <h2>Old story</h2><a class="link" href="https://a.example/1">→ Read the full article here.</a>
+      <h5><span>NEWS</span></h5>
+      <p><a class="link" href="https://b.example/2">→ Read more</a></p>
+    </article>`;
+    expect(issueStories(html)).toEqual([{ url: 'https://a.example/1', title: 'Old story' }]);
+  });
+
+  it('две ссылки на один адрес с текстом между ними не склеиваются', () => {
+    const html = `<article>
+      <a class="link" href="https://x.example/s">Apple Faces Siri Settlement</a> reports <a class="link" href="https://x.example/s">Axios</a>
+    </article>`;
+    expect(issueStories(html)).toEqual([{ url: 'https://x.example/s', title: 'Apple Faces Siri Settlement' }]);
   });
 
   it('сменившаяся вёрстка — отказ, а не тихая пустая лента', async () => {
@@ -448,6 +488,21 @@ describe('прогон по всем источникам', () => {
     expect(kinds.has('x')).toBe(false);
     expect(kinds.has('reddit')).toBe(false);
     expect(kinds.has('threads')).toBe(false);
+  });
+
+  it('частичный сбой источника доходит до лога, а не теряется', async () => {
+    const { fetcher } = exact({ [FORWARD_FUTURE_ARCHIVE]: FF_ARCHIVE_HTML, [FF_ISSUE_22]: FF_ISSUE_HTML });
+    const lines: string[] = [];
+    const logger = createLogger({ level: 'warn', stream: { write: (line: string) => void lines.push(line) } });
+    const config: SmmConfig = {
+      ...smmConfig,
+      sources: { ...smmConfig.sources, telegramChannels: [], rss: [], forwardFutureIssues: 2 },
+    };
+    const result = await pollAll({ config, logger, fetcher, resolver: publicDns });
+    expect(result.items.some((item) => item.sourceKind === 'forwardfuture')).toBe(true);
+    const partial = lines.find((line) => line.includes('часть не разобралась'));
+    expect(partial).toBeDefined();
+    expect(partial).toContain('2026-09-23: http_error');
   });
 
   it('Forward Future выключается нулём выпусков', () => {

@@ -37,6 +37,19 @@ describe('DossierSchema', () => {
     expect(parsed.data.facts.at(-1)?.statement).toBe(`Факт ${DOSSIER_FACTS_MAX}`);
   });
 
+  it('битый элемент в отрезаемом хвосте не валит досье', () => {
+    const list = [...facts(DOSSIER_FACTS_MAX + 1), { statement: '', quote: '' }];
+    const parsed = DossierSchema.safeParse(dossier({ facts: list }));
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.facts).toHaveLength(DOSSIER_FACTS_MAX);
+  });
+
+  it('битый элемент ВНУТРИ потолка по-прежнему отказ', () => {
+    const list = [{ statement: '', quote: '' }, ...facts(3)];
+    expect(DossierSchema.safeParse(dossier({ facts: list })).success).toBe(false);
+  });
+
   it('досье без единого факта по-прежнему не принимается', () => {
     expect(DossierSchema.safeParse(dossier({ facts: [] })).success).toBe(false);
   });
