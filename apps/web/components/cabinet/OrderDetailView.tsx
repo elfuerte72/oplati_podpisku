@@ -30,7 +30,7 @@ import { PathSteps } from './PathSteps';
 import { PaymentIssueForm, paymentIssueSentText } from './PaymentIssueForm';
 import { StatusBadge } from './StatusBadge';
 import type { TelegramMainButton } from './telegram';
-import { useMainButton } from './useMainButton';
+import { useMainButton } from './use-main-button';
 import type {
   CancelOrderResult,
   OrderDetail,

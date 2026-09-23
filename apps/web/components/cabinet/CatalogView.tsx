@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatRub, formatUsd } from '@/components/comic/format';
@@ -212,6 +212,15 @@ export function ServicePicker({
   const [proposing, setProposing] = useState(false);
   const [amount, setAmount] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  // Лист могли закрыть, пока создавался заказ: тогда не открываем его заново
+  // поверх вкладки — заказ и так появится в «Ждут оплаты».
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const propose = useCallback(
     async (
@@ -226,6 +235,7 @@ export function ServicePicker({
       setProposing(true);
       setNotice(null);
       const res = await doPropose(initData, { slug: service.slug, ...payload });
+      if (!mountedRef.current) return;
       setProposing(false);
       if (res.ok) {
         onCreated(res.orderId, hint);

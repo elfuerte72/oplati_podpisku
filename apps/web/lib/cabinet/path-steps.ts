@@ -46,7 +46,7 @@ export type PathStepsInput = {
   siteHost?: string | null | undefined;
   /** Подсказка к шагу 3 на стадии `use` («VPN США · цена в долларах»). */
   useHint?: string | null | undefined;
-  /** Деньги кладутся на уже выпущенную карту, а не на новую. */
+  /** У клиента уже есть активная карта: долив или новая — решает сервер. */
   topUp?: boolean | undefined;
 };
 
@@ -106,7 +106,9 @@ export function buildPathSteps(input: PathStepsInput): PathStep[] {
         { n: 1, title: `Заказ оплачен${pay}`, hint: null, state: 'done' },
         {
           n: 2,
-          title: input.topUp ? 'Карта пополняется' : 'Карта выпускается',
+          // При уже выпущенной карте сервер сам решает, долить её или
+          // выпустить новую (старая могла истекать): текст верен в обоих.
+          title: input.topUp ? 'Кладу деньги на карту' : 'Карта выпускается',
           hint: input.cardText ? `на неё ляжет ${input.cardText}` : 'обычно это пара минут',
           state: 'current',
         },

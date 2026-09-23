@@ -12,6 +12,14 @@
 /** Сколько дней после заказа ещё напоминаем про шаг 3. */
 export const NEXT_STEP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
+/**
+ * Сколько заказ «в выпуске» может заслонять рабочую карту. Обычно выпуск —
+ * минуты; заказ, застрявший на часы (ручная выдача), не должен бессрочно
+ * прятать карту клиента и её «Остался один шаг» за «Выпускаю карту…». Без
+ * рабочей карты показать больше нечего — тогда выпуск виден как есть.
+ */
+export const ISSUING_OVER_CARD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 /** Статусы «деньги пришли, карта в пути». */
 const ISSUING_STATUSES = new Set(['paid', 'in_fulfillment']);
 
@@ -55,22 +63,27 @@ export function selectCardTabState<O extends CardTabOrderLike, C extends CardTab
   now: number = Date.now(),
 ): CardTabState<O, C> {
   const { orders, cards } = snapshot;
+  const hasActiveCard = cards.some((c) => c.status === 'active');
 
   // Выпуск важнее готовой карты: только что оплативший ждёт именно эту карту,
   // и показать ему прошлую с «остался один шаг» по прошлому сервису — сбить.
+  // Но не бессрочно: застрявший выпуск через несколько часов уступает карте.
   const issuing = [...orders]
     .filter(
       (o) =>
         ISSUING_STATUSES.has(o.status) &&
-        !(o.cardId && cards.some((c) => c.id === o.cardId)),
+        !(o.cardId && cards.some((c) => c.id === o.cardId)) &&
+        (!hasActiveCard || now - Date.parse(o.createdAt) <= ISSUING_OVER_CARD_MAX_AGE_MS),
     )
     .sort(byCreatedDesc)[0];
   if (issuing) {
-    return { kind: 'issuing', order: issuing, topUp: cards.some((c) => c.status === 'active') };
+    return { kind: 'issuing', order: issuing, topUp: hasActiveCard };
   }
 
-  const card =
-    cards.find((c) => c.status === 'active') ?? [...cards].sort(byCreatedDesc)[0] ?? null;
+  // Основная карта — свежая активная; активной нет — свежая по выпуску.
+  // Сортируем сами, а не полагаемся на порядок из репозитория.
+  const newestFirst = [...cards].sort(byCreatedDesc);
+  const card = newestFirst.find((c) => c.status === 'active') ?? newestFirst[0] ?? null;
   if (!card) return { kind: 'none' };
 
   const cardOrders = orders

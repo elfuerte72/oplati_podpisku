@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { NEXT_STEP_MAX_AGE_MS, selectCardTabState } from './card-tab-state.ts';
+import {
+  ISSUING_OVER_CARD_MAX_AGE_MS,
+  NEXT_STEP_MAX_AGE_MS,
+  selectCardTabState,
+} from './card-tab-state.ts';
 
 /**
  * Что показывает вкладка «Карта» (тикет 06). Главный риск — спрятать шаг 3
@@ -59,13 +63,42 @@ describe('selectCardTabState', () => {
     expect(state.kind).toBe('issuing');
   });
 
-  it('issuing важнее готовой карты: второй сервис пополняет карту — topUp', () => {
-    const paid = order({ orderId: 'o2', status: 'paid', cardId: null });
+  it('issuing важнее готовой карты: второй сервис только что оплачен — topUp', () => {
+    const paid = order({
+      orderId: 'o2',
+      status: 'paid',
+      cardId: null,
+      createdAt: new Date(NOW - 10 * 60 * 1000).toISOString(),
+    });
     const state = selectCardTabState(
       { orders: [paid, order({ orderId: 'o1', subscriptionActivated: true })], cards: [card()] },
       NOW,
     );
     expect(state).toEqual({ kind: 'issuing', order: paid, topUp: true });
+  });
+
+  it('застрявший выпуск не прячет рабочую карту бессрочно', () => {
+    // Заказ завис в in_fulfillment (ручная выдача): через несколько часов
+    // вкладка возвращается к рабочей карте, а не держит «Выпускаю…».
+    const stuck = order({
+      orderId: 'o2',
+      status: 'in_fulfillment',
+      cardId: null,
+      createdAt: new Date(NOW - ISSUING_OVER_CARD_MAX_AGE_MS - 1).toISOString(),
+    });
+    const done = order({ orderId: 'o1', createdAt: new Date(NOW - 2 * DAY).toISOString() });
+    const state = selectCardTabState({ orders: [stuck, done], cards: [card()] }, NOW);
+    expect(state).toMatchObject({ kind: 'active', nextStep: done });
+  });
+
+  it('без рабочей карты застрявший выпуск показывается как есть — больше показать нечего', () => {
+    const stuck = order({
+      orderId: 'o2',
+      status: 'in_fulfillment',
+      cardId: null,
+      createdAt: new Date(NOW - 3 * DAY).toISOString(),
+    });
+    expect(selectCardTabState({ orders: [stuck], cards: [] }, NOW).kind).toBe('issuing');
   });
 
   it('active + nextStep — последний выполненный заказ по карте без отметки о подписке', () => {
@@ -117,6 +150,12 @@ describe('selectCardTabState', () => {
     const other = order({ orderId: 'o1', cardId: 'card-old' });
     const state = selectCardTabState({ orders: [other], cards: [card()] }, NOW);
     expect(state).toMatchObject({ cardOrders: [], nextStep: null });
+  });
+
+  it('две активные карты — берём свежую по выпуску, а не первую в массиве', () => {
+    const older = card({ id: 'old', createdAt: new Date(NOW - 9 * DAY).toISOString() });
+    const newer = card({ id: 'new', createdAt: new Date(NOW - DAY).toISOString() });
+    expect(selectCardTabState({ orders: [], cards: [older, newer] }, NOW)).toMatchObject({ card: newer });
   });
 
   it('основная карта — активная, а не самая свежая', () => {

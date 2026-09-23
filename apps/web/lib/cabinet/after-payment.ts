@@ -17,6 +17,54 @@ export const POLL_INTERVAL_MS = 5_000;
 /** Потолок опроса от ухода на оплату: дальше клиент вернётся сам. */
 export const POLL_MAX_MS = 10 * 60 * 1000;
 
+/**
+ * Чей заказ опрашивать. Только того, чей лист открыт сейчас: клиент мог
+ * закрыть лист (или открыть другой заказ), пока готовился счёт, — тогда ответы
+ * по прежнему заказу выбрасывались бы до потолка, а лимит бы тратился.
+ */
+export function pollTargetOrderId(
+  awaiting: { orderId: string } | null,
+  openOrderId: string | null,
+): string | null {
+  return awaiting !== null && awaiting.orderId === openOrderId ? awaiting.orderId : null;
+}
+
+/**
+ * Шаг опроса после 429. Бакет `cabinet` общий на все действия клиента, и опрос,
+ * долбящий тем же шагом, выедал бы его: «Оплатить» или «Реквизиты карты»
+ * получали бы отказ из-за фонового чтения.
+ */
+export const RATE_LIMITED_BACKOFF_MS = 30_000;
+
+/** Через сколько после ответа ждать следующий опрос; код ошибки — прошлого ответа. */
+export function nextPollDelayMs(lastError: string | null): number {
+  return lastError === 'rate_limited' ? RATE_LIMITED_BACKOFF_MS : POLL_INTERVAL_MS;
+}
+
+/**
+ * Возврат в приложение приходит двумя событиями сразу — `visibilitychange` и
+ * `activated` Telegram. Каждый возврат перечитывает снапшот, а тот ходит в
+ * PaySpace за живым балансом: второй вызов в том же окне — лишний.
+ */
+export const APP_RETURN_DEDUP_MS = 2_000;
+
+export function isDuplicateReturn(lastReturnAt: number | null, now: number): boolean {
+  return lastReturnAt !== null && now - lastReturnAt < APP_RETURN_DEDUP_MS;
+}
+
+/**
+ * Сколько приложение может пробыть свёрнутым с открытыми реквизитами, прежде
+ * чем они спрячутся (находка ревью). Короткий уход — скопировать номер и
+ * вставить на сайте сервиса — реквизиты не трогает: иначе за CVC пришлось бы
+ * открывать лист заново. Долгий — прячет: PAN и CVC не должны висеть на экране
+ * и в снимке переключателя приложений бессрочно.
+ */
+export const REVEAL_BACKGROUND_LIMIT_MS = 5 * 60 * 1000;
+
+export function revealExpiredAfterBackground(hiddenAt: number | null, now: number): boolean {
+  return hiddenAt !== null && now - hiddenAt > REVEAL_BACKGROUND_LIMIT_MS;
+}
+
 /** Статусы, в которых карта ещё в пути: деньги пришли, выдачи не было. */
 const ISSUING_STATUSES = new Set(['paid', 'in_fulfillment']);
 

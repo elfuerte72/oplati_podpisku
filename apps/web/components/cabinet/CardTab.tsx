@@ -171,7 +171,9 @@ function Issuing({
           ))}
         </span>
         <p className="font-display text-xl font-bold text-[var(--text)]">
-          {topUp ? `Пополняю карту для ${order.service}` : `Выпускаю карту для ${order.service}`}
+          {/* При уже выпущенной карте долить её или выпустить новую решает
+              сервер — заголовок не обещает ни того, ни другого. */}
+          {topUp ? `Готовлю карту для ${order.service}` : `Выпускаю карту для ${order.service}`}
         </p>
         <p className="font-body text-sm text-[var(--text-muted)]">
           Обычно это пара минут. Покажу её здесь и пришлю в чат.
@@ -218,7 +220,13 @@ function ActiveCard({
   const [marking, setMarking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const paymentUrl = card.instructions?.paymentUrl ?? null;
+  // Правила сервиса у карты — от САМОГО СВЕЖЕГО её заказа в любом статусе, а
+  // шаг 3 — от последнего выполненного. Совпали — берём; разошлись (свежий
+  // заказ сорвался) — ни сайта, ни подсказки: «Оплати A» с кнопкой сайта B
+  // сбил бы сильнее, чем их отсутствие (находка ревью).
+  const instructions =
+    nextStep && card.purposeOrderId === nextStep.orderId ? card.instructions : null;
+  const paymentUrl = instructions?.paymentUrl ?? null;
   const siteHost = siteHostFromUrl(paymentUrl);
   const latest = cardOrders[0] ?? null;
 
@@ -261,7 +269,7 @@ function ActiveCard({
               service: nextStep.service,
               cardText: formatUsd(card.balanceUsdCents),
               siteHost,
-              useHint: serviceStepHint(card.instructions),
+              useHint: serviceStepHint(instructions),
             })}
           />
           {paymentUrl && (

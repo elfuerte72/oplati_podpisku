@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  APP_RETURN_DEDUP_MS,
   POLL_INTERVAL_MS,
   POLL_MAX_MS,
+  RATE_LIMITED_BACKOFF_MS,
+  REVEAL_BACKGROUND_LIMIT_MS,
   afterPaymentOutcome,
+  isDuplicateReturn,
+  nextPollDelayMs,
+  pollTargetOrderId,
+  revealExpiredAfterBackground,
   shouldPoll,
   shouldWatchIssuing,
 } from './after-payment.ts';
@@ -91,5 +98,61 @@ describe('afterPaymentOutcome — что делать с новым статус
   it('истёк/отменён/ошибка — лист остаётся и показывает статус', () => {
     expect(afterPaymentOutcome('expired')).toBe('stay');
     expect(afterPaymentOutcome('failed')).toBe('stay');
+  });
+});
+
+describe('pollTargetOrderId — чей заказ опрашивать', () => {
+  it('ждём оплату открытого в листе заказа — его и опрашиваем', () => {
+    expect(pollTargetOrderId({ orderId: 'A' }, 'A')).toBe('A');
+  });
+
+  it('лист закрыли или открыли другой заказ — не опрашиваем никого', () => {
+    // Иначе ответы по A выбрасывались бы 10 минут, а лимит тратился.
+    expect(pollTargetOrderId({ orderId: 'A' }, 'B')).toBeNull();
+    expect(pollTargetOrderId({ orderId: 'A' }, null)).toBeNull();
+  });
+
+  it('оплату не ждём — не опрашиваем', () => {
+    expect(pollTargetOrderId(null, 'A')).toBeNull();
+  });
+});
+
+describe('nextPollDelayMs — отступ при 429', () => {
+  it('обычный шаг — 5 секунд', () => {
+    expect(nextPollDelayMs(null)).toBe(POLL_INTERVAL_MS);
+    expect(nextPollDelayMs('network_error')).toBe(POLL_INTERVAL_MS);
+  });
+
+  it('упёрлись в лимит — ждём дольше, а не долбим тем же шагом', () => {
+    expect(nextPollDelayMs('rate_limited')).toBe(RATE_LIMITED_BACKOFF_MS);
+    expect(RATE_LIMITED_BACKOFF_MS).toBeGreaterThanOrEqual(30_000);
+  });
+});
+
+describe('isDuplicateReturn — возврат в приложение приходит двумя событиями', () => {
+  it('второе событие в пределах окна — дубль', () => {
+    expect(isDuplicateReturn(10_000, 10_000 + APP_RETURN_DEDUP_MS - 1)).toBe(true);
+  });
+
+  it('за окном — новый возврат', () => {
+    expect(isDuplicateReturn(10_000, 10_000 + APP_RETURN_DEDUP_MS)).toBe(false);
+  });
+
+  it('первого возврата ещё не было — не дубль', () => {
+    expect(isDuplicateReturn(null, 5)).toBe(false);
+  });
+});
+
+describe('revealExpiredAfterBackground — реквизиты в свёрнутом приложении', () => {
+  it('короткий уход (скопировать и вставить на сайте) реквизиты не прячет', () => {
+    expect(revealExpiredAfterBackground(0, REVEAL_BACKGROUND_LIMIT_MS)).toBe(false);
+  });
+
+  it('долгий уход — реквизиты прячутся до нового показа', () => {
+    expect(revealExpiredAfterBackground(0, REVEAL_BACKGROUND_LIMIT_MS + 1)).toBe(true);
+  });
+
+  it('приложение не сворачивали — не прячем', () => {
+    expect(revealExpiredAfterBackground(null, 999_999_999)).toBe(false);
   });
 });

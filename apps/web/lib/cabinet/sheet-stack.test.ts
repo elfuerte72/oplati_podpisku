@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSheetStack } from './sheet-stack.ts';
+import { DRAG_CLOSE_PX, FLICK_MIN_PX, createSheetStack, shouldCloseOnRelease } from './sheet-stack.ts';
 
 /**
  * Стек листов Mini App (тикет 03). Системная «Назад» Telegram одна на всё
@@ -48,5 +48,33 @@ describe('createSheetStack', () => {
     expect(stack.count()).toBe(0);
     stack.push();
     expect(stack.count()).toBe(1);
+  });
+});
+
+/**
+ * Потяг листа вниз (тикет 03): в листе заказа набирают почту и промокод, и лист,
+ * закрывшийся от дрожи пальца, теряет введённое.
+ */
+describe('shouldCloseOnRelease — потяг листа вниз', () => {
+  it('дотянули за порог — лист закрывается', () => {
+    expect(shouldCloseOnRelease(DRAG_CLOSE_PX + 1, 1000)).toBe(true);
+  });
+
+  it('медленно и не дотянули — лист возвращается', () => {
+    expect(shouldCloseOnRelease(DRAG_CLOSE_PX - 1, 1000)).toBe(false);
+  });
+
+  it('короткий резкий бросок закрывает, не дотянув до порога', () => {
+    expect(shouldCloseOnRelease(40, 50)).toBe(true);
+  });
+
+  it('дрожь пальца даже быстрым движением лист не закрывает', () => {
+    expect(shouldCloseOnRelease(FLICK_MIN_PX, 5)).toBe(false);
+    expect(shouldCloseOnRelease(15, 10)).toBe(false);
+  });
+
+  it('нулевое время жеста не делит на ноль', () => {
+    expect(shouldCloseOnRelease(30, 0)).toBe(true);
+    expect(shouldCloseOnRelease(0, 0)).toBe(false);
   });
 });

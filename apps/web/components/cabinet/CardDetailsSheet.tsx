@@ -6,6 +6,7 @@ import type { BillingAddress } from '@oplati/types';
 
 import { track } from '@/lib/analytics/client';
 import { billingAddressFields } from '@/lib/billing-address-fields';
+import { revealExpiredAfterBackground } from '@/lib/cabinet/after-payment';
 import { copyCardField, type CardCopyField } from '@/lib/cabinet/copy-field';
 import { copyToClipboard } from '@/lib/clipboard';
 
@@ -46,8 +47,33 @@ function IconCopy() {
 export function CardDetailsSheet({ initData, cardId }: { initData: string; cardId: string }) {
   const [details, setDetails] = useState<Details | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Реквизиты спрятаны после долгого сворачивания приложения — до нового показа.
+  const [hiddenByBackground, setHiddenByBackground] = useState(false);
+  // Номер показа: «Показать снова» перезапрашивает реквизиты тем же эффектом.
+  const [attempt, setAttempt] = useState(0);
+
+  // Короткий уход (скопировать номер и вставить на сайте) реквизиты не трогает,
+  // долгий — прячет: PAN и CVC не висят на экране и в снимке переключателя
+  // приложений бессрочно (находка ревью).
+  useEffect(() => {
+    let hiddenAt: number | null = null;
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (revealExpiredAfterBackground(hiddenAt, Date.now())) {
+        setDetails(null);
+        setHiddenByBackground(true);
+      }
+      hiddenAt = null;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   useEffect(() => {
+    if (hiddenByBackground) return;
     let cancelled = false;
     void (async () => {
       const res = await fetchCardDetails(initData, cardId);
@@ -73,7 +99,27 @@ export function CardDetailsSheet({ initData, cardId }: { initData: string; cardI
     return () => {
       cancelled = true;
     };
-  }, [initData, cardId]);
+  }, [initData, cardId, hiddenByBackground, attempt]);
+
+  if (hiddenByBackground) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-4 text-center">
+        <p className="font-body text-sm text-[var(--text-muted)]">
+          Реквизиты скрыты, пока приложение было свёрнуто.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            setHiddenByBackground(false);
+            setAttempt((n) => n + 1);
+          }}
+          className="min-h-11 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-4 py-2 font-display text-sm font-bold text-[var(--text)]"
+        >
+          Показать снова
+        </button>
+      </div>
+    );
+  }
 
   if (error) {
     return (

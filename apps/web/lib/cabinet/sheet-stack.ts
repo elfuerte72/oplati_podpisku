@@ -18,6 +18,26 @@ export type SheetStack = {
   backButtonVisible: () => boolean;
 };
 
+/** Сколько надо утянуть лист вниз, чтобы отпускание его закрыло. */
+export const DRAG_CLOSE_PX = 96;
+/** Скорость броска (px/мс), которой хватает, чтобы закрыть не дотянув. */
+export const FLICK_PX_PER_MS = 0.5;
+/**
+ * Короче этого бросок не считается: дрожь пальца, коснувшегося полоски, иначе
+ * закрывала бы лист с набранной почтой одним быстрым сдвигом на пару пикселей.
+ */
+export const FLICK_MIN_PX = 20;
+
+/**
+ * Закрыть ли лист, когда палец отпустили (образец — nemo `app/ui/sheet.tsx`):
+ * дотянули за порог — да; не дотянули, но бросили быстро — тоже да, короткий
+ * резкий жест тоже значит «закрой».
+ */
+export function shouldCloseOnRelease(offsetPx: number, elapsedMs: number): boolean {
+  if (offsetPx > DRAG_CLOSE_PX) return true;
+  return offsetPx > FLICK_MIN_PX && offsetPx / Math.max(1, elapsedMs) > FLICK_PX_PER_MS;
+}
+
 export function createSheetStack(): SheetStack {
   let open = 0;
   return {

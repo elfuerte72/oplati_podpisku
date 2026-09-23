@@ -8,9 +8,11 @@ import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { PartnerCabinet } from '@/components/partner/PartnerCabinet';
 import { track } from '@/lib/analytics/client';
 import {
-  POLL_INTERVAL_MS,
   POLL_MAX_MS,
   afterPaymentOutcome,
+  isDuplicateReturn,
+  nextPollDelayMs,
+  pollTargetOrderId,
   shouldPoll,
   shouldWatchIssuing,
 } from '@/lib/cabinet/after-payment';
@@ -448,16 +450,24 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       else node.style.transform = trackTransform(index());
     };
 
+    // Жест отняла система (звонок, жест от края, смена приложения) — ряд
+    // возвращается на место: клиент вкладку не менял.
+    const cancel = () => {
+      if (!tracking) return;
+      stop();
+      node.style.transform = trackTransform(index());
+    };
+
     frame.addEventListener('touchstart', start, { passive: true });
     frame.addEventListener('touchmove', move, { passive: false });
     frame.addEventListener('touchend', end);
-    frame.addEventListener('touchcancel', end);
+    frame.addEventListener('touchcancel', cancel);
     return () => {
       if (raf) cancelAnimationFrame(raf);
       frame.removeEventListener('touchstart', start);
       frame.removeEventListener('touchmove', move);
       frame.removeEventListener('touchend', end);
-      frame.removeEventListener('touchcancel', end);
+      frame.removeEventListener('touchcancel', cancel);
     };
   }, [phase]);
 
@@ -465,6 +475,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // Заказ, открытый в листе прямо сейчас: ответы отставших запросов (клиент
   // успел закрыть лист или открыть другой заказ) не должны перезаписать detail.
   const activeOrderIdRef = useRef<string | null>(null);
+  // Номер последнего запроса детали: применяется только ответ на него.
+  const detailSeqRef = useRef(0);
   const awaitingRef = useRef<{ orderId: string; startedAt: number } | null>(null);
   const busyRef = useRef(false);
 
@@ -488,8 +500,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     setDetail(null);
     setSheet({ kind: 'order', orderId, hint });
     activeOrderIdRef.current = orderId;
+    const seq = ++detailSeqRef.current;
     const res = await fetchOrderDetail(initDataRef.current, orderId);
-    if (activeOrderIdRef.current !== orderId) return; // уже смотрим другой заказ
+    // Уже смотрим другой заказ — или по этому ушёл запрос новее.
+    if (activeOrderIdRef.current !== orderId || seq !== detailSeqRef.current) return;
     if (res.ok) {
       setDetail(res.data);
     } else {
@@ -533,15 +547,24 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     [go, haptic, reloadSnapshot],
   );
 
+  /**
+   * Перечитать открытый заказ. Возвращает код ошибки ответа (`null` — успех
+   * или ответ уже не нужен): по `rate_limited` опрос отступает, а не долбит
+   * бакет `cabinet` тем же шагом.
+   */
   const refreshDetail = useCallback(
-    async (orderId: string) => {
+    async (orderId: string): Promise<string | null> => {
+      const seq = ++detailSeqRef.current;
       const res = await fetchOrderDetail(initDataRef.current, orderId);
-      if (!res.ok || activeOrderIdRef.current !== orderId) return;
+      if (!res.ok) return res.error;
+      // Ответы не упорядочены: опоздавший `pending_payment` после свежего
+      // `payment_review` вернул бы экран к «Оплатить» и выключил опрос.
+      if (activeOrderIdRef.current !== orderId || seq !== detailSeqRef.current) return null;
       const waiting = awaitingRef.current;
       if (waiting?.orderId === orderId) {
         if (afterPaymentOutcome(res.data.status) === 'to_card') {
           finishToCard(res.data);
-          return;
+          return null;
         }
         // Банк держит платёж, счёт протух, отменён — опрос окончен, лист
         // остаётся и показывает статус.
@@ -551,15 +574,18 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         }
       }
       setDetail(res.data);
+      return null;
     },
     [finishToCard],
   );
 
-  // Опрос заказа после ухода на оплату: раз в 5 с, пока счёт выставлен и
-  // приложение на экране, не дольше 10 минут (тикет 08).
+  // Опрос заказа после ухода на оплату: раз в 5 с (после 429 — реже), пока
+  // счёт выставлен и приложение на экране, не дольше 10 минут (тикет 08).
   const detailStatus = detail?.status ?? null;
+  const pollOrderId = pollTargetOrderId(awaiting, detail?.orderId ?? null);
+  const lastPollErrorRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!awaiting || detailStatus === null) return;
+    if (!awaiting || pollOrderId === null || detailStatus === null) return;
     const elapsed = Date.now() - awaiting.startedAt;
     if (elapsed >= POLL_MAX_MS) {
       const timer = window.setTimeout(() => {
@@ -570,14 +596,23 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     }
     if (!shouldPoll(detailStatus, elapsed, visible)) return;
     const timer = window.setTimeout(() => {
-      void refreshDetail(awaiting.orderId).then(() => setPollTick((t) => t + 1));
-    }, POLL_INTERVAL_MS);
+      void refreshDetail(pollOrderId).then((error) => {
+        lastPollErrorRef.current = error;
+        setPollTick((t) => t + 1);
+      });
+    }, nextPollDelayMs(lastPollErrorRef.current));
     return () => window.clearTimeout(timer);
-  }, [awaiting, detailStatus, visible, pollTick, refreshDetail]);
+  }, [awaiting, pollOrderId, detailStatus, visible, pollTick, refreshDetail]);
 
   // Возврат в приложение (из браузера со страницей оплаты) — сразу перечитать
-  // открытый заказ и снапшот, не дожидаясь шага опроса (тикет 08).
+  // открытый заказ и снапшот, не дожидаясь шага опроса (тикет 08). Событий
+  // возврата два (`visibilitychange` и `activated`) — второе в том же окне
+  // пропускаем: снапшот ходит в PaySpace за живым балансом.
+  const lastReturnAtRef = useRef<number | null>(null);
   const onAppReturn = useCallback(() => {
+    const now = Date.now();
+    if (isDuplicateReturn(lastReturnAtRef.current, now)) return;
+    lastReturnAtRef.current = now;
     const orderId = activeOrderIdRef.current;
     if (orderId) void refreshDetail(orderId);
     void reloadSnapshot();
@@ -704,6 +739,17 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       });
       busyRef.current = false;
       setBusy(null);
+      // Лист могли закрыть (или открыть другой заказ), пока готовился счёт:
+      // ссылку клиент просил — её открываем, но сообщение и ожидание оплаты
+      // принадлежат этому листу и под чужим заказом появиться не должны.
+      const stillOpen = activeOrderIdRef.current === detail.orderId;
+      if (res.ok && !stillOpen) {
+        track('pay_link_click', { surface: 'cabinet' }, { orderRef: detail.shortId, immediate: true });
+        openExternalLink(res.paymentUrl);
+        void reloadSnapshot();
+        return;
+      }
+      if (!stillOpen) return;
       if (res.ok) {
         setActionMsg({ tone: 'ok', text: 'Счёт готов — открываю оплату.' });
         track(
@@ -806,9 +852,17 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
    * вкладка «Карта» перечитывает заказ раз в 5 с и, как только карта выдана,
    * перечитывает снапшот — «Выпускаю карту…» сменяется карточкой «Остался один
    * шаг» без перезахода. Заодно из детали берётся сумма «на неё ляжет $X».
+   *
+   * Пока лист ждёт подтверждения другой оплаты, слежка стоит: две петли по 5 с
+   * вместе с возвратами в приложение выедали бы бакет `cabinet` (30 в минуту),
+   * и «Оплатить» получало бы отказ из-за фонового чтения (находка ревью).
    */
+  const paymentPolling = awaiting !== null;
+  // Только пока открыта «Карта»: смотреть на выпуск больше негде, а фоновый
+  // опрос с другой вкладки только тратил бы лимит.
+  const watchIssuing = issuingOrderId !== null && tab === 'card' && visible && !paymentPolling;
   useEffect(() => {
-    if (!issuingOrderId || !visible) return;
+    if (!watchIssuing || !issuingOrderId) return;
     let cancelled = false;
     let timer: number | undefined;
     const startedAt = Date.now();
@@ -825,14 +879,14 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         }
       }
       if (Date.now() - startedAt >= POLL_MAX_MS) return;
-      timer = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
+      timer = window.setTimeout(() => void tick(), nextPollDelayMs(res.ok ? null : res.error));
     };
     void tick();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [issuingOrderId, visible, reloadSnapshot]);
+  }, [watchIssuing, issuingOrderId, reloadSnapshot]);
 
   // «Остался один шаг» увидели — раз за вход (тикет 10).
   const nextStepSentRef = useRef(false);

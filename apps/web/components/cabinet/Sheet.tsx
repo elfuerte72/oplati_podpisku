@@ -3,7 +3,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-import { createSheetStack } from '@/lib/cabinet/sheet-stack';
+import { createSheetStack, shouldCloseOnRelease } from '@/lib/cabinet/sheet-stack';
 
 import { currentTelegramWebApp, tolerateTelegram } from './telegram';
 
@@ -23,10 +23,6 @@ import { currentTelegramWebApp, tolerateTelegram } from './telegram';
  * полоску, — плюс системной «Назад» Telegram, пока лист открыт.
  */
 
-/** Сколько надо утянуть лист вниз, чтобы отпускание его закрыло. */
-const DRAG_CLOSE_PX = 96;
-/** Скорость броска (px/мс), которой хватает, чтобы закрыть не дотянув. */
-const FLICK_PX_PER_MS = 0.5;
 /** Сколько лист уезжает вниз, прежде чем его снимут. */
 const DRAG_SETTLE_MS = 180;
 
@@ -179,8 +175,7 @@ export function Sheet({
       frame = 0;
       grip.releasePointerCapture(event.pointerId);
       panel.style.transition = '';
-      const speed = offset / Math.max(1, event.timeStamp - startedAt);
-      if (offset > DRAG_CLOSE_PX || (offset > 20 && speed > FLICK_PX_PER_MS)) {
+      if (shouldCloseOnRelease(offset, event.timeStamp - startedAt)) {
         panel.style.transform = `translate3d(0, ${panel.offsetHeight}px, 0)`;
         settling = setTimeout(() => closeRef.current(), DRAG_SETTLE_MS);
         return;
