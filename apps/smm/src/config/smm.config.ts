@@ -452,6 +452,11 @@ export interface SmmConfig {
     readonly minRelevance: number;
     /** Как часто планировщик смотрит на часы. */
     readonly checkEveryMinutes: number;
+    /**
+     * Насколько слот может опоздать (часы): после выката или простоя утренний
+     * черновик не приходит вечером — пропущенный слот просто пропущен.
+     */
+    readonly lateHours: number;
   };
   readonly sources: {
     readonly telegramChannels: readonly string[];
@@ -577,6 +582,7 @@ export const smmConfig: SmmConfig = {
     maxPending: 3,
     minRelevance: 3,
     checkEveryMinutes: 5,
+    lateHours: 2,
   },
   sources: {
     // ⚠️ Пустой список означает «источник не опрашиваем». Ленты ниже проверены

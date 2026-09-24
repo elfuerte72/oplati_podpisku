@@ -55,6 +55,8 @@ export interface SourceCandidate {
 export interface AngleOption {
   readonly title: string;
   readonly idea: string;
+  /** Угол даёт читателю действие: черновик по расписанию берёт такой первым. */
+  readonly readerAction?: boolean;
 }
 
 /** Куда пишется пост: у площадок разные экраны и разные кнопки. */

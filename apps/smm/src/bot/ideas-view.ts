@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { RUBRIC_KEYS, smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { RUBRIC_KEYS, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import { buildCallback } from '../dialog/callback.ts';
 import { TEXTS } from '../dialog/texts.ts';
 import type { Keyboard } from '../dialog/types.ts';
@@ -48,20 +48,49 @@ function scoreOf(item: Item): number {
   return rank.relevance ?? 0;
 }
 
-export function ideaItems(
+export interface RankedIdea {
+  readonly item: Item;
+  /** Оценка ранжирования 1–5; неоценённая идея — `undefined`. */
+  readonly relevance?: number;
+  readonly rubric?: RubricKey;
+}
+
+/**
+ * Идеи в порядке, в каком их стоит писать. ОДНА сортировка на `/ideas` и на
+ * черновики по расписанию: разные порядки означали бы, что бот пишет не ту
+ * тему, что стоит первой в дайджесте. Идеи, уже взятые черновиком по
+ * расписанию, сюда не попадают: по ним пост уже пришёл владельцу.
+ */
+export function rankedIdeas(
   store: Store,
   options: { config?: SmmConfig; now?: () => Date } = {},
-): IdeaLine[] {
+): RankedIdea[] {
   const config = options.config ?? smmConfig;
   const now = options.now ?? ((): Date => new Date());
   const since = new Date(now().getTime() - config.sources.digestWindowHours * 60 * 60 * 1000);
 
   return store.items
-    .listRecent({ sinceIso: since.toISOString(), limit: 200, onlyUnjudged: true })
+    .listRecent({ sinceIso: since.toISOString(), limit: 200, onlyUnjudged: true, onlyNotAuto: true })
     .filter((item) => rankOf(item).already_covered !== true)
     .sort((a, b) => scoreOf(b) - scoreOf(a))
-    .slice(0, config.sources.digestTopN)
     .map((item) => {
+      const rank = rankOf(item);
+      return {
+        item,
+        ...(rank.relevance === undefined ? {} : { relevance: rank.relevance }),
+        ...(rank.rubric === undefined ? {} : { rubric: rank.rubric }),
+      };
+    });
+}
+
+export function ideaItems(
+  store: Store,
+  options: { config?: SmmConfig; now?: () => Date } = {},
+): IdeaLine[] {
+  const config = options.config ?? smmConfig;
+  return rankedIdeas(store, options)
+    .slice(0, config.sources.digestTopN)
+    .map(({ item }) => {
       const rank = rankOf(item);
       const rubric = rank.rubric === undefined ? undefined : config.rubrics[rank.rubric];
       const parts = [

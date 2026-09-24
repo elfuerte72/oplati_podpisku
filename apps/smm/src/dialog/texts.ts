@@ -68,6 +68,8 @@ export const TEXTS = {
     `${titles.join(', ')}: без кнопки «Оплатить подписку» под постом.`,
   /** Почему кнопки канала нет под превью. */
   channelRefused: (title: string, reason: string): string => `${title}: не публикую — ${reason}.`,
+  autoDraftFailed: (platform: 'telegram' | 'threads', slot: string, reason: string): string =>
+    `Черновик ${platform === 'threads' ? 'для Threads ' : ''}на ${slot} не собрался: ${reason}`,
   autoDraftReady: (platform: 'telegram' | 'threads', slot: string): string =>
     platform === 'threads'
       ? `Черновик для Threads на ${slot} по расписанию.`

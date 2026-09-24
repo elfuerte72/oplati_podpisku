@@ -29,6 +29,8 @@ export interface HandoffTarget {
   readonly postId: string;
   /** Отпечаток текста: кнопки устаревают вместе с ним. */
   readonly stamp: string;
+  /** Префикс действий кнопок: у черновика по расписанию они усыновляют пост. */
+  readonly prefix?: string;
 }
 
 export interface RunnerDeps {
@@ -59,8 +61,11 @@ export interface RunnerDeps {
 
 export interface Runner {
   runStep(step: PipelineStep, args: Record<string, unknown>): Promise<DialogEvent | undefined>;
-  /** Показать пост владельцу ровно так, как он уйдёт в канал. */
-  preview(postId: string): Promise<PreviewResult>;
+  /**
+   * Показать пост владельцу ровно так, как он уйдёт в канал. `prefix` — для
+   * кнопок передачи Threads у черновика по расписанию.
+   */
+  preview(postId: string, options?: { readonly prefix?: string }): Promise<PreviewResult>;
   /** Опубликовать: ПОСЛЕ проверки права по журналу решений. */
   publish(postId: string): Promise<PublishResult>;
 }
@@ -189,6 +194,7 @@ export function createRunner(deps: RunnerDeps): Runner {
     const input = asString(args.input) ?? fromItem?.url;
     if (input === undefined) return failed('source', 'empty_input', 'пустой ввод', at());
     const platform = args.platform === 'threads' ? 'threads' : 'telegram';
+    const origin = args.origin === 'auto' ? 'auto' : 'owner';
 
     const resolved = await resolveSource(input, deps.resolve ?? {});
     if (resolved.kind === 'refused') {
@@ -220,6 +226,10 @@ export function createRunner(deps: RunnerDeps): Runner {
             brief: input,
             sourceUrl: article.url,
             sourceTitle: article.title,
+            origin,
+            // Пост помнит, из какой идеи вырос: без этого связи идеи с постом
+            // не было вовсе, и сводка не могла сказать, что из идей написано.
+            ...(itemId === undefined ? {} : { itemId }),
           })
         : deps.store.posts.patch(existingId, {
             sourceUrl: article.url,
@@ -276,15 +286,18 @@ export function createRunner(deps: RunnerDeps): Runner {
     );
     if (!planned.ok) return failed('plan', planned.reason, planned.message, at(), postId);
 
+    const angles = planned.value.angles.map((angle) => ({
+      title: angle.title,
+      idea: angle.idea,
+      readerAction: angle.reader_action,
+    }));
+    // Варианты угла живут и в посте: черновик по расписанию не держит их в
+    // диалоге, а «Другой угол» нужен и ему.
+    deps.store.posts.patch(postId, { angles });
     return {
       kind: 'pipeline_done',
       at: at(),
-      outcome: {
-        kind: 'plan',
-        postId,
-        rubric: planned.value.rubric,
-        angles: planned.value.angles.map((angle) => ({ title: angle.title, idea: angle.idea })),
-      },
+      outcome: { kind: 'plan', postId, rubric: planned.value.rubric, angles },
     };
   }
 
@@ -391,6 +404,7 @@ export function createRunner(deps: RunnerDeps): Runner {
         hasImage: post.imagePath !== undefined,
         postId,
         history: historyOf(deps.store, post.platform),
+        ...(args.noAds === true ? { noAds: true } : {}),
       },
       deps.pipeline,
     );
@@ -556,7 +570,7 @@ export function createRunner(deps: RunnerDeps): Runner {
       }
     },
 
-    async preview(postId) {
+    async preview(postId, options = {}) {
       const post = deps.store.posts.get(postId);
       if (post === undefined) return { ok: false, message: 'пост не нашёлся' };
 
@@ -574,7 +588,11 @@ export function createRunner(deps: RunnerDeps): Runner {
           config,
         });
         if ((post.body ?? '') === '') return { ok: false, message: 'у поста нет текста' };
-        await deps.handoff(messages, { postId, stamp: (post.textSha ?? '').slice(0, 8) });
+        await deps.handoff(messages, {
+          postId,
+          stamp: (post.textSha ?? '').slice(0, 8),
+          ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+        });
         deps.store.posts.transition({
           id: postId,
           from: ['reviewed', 'previewed', 'handed'],

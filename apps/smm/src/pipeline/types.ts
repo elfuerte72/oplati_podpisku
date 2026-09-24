@@ -86,6 +86,8 @@ export interface Brief {
   readonly postId?: string;
   readonly history?: readonly HistoryPost[];
   readonly channelPrevious?: readonly HistoryPost[];
+  /** Без рекламы независимо от рубрики (черновик по расписанию). */
+  readonly noAds?: boolean;
 }
 
 export interface ProducedPost extends ReviewedDraft {

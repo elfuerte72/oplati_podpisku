@@ -21,6 +21,7 @@ import { queueEmptyText, queueItems } from './queue-view.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createRunner } from './runner.ts';
 import { runPolling, type PollingState } from './polling.ts';
+import { AutodraftEnabled, createAutodraftScheduler, SETTINGS_AUTODRAFT_ENABLED } from './autodraft.ts';
 import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
 import { buildReport, renderReport, type ReportPeriod } from '../stats/report.ts';
 import { collectViews } from '../stats/views.ts';
@@ -108,7 +109,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         const keyboard =
           message.button === undefined
             ? undefined
-            : threadsPreviewKeyboard(target.postId, target.stamp, message.button);
+            : threadsPreviewKeyboard(target.postId, target.stamp, message.button, target.prefix ?? '');
         await bot.api.sendMessage(ownerChatId, message.text, {
           ...(message.html === true ? { parse_mode: 'HTML' as const } : {}),
           ...(keyboard === undefined ? {} : { reply_markup: toReplyMarkup(keyboard) }),
@@ -292,6 +293,17 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     config,
   });
 
+  // Черновики по расписанию пишутся мимо диалога: кнопки их превью называют
+  // пост сами и усыновляют его в диалог только по нажатию владельца.
+  const autodraft = createAutodraftScheduler({
+    store: deps.store,
+    runner,
+    send: (text, keyboard) => ports.send(text, keyboard),
+    logger: deps.logger,
+    channels: deps.env.channels,
+    config,
+  });
+
   /** Гейт владельца. Чужому не отвечаем вовсе. */
   bot.use(async (ctx, next) => {
     const from = ctx.from?.id;
@@ -368,7 +380,9 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     // Две настройки живут в БАЗЕ, потому что их меняет владелец на ходу:
     // ежедневный дайджест и его час. Остальное — переменные окружения.
     const command = args.trim().toLowerCase();
-    if (command === 'digest on' || command === 'digest off') {
+    if (command === 'autodraft on' || command === 'autodraft off') {
+      deps.store.settings.set(SETTINGS_AUTODRAFT_ENABLED, AutodraftEnabled, command.endsWith('on'));
+    } else if (command === 'digest on' || command === 'digest off') {
       deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, command.endsWith('on'));
     } else if (command.startsWith('digest ')) {
       const hour = Number(command.slice('digest '.length));
@@ -382,14 +396,23 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       deps.store.settings.set(SETTINGS_DIGEST_HOUR, DigestHour, hour);
       deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, true);
     } else if (command !== '') {
-      await ports.send('Не понял. Дайджест: /settings digest on | off | <час 0-23>');
+      await ports.send(
+        'Не понял. Дайджест: /settings digest on | off | <час 0-23>. Черновики по расписанию: /settings autodraft on | off',
+      );
       return;
     }
 
     const enabled = deps.store.settings.get(SETTINGS_DIGEST_ENABLED, DigestEnabled) ?? false;
     const hour = deps.store.settings.get(SETTINGS_DIGEST_HOUR, DigestHour) ?? 10;
+    const autodraftOn = deps.store.settings.get(SETTINGS_AUTODRAFT_ENABLED, AutodraftEnabled) ?? true;
+    const slots = config.autodraft.slotsMsk;
     const lines = [
       'Настройки:',
+      `Черновики по расписанию: ${
+        autodraftOn
+          ? `включены — канал в ${slots.telegram.join(', ')}, Threads в ${slots.threads.join(', ')} МСК`
+          : 'выключены'
+      }`,
       `Ежедневный дайджест: ${enabled ? `включён, ${hour}:00 МСК` : 'выключен'}`,
       `Окно отмены: ${deps.env.publishUndoSeconds} с`,
       ...deps.env.channels.map(
@@ -397,7 +420,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
           `Канал ${channel.title}: @${channel.username}${config.channels[channel.key].botButton ? '' : ' (без рекламы)'}`,
       ),
       `Модель автора: ${deps.env.model.writer}`,
-      'Дайджест: /settings digest on | off | <час 0-23>. Остальное — переменные окружения.',
+      'Дайджест: /settings digest on | off | <час 0-23>. Черновики: /settings autodraft on | off. Остальное — переменные окружения.',
     ];
     await ports.send(lines.join('\n'));
   }
@@ -471,6 +494,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         await bot.api.sendMessage(ownerChatId, recovery.message);
       }
       ticker.start();
+      autodraft.start();
       // Здоровье проверяется СРАЗУ при старте и дальше раз в час: инцидент
       // 08.09.2026 (счёт провайдера в минусе) сутки жил незамеченным.
       void runHealth().catch((error: unknown) => {
@@ -511,6 +535,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         healthTimer = undefined;
       }
       ticker.stop();
+      autodraft.stop();
       timers.stopAll();
       await bot.stop();
     },
