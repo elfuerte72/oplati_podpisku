@@ -1,4 +1,4 @@
-import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { smmConfig, type ChannelKey, type SmmConfig } from '../config/smm.config.ts';
 import type { Logger } from '../logger.ts';
 import { fetchText, type HttpOptions } from '../sources/http.ts';
 import { parseViews, widgetBlocks, widgetViews } from '../sources/poll/telegram-widget.ts';
@@ -39,7 +39,12 @@ export { parseViews };
 export interface CollectViewsDeps {
   readonly store: Store;
   readonly logger: Logger;
-  readonly channelUsername: string;
+  /**
+   * Канал, чью витрину читаем. Посты берутся ТОЛЬКО этого канала: у каждого
+   * канала свои номера сообщений, и чужой пост, не найденный на витрине,
+   * был бы ложно помечен снятым.
+   */
+  readonly channel: { readonly key: ChannelKey; readonly username: string };
   readonly config?: SmmConfig;
   readonly http?: Pick<HttpOptions, 'fetcher' | 'resolver'>;
   readonly now?: () => Date;
@@ -64,7 +69,7 @@ export const WITHDRAW_MIN_AGE_HOURS = 48;
 
 export async function collectViews(deps: CollectViewsDeps): Promise<CollectViewsResult> {
   const now = deps.now ?? ((): Date => new Date());
-  const channel = deps.channelUsername.replace(/^@/, '').trim();
+  const channel = deps.channel.username.replace(/^@/, '').trim();
   const page = await fetchText(`https://t.me/s/${channel}`, {
     ...(deps.http?.fetcher === undefined ? {} : { fetcher: deps.http.fetcher }),
     ...(deps.http?.resolver === undefined ? {} : { resolver: deps.http.resolver }),
@@ -84,7 +89,9 @@ export async function collectViews(deps: CollectViewsDeps): Promise<CollectViews
   // терминален, вернуть пост нечем, а владельцу уходит DM на каждый).
   const onPage = [...views.keys()];
   const oldestOnPage = onPage.length === 0 ? undefined : Math.min(...onPage);
-  const published = deps.store.posts.listByStatus(['published'], { limit: 200 });
+  const published = deps.store.posts
+    .listByStatus(['published'], { limit: 200 })
+    .filter((post) => post.platform === 'telegram' && (post.channel ?? 'main') === deps.channel.key);
   const withdrawn: string[] = [];
   let recorded = 0;
 

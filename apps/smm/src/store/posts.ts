@@ -55,6 +55,15 @@ interface PostRow {
 
 export type OnCorruptJson = (reason: string) => void;
 
+/**
+ * «Пост не копия для второго канала». Копия «в оба» — отдельная строка с тем
+ * же текстом, рубрикой и рекламой; в истории и в статистике СОДЕРЖАНИЯ она
+ * раздвоила бы пост (дефицит рубрик, доля рекламы, свежесть, калибровка
+ * редактора). Одно определение на все выборки: второе разошлось бы молча.
+ * Пост Telegram с родителем — это ВСЕГДА копия: у Threads платформа своя.
+ */
+export const NOT_CHANNEL_COPY_SQL = "NOT (platform = 'telegram' AND parent_post_id IS NOT NULL)";
+
 function makeJsonParser(onCorrupt?: OnCorruptJson) {
   return (raw: string | null, column: string, id: string): unknown => {
     if (raw === null) return undefined;
@@ -395,6 +404,7 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
         `SELECT * FROM posts
          WHERE status IN ('published', 'withdrawn', 'posted')
            AND platform = ?
+           AND ${NOT_CHANNEL_COPY_SQL}
            AND (? IS NULL OR id != ?)
          ORDER BY COALESCE(published_at, status_changed_at) DESC, id DESC
          LIMIT ?`,

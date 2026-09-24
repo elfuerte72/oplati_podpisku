@@ -1,4 +1,4 @@
-import { smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
+import { smmConfig, type ChannelKey, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import { IN_PROGRESS_STATUSES, type Store } from '../store/index.ts';
 
 /**
@@ -16,6 +16,16 @@ export interface ReportInput {
   readonly period: ReportPeriod;
   /** Подписчиков сейчас. Приходит снаружи: это вызов Bot API, а не база. */
   readonly subscribers?: number;
+  /**
+   * Каналы публикации. Больше одного — строки по каждому каналу: сколько
+   * вышло, подписчики, просмотры. Общая цифра по двум аудиториям разного
+   * размера не говорит ни о какой из них.
+   */
+  readonly channels?: readonly {
+    readonly key: ChannelKey;
+    readonly title: string;
+    readonly subscribers?: number;
+  }[];
   readonly config?: SmmConfig;
   readonly now?: () => Date;
 }
@@ -66,16 +76,29 @@ export function buildReport(input: ReportInput): Report {
   }
 
   const sections: ReportSection[] = [];
+  const channels = input.channels ?? [];
+  const multi = channels.length > 1;
 
   sections.push({
-    title: 'Канал',
-    lines: [
-      ...(input.subscribers === undefined ? [] : [`Подписчиков: ${input.subscribers}`]),
-      `Вышло за ${days} дней: ${publishedPeriod}`,
-      `Вышло всего: ${publishedTotal}`,
-      `Выложено в Threads: ${threadsPosted}`,
-      `Черновиков в работе: ${drafts}`,
-    ],
+    title: multi ? 'Каналы' : 'Канал',
+    lines: multi
+      ? [
+          ...channels.map((channel) => {
+            const period = stats.countPublished({ sinceIso: since, channel: channel.key });
+            const total = stats.countPublished({ channel: channel.key });
+            const people = channel.subscribers === undefined ? '' : `, подписчиков ${channel.subscribers}`;
+            return `${channel.title}: за ${days} дней ${period}, всего ${total}${people}`;
+          }),
+          `Выложено в Threads: ${threadsPosted}`,
+          `Черновиков в работе: ${drafts}`,
+        ]
+      : [
+          ...(input.subscribers === undefined ? [] : [`Подписчиков: ${input.subscribers}`]),
+          `Вышло за ${days} дней: ${publishedPeriod}`,
+          `Вышло всего: ${publishedTotal}`,
+          `Выложено в Threads: ${threadsPosted}`,
+          `Черновиков в работе: ${drafts}`,
+        ],
   });
 
   const rubricRows = stats.rubricCounts(since30);
@@ -110,9 +133,17 @@ export function buildReport(input: ReportInput): Report {
   });
 
   const viewsSummary = views.summary(since);
+  const perChannelViews = channels.map((channel) => {
+    const summary = views.summary(since, channel.key);
+    return summary.counted === 0
+      ? `${channel.title}: счётчиков пока нет`
+      : `${channel.title}: в среднем ${summary.average} (постов с цифрой: ${summary.counted})`;
+  });
   sections.push({
     title: 'Просмотры',
-    lines:
+    lines: multi
+      ? [...perChannelViews, 'Свежий пост добирает просмотры день-два — сравнивать его с недельным рано.']
+      :
       viewsSummary.counted === 0
         ? ['Счётчиков пока нет: витрина отдаёт цифру не сразу.']
         : [

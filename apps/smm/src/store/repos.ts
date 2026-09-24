@@ -1,7 +1,8 @@
 import type { ZodType } from 'zod';
 
+import type { ChannelKey } from '../config/smm.config.ts';
 import type { Db, SqlValue } from './db.ts';
-import type { OnCorruptJson } from './posts.ts';
+import { NOT_CHANNEL_COPY_SQL, type OnCorruptJson } from './posts.ts';
 import type { FlowRow, Item, NewItem, UsageByRole, UsageInput, UsageSummary } from './types.ts';
 import { normalizeUrl } from '../url.ts';
 import { ulid } from './ulid.ts';
@@ -403,7 +404,10 @@ export interface ViewsRepo {
   /** Последний снимок поста. */
   latest(postId: string): { views: number; takenAt: string } | undefined;
   /** Лучший и средний по постам, опубликованным в окне. */
-  summary(sinceIso: string): { average: number; best?: { postId: string; views: number }; counted: number };
+  summary(
+    sinceIso: string,
+    channel?: ChannelKey,
+  ): { average: number; best?: { postId: string; views: number }; counted: number };
   /** Пост не найден на витрине: счётчик пропусков растёт. Возвращает новое число. */
   missed(postId: string): number;
   /** Пост снова виден: счётчик пропусков обнуляется. */
@@ -432,16 +436,20 @@ export function createViewsRepo(db: Db, now: () => Date): ViewsRepo {
       return row === undefined ? undefined : { views: row.views, takenAt: row.taken_at };
     },
 
-    summary(sinceIso) {
+    summary(sinceIso, channel) {
       // По ПОСЛЕДНЕМУ снимку каждого поста: снимков у поста много, и сумма по
-      // всем строкам считала бы один пост несколько раз.
+      // всем строкам считала бы один пост несколько раз. Канал — отдельно:
+      // средняя по двум аудиториям разного размера не говорит ни о какой.
       const rows = db.all<{ post_id: string; views: number }>(
         `SELECT s.post_id AS post_id, MAX(s.views) AS views
            FROM views_snapshots s
            JOIN posts p ON p.id = s.post_id
           WHERE p.published_at IS NOT NULL AND p.published_at >= ?
+            AND (? IS NULL OR COALESCE(p.channel, 'main') = ?)
           GROUP BY s.post_id`,
         sinceIso,
+        channel ?? null,
+        channel ?? null,
       );
       if (rows.length === 0) return { average: 0, counted: 0 };
       const total = rows.reduce((sum, row) => sum + row.views, 0);
@@ -476,7 +484,11 @@ export function createViewsRepo(db: Db, now: () => Date): ViewsRepo {
  * правило «SQL только в store» держит отчёт чистой функцией над данными.
  */
 export interface StatsRepo {
-  countPublished(options?: { sinceIso?: string; platform?: string }): number;
+  /**
+   * Сколько вышло. С каналом — публикации в этом канале (копии «в оба»
+   * считаются своему каналу); без канала — уникальные посты, без копий.
+   */
+  countPublished(options?: { sinceIso?: string; platform?: string; channel?: ChannelKey }): number;
   countByStatus(statuses: readonly string[]): number;
   /** Сколько постов каждой рубрики вышло с момента. */
   rubricCounts(sinceIso: string): { rubric: string; count: number }[];
@@ -495,6 +507,12 @@ export function createStatsRepo(db: Db): StatsRepo {
     countPublished(options = {}) {
       const where: string[] = ["status IN ('published', 'withdrawn', 'posted')"];
       const params: SqlValue[] = [];
+      if (options.channel !== undefined) {
+        where.push("platform = 'telegram' AND COALESCE(channel, 'main') = ?");
+        params.push(options.channel);
+      } else {
+        where.push(NOT_CHANNEL_COPY_SQL);
+      }
       if (options.platform !== undefined) {
         where.push('platform = ?');
         params.push(options.platform);
@@ -525,6 +543,7 @@ export function createStatsRepo(db: Db): StatsRepo {
         `SELECT COALESCE(rubric, 'без рубрики') AS rubric, COUNT(*) AS count
            FROM posts
           WHERE status IN ('published', 'withdrawn') AND published_at >= ?
+            AND ${NOT_CHANNEL_COPY_SQL}
           GROUP BY rubric
           ORDER BY count DESC`,
         sinceIso,
@@ -536,6 +555,7 @@ export function createStatsRepo(db: Db): StatsRepo {
         `SELECT cta, COUNT(*) AS count
            FROM posts
           WHERE status IN ('published', 'withdrawn') AND published_at >= ?
+            AND ${NOT_CHANNEL_COPY_SQL}
           GROUP BY cta`,
         sinceIso,
       );
@@ -547,6 +567,7 @@ export function createStatsRepo(db: Db): StatsRepo {
       const rows = db.all<{ status: string; judge: string | null }>(
         `SELECT status, judge FROM posts
           WHERE judge IS NOT NULL AND status IN ('published', 'withdrawn', 'rejected')
+            AND ${NOT_CHANNEL_COPY_SQL}
           ORDER BY created_at DESC LIMIT ?`,
         limit,
       );

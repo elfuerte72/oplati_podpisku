@@ -111,6 +111,40 @@ describe('каналы и автодрафты (миграция 0004)', () => {
     expect(store.items.listRecent({}).map((i) => i.id)).toEqual([item.id]);
   });
 
+  it('пост «в оба» в статистике содержания — один пост, в счётчиках каналов — свой каждому', () => {
+    const { store, tick } = freshStore();
+    const id = previewed(store);
+    store.posts.patch(id, { rubric: 'news' });
+    const sha = textShaOf('тело поста');
+    tick(1000);
+    const approve = { kind: 'approve' as const, actor: 'owner' as const, actorId: OWNER, textSha: sha };
+    store.posts.transition({ id, from: ['previewed'], to: 'approved', decision: approve });
+    store.posts.transition({
+      id,
+      from: ['approved'],
+      to: 'published',
+      decision: { kind: 'publish', actor: 'code' },
+      patch: { channel: 'main', channelMessageId: 11 },
+    });
+    const copy = store.posts.createChannelCopy({ sourceId: id, channel: 'second', approve });
+    if (!copy.ok) throw new Error('копия не создалась');
+    store.posts.transition({
+      id: copy.post.id,
+      from: ['approved'],
+      to: 'published',
+      decision: { kind: 'publish', actor: 'code' },
+      patch: { channel: 'second', channelMessageId: 11 },
+    });
+
+    // Содержание: рубрика и лента свежести видят ОДИН пост, а не два.
+    expect(store.stats.countPublished({ platform: 'telegram' })).toBe(1);
+    expect(store.stats.rubricCounts('2026-09-01T00:00:00.000Z')).toEqual([{ rubric: 'news', count: 1 }]);
+    expect(store.posts.recentPublished({ platform: 'telegram' }).map((p) => p.id)).toEqual([id]);
+    // Каналы: у каждого своя публикация.
+    expect(store.stats.countPublished({ channel: 'main' })).toBe(1);
+    expect(store.stats.countPublished({ channel: 'second' })).toBe(1);
+  });
+
   it('поле angles хранит варианты угла JSON-ом', () => {
     const { store } = freshStore();
     const post = store.posts.create({ platform: 'telegram', origin: 'auto' });

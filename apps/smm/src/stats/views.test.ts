@@ -88,7 +88,7 @@ describe('сбор просмотров', () => {
     const result = await collectViews({
       store,
       logger: silent(),
-      channelUsername: 'ooplatishka',
+      channel: { key: 'main', username: 'ooplatishka' },
       http: { fetcher: serve(widget([{ id: 10, views: '1.2K' }])), resolver: publicDns },
       now: () => NOW,
     });
@@ -108,11 +108,11 @@ describe('сбор просмотров', () => {
       resolver: publicDns,
     };
 
-    const first = await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: empty, now: () => NOW });
+    const first = await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: empty, now: () => NOW });
     expect(first.withdrawn).toEqual([]);
     expect(store.posts.get(postId)?.status).toBe('published');
 
-    const second = await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: empty, now: () => NOW });
+    const second = await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: empty, now: () => NOW });
     expect(second.withdrawn).toEqual([postId]);
     expect(store.posts.get(postId)?.status).toBe('withdrawn');
     expect(WITHDRAW_MISSES).toBe(2);
@@ -124,8 +124,8 @@ describe('сбор просмотров', () => {
     const postId = publishedPost(store, 10, '2026-09-22T08:00:00.000Z');
     const empty = { fetcher: serve(widget([])), resolver: publicDns };
 
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: empty, now: () => NOW });
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: empty, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: empty, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: empty, now: () => NOW });
 
     expect(store.posts.get(postId)?.status).toBe('published');
     store.close();
@@ -140,9 +140,9 @@ describe('сбор просмотров', () => {
     };
     const back = { fetcher: serve(widget([{ id: 10, views: '500' }])), resolver: publicDns };
 
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: gone, now: () => NOW });
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: back, now: () => NOW });
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: gone, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: gone, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: back, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: gone, now: () => NOW });
 
     expect(store.posts.get(postId)?.status).toBe('published');
     store.close();
@@ -158,7 +158,7 @@ describe('сбор просмотров', () => {
     const page = { fetcher: serve(widget([{ id: 118, views: '10' }, { id: 120, views: '20' }])), resolver: publicDns };
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
+      await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: page, now: () => NOW });
     }
 
     expect(store.posts.get(old)?.status).toBe('published');
@@ -171,8 +171,8 @@ describe('сбор просмотров', () => {
     const removed = publishedPost(store, 119, OLD);
     const page = { fetcher: serve(widget([{ id: 118, views: '10' }, { id: 120, views: '20' }])), resolver: publicDns };
 
-    await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
-    const second = await collectViews({ store, logger: silent(), channelUsername: 'ooplatishka', http: page, now: () => NOW });
+    await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: page, now: () => NOW });
+    const second = await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: page, now: () => NOW });
 
     expect(second.withdrawn).toEqual([removed]);
     store.close();
@@ -187,13 +187,51 @@ describe('сбор просмотров', () => {
       const result = await collectViews({
         store,
         logger: silent(),
-        channelUsername: 'ooplatishka',
+        channel: { key: 'main', username: 'ooplatishka' },
         http: { fetcher: broken, resolver: publicDns },
         now: () => NOW,
       });
       expect(result.failed).toBeDefined();
     }
     expect(store.posts.get(postId)?.status).toBe('published');
+    store.close();
+  });
+});
+
+describe('просмотры по каналам', () => {
+  const OLD = '2026-09-01T00:00:00.000Z';
+  const NOW = new Date('2026-09-24T10:00:00.000Z');
+
+  it('пост второго канала не читается с витрины основного и не хоронится ею', async () => {
+    const store = openStore({ path: ':memory:' });
+    const main = publishedPost(store, 10, OLD);
+    // Номер 10 занят основным каналом: во второй канал пост уходит одним патчем
+    // с его собственным номером 10 — у каналов свои счётчики.
+    const second = publishedPost(store, 99, OLD);
+    store.posts.patch(second, { channel: 'second', channelMessageId: 10 });
+    // Витрина основного канала: номер 10 есть, соседи тоже — второй канал со
+    // своим номером 10 тут ни при чём.
+    const page = {
+      fetcher: serve(widget([{ id: 9, views: '50' }, { id: 10, views: '1.2K' }, { id: 11, views: '70' }])),
+      resolver: publicDns,
+    };
+    for (let round = 0; round < 3; round += 1) {
+      await collectViews({ store, logger: silent(), channel: { key: 'main', username: 'ooplatishka' }, http: page, now: () => NOW });
+    }
+    expect(store.views.latest(main)?.views).toBe(1200);
+    expect(store.views.latest(second)).toBeUndefined();
+    expect(store.posts.get(second)?.status).toBe('published');
+
+    // И наоборот: на витрине второго канала поста основного нет — это не повод его хоронить.
+    const secondPage = {
+      fetcher: serve(widget([{ id: 9, views: '5' }, { id: 11, views: '7' }])),
+      resolver: publicDns,
+    };
+    for (let round = 0; round < 3; round += 1) {
+      await collectViews({ store, logger: silent(), channel: { key: 'second', username: 'aibromotion' }, http: secondPage, now: () => NOW });
+    }
+    expect(store.posts.get(main)?.status).toBe('published');
+    expect(store.posts.get(second)?.status).toBe('withdrawn');
     store.close();
   });
 });

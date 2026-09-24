@@ -251,16 +251,20 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     sendDigest: handleIdeas,
     http: {},
     collectViews: async () => {
-      const result = await collectViews({
-        store: deps.store,
-        logger: deps.logger,
-        channelUsername: deps.env.channelUsername,
-        config,
-      });
-      // Снятые посты — это событие для владельца, а не строка в логе: пост
-      // пропал из канала, и знать об этом он должен.
-      for (const postId of result.withdrawn) {
-        await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала: помечен снятым.`);
+      // Витрина у каждого канала своя, и номера сообщений тоже: читаем по
+      // одной, и каждая смотрит только свои посты.
+      for (const channel of deps.env.channels) {
+        const result = await collectViews({
+          store: deps.store,
+          logger: deps.logger,
+          channel: { key: channel.key, username: channel.username },
+          config,
+        });
+        // Снятые посты — это событие для владельца, а не строка в логе: пост
+        // пропал из канала, и знать об этом он должен.
+        for (const postId of result.withdrawn) {
+          await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала ${channel.title}: помечен снятым.`);
+        }
       }
     },
     sendWeekly: async () => {
@@ -314,12 +318,12 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   }
 
   /** Подписчиков спрашиваем у Telegram: в базе их нет и быть не может. */
-  async function subscribers(): Promise<number | undefined> {
+  async function subscribers(chatId: string = deps.env.channelId): Promise<number | undefined> {
     try {
       // Свой короткий поводок: без него дефолт grammY — 500 с, и `/stats`
       // столько же молчит, а недельная сводка держит весь тикер.
       return await Promise.race([
-        bot.api.getChatMemberCount(deps.env.channelId),
+        bot.api.getChatMemberCount(chatId),
         new Promise<number>((_, reject) =>
           setTimeout(() => reject(new Error('getChatMemberCount не ответил за 5 с')), 5000).unref?.(),
         ),
@@ -332,12 +336,21 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   }
 
   async function statsText(period: ReportPeriod): Promise<string> {
-    const count = await subscribers();
+    const counts = await Promise.all(deps.env.channels.map((channel) => subscribers(channel.id)));
+    const count = counts[0];
     const report = buildReport({
       store: deps.store,
       period,
       config,
       ...(count === undefined ? {} : { subscribers: count }),
+      channels: deps.env.channels.map((channel, index) => {
+        const people = counts[index];
+        return {
+          key: channel.key,
+          title: channel.title,
+          ...(people === undefined ? {} : { subscribers: people }),
+        };
+      }),
     });
     return renderReport(report);
   }
@@ -379,7 +392,10 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       'Настройки:',
       `Ежедневный дайджест: ${enabled ? `включён, ${hour}:00 МСК` : 'выключен'}`,
       `Окно отмены: ${deps.env.publishUndoSeconds} с`,
-      `Канал: ${deps.env.channelUsername}`,
+      ...deps.env.channels.map(
+        (channel) =>
+          `Канал ${channel.title}: @${channel.username}${config.channels[channel.key].botButton ? '' : ' (без рекламы)'}`,
+      ),
       `Модель автора: ${deps.env.model.writer}`,
       'Дайджест: /settings digest on | off | <час 0-23>. Остальное — переменные окружения.',
     ];
