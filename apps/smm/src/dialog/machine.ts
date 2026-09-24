@@ -348,7 +348,7 @@ function handleCallback(
             : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
           {
             type: 'send',
-            text: TEXTS.askAngle,
+            text: TEXTS.askAngle(angles),
             keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
           },
         ],
@@ -469,7 +469,7 @@ function handleCallback(
             answer,
             {
               type: 'send',
-              text: TEXTS.askAngle,
+              text: TEXTS.askAngle(angles),
               keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
             },
           ],
@@ -594,7 +594,7 @@ function handleCallback(
             answer,
             {
               type: 'send',
-              text: TEXTS.askAngle,
+              text: TEXTS.askAngle(angles),
               keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
             },
           ],
@@ -683,7 +683,7 @@ function handlePipelineDone(
       effects: [
         {
           type: 'send',
-          text: TEXTS.askSourcePick,
+          text: TEXTS.askSourcePick(outcome.candidates),
           keyboard: sourcePickKeyboard(state.postId ?? NO_POST_ID, stamp, outcome.candidates),
         },
       ],

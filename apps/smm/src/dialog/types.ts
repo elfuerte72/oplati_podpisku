@@ -40,6 +40,13 @@ export const TEXT_STATES: readonly StateName[] = [
   'post.await_owner_text',
 ];
 
+/**
+ * Сколько вариантов показывается на выбор. Текст списка и ряд кнопок-номеров
+ * режут ОДНИМ числом: разъедутся — и кнопка «4» выберет вариант, которого в
+ * сообщении нет.
+ */
+export const PICK_LIMITS = { sources: 5, angles: 3 } as const;
+
 export interface SourceCandidate {
   readonly url: string;
   readonly title: string;
