@@ -1,3 +1,4 @@
+import type { ChannelTarget } from '../config/env.ts';
 import { isLayoutKey, layoutFor, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import type { DialogEvent, PipelineStep } from '../dialog/types.ts';
 import { formatJudge, type JudgeVerdict } from '../llm/judge.ts';
@@ -7,11 +8,12 @@ import { advisePlan, buildDossier, plan, producePost, revisePost, type PipelineD
 import { produceThreadsPost } from '../pipeline/threads.ts';
 import { threadsHandoff, type HandoffMessage } from '../threads/handoff.ts';
 import type { HistoryPost, ReviewContext } from '../pipeline/types.ts';
-import { renderPost, type RenderablePost } from '../render/render.ts';
+import { renderPost, type RenderOptions, type RenderablePost } from '../render/render.ts';
 import { sendPost, type SendApi, type SendTarget } from '../render/send.ts';
 import { resolveSource, type ResolveOptions } from '../sources/resolve.ts';
 import { saveImage } from '../sources/article.ts';
 import type { Article } from '../sources/article.ts';
+import { approvedChannels, channelAllows } from './channels.ts';
 import type { PreviewResult } from './ports.ts';
 import type { Store } from '../store/index.ts';
 import type { Post } from '../store/types.ts';
@@ -43,6 +45,11 @@ export interface RunnerDeps {
   readonly ownerId: number;
   readonly ownerChatId: number | string;
   readonly channelId: string;
+  /**
+   * Каналы публикации. Не заданы — один основной канал `channelId` (тесты и
+   * режим без второго канала).
+   */
+  readonly channels?: readonly ChannelTarget[];
   readonly config?: SmmConfig;
   readonly resolve?: ResolveOptions;
   /** Куда класть обложки постов. По умолчанию рядом с базой. */
@@ -55,7 +62,14 @@ export interface Runner {
   /** Показать пост владельцу ровно так, как он уйдёт в канал. */
   preview(postId: string): Promise<PreviewResult>;
   /** Опубликовать: ПОСЛЕ проверки права по журналу решений. */
-  publish(postId: string): Promise<{ ok: boolean; message?: string }>;
+  publish(postId: string): Promise<PublishResult>;
+}
+
+export interface PublishResult {
+  readonly ok: boolean;
+  readonly message?: string;
+  /** Куда ушёл и куда нет — строкой для владельца. */
+  readonly summary?: string;
 }
 
 function asString(value: unknown): string | undefined {
@@ -450,8 +464,12 @@ export function createRunner(deps: RunnerDeps): Runner {
     };
   }
 
-  async function send(post: Post, target: SendTarget): Promise<{ ok: boolean; messageId?: number; message?: string }> {
-    const rendered = renderPost(renderableOf(post), config);
+  async function send(
+    post: Post,
+    target: SendTarget,
+    options: RenderOptions = {},
+  ): Promise<{ ok: boolean; messageId?: number; message?: string }> {
+    const rendered = renderPost(renderableOf(post), config, options);
     if (!rendered.ok) {
       deps.logger.warn({ postId: post.id, reason: rendered.reason }, 'пост не отрисовался');
       return { ok: false, message: rendered.message };
@@ -523,7 +541,12 @@ export function createRunner(deps: RunnerDeps): Runner {
           return {
             kind: 'pipeline_done',
             at: at(),
-            outcome: { kind: 'published', postId, textSha: published?.textSha ?? '' },
+            outcome: {
+              kind: 'published',
+              postId,
+              textSha: published?.textSha ?? '',
+              ...(result.summary === undefined ? {} : { summary: result.summary }),
+            },
           };
         }
         default:
@@ -587,36 +610,128 @@ export function createRunner(deps: RunnerDeps): Runner {
     },
   };
 
-  async function publishOnce(postId: string): Promise<{ ok: boolean; message?: string }> {
-      const post = deps.store.posts.get(postId);
-      if (post === undefined) return { ok: false, message: 'пост не нашёлся' };
+  /** Каналы публикации: заданные явно или один основной из `channelId`. */
+  const channels: readonly ChannelTarget[] =
+    deps.channels !== undefined && deps.channels.length > 0
+      ? deps.channels
+      : [
+          {
+            key: 'main',
+            id: deps.channelId,
+            username: '',
+            title: config.channels.main.title,
+            label: config.channels.main.label,
+          },
+        ];
 
-      // ⚠️ Гейт публикации ЗДЕСЬ, даже если автомат прислал эффект: два слоя
-      // защиты, потому что в канал пост уходит один раз и навсегда.
-      if (!deps.store.posts.isApprovedForPublish(postId, deps.ownerId)) {
-        deps.logger.warn({ postId, status: post.status }, 'публикация без подтверждения владельца отклонена');
-        return { ok: false, message: 'нет подтверждения владельца под этим текстом' };
-      }
+  /** Отправка в ОДИН канал и переход `approved → published` с его ключом. */
+  async function publishTo(post: Post, channel: ChannelTarget): Promise<{ ok: boolean; message?: string }> {
+    // Правило канала перепроверяется здесь, у самой отправки: кнопки бывают
+    // старыми, а колбэк подделывается. Реклама в канал без рекламы не уходит.
+    const verdict = channelAllows(channel, post, config);
+    if (!verdict.ok) return { ok: false, message: verdict.reason };
 
-      const result = await send(post, { chatId: deps.channelId });
-      if (!result.ok) return { ok: false, message: result.message ?? 'не отправилось' };
+    const result = await send(post, { chatId: channel.id }, { botButton: config.channels[channel.key].botButton });
+    if (!result.ok) return { ok: false, message: result.message ?? 'не отправилось' };
 
-      const moved = deps.store.posts.transition({
-        id: postId,
-        from: ['approved'],
-        to: 'published',
-        decision: { kind: 'publish', actor: 'code', payload: { messageId: result.messageId } },
-        patch: {
-          publishAt: null,
-          ...(result.messageId === undefined ? {} : { channelMessageId: result.messageId }),
+    const moved = deps.store.posts.transition({
+      id: post.id,
+      from: ['approved'],
+      to: 'published',
+      decision: { kind: 'publish', actor: 'code', payload: { messageId: result.messageId, channel: channel.key } },
+      patch: {
+        publishAt: null,
+        channel: channel.key,
+        ...(result.messageId === undefined ? {} : { channelMessageId: result.messageId }),
+      },
+    });
+    if (!moved.ok) {
+      // Пост уже ушёл в канал, а статус не сдвинулся: это ровно тот случай,
+      // когда молчать нельзя — иначе тот же пост опубликуется второй раз.
+      deps.logger.error({ postId: post.id, channel: channel.key, actual: moved.actual }, 'пост опубликован, но статус не перешёл');
+    }
+    return { ok: true };
+  }
+
+  async function publishOnce(postId: string): Promise<PublishResult> {
+    const post = deps.store.posts.get(postId);
+    if (post === undefined) return { ok: false, message: 'пост не нашёлся' };
+
+    // ⚠️ Гейт публикации ЗДЕСЬ, даже если автомат прислал эффект: два слоя
+    // защиты, потому что в канал пост уходит один раз и навсегда.
+    if (!deps.store.posts.isApprovedForPublish(postId, deps.ownerId)) {
+      deps.logger.warn({ postId, status: post.status }, 'публикация без подтверждения владельца отклонена');
+      return { ok: false, message: 'нет подтверждения владельца под этим текстом' };
+    }
+
+    // Каналы — из РЕШЕНИЯ владельца, а не из поля поста.
+    const keys = approvedChannels(deps.store.posts.decisions(postId));
+    const wanted = keys
+      .map((key) => channels.find((channel) => channel.key === key))
+      .filter((channel): channel is ChannelTarget => channel !== undefined);
+    const missing = keys.filter((key) => !channels.some((channel) => channel.key === key));
+    if (wanted.length === 0) {
+      return { ok: false, message: `канал публикации не настроен: ${missing.join(', ') || 'нет решения'}` };
+    }
+
+    const notSent: string[] = missing.map((key) => `${key}: канал не настроен`);
+    const sent: string[] = [];
+    const [first, ...rest] = wanted;
+    if (first === undefined) return { ok: false, message: 'канал публикации не настроен' };
+
+    const primary = await publishTo(post, first);
+    if (!primary.ok) {
+      // Первый канал не принял — дальше не идём: копия без исходника была бы
+      // публикацией, которую владелец не узнает в /queue.
+      return { ok: false, message: `${first.title}: ${primary.message ?? 'не отправилось'}` };
+    }
+    sent.push(first.title);
+
+    // «В оба»: второй канал получает КОПИЮ с тем же текстом и своим гейтом.
+    // Право на неё выводится из уже проверенного подтверждения исходника: тот
+    // же клик владельца, тот же отпечаток.
+    for (const channel of rest) {
+      const copy = deps.store.posts.createChannelCopy({
+        sourceId: post.id,
+        channel: channel.key,
+        approve: {
+          kind: 'approve',
+          actor: 'owner',
+          actorId: deps.ownerId,
+          ...(post.textSha === undefined ? {} : { textSha: post.textSha }),
+          payload: { channels: [channel.key], copyOf: post.id },
         },
       });
-      if (!moved.ok) {
-        // Пост уже ушёл в канал, а статус не сдвинулся: это ровно тот случай,
-        // когда молчать нельзя — иначе тот же пост опубликуется второй раз.
-        deps.logger.error({ postId, actual: moved.actual }, 'пост опубликован, но статус не перешёл');
+      if (!copy.ok) {
+        deps.logger.error({ postId, channel: channel.key, actual: copy.actual }, 'копия для второго канала не создалась');
+        notSent.push(`${channel.title}: копия не создалась`);
+        continue;
       }
-      return { ok: true };
+      if (!deps.store.posts.isApprovedForPublish(copy.post.id, deps.ownerId)) {
+        notSent.push(`${channel.title}: нет подтверждения под копией`);
+        continue;
+      }
+      const result = await publishTo(copy.post, channel);
+      if (result.ok) {
+        sent.push(channel.title);
+        continue;
+      }
+      notSent.push(`${channel.title}: ${result.message ?? 'не отправилось'}`);
+      // Неотправленная копия не должна висеть «подтверждённой»: её никто не
+      // опубликует, а сторож очереди краснел бы на неё вечно.
+      deps.store.posts.transition({
+        id: copy.post.id,
+        from: ['approved'],
+        to: 'rejected',
+        decision: { kind: 'reject', actor: 'code', payload: { reason: result.message ?? 'send_failed' } },
+      });
+    }
+
+    const summary = [
+      channels.length > 1 ? `Опубликовал: ${sent.join(', ')}.` : 'Опубликовал.',
+      ...(notSent.length === 0 ? [] : [`Не ушло — ${notSent.join('; ')}.`]),
+    ].join('\n');
+    return { ok: true, summary };
   }
 
   return runner;

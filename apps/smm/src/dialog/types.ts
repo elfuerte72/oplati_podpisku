@@ -1,4 +1,4 @@
-import type { RubricKey } from '../config/smm.config.ts';
+import type { ChannelKey, RubricKey } from '../config/smm.config.ts';
 
 /**
  * Диалог владельца — конечный автомат, а не модель.
@@ -134,6 +134,8 @@ export type PipelineOutcome =
       readonly kind: 'published';
       readonly postId: string;
       readonly textSha: string;
+      /** Куда ушёл и куда нет — строкой для владельца. Нет — прежнее «Опубликовал». */
+      readonly summary?: string;
     };
 
 export type DialogEvent =
@@ -190,6 +192,29 @@ export type Effect =
   | { readonly type: 'persist'; readonly postId: string; readonly patch: Record<string, unknown> }
   | {
       /**
+       * Кнопки под превью поста канала. Собирает ИСПОЛНИТЕЛЬ: какие каналы
+       * доступны, зависит от окружения и от текста поста (в канал без рекламы
+       * не уходит упоминание Оплатишки), а автомат не знает ни того, ни другого.
+       */
+      readonly type: 'preview_controls';
+      readonly postId: string;
+      readonly stamp: string;
+      readonly note: 'ready' | 'cancelled';
+    }
+  | {
+      /**
+       * Нажатие кнопки черновика по расписанию: исполнитель сверяет отпечаток
+       * с постом, делает пост текущим в диалоге и повторяет нажатие обычным
+       * действием (`action` — без префикса).
+       */
+      readonly type: 'adopt';
+      readonly postId: string;
+      readonly action: string;
+      readonly stamp: string;
+      readonly messageId?: number;
+    }
+  | {
+      /**
        * Решение владельца по идее из `/ideas`. Отдельный эффект, а не решение
        * по посту: поста ещё нет, а тема уже отвергнута.
        */
@@ -210,6 +235,22 @@ export type Effect =
  * исполнитель приводит присланное к типу журнала вслепую, и опечатка в
  * названии доезжает до базы.
  */
+/** Каналы публикации по действию кнопки: `pub` — кнопка до второго канала, это основной. */
+export const PUBLISH_CHANNELS: ReadonlyMap<string, readonly ChannelKey[]> = new Map([
+  ['pub', ['main']],
+  ['pub.main', ['main']],
+  ['pub.second', ['second']],
+  ['pub.both', ['main', 'second']],
+]);
+
+/**
+ * Состояния, из которых кнопка черновика по расписанию может «усыновить» пост.
+ * Это ожидания без работы в руках: владелец смотрит превью или ничего не
+ * делает. Из остальных (ждём текст правки, идёт сборка, окно отмены) усыновлять
+ * нельзя — это оборвало бы начатое посередине.
+ */
+export const ADOPTABLE_STATES: readonly StateName[] = ['idle', 'post.previewed', 'post.failed', 'threads.previewed'];
+
 export type DecisionEffectKind =
   | 'rubric'
   | 'angle'

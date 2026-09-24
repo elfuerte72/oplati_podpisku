@@ -1,5 +1,8 @@
+import type { ChannelTarget } from '../config/env.ts';
 import { smmConfig, type SmmConfig } from '../config/smm.config.ts';
+import { buildCallback } from '../dialog/callback.ts';
 import { transition } from '../dialog/machine.ts';
+import { TEXTS } from '../dialog/texts.ts';
 import type {
   DecisionEffectKind,
   DialogEvent,
@@ -13,6 +16,7 @@ import type { Logger } from '../logger.ts';
 import type { Store } from '../store/index.ts';
 import type { DecisionKind } from '../store/post-state.ts';
 import type { PostPatch } from '../store/types.ts';
+import { buildPreviewControls } from './channels.ts';
 import type { BotPorts } from './ports.ts';
 
 /**
@@ -32,6 +36,11 @@ export interface EngineDeps {
   readonly logger: Logger;
   readonly ownerId: number;
   readonly undoSeconds: number;
+  /**
+   * Каналы публикации. Не заданы — один основной канал и прежние кнопки
+   * (тесты и режим без второго канала).
+   */
+  readonly channels?: readonly ChannelTarget[];
   readonly config?: SmmConfig;
   readonly now?: () => Date;
 }
@@ -134,6 +143,20 @@ export function createEngine(deps: EngineDeps): Engine {
         recordDecision(effect.postId, effect.kind, effect.textSha, effect.payload);
         return undefined;
       }
+      case 'preview_controls': {
+        const controls = buildPreviewControls({
+          post: deps.store.posts.get(effect.postId),
+          postId: effect.postId,
+          stamp: effect.stamp,
+          channels: deps.channels ?? [],
+          note: effect.note,
+          config,
+        });
+        await deps.ports.send(controls.text, controls.keyboard);
+        return undefined;
+      }
+      case 'adopt':
+        return adopt(effect);
       case 'schedule_publish':
         deps.ports.schedulePublish(effect.postId, effect.at);
         return undefined;
@@ -186,7 +209,15 @@ export function createEngine(deps: EngineDeps): Engine {
         id: postId,
         from: ['previewed'],
         to: 'approved',
-        decision: { kind: 'approve', actor: 'owner', actorId: deps.ownerId, textSha: full },
+        // Каналы из кнопки идут в решение: публикация читает их из журнала, а
+        // не из поля поста, которое можно перезаписать чем угодно.
+        decision: {
+          kind: 'approve',
+          actor: 'owner',
+          actorId: deps.ownerId,
+          textSha: full,
+          ...(payload === undefined ? {} : { payload }),
+        },
       });
       if (!result.ok) deps.logger.warn({ postId, actual: result.actual }, 'подтверждение не состоялось');
       return;
@@ -229,6 +260,51 @@ export function createEngine(deps: EngineDeps): Engine {
     // был — исключение гасило все эффекты после решения, и владелец не
     // получал следующий вопрос.
     deps.store.posts.note(postId, { kind, actor: 'owner', actorId: deps.ownerId, payload });
+  }
+
+  /**
+   * Кнопка черновика по расписанию: пост становится текущим в диалоге, и
+   * нажатие повторяется обычным действием. Сверка — по посту, а не по
+   * диалогу: черновик жил вне него.
+   */
+  async function adopt(effect: Extract<Effect, { type: 'adopt' }>): Promise<DialogEvent | undefined> {
+    const post = deps.store.posts.get(effect.postId);
+    const platform = post?.platform;
+    const waiting = platform === 'threads' ? 'handed' : 'previewed';
+    if (
+      post === undefined ||
+      post.status !== waiting ||
+      post.textSha === undefined ||
+      !post.textSha.startsWith(effect.stamp)
+    ) {
+      // Черновик уже опубликован, снят или переписан: кнопка старая.
+      await deps.ports.answerCallback(TEXTS.stale);
+      if (effect.messageId !== undefined) await deps.ports.editKeyboard(effect.messageId, null);
+      return undefined;
+    }
+    const angles = Array.isArray(post.angles) ? (post.angles as FlowPayload['angles']) : undefined;
+    const at = (deps.now ?? ((): Date => new Date()))();
+    const state: FlowState = {
+      name: platform === 'threads' ? 'threads.previewed' : 'post.previewed',
+      postId: post.id,
+      payload: {
+        platform: platform ?? 'telegram',
+        stamp: effect.stamp,
+        ...(angles === undefined ? {} : { angles }),
+        ...(post.rubric === undefined ? {} : { rubric: post.rubric }),
+        ...(post.angle === undefined ? {} : { angle: post.angle, seenAngles: [post.angle] }),
+        anglesShown: 1,
+      },
+      expiresAt: new Date(at.getTime() + config.flow.questionTtlMs).toISOString(),
+    };
+    write(state);
+    deps.logger.info({ postId: post.id, action: effect.action }, 'черновик по расписанию взят в диалог');
+    return {
+      kind: 'callback',
+      data: buildCallback(effect.action, post.id, effect.stamp),
+      at: at.toISOString(),
+      ...(effect.messageId === undefined ? {} : { messageId: effect.messageId }),
+    };
   }
 
   async function handleOnce(event: DialogEvent, depth: number): Promise<void> {

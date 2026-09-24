@@ -122,6 +122,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     ownerId: deps.env.ownerId,
     ownerChatId,
     channelId: deps.env.channelId,
+    channels: deps.env.channels,
     config,
     // Обложки живут рядом с базой: один том в Dokploy, один бэкап.
     mediaDir: join(dirname(deps.env.dbPath), 'media'),
@@ -283,6 +284,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     logger: deps.logger,
     ownerId: deps.env.ownerId,
     undoSeconds: deps.env.publishUndoSeconds,
+    channels: deps.env.channels,
     config,
   });
 

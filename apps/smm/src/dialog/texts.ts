@@ -59,6 +59,19 @@ export const TEXTS = {
   working: 'Собираю. Это займёт до минуты.',
   stillWorking: 'Ещё собираю, подожди.',
   previewReady: 'Так пост уйдёт в канал.',
+  /**
+   * Подпись под превью, когда каналов несколько. Превью нарисовано для
+   * основного канала: во втором под постом нет кнопки бота, и это сказано
+   * прямо, а не оставлено догадке.
+   */
+  noBotButton: (titles: readonly string[]): string =>
+    `${titles.join(', ')}: без кнопки «Оплатить подписку» под постом.`,
+  /** Почему кнопки канала нет под превью. */
+  channelRefused: (title: string, reason: string): string => `${title}: не публикую — ${reason}.`,
+  autoDraftReady: (platform: 'telegram' | 'threads', slot: string): string =>
+    platform === 'threads'
+      ? `Черновик для Threads на ${slot} по расписанию.`
+      : `Черновик на ${slot} по расписанию. Так пост уйдёт в канал.`,
   askEditChoice: 'Что делаем?',
   askEditText: 'Скажи, что поменять.',
   askOwnerText: 'Пришли свой текст: уйдёт дословно, редактор его не смотрит.',
@@ -90,6 +103,7 @@ export const TEXTS = {
   stepFailed: (reason: string): string => `Шаг не прошёл: ${reason}`,
   buttons: {
     publish: 'Опубликовать',
+    publishBoth: 'В оба канала',
     edit: 'Правки',
     otherAngle: 'Другой угол',
     drop: 'Снять',

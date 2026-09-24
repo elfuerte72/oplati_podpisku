@@ -95,7 +95,15 @@ export interface ItemsRepo {
     onlyUnjudged?: boolean;
     /** Только неоценённые: пачка, упавшая из-за модели, должна вернуться. */
     onlyUnranked?: boolean;
+    /** Без идей, которые уже брал автодрафт. */
+    onlyNotAuto?: boolean;
   }): Item[];
+  /**
+   * Занять идею под автодрафт. Условная запись: false — идею уже занял другой
+   * прогон или её нет. Ставится ДО прогона, чтобы упавшая идея не бралась в
+   * каждый следующий слот.
+   */
+  claimAuto(id: string): boolean;
   /** false — элемента с таким id нет: молча промахнуться нельзя. */
   markVerdict(id: string, verdict: NonNullable<Item['verdict']>): boolean;
   setRank(id: string, rank: unknown): boolean;
@@ -111,6 +119,7 @@ interface ItemDbRow {
   seen_at: string;
   rank: string | null;
   verdict: string | null;
+  auto_at: string | null;
 }
 
 function toItem(row: ItemDbRow): Item {
@@ -124,6 +133,7 @@ function toItem(row: ItemDbRow): Item {
     seenAt: row.seen_at,
     rank: parseJson(row.rank),
     verdict: (row.verdict as Item['verdict']) ?? undefined,
+    autoAt: row.auto_at ?? undefined,
   };
 }
 
@@ -167,18 +177,29 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
           WHERE (? IS NULL OR seen_at >= ?)
             AND (? = 0 OR verdict IS NULL)
             AND (? = 0 OR rank IS NULL)
+            AND (? = 0 OR auto_at IS NULL)
           ORDER BY COALESCE(published_at, seen_at) DESC, id DESC
           LIMIT ?`,
         options.sinceIso ?? null,
         options.sinceIso ?? null,
         options.onlyUnjudged === true ? 1 : 0,
         options.onlyUnranked === true ? 1 : 0,
+        options.onlyNotAuto === true ? 1 : 0,
         options.limit ?? 50,
       );
       return rows.map(toItem);
     },
     markVerdict(id, verdict) {
       return db.run('UPDATE items SET verdict = ? WHERE id = ?', verdict, id).changes > 0;
+    },
+    claimAuto(id) {
+      return (
+        db.run(
+          'UPDATE items SET auto_at = ? WHERE id = ? AND auto_at IS NULL AND verdict IS NULL',
+          now().toISOString(),
+          id,
+        ).changes > 0
+      );
     },
     setRank(id, rank) {
       return db.run('UPDATE items SET rank = ? WHERE id = ?', JSON.stringify(rank), id).changes > 0;

@@ -72,21 +72,37 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** Как рисовать пост для конкретного канала. */
+export interface RenderOptions {
+  /**
+   * Кнопка бота под постом. По умолчанию есть: так живёт основной канал. Канал
+   * без рекламы (Aibromotion) передаёт `false` — решение владельца 24.09.2026.
+   */
+  readonly botButton?: boolean;
+}
+
 /**
  * Клавиатура под постом: своя кнопка поста сверху, кнопка бота снизу.
  *
- * Кнопка бота есть ВСЕГДА и ставит её код: уровень рекламы (`cta`) к ней
- * отношения не имеет — он про текст поста. В подписи имя бота не дублируется,
- * кнопка заметнее и не требует ничего копировать.
+ * Кнопку бота ставит код, а не текст: уровень рекламы (`cta`) к ней отношения
+ * не имеет — он про тело поста. Есть она у канала с `botButton` (основного);
+ * в канале без рекламы её нет. В подписи имя бота не дублируется, кнопка
+ * заметнее и не требует ничего копировать.
  */
-export function buildKeyboard(post: RenderablePost, config: SmmConfig = smmConfig): RenderKeyboard {
+export function buildKeyboard(
+  post: RenderablePost,
+  config: SmmConfig = smmConfig,
+  options: RenderOptions = {},
+): RenderKeyboard {
   const rows: RenderButton[][] = [];
   const text = post.buttonText?.trim() ?? '';
   const url = post.buttonUrl?.trim() ?? '';
   if (text !== '' && /^https?:\/\//i.test(url)) {
     rows.push([{ text: text.slice(0, 64), url }]);
   }
-  rows.push([{ text: config.buttons.bot.text.slice(0, 64), url: config.buttons.bot.url }]);
+  if (options.botButton !== false) {
+    rows.push([{ text: config.buttons.bot.text.slice(0, 64), url: config.buttons.bot.url }]);
+  }
   return { rows };
 }
 
@@ -181,7 +197,11 @@ function inline(text: string): string {
     .replace(/`([^`\n]+)`/g, '<code>$1</code>');
 }
 
-export function renderPost(post: RenderablePost, config: SmmConfig = smmConfig): RenderResult {
+export function renderPost(
+  post: RenderablePost,
+  config: SmmConfig = smmConfig,
+  options: RenderOptions = {},
+): RenderResult {
   const body = post.body.trim();
   if (body === '') return { ok: false, reason: 'empty_body', message: 'тело поста пустое' };
 
@@ -202,7 +222,7 @@ export function renderPost(post: RenderablePost, config: SmmConfig = smmConfig):
     };
   }
 
-  const keyboard = buildKeyboard(post, config);
+  const keyboard = buildKeyboard(post, config, options);
   const layout = config.layouts[post.layout];
 
   if (layout.format === 'rich') {

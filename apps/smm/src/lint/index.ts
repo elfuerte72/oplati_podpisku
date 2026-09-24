@@ -2,7 +2,7 @@ export { lintPost } from './post.ts';
 export { lintThreads, threadsHook, threadsLength, threadsPieces } from './threads.ts';
 export { formatLint, lintPassed } from './report.ts';
 export { countNumbers, visibleLength, visibleText } from './text.ts';
-export { countMatches } from './rules.ts';
+export { BOT_RE, BRAND_RE, countMatches } from './rules.ts';
 export type {
   Finding,
   LintContext,

@@ -1,7 +1,10 @@
-import type { CtaLevel, LayoutKey, RubricKey } from '../config/smm.config.ts';
+import type { ChannelKey, CtaLevel, LayoutKey, RubricKey } from '../config/smm.config.ts';
 import type { DecisionActor, DecisionKind, PostStatus } from './post-state.ts';
 
 export type Platform = 'telegram' | 'threads';
+
+/** Откуда пост: начат владельцем или пришёл черновиком по расписанию. */
+export type PostOrigin = 'owner' | 'auto';
 
 /** Пост канала или Threads — единица работы владельца. */
 export interface Post {
@@ -33,6 +36,14 @@ export interface Post {
   readonly buttonText?: string;
   readonly buttonUrl?: string;
   readonly channelMessageId?: number;
+  /**
+   * Канал, куда пост ушёл или уходит. Пост — ОДНА публикация в ОДНОМ канале:
+   * «в оба» создаёт копию для второго канала (`parentPostId` = исходный).
+   */
+  readonly channel?: ChannelKey;
+  readonly origin: PostOrigin;
+  /** Варианты угла из плана: «Другой угол» у автодрафта берёт их отсюда. */
+  readonly angles?: unknown;
   readonly itemId?: string;
   readonly parentPostId?: string;
   readonly publishAt?: string;
@@ -57,6 +68,7 @@ export interface NewPost {
   readonly itemId?: string;
   readonly parentPostId?: string;
   readonly dossier?: unknown;
+  readonly origin?: PostOrigin;
 }
 
 /**
@@ -84,6 +96,8 @@ export interface PostPatch {
   readonly buttonText?: string;
   readonly buttonUrl?: string;
   readonly channelMessageId?: number;
+  readonly channel?: ChannelKey;
+  readonly angles?: unknown;
   readonly itemId?: string;
   readonly publishAt?: string | null;
 }
@@ -135,6 +149,8 @@ export interface Item {
   readonly seenAt: string;
   readonly rank?: unknown;
   readonly verdict?: 'written' | 'skipped' | 'offtopic';
+  /** Когда идею взял автодрафт: второй раз её в слот не берут. */
+  readonly autoAt?: string;
 }
 
 export interface NewItem {
