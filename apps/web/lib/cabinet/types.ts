@@ -187,6 +187,17 @@ export type CardView = {
   instructions: ServicePaymentInstructions | null;
 };
 
+/**
+ * Живые поля основной карты из PaySpace (action `card-live`): кабинет подменяет
+ * ими поля карты из снапшота. Остальное живой ответ не меняет.
+ */
+export type CardLiveView = {
+  cardId: string;
+  balanceUsdCents: number;
+  /** «Действует до» с учётом срока самой карты — см. `cardValidUntil`. */
+  validUntil: string;
+};
+
 export type PaymentView = {
   amountKopecks: number;
   status: PaymentStatus;

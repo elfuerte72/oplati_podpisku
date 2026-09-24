@@ -68,6 +68,25 @@ async function fetchCatalogOnce(): Promise<CatalogSnapshot | null> {
   }
 }
 
+/**
+ * Запрос витрины, начатый заранее (`prefetchCatalog`), — его забирает первый
+ * `useCatalog`. Витрина публичная и от клиента не зависит, поэтому кабинет
+ * начинает её грузить в момент запуска, параллельно с SDK и снапшотом, а не
+ * после них: иначе каталог на «Оплате» дорисовывался третьим сетевым походом.
+ */
+let prefetched: Promise<CatalogSnapshot | null> | null = null;
+
+export function prefetchCatalog(): void {
+  prefetched ??= fetchCatalogOnce();
+}
+
+/** Забрать заранее начатый запрос (один раз) или начать новый. */
+function takeCatalog(): Promise<CatalogSnapshot | null> {
+  const request = prefetched ?? fetchCatalogOnce();
+  prefetched = null;
+  return request;
+}
+
 export type CatalogState = {
   groups: CatalogGroup[];
   buyerFeePercent: number;
@@ -89,7 +108,7 @@ export function useCatalog(enabled: boolean): CatalogState {
     if (!enabled) return;
     let cancelled = false;
     void (async () => {
-      const snapshot = await fetchCatalogOnce();
+      const snapshot = await takeCatalog();
       if (cancelled) return;
       setCatalog(snapshot?.services ?? null);
       setBuyerFeePercent(snapshot?.buyerFeePercent ?? 0);
@@ -113,7 +132,13 @@ export function useCatalog(enabled: boolean): CatalogState {
   }, []);
 
   const groups = useMemo(() => (catalog ? groupCatalog(catalog) : []), [catalog]);
-  return { groups, buyerFeePercent, loading, failed, retry };
+  // Один и тот же объект, пока витрина не менялась: вкладка «Оплата» обёрнута
+  // в memo, и новый объект на каждый рендер оболочки перерисовывал бы весь
+  // каталог при смене вкладки и открытии листа.
+  return useMemo(
+    () => ({ groups, buyerFeePercent, loading, failed, retry }),
+    [groups, buyerFeePercent, loading, failed, retry],
+  );
 }
 
 const sectionTitle =

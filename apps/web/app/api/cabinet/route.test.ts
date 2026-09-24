@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   })),
   getClientIp: vi.fn(() => '1.2.3.4'),
   buildSnapshot: vi.fn(async () => ({ orders: [], cards: [] })),
+  buildCardLive: vi.fn(async () => ({ cardId: 'card-1', balanceUsdCents: 315, validUntil: '2027-03-20T20:59:59.000Z' })),
   updateUserContacts: vi.fn((..._args: unknown[]) => Promise.resolve()),
   payOrder: vi.fn(async () => ({ ok: true })),
   state: {
@@ -49,6 +50,7 @@ vi.mock('@/lib/ratelimit', () => ({
 }));
 vi.mock('@/lib/cabinet/read', () => ({
   buildSnapshot: h.buildSnapshot,
+  buildCardLive: h.buildCardLive,
   buildOrderDetail: vi.fn(async () => null),
 }));
 vi.mock('@/lib/cabinet/actions', () => ({
@@ -213,6 +215,58 @@ describe('POST /api/cabinet — порядок барьеров', () => {
     const res = await POST(makeRequest(snapshotBody));
     expect(res.status).toBe(200);
     expect(h.buildSnapshot).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * Живой баланс карты — отдельное действие: снапшот кабинета больше не ждёт
+ * PaySpace (~1,2 с на каждое открытие). Ходит в чужой API, поэтому обязан
+ * стоять за теми же барьерами, что и снапшот.
+ */
+describe('POST /api/cabinet — card-live', () => {
+  const liveBody = { action: 'card-live', initData: 'x' };
+
+  beforeEach(() => {
+    h.state.signatureOk = true;
+    h.state.identityAllowed = true;
+    h.state.authFloodAllowed = true;
+    h.buildCardLive.mockClear();
+    h.buildSnapshot.mockClear();
+    h.upsert.mockClear();
+  });
+
+  it('отдаёт живые поля основной карты и не строит снапшот', async () => {
+    const res = await POST(makeRequest(liveBody));
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      card: { cardId: 'card-1', balanceUsdCents: 315, validUntil: '2027-03-20T20:59:59.000Z' },
+    });
+    expect(h.buildCardLive).toHaveBeenCalledWith('user-1');
+    expect(h.buildSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('карты нет — card: null', async () => {
+    h.buildCardLive.mockResolvedValueOnce(null as never);
+    const res = await POST(makeRequest(liveBody));
+    await expect(res.json()).resolves.toEqual({ ok: true, card: null });
+  });
+
+  it('исчерпанный бакет кабинета режет и его — до записи в БД и до PaySpace', async () => {
+    h.state.identityAllowed = false;
+    const res = await POST(makeRequest(liveBody));
+    expect(res.status).toBe(429);
+    expect(h.upsert).not.toHaveBeenCalled();
+    expect(h.buildCardLive).not.toHaveBeenCalled();
+  });
+
+  it('без валидной подписи в PaySpace не ходит', async () => {
+    h.state.signatureOk = false;
+    h.state.signatureReason = 'bad_signature';
+    h.state.signatureStatus = 401;
+    const res = await POST(makeRequest(liveBody));
+    expect(res.status).toBe(401);
+    expect(h.buildCardLive).not.toHaveBeenCalled();
   });
 });
 

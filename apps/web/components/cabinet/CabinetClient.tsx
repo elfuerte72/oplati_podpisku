@@ -1,6 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import { formatUsd } from '@/components/comic/format';
@@ -16,17 +25,22 @@ import {
   shouldPoll,
   shouldWatchIssuing,
 } from '@/lib/cabinet/after-payment';
+import { applyCardLive, shouldRefreshCardLive } from '@/lib/cabinet/card-live';
 import { selectCardTabState } from '@/lib/cabinet/card-tab-state';
 import { siteHostFromUrl } from '@/lib/cabinet/path-steps';
 import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { selectPendingPaymentOrders } from '@/lib/cabinet/pending-orders';
 import {
   CABINET_TABS,
+  SETTLE_MS,
   dragOffset,
   lockAxis,
+  releaseVelocity,
   resolveSwipe,
+  settleDurationMs,
   startsInEdgeGuard,
   type CabinetTab,
+  type SwipeSample,
 } from '@/lib/cabinet/tab-swipe';
 import type { CatalogService } from '@/lib/catalog/build';
 
@@ -34,7 +48,7 @@ import { CabinetIntro } from './CabinetIntro';
 import { CabinetLoader } from './CabinetLoader';
 import { CardDetailsSheet } from './CardDetailsSheet';
 import { CardTab } from './CardTab';
-import { ServicePicker, formatTierPeriod, useCatalog, type OrderHint } from './CatalogView';
+import { ServicePicker, formatTierPeriod, prefetchCatalog, useCatalog, type OrderHint } from './CatalogView';
 import { OrderDetailView, type DetailActionMessage } from './OrderDetailView';
 import { PayTab } from './PayTab';
 import { PaymentIssueForm, paymentIssueSentText } from './PaymentIssueForm';
@@ -50,6 +64,7 @@ import {
   doReportPaymentIssue,
   doReportPaymentProblem,
   doUpdateContacts,
+  fetchCardLive,
   fetchOrderDetail,
   fetchSnapshot,
   type CancelOrderResult,
@@ -60,6 +75,7 @@ import {
 import { errorTextFor } from './error-text';
 import {
   loadTelegramWebApp,
+  readLaunchInitData,
   tolerateTelegram,
   type TelegramMainButton,
   type TelegramWebApp,
@@ -186,6 +202,42 @@ function trackTransform(index: number, offsetPx = 0): string {
   return `translate3d(calc(${-index} * 100% / ${CABINET_TABS.length} + ${offsetPx}px), 0, 0)`;
 }
 
+/**
+ * Поставить ряд против вкладки `index` с доездом за `durationMs`. Пишется прямо
+ * в узел и ДО рендера React: анимацию transform ведёт компоновщик, и ряд едет
+ * с первого же кадра, даже пока React ещё перерисовывает оболочку. Раньше
+ * положение писал эффект после рендера — ряд стоял, пока шёл рендер, и
+ * касание казалось «проглоченным».
+ */
+function placeTrack(node: HTMLElement, index: number, durationMs: number): void {
+  node.style.setProperty('--settle-ms', `${durationMs}ms`);
+  node.style.transform = trackTransform(index);
+}
+
+/**
+ * Отложить работу до простоя браузера. На iOS `requestIdleCallback` нет —
+ * там короткая пауза: монтировать соседние вкладки сразу после первого кадра
+ * значит отнять этот кадр у клиента.
+ */
+function whenIdle(run: () => void): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const id = window.requestIdleCallback(run, { timeout: 1500 });
+    return () => window.cancelIdleCallback(id);
+  }
+  const timer = window.setTimeout(run, 400);
+  return () => window.clearTimeout(timer);
+}
+
+/*
+ * Вкладки перерисовываются только от своих данных. Оболочка меняет состояние
+ * часто — вкладка, лист, плашка, шаг опроса, — и без memo каждое такое
+ * изменение заново строило содержимое всех трёх вкладок: на слабом телефоне
+ * это десятки миллисекунд прямо в кадре, где начинается анимация.
+ */
+const PayTabView = memo(PayTab);
+const CardTabView = memo(CardTab);
+const ProfileTabView = memo(ProfileTab);
+
 export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot } = {}) {
   const preview = previewSnapshot !== undefined;
   const [phase, setPhase] = useState<Phase>(preview ? 'ready' : 'loading');
@@ -232,10 +284,30 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   const visible = usePageVisible();
   const catalog = useCatalog(phase === 'ready');
 
-  // ─── Инициализация: SDK Telegram → snapshot ──────────────────────────────
+  // ─── Живой баланс карты (PaySpace) — после снапшота, в фоне ──────────────
+  const cardLiveAtRef = useRef<number | null>(null);
+  const cardLiveSeqRef = useRef(0);
+  const refreshCardLive = useCallback(async (force: boolean) => {
+    const now = Date.now();
+    if (!shouldRefreshCardLive(cardLiveAtRef.current, now, force)) return;
+    cardLiveAtRef.current = now;
+    const seq = ++cardLiveSeqRef.current;
+    const res = await fetchCardLive(initDataRef.current);
+    // Применяется только ответ на последний запрос: ответы не упорядочены.
+    if (!res.ok || !res.data || seq !== cardLiveSeqRef.current) return;
+    const live = res.data;
+    setSnapshot((s) => (s ? applyCardLive(s, live) : s));
+  }, []);
+
+  // ─── Инициализация: SDK Telegram ∥ snapshot ∥ каталог ────────────────────
   useEffect(() => {
     if (preview) return; // превью/QA-seam: рендер без Telegram
     let cancelled = false;
+    // Три запроса стартуют разом, а не цепочкой «SDK → снапшот → каталог»:
+    // initData есть в адресе запуска, витрина публичная.
+    prefetchCatalog();
+    const launchInitData = readLaunchInitData();
+    const earlySnapshot = launchInitData ? fetchSnapshot(launchInitData) : null;
     void (async () => {
       const tg = await loadTelegramWebApp();
       if (cancelled) return;
@@ -268,11 +340,15 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       // (тикет 03). Отдельным вызовом: в старых клиентах метод бросает.
       tolerateTelegram(() => tg.disableVerticalSwipes?.());
 
-      const res = await fetchSnapshot(tg.initData);
+      // Ранний ответ годится, только если SDK видит ту же initData, — иначе
+      // снапшот запрашивается заново по строке SDK.
+      const res =
+        earlySnapshot && tg.initData === launchInitData ? await earlySnapshot : await fetchSnapshot(tg.initData);
       if (cancelled) return;
       if (res.ok) {
         setSnapshot(res.data);
         setPhase('ready');
+        if (res.data.cards.length > 0) void refreshCardLive(true);
       } else {
         setErrorText(errorTextFor(res.error));
         setPhase('error');
@@ -281,7 +357,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     return () => {
       cancelled = true;
     };
-  }, [preview]);
+  }, [preview, refreshCardLive]);
 
   // Открытие кабинета — ОДИН раз на вход, а не на каждую вкладку. Ref-гейт:
   // StrictMode монтирует эффекты дважды.
@@ -292,10 +368,20 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     track('cabinet_open', { entry: preview ? 'preview' : 'telegram' });
   }, [snapshot, preview]);
 
-  const reloadSnapshot = useCallback(async () => {
-    const res = await fetchSnapshot(initDataRef.current);
-    if (res.ok) setSnapshot(res.data);
-  }, []);
+  /**
+   * Перечитать снапшот. Живой баланс карты — следом и не чаще раза в 15 с;
+   * `forceLive` — без паузы (возврат в приложение: клиент мог только что
+   * оплатить подписку картой).
+   */
+  const reloadSnapshot = useCallback(
+    async (opts?: { forceLive?: boolean }) => {
+      const res = await fetchSnapshot(initDataRef.current);
+      if (!res.ok) return;
+      setSnapshot(res.data);
+      if (res.data.cards.length > 0) void refreshCardLive(opts?.forceLive ?? false);
+    },
+    [refreshCardLive],
+  );
 
   const openExternalLink = useCallback((url: string) => {
     const tg = tgRef.current;
@@ -330,11 +416,12 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
    */
   const go = useCallback(
     (next: CabinetTab, via: 'tap' | 'swipe' | 'auto') => {
+      // Свайп ставит ряд сам — с доездом по скорости пальца; остальные входы
+      // ставят его здесь, до рендера (см. `placeTrack`).
+      const node = trackRef.current;
+      if (node && via !== 'swipe') placeTrack(node, CABINET_TABS.indexOf(next), SETTLE_MS);
       setMounted((were) => (were.includes(next) ? were : [...were, next]));
-      if (next === tabRef.current) {
-        trackRef.current?.style.setProperty('transform', trackTransform(CABINET_TABS.indexOf(next)));
-        return;
-      }
+      if (next === tabRef.current) return;
       tabRef.current = next;
       setTab(next);
       track('cabinet_tab_view', { tab: next, via });
@@ -345,10 +432,21 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   // Ряд встаёт против выбранной вкладки записью в узел, а не свойством
   // разметки: под пальцем положение меняется по многу раз в секунду, и держать
-  // его состоянием значило бы гонять React на каждое касание.
+  // его состоянием значило бы гонять React на каждое касание. Эффект — только
+  // подстраховка первого показа: смену вкладки узел получает раньше, в `go`,
+  // и та же строка transform повторно анимацию не запускает.
   useEffect(() => {
     trackRef.current?.style.setProperty('transform', trackTransform(CABINET_TABS.indexOf(tab)));
   }, [tab, phase]);
+
+  // Соседние вкладки монтируются в простое после первого показа, а не в
+  // момент перехода: иначе первый свайп строил вкладку прямо под пальцем, и
+  // первые кадры переноса проседали. Прерываемо — касание во время монтажа
+  // обрабатывается сразу.
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    return whenIdle(() => startTransition(() => setMounted(CABINET_TABS)));
+  }, [phase]);
 
   // Свайп блокируют открытый лист, онбординг и клавиатура.
   const introFirstRun = !introSeen && !forceIntro;
@@ -381,6 +479,8 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     let tracking = false;
     let width = 0;
     let raf = 0;
+    // Последние точки пути пальца — по ним скорость в момент отпускания.
+    let samples: SwipeSample[] = [];
 
     const index = () => CABINET_TABS.indexOf(tabRef.current);
     const paint = () => {
@@ -408,6 +508,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       axis = null;
       tracking = true;
       width = frame.clientWidth;
+      samples = [{ t: event.timeStamp, x: touch.clientX }];
     };
 
     const move = (event: TouchEvent) => {
@@ -415,11 +516,13 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       const touch = event.touches[0];
       if (event.touches.length !== 1 || !touch) {
         stop();
-        node.style.transform = trackTransform(index());
+        placeTrack(node, index(), SETTLE_MS);
         return;
       }
       dx = touch.clientX - startX;
       const dy = touch.clientY - startY;
+      samples.push({ t: event.timeStamp, x: touch.clientX });
+      if (samples.length > 12) samples.shift();
       if (!axis) {
         axis = lockAxis(dx, dy);
         if (!axis) return;
@@ -442,12 +545,20 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     const end = () => {
       if (!tracking) return;
       const wasX = axis === 'x';
-      const target = resolveSwipe(dx, width, index(), CABINET_TABS.length);
+      const from = index();
+      const velocity = releaseVelocity(samples);
+      const target = resolveSwipe(dx, width, from, CABINET_TABS.length, velocity);
+      // Сколько ряду осталось проехать и в какую сторону: сейчас он стоит на
+      // `-from·w + offset`, встать должен на `-target·w`.
+      const travel = (from - target) * width - dragOffset(dx, from, CABINET_TABS.length);
+      // stop() снимает и отложенный кадр переноса — иначе он перезаписал бы
+      // положение, выставленное ниже.
       stop();
       if (!wasX) return;
+      const towardTarget = travel !== 0 && Math.sign(velocity) === Math.sign(travel);
+      placeTrack(node, target, settleDurationMs(Math.abs(travel), width, velocity, towardTarget));
       const next = CABINET_TABS[target];
-      if (next && target !== index()) goRef.current(next, 'swipe');
-      else node.style.transform = trackTransform(index());
+      if (next && target !== from) goRef.current(next, 'swipe');
     };
 
     // Жест отняла система (звонок, жест от края, смена приложения) — ряд
@@ -455,7 +566,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     const cancel = () => {
       if (!tracking) return;
       stop();
-      node.style.transform = trackTransform(index());
+      placeTrack(node, index(), SETTLE_MS);
     };
 
     frame.addEventListener('touchstart', start, { passive: true });
@@ -607,7 +718,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
   // Возврат в приложение (из браузера со страницей оплаты) — сразу перечитать
   // открытый заказ и снапшот, не дожидаясь шага опроса (тикет 08). Событий
   // возврата два (`visibilitychange` и `activated`) — второе в том же окне
-  // пропускаем: снапшот ходит в PaySpace за живым балансом.
+  // пропускаем: следом за снапшотом идёт запрос живого баланса в PaySpace.
   const lastReturnAtRef = useRef<number | null>(null);
   const onAppReturn = useCallback(() => {
     const now = Date.now();
@@ -615,7 +726,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     lastReturnAtRef.current = now;
     const orderId = activeOrderIdRef.current;
     if (orderId) void refreshDetail(orderId);
-    void reloadSnapshot();
+    void reloadSnapshot({ forceLive: true });
   }, [refreshDetail, reloadSnapshot]);
   const wasVisibleRef = useRef(true);
   useEffect(() => {
@@ -897,6 +1008,30 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     track('card_next_step_view');
   }, [nextStepVisible]);
 
+  // ─── Пропсы вкладок: те же ссылки между рендерами (вкладки под memo) ─────
+  const onOpenOrderTap = useCallback((orderId: string) => void openOrder(orderId), [openOrder]);
+  const onOpenService = useCallback((service: CatalogService) => setSheet({ kind: 'service', service }), []);
+  const onOpenIntro = useCallback(() => setForceIntro(true), []);
+  const onGoPay = useCallback(() => go('pay', 'tap'), [go]);
+  const onOpenCardDetails = useCallback((cardId: string) => setSheet({ kind: 'card-details', cardId }), []);
+  const onOpenIssue = useCallback((orderId: string) => {
+    setIssueNote(null);
+    setSheet({ kind: 'card-issue', orderId });
+  }, []);
+  const onOpenPartner = useCallback(() => setSheet({ kind: 'partner' }), []);
+  const onEditContacts = useCallback(() => setSheet({ kind: 'contacts' }), []);
+  const supportAction = canCloseApp ? contactSupport : undefined;
+  const issuingForTab = issuingInfo && issuingInfo.orderId === issuingOrderId ? issuingInfo : null;
+  // «Ждут оплаты»: оплатимые заказы с ещё живым сроком, самые срочные сверху.
+  // Пересчёт и на смене вкладки: срок живёт часами, и заказ, протухший, пока
+  // клиент был на другой вкладке, не должен ждать нового снапшота.
+  const pendingOrders = useMemo(
+    () => (snapshot ? selectPendingPaymentOrders(snapshot.orders) : []),
+    // `tab` в зависимостях намеренно — см. выше.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [snapshot, tab],
+  );
+
   // ─── Рендер ──────────────────────────────────────────────────────────────
   if (phase === 'loading') {
     return <CabinetLoader />;
@@ -915,46 +1050,41 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
 
   const firstName = snapshot.profile.displayName?.trim().split(/\s+/)[0];
   const greeting = firstName ? `Привет, ${firstName}!` : 'Привет!';
-  // «Ждут оплаты»: оплатимые заказы с ещё живым сроком, самые срочные сверху.
-  const pendingOrders = selectPendingPaymentOrders(snapshot.orders);
   const blockedByOverlay = sheet !== null || showIntro;
 
   const screens: Record<CabinetTab, React.ReactNode> = {
     pay: (
-      <PayTab
+      <PayTabView
         greeting={greeting}
         pendingOrders={pendingOrders}
         catalog={catalog}
-        onOpenOrder={(orderId) => void openOrder(orderId)}
-        onOpenService={(service) => setSheet({ kind: 'service', service })}
-        onOpenIntro={() => setForceIntro(true)}
-        onContactSupport={canCloseApp ? contactSupport : undefined}
+        onOpenOrder={onOpenOrderTap}
+        onOpenService={onOpenService}
+        onOpenIntro={onOpenIntro}
+        onContactSupport={supportAction}
       />
     ),
     card: (
-      <CardTab
+      <CardTabView
         state={cardState}
-        issuing={issuingInfo && issuingInfo.orderId === issuingOrderId ? issuingInfo : null}
-        onGoPay={() => go('pay', 'tap')}
-        onOpenCardDetails={(cardId) => setSheet({ kind: 'card-details', cardId })}
-        onOpenOrder={(orderId) => void openOrder(orderId)}
-        onOpenIssue={(orderId) => {
-          setIssueNote(null);
-          setSheet({ kind: 'card-issue', orderId });
-        }}
+        issuing={issuingForTab}
+        onGoPay={onGoPay}
+        onOpenCardDetails={onOpenCardDetails}
+        onOpenOrder={onOpenOrderTap}
+        onOpenIssue={onOpenIssue}
         onMarkSubscriptionPaid={markSubscriptionPaid}
         onOpenExternalLink={openExternalLink}
       />
     ),
     profile: (
-      <ProfileTab
+      <ProfileTabView
         profile={snapshot.profile}
         referralLink={snapshot.referralLink}
         phoneRequiredFromRub={snapshot.phoneRequiredFromRub}
-        onOpenPartner={() => setSheet({ kind: 'partner' })}
-        onEditContacts={() => setSheet({ kind: 'contacts' })}
-        onOpenIntro={() => setForceIntro(true)}
-        onContactSupport={canCloseApp ? contactSupport : undefined}
+        onOpenPartner={onOpenPartner}
+        onEditContacts={onEditContacts}
+        onOpenIntro={onOpenIntro}
+        onContactSupport={supportAction}
         onOpenExternalLink={openExternalLink}
         onShare={shareLink}
       />
@@ -966,7 +1096,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
       <div ref={frameRef} inert={blockedByOverlay} className="relative min-h-0 flex-1 overflow-hidden">
         <div
           ref={trackRef}
-          className="flex h-full w-[300%] transition-transform duration-[250ms] ease-out will-change-transform data-[dragging]:transition-none"
+          className="flex h-full w-[300%] transition-transform duration-[var(--settle-ms,250ms)] ease-out will-change-transform data-[dragging]:transition-none"
         >
           {CABINET_TABS.map((id) => (
             <div
@@ -1062,7 +1192,10 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
                 onContactSupport={canCloseApp ? contactSupport : undefined}
               />
             ) : (
-              <p role="status" className="py-6 text-center font-body text-sm text-[var(--text-muted)]">
+              // Высота — заранее, почти как у экрана заказа: иначе лист
+              // выезжал низкой полоской и рывком вырастал, когда приходила
+              // деталь, — это читалось как подвисание.
+              <p role="status" className="min-h-[60dvh] pt-6 text-center font-body text-sm text-[var(--text-muted)]">
                 Открываю заказ…
               </p>
             )}

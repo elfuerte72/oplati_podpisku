@@ -199,8 +199,11 @@ export function PartnerCabinet({
 
         {/* ── Main ── */}
         <main className="min-h-screen min-w-0 flex-1 pb-24 lg:pb-0">
-          {/* Topbar */}
-          <header className="sticky top-0 z-10 flex items-center justify-between border-b-[2.5px] border-[var(--shadow-ink)] bg-[color-mix(in_srgb,var(--bg)_88%,transparent)] px-5 py-4 backdrop-blur">
+          {/* Topbar. Фон сплошной, без backdrop-blur: размытие под липкой
+              шапкой пересчитывается на каждом кадре прокрутки, и в листе
+              Mini App на слабом Android партнёрка листалась рывками, — а при
+              88% непрозрачности его всё равно почти не было видно. */}
+          <header className="sticky top-0 z-10 flex items-center justify-between border-b-[2.5px] border-[var(--shadow-ink)] bg-[var(--bg)] px-5 py-4">
             <div className="flex items-center gap-2.5">
               {onBack ? (
                 <button

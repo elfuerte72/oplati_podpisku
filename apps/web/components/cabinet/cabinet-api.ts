@@ -297,6 +297,26 @@ export async function fetchSnapshot(initData: string): Promise<ApiResult<Snapsho
   return parseOrError(resp, snapshotSchema);
 }
 
+const cardLiveResponseSchema = z.object({
+  ok: z.literal(true),
+  card: z
+    .object({ cardId: z.string(), balanceUsdCents: z.number().int(), validUntil: z.string() })
+    .nullable(),
+});
+
+export type CardLive = NonNullable<z.infer<typeof cardLiveResponseSchema>['card']>;
+
+/**
+ * Живой баланс и срок основной карты (PaySpace) — отдельно от снапшота: тот
+ * отвечает из БД сразу, а этот запрос идёт следом в фоне (~1,2 с у провайдера).
+ * `data: null` — карты нет.
+ */
+export async function fetchCardLive(initData: string): Promise<ApiResult<CardLive | null>> {
+  const resp = await callCabinet({ action: 'card-live', initData });
+  const result = parseOrError(resp, cardLiveResponseSchema);
+  return result.ok ? { ok: true, data: result.data.card } : result;
+}
+
 export async function fetchOrderDetail(
   initData: string,
   orderId: string,

@@ -44,7 +44,7 @@ import { buyerFeePercentForOrder } from '../payments/gateway.ts';
 import { bonusValueKopecks } from '../referral/spend-math.ts';
 import { isPromoEnabled } from '../promo/apply.ts';
 import { isBonusSpendEnabled, loadBonusSpendStateSafe } from '../referral/spend.ts';
-import { withLiveBalance, type CardWithLive } from './live-balance.ts';
+import { pickPrimaryCard, withLiveBalance, type CardWithLive } from './live-balance.ts';
 import {
   CARD_LIFETIME_DAYS,
   CARD_STATUS_LABELS,
@@ -55,6 +55,7 @@ import {
   isPayableStatus,
   type CabinetProfile,
   type CabinetSnapshot,
+  type CardLiveView,
   type CardView,
   type OrderBonusView,
   type OrderDetail,
@@ -296,12 +297,12 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
   ]);
 
   const serviceIds = [...new Set(orders.map((o) => o.serviceId).filter((id): id is string => id !== null))];
-  // Live-баланс основной карты (PaySpace) — параллельно с резолвом сервисов,
-  // чтобы не удлинять критический путь снапшота; сбой → БД-снимок как был.
-  const [services, cardsWithLiveBalance] = await Promise.all([
-    getServicesByIds(db, serviceIds),
-    withLiveBalance(db, cards),
-  ]);
+  // Баланс карты — из БД, без запроса в PaySpace: живой баланс отдаёт
+  // отдельное действие `card-live` (`buildCardLive`). В снапшоте он стоил
+  // каждому клиенту с картой ~1,2 с на КАЖДОМ открытии кабинета и после
+  // каждого закрытия листа — провайдер отвечает не быстрее. В БД лежит
+  // последний сверенный баланс: сверка пишет его туда compare-and-set'ом.
+  const services = await getServicesByIds(db, serviceIds);
   const serviceNameById = new Map(services.map((s) => [s.id, s.name]));
   const serviceInstructionsById = new Map(
     services.map((s) => [s.id, parseInstructions(s.paymentInstructions)]),
@@ -381,8 +382,30 @@ export async function buildSnapshot(userId: string): Promise<CabinetSnapshot> {
   return {
     profile,
     orders: orderSummaries,
-    cards: cardsWithLiveBalance.map((c) => mapCard(c, purposeForCard(c.id))),
+    cards: cards.map((c) => mapCard(c, purposeForCard(c.id))),
     phoneRequiredFromRub: phoneRequirementRub(),
+  };
+}
+
+/**
+ * Живые поля основной карты — баланс и срок из PaySpace, — отдельно от
+ * снапшота. Кабинет открывается по снапшоту из БД сразу, а этот запрос идёт
+ * следом в фоне и подменяет у карты ровно эти два поля: остальное живой ответ
+ * не меняет. `null` — карты нет.
+ *
+ * Сбой, таймаут бюджета или ненастроенный PaySpace — БД-значения (контракт
+ * `withLiveBalance`): клиент получает то же, что уже видит.
+ */
+export async function buildCardLive(userId: string): Promise<CardLiveView | null> {
+  const db = getDb();
+  const cards = await findCardsByUserIdForCabinet(db, userId);
+  const primary = pickPrimaryCard(cards);
+  if (!primary) return null;
+  const card: CardWithLive = (await withLiveBalance(db, cards)).find((c) => c.id === primary.id) ?? primary;
+  return {
+    cardId: card.id,
+    balanceUsdCents: card.balanceUsdCents,
+    validUntil: cardValidUntil(card.createdAt, card.liveExpDate),
   };
 }
 

@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   events: [] as Record<string, unknown>[],
   order: null as Record<string, unknown> | null,
   eventQueries: [] as { orderIds: readonly string[]; eventType: string }[],
+  withLive: vi.fn(async (_db: unknown, cards: unknown[]) => cards),
 }));
 
 vi.mock('../env.server.ts', () => ({
@@ -41,7 +42,10 @@ vi.mock('../payments/gateway.ts', () => ({
 }));
 vi.mock('../contacts/phone-gate.ts', () => ({ phoneRequirementRub: () => null }));
 vi.mock('../promo/apply.ts', () => ({ isPromoEnabled: () => false }));
-vi.mock('./live-balance.ts', () => ({ withLiveBalance: async (_db: unknown, c: unknown[]) => c }));
+vi.mock('./live-balance.ts', () => ({
+  withLiveBalance: h.withLive,
+  pickPrimaryCard: (cards: readonly Record<string, unknown>[]) => cards[0] ?? null,
+}));
 
 vi.mock('@oplati/db', () => ({
   getDb: () => ({}) as unknown,
@@ -74,7 +78,7 @@ vi.mock('@oplati/db', () => ({
   PAYMENT_REVIEW_CLIENT_NOTIFIED_EVENT: 'payment_review_client_notified',
 }));
 
-import { buildOrderDetail, buildSnapshot } from './read.ts';
+import { buildCardLive, buildOrderDetail, buildSnapshot } from './read.ts';
 
 const PAN = '5592680100101726';
 const CVC = '167';
@@ -126,6 +130,7 @@ beforeEach(() => {
   h.events = [];
   h.order = null;
   h.eventQueries = [];
+  h.withLive.mockImplementation(async (_db: unknown, cards: unknown[]) => cards);
 });
 
 describe('buildSnapshot — cardId и subscriptionActivated в сводке заказа', () => {
@@ -199,5 +204,52 @@ describe('buildOrderDetail — те же поля на экране заказа
     const detail = await buildOrderDetail('user-1', 'order-1');
 
     expect(detail?.subscriptionActivated).toBe(false);
+  });
+});
+
+/**
+ * Живой баланс карты ушёл из снапшота в отдельное действие: PaySpace отвечает
+ * ~1,2 с, и снапшот нёс это ожидание в каждое открытие кабинета.
+ */
+describe('живой баланс — отдельно от снапшота', () => {
+  it('снапшот в PaySpace не ходит: баланс карты — из БД', async () => {
+    h.cards = [cardRow()];
+
+    const snapshot = await buildSnapshot('user-1');
+
+    expect(h.withLive).not.toHaveBeenCalled();
+    expect(snapshot.cards[0]?.balanceUsdCents).toBe(2000);
+  });
+
+  it('buildCardLive отдаёт живой баланс и срок основной карты — и больше ничего', async () => {
+    h.cards = [cardRow()];
+    h.withLive.mockImplementation(async (_db: unknown, cards: unknown[]) =>
+      (cards as Record<string, unknown>[]).map((c) => ({ ...c, balanceUsdCents: 315, liveExpDate: '01/27' })),
+    );
+
+    const live = await buildCardLive('user-1');
+
+    // Срок сети — январь 2027, наш — март 2027 (180 дней от 22.09.2026):
+    // «Действует до» берёт более ранний, то есть конец января.
+    expect(live).toEqual({ cardId: 'card-1', balanceUsdCents: 315, validUntil: '2027-01-31T20:59:59.000Z' });
+    // Ни PAN, ни CVC, ни идентификатора провайдера наружу.
+    expect(JSON.stringify(live)).not.toContain(PAN);
+    expect(JSON.stringify(live)).not.toContain('prov-777');
+  });
+
+  it('PaySpace не ответил — БД-значения, срок по нашему правилу', async () => {
+    h.cards = [cardRow()];
+
+    const live = await buildCardLive('user-1');
+
+    expect(live?.balanceUsdCents).toBe(2000);
+    expect(live?.validUntil).toBe(new Date(Date.parse('2026-09-22T10:07:00Z') + 180 * 86_400_000).toISOString());
+  });
+
+  it('карты нет — null, в PaySpace не ходим', async () => {
+    const live = await buildCardLive('user-1');
+
+    expect(live).toBeNull();
+    expect(h.withLive).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,7 @@
 'use client';
 
+import { TELEGRAM_SDK_URL } from './telegram-sdk-url';
+
 /**
  * Тонкая обёртка над Telegram WebApp SDK для Mini App.
  *
@@ -110,7 +112,23 @@ declare global {
   }
 }
 
-const SDK_URL = 'https://telegram.org/js/telegram-web-app.js';
+const SDK_URL = TELEGRAM_SDK_URL;
+
+/**
+ * initData из адреса запуска. Telegram кладёт её в hash (`#tgWebAppData=…`),
+ * и SDK берёт её оттуда же, поэтому снапшот можно запросить, не дожидаясь
+ * загрузки SDK с telegram.org: раньше запросы шли цепочкой «SDK → снапшот →
+ * каталог», и клиент ждал сумму трёх сетевых походов. Разбор совпадает с
+ * `urlSafeDecode` SDK (`+` — пробел, дальше percent-декод); ответ на ранний
+ * запрос кабинет берёт, только если строка совпала с `WebApp.initData`.
+ *
+ * Пусто — данных в адресе нет (перезагрузка страницы, вне Telegram): тогда
+ * снапшот ждёт SDK, как раньше.
+ */
+export function readLaunchInitData(): string {
+  if (typeof window === 'undefined') return '';
+  return new URLSearchParams(window.location.hash.replace(/^#/, '')).get('tgWebAppData') ?? '';
+}
 
 export function loadTelegramWebApp(): Promise<TelegramWebApp | null> {
   if (typeof window === 'undefined') return Promise.resolve(null);
