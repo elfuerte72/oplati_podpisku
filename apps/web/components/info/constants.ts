@@ -12,9 +12,9 @@ export const SUPPORT_TELEGRAM_URL = 'https://telegram.me/OplatishkaSupport_bot';
 export const SUPPORT_EMAIL = 'oplatishka.general@gmail.com';
 
 /** Дата действующей редакции Пользовательского соглашения. */
-export const TERMS_UPDATED_AT = '24 июля 2026 года';
+export const TERMS_UPDATED_AT = '24 сентября 2026 года';
 /** Дата действующей редакции Политики конфиденциальности. */
-export const PRIVACY_UPDATED_AT = '9 сентября 2026 года';
+export const PRIVACY_UPDATED_AT = '24 сентября 2026 года';
 
 /**
  * Канонический публичный домен сайта — для ссылок из Mini App: кабинет живёт

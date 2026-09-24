@@ -23,7 +23,7 @@ vi.mock('@oplati/db', () => ({
   deleteExpiredCardFundReservations: h.fundReservationsDeleteMock,
 }));
 
-import { MESSAGES_RETENTION_DAYS, PAYLOAD_RETENTION_DAYS } from '../retention-policy.ts';
+import { ANALYTICS_RETENTION_DAYS, MESSAGES_RETENTION_DAYS, PAYLOAD_RETENTION_DAYS } from '../retention-policy.ts';
 import { runRetention } from './retention.ts';
 
 beforeEach(() => {
@@ -111,13 +111,16 @@ describe('runRetention — чистка занятий фонда (тикет 05
 });
 
 /**
- * Канарейка сроков хранения. Числа здесь дублируют константы НАМЕРЕННО: срок
- * переписки обещан клиентам в публичной политике (`/privacy`), и молчаливая
- * правка константы означала бы, что документ врёт.
+ * Канарейка сроков хранения. Числа здесь дублируют константы НАМЕРЕННО.
+ * Публичная политика (`/privacy`) с 2026-09-24 берёт сроки из тех же констант
+ * и разойтись с кроном уже не может — но правка константы меняет обещание
+ * клиентам, а это новая редакция документа (`PRIVACY_UPDATED_AT`). Упавший
+ * тест здесь — напоминание обновить дату, а не только число.
  */
 describe('сроки хранения', () => {
-  it('переписка — 2 года, сырые payload — 180 дней', () => {
+  it('переписка — 2 года, сырые payload — 180 дней, аналитика — 400 дней', () => {
     expect(MESSAGES_RETENTION_DAYS).toBe(730);
     expect(PAYLOAD_RETENTION_DAYS).toBe(180);
+    expect(ANALYTICS_RETENTION_DAYS).toBe(400);
   });
 });
