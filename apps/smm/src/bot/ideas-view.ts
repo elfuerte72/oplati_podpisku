@@ -58,8 +58,8 @@ export interface RankedIdea {
 /**
  * Идеи в порядке, в каком их стоит писать. ОДНА сортировка на `/ideas` и на
  * черновики по расписанию: разные порядки означали бы, что бот пишет не ту
- * тему, что стоит первой в дайджесте. Идеи, уже взятые черновиком по
- * расписанию, сюда не попадают: по ним пост уже пришёл владельцу.
+ * тему, что стоит первой в дайджесте. Идеи, уже взятые в работу (черновик по
+ * расписанию или «Написать»), сюда не попадают: по ним пост уже пишется.
  */
 export function rankedIdeas(
   store: Store,
@@ -70,7 +70,7 @@ export function rankedIdeas(
   const since = new Date(now().getTime() - config.sources.digestWindowHours * 60 * 60 * 1000);
 
   return store.items
-    .listRecent({ sinceIso: since.toISOString(), limit: 200, onlyUnjudged: true, onlyNotAuto: true })
+    .listRecent({ sinceIso: since.toISOString(), limit: 200, onlyUnjudged: true, onlyNotTaken: true })
     .filter((item) => rankOf(item).already_covered !== true)
     .sort((a, b) => scoreOf(b) - scoreOf(a))
     .map((item) => {

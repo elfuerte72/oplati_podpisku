@@ -18,10 +18,17 @@ import type { Decision, Post } from '../store/index.ts';
 
 type AdsCarrier = Pick<Post, 'body' | 'buttonText' | 'buttonUrl'>;
 
-/** Реклама Оплатишки в посте: бренд или бот в теле либо в собственной кнопке поста. */
+/**
+ * Бренд латиницей: название, домен `oplatishka.com`, имя бота. Линт канала
+ * ловит кириллицу (`BRAND_RE`), а в канал без рекламы не должна пройти и
+ * ссылка на сайт (ревью 24.09.2026). Без флага `g`: `.test` без состояния.
+ */
+const BRAND_LATIN_RE = /oplatishk/i;
+
+/** Реклама Оплатишки в посте: бренд, сайт или бот в теле либо в собственной кнопке поста. */
 export function mentionsProduct(post: AdsCarrier): boolean {
   const parts = [post.body ?? '', post.buttonText ?? '', post.buttonUrl ?? ''];
-  return parts.some((part) => BRAND_RE.test(part) || BOT_RE.test(part));
+  return parts.some((part) => BRAND_RE.test(part) || BOT_RE.test(part) || BRAND_LATIN_RE.test(part));
 }
 
 export type ChannelVerdict = { readonly ok: true } | { readonly ok: false; readonly reason: string };

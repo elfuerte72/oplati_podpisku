@@ -41,20 +41,21 @@ export type AutodraftResult =
   | { readonly kind: 'skipped'; readonly reason: 'too_many_pending' | 'no_idea' }
   | { readonly kind: 'failed'; readonly step: string; readonly message: string; readonly postId?: string };
 
-/** Исход шага, если это ожидаемый итог; иначе — причина сбоя строкой. */
-function outcomeOf<K extends string>(
+type Done = Extract<DialogEvent, { kind: 'pipeline_done' }>;
+type OutcomeOf<K extends Done['outcome']['kind']> = Extract<Done['outcome'], { kind: K }>;
+
+/** Исход шага, если это ожидаемый итог; иначе — причина сбоя. */
+function outcomeOf<K extends Done['outcome']['kind']>(
   event: DialogEvent | undefined,
   kind: K,
-): { ok: true; outcome: Extract<Extract<DialogEvent, { kind: 'pipeline_done' }>['outcome'], { kind: K }> } | { ok: false; message: string } {
-  if (event === undefined) return { ok: false, message: 'шаг ничего не вернул' };
-  if (event.kind === 'pipeline_failed') return { ok: false, message: event.message };
+): { ok: true; outcome: OutcomeOf<K> } | { ok: false; reason: string; message: string } {
+  if (event === undefined) return { ok: false, reason: 'no_event', message: 'шаг ничего не вернул' };
+  if (event.kind === 'pipeline_failed') return { ok: false, reason: event.reason, message: event.message };
   if (event.kind !== 'pipeline_done' || event.outcome.kind !== kind) {
-    return { ok: false, message: `шаг вернул ${event.kind === 'pipeline_done' ? event.outcome.kind : event.kind}` };
+    const got = event.kind === 'pipeline_done' ? event.outcome.kind : event.kind;
+    return { ok: false, reason: 'unexpected', message: `шаг вернул ${got}` };
   }
-  return {
-    ok: true,
-    outcome: event.outcome as Extract<Extract<DialogEvent, { kind: 'pipeline_done' }>['outcome'], { kind: K }>,
-  };
+  return { ok: true, outcome: event.outcome as OutcomeOf<K> };
 }
 
 /** Угол черновика: с действием для читателя, иначе первый. Советует план, выбирает код. */
@@ -80,20 +81,35 @@ export async function runAutodraft(
     config,
     ...(deps.now === undefined ? {} : { now: deps.now }),
   }).find((candidate) => (candidate.relevance ?? 0) >= config.autodraft.minRelevance);
-  // Идея занимается ДО прогона: упавший разбор иначе брал бы её в каждый слот.
-  if (idea === undefined || !deps.store.items.claimAuto(idea.item.id)) {
-    return { kind: 'skipped', reason: 'no_idea' };
-  }
+  if (idea === undefined) return { kind: 'skipped', reason: 'no_idea' };
   const itemId = idea.item.id;
 
+  // Идею занимает САМ шаг источника — тем же условным UPDATE, что и кнопка
+  // «Написать»: две точки занятия разошлись бы, и тема писалась бы дважды.
   const source = outcomeOf(await deps.runner.runStep('source', { itemId, platform, origin: 'auto' }), 'article');
-  if (!source.ok) return { kind: 'failed', step: 'source', message: source.message };
+  if (!source.ok) {
+    if (source.reason === 'idea_taken') return { kind: 'skipped', reason: 'no_idea' };
+    return { kind: 'failed', step: 'source', message: source.message };
+  }
   const postId = source.outcome.postId;
 
+  // Сборка, сорвавшаяся после создания поста, хоронит пост: брошенный черновик
+  // висел бы в /queue, и владелец разбирал бы чужой мусор.
+  const abandon = (step: string, message: string): AutodraftResult => {
+    const moved = deps.store.posts.transition({
+      id: postId,
+      from: ['draft', 'linted', 'reviewed'],
+      to: 'rejected',
+      decision: { kind: 'reject', actor: 'code', payload: { auto: true, step, reason: message } },
+    });
+    if (!moved.ok) deps.logger.warn({ postId, actual: moved.actual }, 'несобранный черновик не снялся');
+    return { kind: 'failed', step, message, postId };
+  };
+
   const planned = outcomeOf(await deps.runner.runStep('plan', { postId }), 'plan');
-  if (!planned.ok) return { kind: 'failed', step: 'plan', message: planned.message, postId };
+  if (!planned.ok) return abandon('plan', planned.message);
   const angle = pickAngle(planned.outcome.angles);
-  if (angle === undefined) return { kind: 'failed', step: 'plan', message: 'план без углов', postId };
+  if (angle === undefined) return abandon('plan', 'план без углов');
   // Выбор рубрики и угла — след в журнале: их сделал код, а не владелец.
   deps.store.posts.note(postId, { kind: 'rubric', actor: 'code', payload: { rubric: planned.outcome.rubric, auto: true } });
   deps.store.posts.note(postId, { kind: 'angle', actor: 'code', payload: { angle: angle.title, auto: true } });
@@ -102,7 +118,7 @@ export async function runAutodraft(
     await deps.runner.runStep('produce', { postId, rubric: planned.outcome.rubric, angle: angle.title, noAds: true }),
     'post',
   );
-  if (!produced.ok) return { kind: 'failed', step: 'produce', message: produced.message, postId };
+  if (!produced.ok) return abandon('produce', produced.message);
 
   const failedCheck =
     produced.outcome.verdict === 'fail' && produced.outcome.summary !== undefined
@@ -110,15 +126,16 @@ export async function runAutodraft(
       : '';
 
   if (platform === 'threads') {
-    // У площадки кнопки живут на самом посте (экран передачи): подпись — до него.
-    await deps.send(`${TEXTS.autoDraftReady('threads', slot)}${failedCheck}`);
+    // У площадки кнопки живут на самом посте (экран передачи). Подпись — ПОСЛЕ
+    // него: отправленная до превью, она противоречила бы сорвавшемуся показу.
     const shown = await deps.runner.preview(postId, { prefix: AUTO_PREFIX });
-    if (!shown.ok) return { kind: 'failed', step: 'preview', message: shown.message, postId };
+    if (!shown.ok) return abandon('preview', shown.message);
+    await deps.send(`${TEXTS.autoDraftReady('threads', slot)}${failedCheck}`);
     return { kind: 'sent', postId, itemId, verdict: produced.outcome.verdict };
   }
 
   const shown = await deps.runner.preview(postId);
-  if (!shown.ok) return { kind: 'failed', step: 'preview', message: shown.message, postId };
+  if (!shown.ok) return abandon('preview', shown.message);
   const post = deps.store.posts.get(postId);
   const controls = buildPreviewControls({
     post,
@@ -130,7 +147,14 @@ export async function runAutodraft(
     headline: `${TEXTS.autoDraftReady('telegram', slot)}${failedCheck}`,
     config,
   });
-  await deps.send(controls.text, controls.keyboard);
+  try {
+    await deps.send(controls.text, controls.keyboard);
+  } catch (error) {
+    // Превью уже у владельца, а кнопок к нему нет. Пост цел и лежит в /queue —
+    // это не «не собрался», и говорить надо ровно это.
+    deps.logger.warn({ err: error, postId }, 'кнопки черновика не дошли');
+    return { kind: 'failed', step: 'controls', message: 'превью ушло без кнопок, черновик ждёт в /queue', postId };
+  }
   return { kind: 'sent', postId, itemId, verdict: produced.outcome.verdict };
 }
 
@@ -138,8 +162,10 @@ export async function runAutodraft(
 
 export const SETTINGS_AUTODRAFT_ENABLED = 'autodraft.enabled';
 const SLOT_PREFIX = 'autodraft.slot.';
+const PENDING_NOTICE_PREFIX = 'autodraft.pendingNotice.';
 export const AutodraftEnabled = z.boolean();
 const SlotMark = z.object({ at: z.string(), outcome: z.string() });
+const NoticeMark = z.string();
 
 /** Ключ слота: площадка, день и час по Москве. Слот срабатывает один раз. */
 export function slotKey(platform: Platform, at: Date, hour: number): string {
@@ -195,6 +221,22 @@ export function createAutodraftScheduler(
     deps.store.settings.set(key, SlotMark, { at: now().toISOString(), outcome });
   };
 
+  /** Ключи прошлых дней не нужны никому: читаются только ключи сегодняшнего. */
+  function prune(at: Date): void {
+    const today = mskDay(at);
+    for (const key of deps.store.settings.keys()) {
+      const isSlot = key.startsWith(SLOT_PREFIX);
+      const isNotice = key.startsWith(PENDING_NOTICE_PREFIX);
+      if ((isSlot || isNotice) && !key.includes(`.${today}`)) deps.store.settings.remove(key);
+    }
+  }
+
+  async function notify(text: string): Promise<void> {
+    await deps.send(text).catch((error: unknown) => {
+      deps.logger.warn({ err: error }, 'сообщение о черновике по расписанию не ушло');
+    });
+  }
+
   async function tick(): Promise<void> {
     // Проход не наслаивается на проход: черновик пишется минутами.
     if (running) return;
@@ -202,6 +244,7 @@ export function createAutodraftScheduler(
     if (!enabled) return;
     running = true;
     try {
+      prune(now());
       for (const platform of ['telegram', 'threads'] as const) {
         const at = now();
         const decision = dueSlot(platform, at, isDone, config);
@@ -224,9 +267,17 @@ export function createAutodraftScheduler(
         deps.logger.info({ platform, slot, result }, 'черновик по расписанию');
         if (result.kind === 'failed') {
           // Владелец ждёт черновик в это время: молчать нельзя.
-          await deps.send(TEXTS.autoDraftFailed(platform, slot, result.message)).catch((error: unknown) => {
-            deps.logger.warn({ err: error }, 'сообщение о несобранном черновике не ушло');
-          });
+          const reason = result.step === 'controls' ? result.message : `не собрался — ${result.message}`;
+          await notify(TEXTS.autoDraftFailed(platform, slot, reason));
+        }
+        if (result.kind === 'skipped' && result.reason === 'too_many_pending') {
+          // Упёрлись в потолок — черновики встали, пока владелец не разберёт
+          // очередь. Сказать об этом раз в день: иначе остановка выглядит как тишина.
+          const noticeKey = `${PENDING_NOTICE_PREFIX}${platform}.${mskDay(at)}`;
+          if (deps.store.settings.get(noticeKey, NoticeMark) === undefined) {
+            deps.store.settings.set(noticeKey, NoticeMark, at.toISOString());
+            await notify(TEXTS.autoDraftPaused(platform, config.autodraft.maxPending));
+          }
         }
       }
     } finally {

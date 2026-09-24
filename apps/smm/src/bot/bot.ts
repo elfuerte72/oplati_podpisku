@@ -255,16 +255,22 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       // Витрина у каждого канала своя, и номера сообщений тоже: читаем по
       // одной, и каждая смотрит только свои посты.
       for (const channel of deps.env.channels) {
-        const result = await collectViews({
-          store: deps.store,
-          logger: deps.logger,
-          channel: { key: channel.key, username: channel.username },
-          config,
-        });
-        // Снятые посты — это событие для владельца, а не строка в логе: пост
-        // пропал из канала, и знать об этом он должен.
-        for (const postId of result.withdrawn) {
-          await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала ${channel.title}: помечен снятым.`);
+        // Каналы изолированы: сбой сообщения о снятом посте первого канала не
+        // должен оставлять второй без просмотров до следующего окна.
+        try {
+          const result = await collectViews({
+            store: deps.store,
+            logger: deps.logger,
+            channel: { key: channel.key, username: channel.username },
+            config,
+          });
+          // Снятые посты — это событие для владельца, а не строка в логе: пост
+          // пропал из канала, и знать об этом он должен.
+          for (const postId of result.withdrawn) {
+            await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала ${channel.title}: помечен снятым.`);
+          }
+        } catch (error) {
+          deps.logger.error({ err: error, channel: channel.key }, 'просмотры канала не собрались');
         }
       }
     },

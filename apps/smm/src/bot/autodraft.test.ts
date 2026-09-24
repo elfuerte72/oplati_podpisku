@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import type { ChannelTarget } from '../config/env.ts';
 import { smmConfig, type ModelRole } from '../config/smm.config.ts';
@@ -170,7 +171,7 @@ describe('черновик по расписанию', () => {
     expect(post?.cta).toBe('none');
     expect(Array.isArray(post?.angles)).toBe(true);
     // Идея занята и из /ideas ушла.
-    expect(store.items.findById(itemId)?.autoAt).toBeDefined();
+    expect(store.items.findById(itemId)?.takenAt).toBeDefined();
 
     const controls = sent.at(-1);
     expect(controls?.text.split('\n')[0]).toBe('Черновик на 10:00 по расписанию. Так пост уйдёт в канал.');
@@ -187,9 +188,11 @@ describe('черновик по расписанию', () => {
     for (let index = 0; index < smmConfig.autodraft.maxPending; index += 1) {
       const post = store.posts.create({ platform: 'telegram', origin: 'auto' });
       store.posts.transition({ id: post.id, from: ['draft'], to: 'linted', decision: { kind: 'lint', actor: 'code' } });
+      store.posts.transition({ id: post.id, from: ['linted'], to: 'reviewed', decision: { kind: 'judge', actor: 'model' } });
+      store.posts.transition({ id: post.id, from: ['reviewed'], to: 'previewed', decision: { kind: 'preview', actor: 'code' } });
     }
     expect(await runAutodraft('telegram', '14:00', deps)).toEqual({ kind: 'skipped', reason: 'too_many_pending' });
-    expect(store.items.findById(itemId)?.autoAt).toBeUndefined();
+    expect(store.items.findById(itemId)?.takenAt).toBeUndefined();
   });
 
   it('слабая идея не пишется: лучше пропустить слот, чем прислать проходное', async () => {
@@ -198,13 +201,31 @@ describe('черновик по расписанию', () => {
     expect(await runAutodraft('telegram', '10:00', deps)).toEqual({ kind: 'skipped', reason: 'no_idea' });
   });
 
-  it('сбой на шаге — исход с причиной, а идея остаётся занятой и не берётся снова', async () => {
+  it('сбой на шаге — исход с причиной, пост снят, а идея остаётся занятой и не берётся снова', async () => {
     const { store, deps } = setup({});
     const itemId = idea(store, 4);
     const result = await runAutodraft('telegram', '10:00', deps);
     expect(result).toMatchObject({ kind: 'failed', step: 'plan' });
-    expect(store.items.findById(itemId)?.autoAt).toBeDefined();
+    // Брошенный черновик не висит в /queue и не забивает потолок.
+    if (result.kind === 'failed') expect(store.posts.get(result.postId ?? '')?.status).toBe('rejected');
+    expect(store.items.findById(itemId)?.takenAt).toBeDefined();
     expect(await runAutodraft('telegram', '14:00', deps)).toEqual({ kind: 'skipped', reason: 'no_idea' });
+  });
+
+  it('идея, уже взятая кнопкой «Написать», черновиком не пишется второй раз', async () => {
+    const { store, deps, runner } = setup(FULL);
+    const itemId = idea(store, 4);
+    // Владелец нажал «Написать» в дайджесте раньше слота.
+    await runner.runStep('source', { itemId, platform: 'telegram' });
+    expect(await runAutodraft('telegram', '10:00', deps)).toEqual({ kind: 'skipped', reason: 'no_idea' });
+  });
+
+  it('и наоборот: «Написать» по теме, которую взял черновик, получает отказ', async () => {
+    const { store, deps, runner } = setup(FULL);
+    const itemId = idea(store, 4);
+    await runAutodraft('telegram', '10:00', deps);
+    const event = await runner.runStep('source', { itemId, platform: 'telegram' });
+    expect(event).toMatchObject({ kind: 'pipeline_failed', reason: 'idea_taken' });
   });
 });
 
@@ -252,8 +273,9 @@ describe('черновик для Threads', () => {
       channels: CHANNELS,
     });
     expect(result).toMatchObject({ kind: 'sent', itemId });
-    expect(calls).toEqual(['source', 'plan', 'produce', 'send', 'preview:a.']);
-    expect(sent[0]).toBe('Черновик для Threads на 12:00 по расписанию.');
+    // Подпись — ПОСЛЕ показа: до него она противоречила бы сорвавшемуся превью.
+    expect(calls).toEqual(['source', 'plan', 'produce', 'preview:a.', 'send']);
+    expect(sent[0]).toBe('Черновик для Threads на 12:00 по расписанию — выше.');
   });
 });
 
@@ -263,7 +285,7 @@ describe('планировщик', () => {
     idea(store, 4);
     const scheduler = createAutodraftScheduler({ ...deps, now: () => msk(10, 5) });
     await scheduler.tick();
-    expect(sent.some((message) => message.text.startsWith('Черновик на 10:00 не собрался'))).toBe(true);
+    expect(sent.some((message) => message.text.startsWith('Черновик на 10:00: не собрался'))).toBe(true);
     const keys = store.settings.keys().filter((key) => key.startsWith('autodraft.slot.telegram'));
     expect(keys).toEqual([slotKey('telegram', msk(10, 5), 10)]);
 
@@ -279,5 +301,43 @@ describe('планировщик', () => {
     await createAutodraftScheduler({ ...deps, now: () => msk(10, 5) }).tick();
     expect(sent).toEqual([]);
     expect(store.settings.keys().some((key) => key.startsWith('autodraft.slot.'))).toBe(false);
+  });
+});
+
+describe('пауза расписания', () => {
+  it('упёрлись в потолок — владелец узнаёт ОДИН раз за день, а не на каждом слоте', async () => {
+    const store = openStore({ path: ':memory:' });
+    for (let index = 0; index < smmConfig.autodraft.maxPending; index += 1) {
+      const post = store.posts.create({ platform: 'telegram', origin: 'auto' });
+      store.posts.transition({ id: post.id, from: ['draft'], to: 'linted', decision: { kind: 'lint', actor: 'code' } });
+      store.posts.transition({ id: post.id, from: ['linted'], to: 'reviewed', decision: { kind: 'judge', actor: 'model' } });
+      store.posts.transition({ id: post.id, from: ['reviewed'], to: 'previewed', decision: { kind: 'preview', actor: 'code' } });
+    }
+    const sent: string[] = [];
+    let current = msk(10, 5);
+    const scheduler = createAutodraftScheduler({
+      store,
+      runner: { runStep: () => Promise.resolve(undefined), preview: () => Promise.resolve({ ok: true }) },
+      send: (text) => (sent.push(text), Promise.resolve()),
+      logger: silent(),
+      channels: CHANNELS,
+      now: () => current,
+    });
+    await scheduler.tick();
+    current = msk(14, 5);
+    await scheduler.tick();
+    const paused = sent.filter((text) => text.includes('на паузе'));
+    expect(paused).toHaveLength(1);
+    expect(paused[0]).toContain('/queue');
+  });
+
+  it('ключи прошлых дней вычищаются: читаются только сегодняшние', async () => {
+    const { store, deps } = setup({});
+    store.settings.set('autodraft.slot.telegram.2026-09-20.10', z.object({ at: z.string(), outcome: z.string() }), {
+      at: 'x',
+      outcome: 'sent',
+    });
+    await createAutodraftScheduler({ ...deps, now: () => msk(9, 0) }).tick();
+    expect(store.settings.keys().filter((key) => key.includes('2026-09-20'))).toEqual([]);
   });
 });

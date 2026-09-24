@@ -96,15 +96,17 @@ export interface ItemsRepo {
     onlyUnjudged?: boolean;
     /** Только неоценённые: пачка, упавшая из-за модели, должна вернуться. */
     onlyUnranked?: boolean;
-    /** Без идей, которые уже брал автодрафт. */
-    onlyNotAuto?: boolean;
+    /** Без идей, уже взятых в работу. */
+    onlyNotTaken?: boolean;
   }): Item[];
   /**
-   * Занять идею под автодрафт. Условная запись: false — идею уже занял другой
-   * прогон или её нет. Ставится ДО прогона, чтобы упавшая идея не бралась в
-   * каждый следующий слот.
+   * Взять идею в работу. Условная запись: false — идею уже взяли (другой
+   * прогон, кнопка из старого дайджеста) или по ней уже решено. Один путь на
+   * черновик по расписанию и на «Написать»: иначе одна тема писалась бы дважды.
    */
-  claimAuto(id: string): boolean;
+  claim(id: string): boolean;
+  /** Вернуть идею в дайджест: ручной разбор не открыл статью. */
+  release(id: string): void;
   /** false — элемента с таким id нет: молча промахнуться нельзя. */
   markVerdict(id: string, verdict: NonNullable<Item['verdict']>): boolean;
   setRank(id: string, rank: unknown): boolean;
@@ -120,7 +122,7 @@ interface ItemDbRow {
   seen_at: string;
   rank: string | null;
   verdict: string | null;
-  auto_at: string | null;
+  taken_at: string | null;
 }
 
 function toItem(row: ItemDbRow): Item {
@@ -134,7 +136,7 @@ function toItem(row: ItemDbRow): Item {
     seenAt: row.seen_at,
     rank: parseJson(row.rank),
     verdict: (row.verdict as Item['verdict']) ?? undefined,
-    autoAt: row.auto_at ?? undefined,
+    takenAt: row.taken_at ?? undefined,
   };
 }
 
@@ -178,14 +180,14 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
           WHERE (? IS NULL OR seen_at >= ?)
             AND (? = 0 OR verdict IS NULL)
             AND (? = 0 OR rank IS NULL)
-            AND (? = 0 OR auto_at IS NULL)
+            AND (? = 0 OR taken_at IS NULL)
           ORDER BY COALESCE(published_at, seen_at) DESC, id DESC
           LIMIT ?`,
         options.sinceIso ?? null,
         options.sinceIso ?? null,
         options.onlyUnjudged === true ? 1 : 0,
         options.onlyUnranked === true ? 1 : 0,
-        options.onlyNotAuto === true ? 1 : 0,
+        options.onlyNotTaken === true ? 1 : 0,
         options.limit ?? 50,
       );
       return rows.map(toItem);
@@ -193,14 +195,17 @@ export function createItemsRepo(db: Db, now: () => Date): ItemsRepo {
     markVerdict(id, verdict) {
       return db.run('UPDATE items SET verdict = ? WHERE id = ?', verdict, id).changes > 0;
     },
-    claimAuto(id) {
+    claim(id) {
       return (
         db.run(
-          'UPDATE items SET auto_at = ? WHERE id = ? AND auto_at IS NULL AND verdict IS NULL',
+          'UPDATE items SET taken_at = ? WHERE id = ? AND taken_at IS NULL AND verdict IS NULL',
           now().toISOString(),
           id,
         ).changes > 0
       );
+    },
+    release(id) {
+      db.run('UPDATE items SET taken_at = NULL WHERE id = ? AND verdict IS NULL', id);
     },
     setRank(id, rank) {
       return db.run('UPDATE items SET rank = ? WHERE id = ?', JSON.stringify(rank), id).changes > 0;

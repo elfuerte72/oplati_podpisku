@@ -85,11 +85,13 @@ describe('каналы и автодрафты (миграция 0004)', () => {
     expect(store.posts.channelCopies(id)).toEqual([]);
   });
 
-  it('неразобранные автодрафты считаются по площадке и статусу', () => {
+  it('неразобранные автодрафты — только ПОКАЗАННЫЕ владельцу, по площадке', () => {
     const { store } = freshStore();
     previewed(store, 'а', 'auto');
     previewed(store, 'б', 'auto');
     previewed(store, 'в', 'owner');
+    // Застрявший на сборке черновик ждёт уборки, а не решения: потолок он не забивает.
+    store.posts.create({ platform: 'telegram', origin: 'auto' });
     const rejected = previewed(store, 'г', 'auto');
     store.posts.transition({
       id: rejected,
@@ -101,14 +103,29 @@ describe('каналы и автодрафты (миграция 0004)', () => {
     expect(store.posts.countPendingAuto('threads')).toBe(0);
   });
 
-  it('идею под автодрафт занимают один раз, и она уходит из выборки', () => {
+  it('идею берут в работу один раз, она уходит из выборки и возвращается по release', () => {
     const { store } = freshStore();
     const item = store.items.upsertByUrl({ sourceKind: 'rss', url: 'https://news.example/a', title: 'A' });
-    expect(store.items.claimAuto(item.id)).toBe(true);
-    expect(store.items.claimAuto(item.id)).toBe(false);
-    expect(store.items.findById(item.id)?.autoAt).toBeDefined();
-    expect(store.items.listRecent({ onlyNotAuto: true })).toEqual([]);
+    expect(store.items.claim(item.id)).toBe(true);
+    expect(store.items.claim(item.id)).toBe(false);
+    expect(store.items.findById(item.id)?.takenAt).toBeDefined();
+    expect(store.items.listRecent({ onlyNotTaken: true })).toEqual([]);
     expect(store.items.listRecent({}).map((i) => i.id)).toEqual([item.id]);
+    store.items.release(item.id);
+    expect(store.items.claim(item.id)).toBe(true);
+  });
+
+  it('копия без НАСТОЯЩЕГО решения владельца на исходнике не создаётся', () => {
+    // Иначе гейт копии замыкался бы на себя: код пишет решение и сам его проверяет.
+    const { store } = freshStore();
+    const id = previewed(store);
+    const copy = store.posts.createChannelCopy({
+      sourceId: id,
+      channel: 'second',
+      approve: { kind: 'approve', actor: 'owner', actorId: OWNER, textSha: textShaOf('тело поста') },
+    });
+    expect(copy.ok).toBe(false);
+    expect(store.posts.channelCopies(id)).toEqual([]);
   });
 
   it('пост «в оба» в статистике содержания — один пост, в счётчиках каналов — свой каждому', () => {

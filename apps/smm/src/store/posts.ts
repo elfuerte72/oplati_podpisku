@@ -161,7 +161,7 @@ export interface PostsRepo {
    */
   recentPublished(options?: { platform?: Platform; limit?: number; excludeId?: string }): Post[];
   findByMessageId(channel: ChannelKey, messageId: number): Post | undefined;
-  /** Сколько черновиков по расписанию площадки ждут решения владельца. */
+  /** Сколько показанных черновиков по расписанию площадки ждут решения владельца. */
   countPendingAuto(platform: Platform): number;
   /** Копии поста для других каналов («в оба»). */
   channelCopies(parentId: string): Post[];
@@ -427,10 +427,12 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
     },
 
     countPendingAuto(platform) {
+      // Считаются только ПОКАЗАННЫЕ владельцу черновики: застрявший на сборке
+      // пост ждёт не решения, а уборки, и забивал бы потолок навсегда.
       const row = db.get<{ n: number }>(
         `SELECT COUNT(*) AS n FROM posts
           WHERE origin = 'auto' AND platform = ?
-            AND status IN ('draft', 'linted', 'reviewed', 'previewed', 'handed')`,
+            AND status IN ('previewed', 'handed')`,
         platform,
       );
       return row?.n ?? 0;
@@ -457,6 +459,19 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
         // Копия — ТОТ ЖЕ текст: отпечаток обязан совпасть с тем, что владелец
         // видел и подтвердил. Разошёлся — подтверждения под копией нет.
         if (input.approve.textSha !== source.textSha) return { ok: false, actual: source.status };
+        // Решение под копией выводится из НАСТОЯЩЕГО решения владельца на
+        // исходнике: без него проверка гейта копии замыкалась бы на саму себя
+        // (код пишет решение и сам же его проверяет — ревью 24.09.2026).
+        const owned = db.get<{ found: number }>(
+          `SELECT 1 AS found FROM decisions
+            WHERE post_id = ? AND kind = 'approve' AND actor = 'owner'
+              AND actor_id = ? AND text_sha = ?
+            LIMIT 1`,
+          source.id,
+          input.approve.actorId ?? null,
+          source.textSha,
+        );
+        if (input.approve.actor !== 'owner' || owned === undefined) return { ok: false, actual: source.status };
 
         const at = nowIso();
         const id = ulid(now().getTime());
@@ -497,13 +512,17 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
           if (!moved.ok) throw new Error(`копия ${id} не прошла ${from} → ${step.to}`);
           from = step.to;
         }
-        return repo.transition({
+        const approved = repo.transition({
           id,
           from: ['previewed'],
           to: 'approved',
           decision: input.approve,
           ...(input.publishAt === undefined ? {} : { patch: { publishAt: input.publishAt } }),
         });
+        // Несостоявшийся последний шаг откатывает ВСЮ копию: «показанная»
+        // копия в /queue предлагала бы опубликовать уже вышедший пост ещё раз.
+        if (!approved.ok) throw new Error(`копия ${id} не подтвердилась: ${approved.actual ?? 'нет поста'}`);
+        return approved;
       });
     },
 

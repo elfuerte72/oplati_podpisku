@@ -149,8 +149,8 @@ export interface Item {
   readonly seenAt: string;
   readonly rank?: unknown;
   readonly verdict?: 'written' | 'skipped' | 'offtopic';
-  /** Когда идею взял автодрафт: второй раз её в слот не берут. */
-  readonly autoAt?: string;
+  /** Когда идею взяли в работу (черновик по расписанию или «Написать»). */
+  readonly takenAt?: string;
 }
 
 export interface NewItem {

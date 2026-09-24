@@ -69,10 +69,13 @@ export const TEXTS = {
   /** Почему кнопки канала нет под превью. */
   channelRefused: (title: string, reason: string): string => `${title}: не публикую — ${reason}.`,
   autoDraftFailed: (platform: 'telegram' | 'threads', slot: string, reason: string): string =>
-    `Черновик ${platform === 'threads' ? 'для Threads ' : ''}на ${slot} не собрался: ${reason}`,
+    `Черновик ${platform === 'threads' ? 'для Threads ' : ''}на ${slot}: ${reason}`,
+  autoDraftPaused: (platform: 'telegram' | 'threads', max: number): string =>
+    `Черновики ${platform === 'threads' ? 'для Threads ' : ''}по расписанию на паузе: ждут решения ${max}. ` +
+    'Разбери их в /queue — и расписание продолжится.',
   autoDraftReady: (platform: 'telegram' | 'threads', slot: string): string =>
     platform === 'threads'
-      ? `Черновик для Threads на ${slot} по расписанию.`
+      ? `Черновик для Threads на ${slot} по расписанию — выше.`
       : `Черновик на ${slot} по расписанию. Так пост уйдёт в канал.`,
   askEditChoice: 'Что делаем?',
   askEditText: 'Скажи, что поменять.',

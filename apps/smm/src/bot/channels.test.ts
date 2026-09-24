@@ -43,6 +43,9 @@ describe('правило рекламы канала', () => {
     expect(mentionsProduct({ body: AD_BODY })).toBe(true);
     expect(mentionsProduct({ body: 'пиши @oplatishkaa_bot' })).toBe(true);
     expect(mentionsProduct({ body: GOOD_DRAFT, buttonUrl: 'https://t.me/oplatishkaa_bot?start=x' })).toBe(true);
+    // Латиница и сайт — тоже реклама: в канал без рекламы не проходят (ревью 24.09).
+    expect(mentionsProduct({ body: 'сервис Oplatishka помогает' })).toBe(true);
+    expect(mentionsProduct({ body: GOOD_DRAFT, buttonUrl: 'https://www.oplatishka.com/pay' })).toBe(true);
   });
 
   it('канал без рекламы не берёт текст с упоминанием, основной берёт', () => {

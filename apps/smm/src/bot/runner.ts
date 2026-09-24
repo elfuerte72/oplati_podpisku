@@ -196,14 +196,30 @@ export function createRunner(deps: RunnerDeps): Runner {
     const platform = args.platform === 'threads' ? 'threads' : 'telegram';
     const origin = args.origin === 'auto' ? 'auto' : 'owner';
 
+    // Идея берётся в работу ОДНИМ условным UPDATE и для черновика по
+    // расписанию, и для «Написать»: кнопка из дайджеста, отправленного до
+    // слота, иначе писала бы ту же тему второй раз (ревью 24.09.2026).
+    if (itemId !== undefined && !deps.store.items.claim(itemId)) {
+      return failed('source', 'idea_taken', 'эту тему уже взяли в работу', at());
+    }
+    // Ручной разбор, не открывший статью, возвращает тему в дайджест: владелец
+    // может попробовать ещё раз. Черновик по расписанию тему НЕ возвращает —
+    // иначе упавшая статья бралась бы в каждый следующий слот.
+    const giveBack = (): void => {
+      if (itemId !== undefined && origin === 'owner') deps.store.items.release(itemId);
+    };
+
     const resolved = await resolveSource(input, deps.resolve ?? {});
     if (resolved.kind === 'refused') {
+      giveBack();
       return failed('source', resolved.reason, resolved.message, at());
     }
     if (resolved.kind === 'failed') {
+      giveBack();
       return failed('source', resolved.reason, resolved.message, at());
     }
     if (resolved.kind === 'topic') {
+      giveBack();
       return {
         kind: 'pipeline_done',
         at: at(),
@@ -235,7 +251,10 @@ export function createRunner(deps: RunnerDeps): Runner {
             sourceUrl: article.url,
             sourceTitle: article.title,
           });
-    if (post === undefined) return failed('source', 'no_post', 'пост не нашёлся', at(), existingId);
+    if (post === undefined) {
+      giveBack();
+      return failed('source', 'no_post', 'пост не нашёлся', at(), existingId);
+    }
 
     // Текст статьи кладётся в досье-заготовку: следующий шаг разбирает его
     // моделью, и качать страницу заново не придётся.
@@ -404,7 +423,10 @@ export function createRunner(deps: RunnerDeps): Runner {
         hasImage: post.imagePath !== undefined,
         postId,
         history: historyOf(deps.store, post.platform),
-        ...(args.noAds === true ? { noAds: true } : {}),
+        // Черновик по расписанию — без рекламы ВСЕГДА, а не только при первой
+        // сборке: «Другой угол» пересобирает текст, и правило обязано ехать с
+        // постом, а не с аргументом одного вызова (ревью 24.09.2026).
+        ...(args.noAds === true || post.origin === 'auto' ? { noAds: true } : {}),
       },
       deps.pipeline,
     );
@@ -709,40 +731,14 @@ export function createRunner(deps: RunnerDeps): Runner {
     // Право на неё выводится из уже проверенного подтверждения исходника: тот
     // же клик владельца, тот же отпечаток.
     for (const channel of rest) {
-      const copy = deps.store.posts.createChannelCopy({
-        sourceId: post.id,
-        channel: channel.key,
-        approve: {
-          kind: 'approve',
-          actor: 'owner',
-          actorId: deps.ownerId,
-          ...(post.textSha === undefined ? {} : { textSha: post.textSha }),
-          payload: { channels: [channel.key], copyOf: post.id },
-        },
-      });
-      if (!copy.ok) {
-        deps.logger.error({ postId, channel: channel.key, actual: copy.actual }, 'копия для второго канала не создалась');
-        notSent.push(`${channel.title}: копия не создалась`);
-        continue;
+      // Первый канал УЖЕ получил пост: сбой второго не должен превращаться в
+      // «публикация не состоялась» — владелец узнает ровно, что вышло, а что нет.
+      try {
+        await publishCopy(post, channel, sent, notSent);
+      } catch (error) {
+        deps.logger.error({ err: error, postId, channel: channel.key }, 'публикация во второй канал сорвалась');
+        notSent.push(`${channel.title}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      if (!deps.store.posts.isApprovedForPublish(copy.post.id, deps.ownerId)) {
-        notSent.push(`${channel.title}: нет подтверждения под копией`);
-        continue;
-      }
-      const result = await publishTo(copy.post, channel);
-      if (result.ok) {
-        sent.push(channel.title);
-        continue;
-      }
-      notSent.push(`${channel.title}: ${result.message ?? 'не отправилось'}`);
-      // Неотправленная копия не должна висеть «подтверждённой»: её никто не
-      // опубликует, а сторож очереди краснел бы на неё вечно.
-      deps.store.posts.transition({
-        id: copy.post.id,
-        from: ['approved'],
-        to: 'rejected',
-        decision: { kind: 'reject', actor: 'code', payload: { reason: result.message ?? 'send_failed' } },
-      });
     }
 
     const summary = [
@@ -750,6 +746,46 @@ export function createRunner(deps: RunnerDeps): Runner {
       ...(notSent.length === 0 ? [] : [`Не ушло — ${notSent.join('; ')}.`]),
     ].join('\n');
     return { ok: true, summary };
+  }
+
+  /** Копия поста для ещё одного канала и её отправка. Бросает только на неожиданном. */
+  async function publishCopy(post: Post, channel: ChannelTarget, sent: string[], notSent: string[]): Promise<void> {
+    // Право на копию выводится из УЖЕ проверенного подтверждения исходника:
+    // хранилище сверит, что под этим текстом есть решение владельца.
+    const copy = deps.store.posts.createChannelCopy({
+      sourceId: post.id,
+      channel: channel.key,
+      approve: {
+        kind: 'approve',
+        actor: 'owner',
+        actorId: deps.ownerId,
+        ...(post.textSha === undefined ? {} : { textSha: post.textSha }),
+        payload: { channels: [channel.key], copyOf: post.id },
+      },
+    });
+    if (!copy.ok) {
+      deps.logger.error({ postId: post.id, channel: channel.key, actual: copy.actual }, 'копия для второго канала не создалась');
+      notSent.push(`${channel.title}: копия не создалась`);
+      return;
+    }
+    if (!deps.store.posts.isApprovedForPublish(copy.post.id, deps.ownerId)) {
+      notSent.push(`${channel.title}: нет подтверждения под копией`);
+      return;
+    }
+    const result = await publishTo(copy.post, channel);
+    if (result.ok) {
+      sent.push(channel.title);
+      return;
+    }
+    notSent.push(`${channel.title}: ${result.message ?? 'не отправилось'}`);
+    // Неотправленная копия не должна висеть «подтверждённой»: её никто не
+    // опубликует, а в /queue она выглядела бы брошенным черновиком.
+    deps.store.posts.transition({
+      id: copy.post.id,
+      from: ['approved'],
+      to: 'rejected',
+      decision: { kind: 'reject', actor: 'code', payload: { reason: result.message ?? 'send_failed' } },
+    });
   }
 
   return runner;
