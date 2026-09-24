@@ -1085,7 +1085,6 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         onEditContacts={onEditContacts}
         onOpenIntro={onOpenIntro}
         onContactSupport={supportAction}
-        onOpenExternalLink={openExternalLink}
         onShare={shareLink}
       />
     ),

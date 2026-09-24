@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 
-import { SITE_ORIGIN } from '@/components/info/constants';
 import { formatRub, formatSinceMonth, formatUsd } from '@/components/comic/format';
 import { IconArrowRight } from '@/components/comic/icons';
 import { track } from '@/lib/analytics/client';
@@ -66,7 +65,6 @@ export function ProfileTab({
   onEditContacts,
   onOpenIntro,
   onContactSupport,
-  onOpenExternalLink,
   onShare,
 }: {
   profile: CabinetProfile;
@@ -78,7 +76,6 @@ export function ProfileTab({
   onOpenIntro: () => void;
   /** Закрыть Mini App — клиент попадает в чат бота. Не задан — пункта нет. */
   onContactSupport?: (() => void) | undefined;
-  onOpenExternalLink: (url: string) => void;
   /** Открыть шеринг Telegram (или окно браузера вне Telegram). */
   onShare: (url: string) => void;
 }) {
@@ -227,29 +224,6 @@ export function ProfileTab({
           />
         )}
       </section>
-
-      {/* Документы — те же публичные страницы сайта (требование платёжного
-          провайдера). Абсолютные ссылки: кабинет живёт на другом хосте;
-          открываем внешним браузером через tg.openLink. */}
-      <nav
-        aria-label="Документы"
-        className="flex flex-wrap items-center justify-center gap-x-3.5 gap-y-1 pb-2 font-body text-[13px] text-[var(--text-muted)]"
-      >
-        {[
-          { href: `${SITE_ORIGIN}/about`, label: 'О сервисе' },
-          { href: `${SITE_ORIGIN}/terms`, label: 'Условия' },
-          { href: `${SITE_ORIGIN}/privacy`, label: 'Конфиденциальность' },
-        ].map((doc) => (
-          <button
-            key={doc.href}
-            type="button"
-            onClick={() => onOpenExternalLink(doc.href)}
-            className="min-h-9 underline"
-          >
-            {doc.label}
-          </button>
-        ))}
-      </nav>
     </div>
   );
 }

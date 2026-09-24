@@ -7,6 +7,7 @@ import { PROMO_CODE_MAX_LENGTH } from '@oplati/types';
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
 import { ContactCard, useContacts } from '@/components/contacts/ContactCard';
+import { SITE_ORIGIN } from '@/components/info/constants';
 import { isPhoneRequiredForAmount } from '@/lib/contacts/phone';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
 import { IconCheck } from '@/components/comic/icons';
@@ -1319,6 +1320,28 @@ export function OrderDetailView({
             payInFlight={busy === 'pay'}
             onCancel={onCancel}
           />
+          {/* Условия и политика — здесь, у оплаты, а не кнопками в «Профиле»:
+              в Mini App документы ищут там, где принимают деньги, как в любом
+              платёжном экране. Политику Telegram ещё и сам показывает в меню
+              Mini App — по ссылке из @BotFather. */}
+          <p className="text-center font-body text-xs text-[var(--text-muted)]">
+            Оплачивая, ты принимаешь{' '}
+            <button
+              type="button"
+              onClick={() => onOpenExternalLink(`${SITE_ORIGIN}/terms`)}
+              className="underline underline-offset-2"
+            >
+              условия сервиса
+            </button>{' '}
+            и{' '}
+            <button
+              type="button"
+              onClick={() => onOpenExternalLink(`${SITE_ORIGIN}/privacy`)}
+              className="underline underline-offset-2"
+            >
+              политику конфиденциальности
+            </button>
+          </p>
         </div>
       )}
     </div>

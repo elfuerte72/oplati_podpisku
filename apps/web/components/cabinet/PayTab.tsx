@@ -1,5 +1,8 @@
 'use client';
 
+import Image from 'next/image';
+
+import { IconArrowRight } from '@/components/comic/icons';
 import type { CatalogService } from '@/lib/catalog/build';
 
 import type { OrderSummary } from './cabinet-api';
@@ -66,15 +69,46 @@ export function PayTab({
 
       <CatalogGrid catalog={catalog} onSelect={onOpenService} />
 
-      {onContactSupport && (
-        <button
-          type="button"
-          onClick={onContactSupport}
-          className="flex min-h-11 items-center self-center font-body text-sm text-[var(--text-muted)] underline underline-offset-[3px]"
-        >
-          Нет нужного сервиса? Напиши в поддержку
-        </button>
-      )}
+      {onContactSupport && <SupportCard onClick={onContactSupport} />}
     </div>
+  );
+}
+
+/**
+ * «Нет нужного сервиса?» — карточкой в стиле бренда, а не строкой текста:
+ * это единственный выход для клиента, который не нашёл свой сервис в
+ * каталоге, и серой ссылкой под каталогом его не замечали. Маскот в гарнитуре
+ * (бюст из `support.webp`, 18 КБ вместо 120) стоит на нижней кромке — других
+ * маскотов на «Оплате» нет, правило «один на экране» соблюдено.
+ */
+function SupportCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-end gap-3 overflow-hidden rounded-[18px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-deep)] pr-3.5 text-left shadow-[var(--shadow-comic)] transition-[transform,box-shadow] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+    >
+      <Image
+        src="/mascot/support-bust.webp"
+        alt=""
+        width={96}
+        height={96}
+        className="size-24 shrink-0 self-end"
+      />
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-2 self-center py-3.5">
+        <span>
+          <span className="block font-display text-[18px] leading-tight font-bold text-[var(--color-paper)]">
+            Нет нужного сервиса?
+          </span>
+          <span className="mt-0.5 block font-body text-[13px] leading-snug text-[color-mix(in_srgb,var(--color-paper)_82%,transparent)]">
+            Напиши нам — проверим, можно ли его оплатить
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)] px-3 py-1.5 font-display text-sm font-bold text-[var(--color-ink)]">
+          Написать в поддержку
+          <IconArrowRight size={14} />
+        </span>
+      </span>
+    </button>
   );
 }
