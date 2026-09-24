@@ -23,7 +23,11 @@ export type ProfileSaveResult = { ok: true } | { ok: false; message: string };
 
 type Props = {
   profile: CabinetProfile;
-  onBack: () => void;
+  /**
+   * «В кабинет». Не задан — экран открыт листом (трек miniapp-tabs, тикет 09):
+   * выход из листа — его крестик и системная «Назад», своя кнопка не нужна.
+   */
+  onBack?: (() => void) | undefined;
   onSave: (contacts: { email?: string; phone?: string }) => Promise<ProfileSaveResult>;
   /** requestContact SDK; не задан (старый клиент Telegram) → кнопки нет. */
   onRequestTelegramPhone?: (() => void) | undefined;
@@ -102,17 +106,25 @@ export function ProfileView({ profile, onBack, onSave, onRequestTelegramPhone }:
 
   return (
     <div className="space-y-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)]"
-      >
-        <IconArrowLeft size={16} />
-        В кабинет
-      </button>
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)]"
+        >
+          <IconArrowLeft size={16} />
+          В кабинет
+        </button>
+      )}
 
-      <div className="space-y-4 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-5 shadow-[var(--shadow-comic)]">
-        <h2 className="font-display text-xl font-bold text-[var(--text)]">Профиль</h2>
+      <div
+        className={
+          onBack
+            ? 'space-y-4 rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-5 shadow-[var(--shadow-comic)]'
+            : 'space-y-4'
+        }
+      >
+        {onBack && <h2 className="font-display text-xl font-bold text-[var(--text)]">Профиль</h2>}
 
         <Field label="Имя" note="из Telegram">
           <p className="mt-1.5 font-body text-sm text-[var(--text)]">

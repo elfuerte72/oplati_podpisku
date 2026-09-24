@@ -1,25 +1,25 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { PROMO_CODE_MAX_LENGTH } from '@oplati/types';
 
 import { ServiceInstructions } from '@/components/catalog/ServiceInstructions';
 import { ComicButton } from '@/components/comic/ComicButton';
 import { ContactCard, useContacts } from '@/components/contacts/ContactCard';
+import { SITE_ORIGIN } from '@/components/info/constants';
 import { isPhoneRequiredForAmount } from '@/lib/contacts/phone';
 import { formatExpires, formatRub, formatUsd } from '@/components/comic/format';
-import { IconArrowLeft, IconCheck } from '@/components/comic/icons';
+import { IconCheck } from '@/components/comic/icons';
 import {
-  PAYMENT_ISSUE_CHECKLIST,
-  PAYMENT_ISSUE_LABELS,
-  PAYMENT_ISSUE_TYPES,
   PAYMENT_PROBLEM_LABELS,
   PAYMENT_PROBLEM_TYPES,
   type PaymentIssueType,
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
+import { buildPathSteps, siteHostFromUrl, type PathStage } from '@/lib/cabinet/path-steps';
+import { PAY_BLOCK_TEXT, payBlockReason, type PayBlockReason } from '@/lib/cabinet/pay-block';
 import { track } from '@/lib/analytics/client';
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
 import {
@@ -27,7 +27,11 @@ import {
   SUBSCRIPTION_ACTIVATED_EVENT,
 } from '@/lib/cabinet/types';
 
+import { PathSteps } from './PathSteps';
+import { PaymentIssueForm, paymentIssueSentText } from './PaymentIssueForm';
 import { StatusBadge } from './StatusBadge';
+import type { TelegramMainButton } from './telegram';
+import { useMainButton } from './use-main-button';
 import type {
   CancelOrderResult,
   OrderDetail,
@@ -51,7 +55,16 @@ type Props = {
   phoneSource: string | null;
   /** Порог «телефон обязателен» в целых рублях; null — фича выключена. */
   phoneRequiredFromRub: number | null;
-  onBack: () => void;
+  /**
+   * Клиент ушёл на страницу оплаты, и лист ждёт подтверждения (трек
+   * miniapp-tabs, тикет 08): опрос статуса идёт в `CabinetClient`.
+   */
+  awaitingPayment?: boolean;
+  /**
+   * Нативная кнопка Telegram для «Оплатить» (тикет 05). `null` — её нет
+   * (старый клиент, стенд): лист рисует свою кнопку в закреплённом низу.
+   */
+  mainButton?: TelegramMainButton | null;
   onPay: (
     contactsToSend: { email?: string; phone?: string },
     useBonus: boolean,
@@ -338,7 +351,7 @@ function PromoCodeBlock({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="font-display text-xs font-bold text-[var(--link)]"
+        className="min-h-9 self-start font-body text-sm text-[var(--accent)]"
       >
         Есть промокод?
       </button>
@@ -422,18 +435,18 @@ function HowPriceComputed({
       : null;
   return (
     <details
-      className="group mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5"
+      className="group mt-1.5"
       onToggle={(e) => {
         if (e.currentTarget.open) {
           track('price_breakdown_open', { surface: 'cabinet' });
         }
       }}
     >
-      <summary className="cursor-pointer list-none font-display text-sm font-bold text-[var(--text)]">
-        <span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>
+      <summary className="inline-flex min-h-9 cursor-pointer list-none items-center gap-1 font-body text-sm text-[var(--accent)] [&::-webkit-details-marker]:hidden">
         Как рассчитана сумма
+        <span aria-hidden className="inline-block transition-transform group-open:rotate-90">›</span>
       </summary>
-      <ul className="mt-2 space-y-1 font-body text-xs leading-snug text-[var(--text-muted)]">
+      <ul className="mt-1 space-y-1 rounded-[12px] bg-[var(--surface-2)] px-3.5 py-2.5 font-body text-xs leading-snug text-[var(--text-muted)]">
         {usdAmount !== null && (
           <li>
             Цена подписки — {formatUsd(usdAmount)}: столько стоит сервис в США,
@@ -522,32 +535,11 @@ function AfterCardBlock({
   onSubscriptionPaid: () => Promise<SubscriptionPaidResult>;
 }) {
   const [issueOpen, setIssueOpen] = useState(false);
-  const [issueType, setIssueType] = useState<PaymentIssueType>('card_declined');
-  const [comment, setComment] = useState('');
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState<DetailActionMessage | null>(null);
 
   const status = afterCardStatus(order);
   const view = AFTER_CARD_STATUS_VIEW[status];
-
-  const sendIssue = async () => {
-    if (sending) return;
-    setSending(true);
-    setNote(null);
-    const res = await onReportIssue(issueType, comment.trim() || undefined);
-    setSending(false);
-    if (res.ok) {
-      setIssueOpen(false);
-      setNote({
-        tone: 'ok',
-        text: res.duplicate
-          ? 'Обращение уже у оператора — он свяжется с тобой в Telegram.'
-          : 'Передал оператору всё по заказу. Он напишет тебе в Telegram.',
-      });
-    } else {
-      setNote({ tone: 'err', text: res.message });
-    }
-  };
 
   const confirmPaid = async () => {
     if (sending) return;
@@ -585,8 +577,8 @@ function AfterCardBlock({
 
       <p className="mt-2 font-body text-sm leading-snug text-[var(--text-muted)]">
         Карта выпущена и пополнена. Последний шаг делаешь ты: открой сайт сервиса, войди в
-        свой аккаунт, оформи подписку и заплати этой картой. Номер, срок и CVC — на главном
-        экране кабинета и в сообщении бота.
+        свой аккаунт, оформи подписку и заплати этой картой. Номер, срок, CVC и адрес
+        плательщика — во вкладке «Карта» и в сообщении бота.
       </p>
 
       <ServiceInstructions instructions={order.instructions} className="mt-3" />
@@ -624,70 +616,27 @@ function AfterCardBlock({
             </span>
           </ComicButton>
         )}
+        {/* Нейтральным цветом (находка П15): красный — только у отказа, а
+            здесь клиент просит помощи. */}
         <button
           type="button"
           onClick={() => setIssueOpen((v) => !v)}
-          className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline"
+          className="min-h-10 font-body text-sm text-[var(--text-muted)] underline underline-offset-[3px]"
         >
           Не проходит оплата?
         </button>
       </div>
 
       {issueOpen && (
-        <div className="mt-3 rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] p-3.5">
-          <p className="font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
-            Сначала проверь
-          </p>
-          <ul className="mt-1.5 space-y-1">
-            {PAYMENT_ISSUE_CHECKLIST.map((item) => (
-              <li key={item} className="flex gap-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
-                <span aria-hidden className="text-[var(--accent)]">•</span>
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-
-          <fieldset className="mt-3">
-            <legend className="font-display text-xs font-bold uppercase tracking-wide text-[var(--text)]">
-              Не помогло? Что случилось:
-            </legend>
-            <div className="mt-1.5 space-y-1">
-              {PAYMENT_ISSUE_TYPES.map((type) => (
-                <label key={type} className="flex items-center gap-2 font-body text-sm text-[var(--text)]">
-                  <input
-                    type="radio"
-                    name="issue-type"
-                    checked={issueType === type}
-                    onChange={() => setIssueType(type)}
-                    className="accent-[var(--accent)]"
-                  />
-                  {PAYMENT_ISSUE_LABELS[type]}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={2}
-            maxLength={1000}
-            placeholder="Комментарий (необязательно)"
-            aria-label="Комментарий к проблеме"
-            className="mt-2.5 w-full resize-none rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--bg)] px-3 py-2 font-body text-sm text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none"
+        <div className="mt-3">
+          <PaymentIssueForm
+            onReport={onReportIssue}
+            onSent={(duplicate) => {
+              setIssueOpen(false);
+              setNote({ tone: 'ok', text: paymentIssueSentText(duplicate) });
+            }}
+            onError={(message) => setNote({ tone: 'err', text: message })}
           />
-
-          <ComicButton
-            variant="primary"
-            className="mt-2 w-full px-4 py-2.5 text-sm"
-            disabled={sending}
-            onClick={() => void sendIssue()}
-          >
-            {sending ? 'Отправляю…' : 'Отправить в поддержку'}
-          </ComicButton>
-          <p className="mt-1.5 font-body text-[11px] leading-snug text-[var(--text-muted)]">
-            Оператору автоматически уйдут номер заказа, сервис, тариф, сумма и статус карты.
-          </p>
         </div>
       )}
 
@@ -755,11 +704,13 @@ function PaymentProblemBlock({
   };
 
   return (
-    <div className="mt-4">
+    <div>
+      {/* Нейтральным цветом (находка П15): красный остаётся только у
+          подтверждения отмены — здесь клиент просит помощи, а не отказывается. */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline"
+        className="min-h-10 font-body text-sm text-[var(--text-muted)] underline underline-offset-[3px]"
       >
         Проблема с оплатой?
       </button>
@@ -836,9 +787,10 @@ function PaymentProblemBlock({
  * может (API отмены инвойса у провайдеров нет) — оплата по ней после отмены
  * означает ручной возврат. Барьер тут дешевле разбора.
  *
- * Кнопка стоит под «Оплатить» и красится цветом отказа (`--color-stamp`,
- * решение владельца 2026-09-07): приглушённая серая читалась как подпись, а не
- * как действие. Заливки у неё нет — заметное действие на экране одно, «Оплатить».
+ * Кнопка стоит под «Оплатить» в закреплённом низу листа. С вкладками (трек
+ * miniapp-tabs, тикет 05, находка П15) она нейтрального цвета и подчёркнута —
+ * читается как действие, но не спорит с «Оплатить»; цветом отказа
+ * (`--color-stamp`) красится только подтверждение «Да, отменить».
  */
 function CancelOrderBlock({
   invoiceIssued,
@@ -873,7 +825,7 @@ function CancelOrderBlock({
   };
 
   return (
-    <div className="mt-4 border-t-2 border-dashed border-[var(--shadow-ink)] pt-3">
+    <div className="flex flex-col items-center">
       {!confirming && (
         <button
           type="button"
@@ -882,14 +834,14 @@ function CancelOrderBlock({
             setErrorText(null);
             setConfirming(true);
           }}
-          className="font-display text-sm font-bold text-[var(--color-stamp)] underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex min-h-11 items-center font-body text-sm text-[var(--text-muted)] underline underline-offset-[3px] disabled:cursor-not-allowed disabled:opacity-50"
         >
           Отменить заказ
         </button>
       )}
 
       {confirming && (
-        <div className="space-y-2.5">
+        <div className="w-full space-y-2.5 pt-1">
           <p className="font-body text-sm leading-snug text-[var(--color-stamp)]">
             {invoiceIssued
               ? 'Счёт уже выставлен. Если ты его оплатил — не отменяй: заказ подтвердится сам. Отменить заказ и закрыть счёт?'
@@ -927,11 +879,24 @@ function CancelOrderBlock({
   );
 }
 
+/** Какой шаг пути показывать на листе заказа; `null` — шагов нет. */
+function pathStageFor(status: string): PathStage | null {
+  if (status === 'ready_for_payment' || status === 'pending_payment') return 'pay';
+  if (status === 'paid' || status === 'in_fulfillment') return 'issuing';
+  return null;
+}
+
 /**
- * Экран деталей заказа: сводка, кнопка «Оплатить <сумма>» (финальная сумма — на
- * кнопке, ТЗ §3), таймлайн событий, платежи и блок «что дальше» после выпуска
- * карты. Оплата проксируется наверх в CabinetClient (там Telegram WebApp для
- * открытия платёжной ссылки).
+ * Лист заказа: что будет после оплаты (три шага), чек, промокод, контакты,
+ * баллы и кнопка «Оплатить <сумма>» (финальная сумма — на кнопке, ТЗ §3),
+ * закреплённая внизу листа или нативная `MainButton` Telegram. Ниже — платежи,
+ * история и блок «что дальше» после выпуска карты. Оплата проксируется наверх в
+ * CabinetClient (там Telegram WebApp для открытия платёжной ссылки).
+ *
+ * С вкладками (трек miniapp-tabs, тикет 05) кнопка оплаты больше не серая без
+ * объяснения: нажатие без почты (или телефона от порога) ведёт к полю и
+ * говорит, чего не хватает (находка П8 — все семь клиентов, не дошедших до
+ * счёта, не заполнили почту).
  */
 export function OrderDetailView({
   order,
@@ -942,7 +907,8 @@ export function OrderDetailView({
   savedPhone,
   phoneSource,
   phoneRequiredFromRub,
-  onBack,
+  awaitingPayment = false,
+  mainButton = null,
   onPay,
   onCheckPromo,
   onOpenExternalLink,
@@ -971,6 +937,11 @@ export function OrderDetailView({
     bonusOffer: OrderDetail['bonusOffer'];
   } | null>(null);
   const [promoBusy, setPromoBusy] = useState(false);
+  // Чего не хватило при последнем нажатии «Оплатить» (тикет 05). Текст висит,
+  // пока поле не станет валидным, — см. `emailError`/`phoneError` ниже.
+  const [blocked, setBlocked] = useState<PayBlockReason | null>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
   // При применённом промокоде баллы считаются от остатка маржи — берём
   // предложение из ответа проверки, а не из снапшота заказа.
   const bonusOffer = (promo ? promo.bonusOffer : order.bonusOffer) ?? null;
@@ -1022,7 +993,11 @@ export function OrderDetailView({
   // Сравнение суммы с порогом — общий isPhoneRequiredForAmount (одно место
   // конверсии рубли→копейки на гейт и обе плашки).
   const phoneRequired = isPhoneRequiredForAmount(order.amountKopecks, phoneRequiredFromRub);
-  const contactsOk = contacts.email.ok && (!phoneRequired || contacts.phone.ok);
+  const blockReason = payBlockReason({
+    emailOk: contacts.email.ok,
+    phoneRequired,
+    phoneOk: contacts.phone.ok,
+  });
 
   const handlePay = () => {
     const toSend = {
@@ -1039,34 +1014,96 @@ export function OrderDetailView({
     );
   };
 
+  /**
+   * Нажатие «Оплатить». Кнопка не отключается из-за контактов: без почты (или
+   * телефона от порога) нажатие ведёт к полю, ставит в него фокус и называет,
+   * чего не хватает. Счёт не запрашивается — гейт всё равно отказал бы.
+   */
+  const onPayTap = () => {
+    if (busy !== null) return;
+    if (blockReason) {
+      track('pay_blocked_tap', { reason: blockReason });
+      setBlocked(blockReason);
+      const field = (blockReason === 'email' ? emailRef : phoneRef).current;
+      field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      field?.focus({ preventScroll: true });
+      return;
+    }
+    setBlocked(null);
+    handlePay();
+  };
+
+  const payLabel =
+    busy === 'pay'
+      ? 'Готовлю счёт…'
+      : payableKopecks !== null
+        ? `Оплатить ${formatRub(payableKopecks)}`
+        : 'Оплатить';
+
+  useMainButton({
+    button: mainButton,
+    visible: order.payable,
+    text: payLabel,
+    busy: busy === 'pay',
+    onClick: onPayTap,
+  });
+
+  const stage = pathStageFor(order.status);
+  const usdCents =
+    order.originalCurrency === 'USD' && order.originalAmount !== null && order.originalAmount > 0
+      ? order.originalAmount
+      : null;
+  const paidKopecks =
+    order.amountKopecks !== null
+      ? order.amountKopecks - (order.bonus?.discountKopecks ?? 0) - (order.promo?.discountKopecks ?? 0)
+      : null;
+  const steps = stage
+    ? buildPathSteps({
+        stage,
+        service: order.service,
+        payText:
+          stage === 'pay'
+            ? payableKopecks !== null
+              ? formatRub(payableKopecks)
+              : null
+            : paidKopecks !== null
+              ? formatRub(paidKopecks)
+              : null,
+        cardText: usdCents !== null ? formatUsd(usdCents) : null,
+        siteHost: siteHostFromUrl(order.instructions?.paymentUrl),
+        topUp: hasActiveCard,
+      })
+    : null;
+
   return (
-    <div className="space-y-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)]"
-      >
-        <IconArrowLeft size={16} />
-        В кабинет
-      </button>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-body text-sm text-[var(--text-muted)]">{order.shortId}</span>
+        <StatusBadge status={order.status} label={order.statusLabel} />
+      </div>
 
-      <div
-        className={[
-          'bg-[var(--surface)] p-5',
-          'rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] shadow-[var(--shadow-comic)]',
-        ].join(' ')}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <span className="font-display text-sm font-bold text-[var(--text-muted)]">
-            {order.shortId}
+      {awaitingPayment && order.status === 'pending_payment' && (
+        <p
+          role="status"
+          className="flex items-center gap-2 rounded-[12px] border-2 border-[var(--color-teal-deep)] px-3 py-2 font-body text-sm text-[var(--text)]"
+        >
+          <span aria-hidden className="flex gap-1">
+            {['0s', '0.15s', '0.3s'].map((delay) => (
+              <span
+                key={delay}
+                className="size-1.5 rounded-full bg-[var(--accent)] motion-safe:animate-[dot-bounce_1s_ease-in-out_infinite]"
+                style={{ animationDelay: delay }}
+              />
+            ))}
           </span>
-          <StatusBadge status={order.status} label={order.statusLabel} />
-        </div>
-        <p className="mt-1 font-display text-xl font-bold text-[var(--text)]">{order.service}</p>
+          Жду подтверждения оплаты…
+        </p>
+      )}
 
-        <div className="my-4 border-t-2 border-[var(--shadow-ink)]" />
+      {steps && <PathSteps steps={steps} boxed />}
 
-        <dl className="space-y-1">
+      <div>
+        <dl className="space-y-1.5">
           <Row label="Создан" value={formatExpires(order.createdAt)} />
           {order.amountKopecks !== null && (
             <PriceBreakdown
@@ -1087,138 +1124,123 @@ export function OrderDetailView({
         {order.amountKopecks !== null && (
           <HowPriceComputed order={order} hasActiveCard={hasActiveCard} />
         )}
+      </div>
 
-        {order.payable && (
-          <div className="mt-5 space-y-3">
-            <ContactCard
-              contacts={contacts}
-              phoneRequired={phoneRequired}
-              phoneRequiredFromRub={phoneRequiredFromRub}
-              phoneSource={phoneSource}
-              onRequestTelegramPhone={onRequestTelegramPhone}
+      {order.payable && (
+        <>
+          {/* Промокод ВЫШЕ баллов и отдельной строкой над почтой (находка
+              П7: «Есть промокод?» слипался с кнопкой «Оплатить») — в том же
+              порядке, в каком считается скидка: сначала промокод, потом баллы
+              от остатка маржи. */}
+          {order.promoInputEnabled && !invoiceIssued && (
+            <PromoCodeBlock
+              applied={promo}
+              onApply={applyPromo}
+              onClear={() => {
+                setPromo(null);
+                setUseBonus(false);
+              }}
+              busy={promoBusy}
+              disabled={busy !== null}
             />
-            {/* Промокод ВЫШЕ баллов — в том же порядке, в каком считается
-                скидка: сначала промокод, потом баллы от остатка маржи. */}
-            {order.promoInputEnabled && !invoiceIssued && (
-              <PromoCodeBlock
-                applied={promo}
-                onApply={applyPromo}
-                onClear={() => {
-                  setPromo(null);
-                  setUseBonus(false);
-                }}
-                busy={promoBusy}
-                disabled={busy !== null}
-              />
-            )}
-            {bonusOffer && order.amountKopecks !== null && !invoiceIssued && (
-              <BonusSpendBlock
-                bonus={bonusOffer}
-                enabled={useBonus}
-                onToggle={setUseBonus}
-                totalKopecks={order.amountKopecks - promoDiscountKopecks}
-                disabled={busy !== null}
-              />
-            )}
-            {/* Счёт уже выставлен: переставить его сумму мы не умеем (API
-                правки инвойса нет ни у Freekassa, ни у L&P), а второй счёт на
-                заказ запрещён частичным UNIQUE. Говорим прямо, что делать. */}
-            {invoiceIssued && bonusOffer?.offer && !order.bonus && (
-              <p className="rounded-[10px] border-2 border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
-                Счёт уже выставлен. Чтобы списать баллы, отмени заказ и оформи заново.
-              </p>
-            )}
-            {invoiceIssued && order.bonus && order.amountKopecks !== null && (
-              <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
-                Баллами списано {formatRub(order.bonus.discountKopecks)} — счёт выставлен на{' '}
-                {formatRub(order.amountKopecks - order.bonus.discountKopecks)}.
-              </p>
-            )}
-            {/* Промокод по выставленному счёту — ФАКТ. Сумму называем ту, что
-                уже ушла шлюзу: обе скидки вычтены (трек promo-codes). */}
-            {invoiceIssued && order.promo && order.amountKopecks !== null && (
-              <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
-                Промокод применён: −{formatRub(order.promo.discountKopecks)}. Счёт выставлен на{' '}
-                {formatRub(
-                  order.amountKopecks -
-                    order.promo.discountKopecks -
-                    (order.bonus?.discountKopecks ?? 0),
-                )}
-                .
-              </p>
-            )}
-            <ComicButton
-              variant="primary"
-              onClick={handlePay}
-              disabled={busy !== null || !contactsOk}
-            >
-              {busy === 'pay'
-                ? 'Готовлю счёт…'
-                : payableKopecks !== null
-                  ? `Оплатить ${formatRub(payableKopecks)}`
-                  : 'Оплатить'}
-            </ComicButton>
-            {/* ⚠️ Надбавка платёжной системы считается от суммы СЧЁТА, а не
-                от цены заказа: провайдер начисляет её на то, что мы у него
-                запросили. С применённой скидкой полная цена обещала бы клиенту
-                неверное число на странице оплаты — ровно то, что исправлено в
-                напоминании об оплате из панели. */}
-            {payableKopecks !== null &&
-              buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub) !== null && (
-                <p className="mt-2 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
-                  {buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub)}
-                </p>
+          )}
+          <ContactCard
+            contacts={contacts}
+            phoneRequired={phoneRequired}
+            phoneRequiredFromRub={phoneRequiredFromRub}
+            phoneSource={phoneSource}
+            onRequestTelegramPhone={onRequestTelegramPhone}
+            emailLabel="Почта — нужна для оплаты"
+            emailHint="Напишем, только если банк задержит платёж."
+            emailInputRef={emailRef}
+            phoneInputRef={phoneRef}
+            emailError={blocked === 'email' && !contacts.email.ok ? PAY_BLOCK_TEXT.email : null}
+            phoneError={blocked === 'phone' && !contacts.phone.ok ? PAY_BLOCK_TEXT.phone : null}
+          />
+          {bonusOffer && order.amountKopecks !== null && !invoiceIssued && (
+            <BonusSpendBlock
+              bonus={bonusOffer}
+              enabled={useBonus}
+              onToggle={setUseBonus}
+              totalKopecks={order.amountKopecks - promoDiscountKopecks}
+              disabled={busy !== null}
+            />
+          )}
+          {/* Счёт уже выставлен: переставить его сумму мы не умеем (API
+              правки инвойса нет ни у Freekassa, ни у L&P), а второй счёт на
+              заказ запрещён частичным UNIQUE. Говорим прямо, что делать. */}
+          {invoiceIssued && bonusOffer?.offer && !order.bonus && (
+            <p className="rounded-[10px] border-2 border-dashed border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text-muted)]">
+              Счёт уже выставлен. Чтобы списать баллы, отмени заказ и оформи заново.
+            </p>
+          )}
+          {invoiceIssued && order.bonus && order.amountKopecks !== null && (
+            <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+              Баллами списано {formatRub(order.bonus.discountKopecks)} — счёт выставлен на{' '}
+              {formatRub(order.amountKopecks - order.bonus.discountKopecks)}.
+            </p>
+          )}
+          {/* Промокод по выставленному счёту — ФАКТ. Сумму называем ту, что
+              уже ушла шлюзу: обе скидки вычтены (трек promo-codes). */}
+          {invoiceIssued && order.promo && order.amountKopecks !== null && (
+            <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+              Промокод применён: −{formatRub(order.promo.discountKopecks)}. Счёт выставлен на{' '}
+              {formatRub(
+                order.amountKopecks -
+                  order.promo.discountKopecks -
+                  (order.bonus?.discountKopecks ?? 0),
               )}
-            {order.expiresAt && (
-              <p className="mt-2 font-body text-xs text-[var(--text-muted)]">
-                Цена зафиксирована до {formatExpires(order.expiresAt)}
-                {order.buyerFeePercent > 0
-                  ? ' — наша сумма не изменится.'
-                  : ' — после оплаты сумма не изменится.'}
+              .
+            </p>
+          )}
+          {/* ⚠️ Надбавка платёжной системы считается от суммы СЧЁТА, а не
+              от цены заказа: провайдер начисляет её на то, что мы у него
+              запросили. С применённой скидкой полная цена обещала бы клиенту
+              неверное число на странице оплаты — ровно то, что исправлено в
+              напоминании об оплате из панели. */}
+          {payableKopecks !== null &&
+            buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub) !== null && (
+              <p className="rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-1.5 font-body text-xs leading-snug text-[var(--text)]">
+                {buyerFeeAmountNote(payableKopecks, order.buyerFeePercent, formatRub)}
               </p>
             )}
-            <CancelOrderBlock
-              invoiceIssued={order.status === 'pending_payment'}
-              payInFlight={busy === 'pay'}
-              onCancel={onCancel}
-            />
-          </div>
-        )}
+        </>
+      )}
 
-        {/* «Проблема с оплатой» — фаза до выпуска (тикет 10). */}
-        {showPaymentProblemButton(order) && (
-          <PaymentProblemBlock onReport={onReportPaymentProblem} />
-        )}
-
-        {message && (
-          <div
+      {message && (
+        <div
+          className={[
+            'flex flex-wrap items-center justify-between gap-2 rounded-[12px] border-2 px-3 py-2',
+            message.tone === 'ok'
+              ? 'border-[var(--color-teal-deep)]'
+              : 'border-[var(--color-stamp)]',
+          ].join(' ')}
+        >
+          <p
+            role={message.tone === 'err' ? 'alert' : 'status'}
             className={[
-              'mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[12px] border-2 px-3 py-2',
-              message.tone === 'ok'
-                ? 'border-[var(--color-teal-deep)]'
-                : 'border-[var(--color-stamp)]',
+              'font-body text-sm',
+              message.tone === 'ok' ? 'text-[var(--text)]' : 'text-[var(--color-stamp)]',
             ].join(' ')}
           >
-            <p
-              className={[
-                'font-body text-sm',
-                message.tone === 'ok' ? 'text-[var(--text)]' : 'text-[var(--color-stamp)]',
-              ].join(' ')}
+            {message.text}
+          </p>
+          {message.tone === 'err' && onContactSupport && (
+            <button
+              type="button"
+              onClick={onContactSupport}
+              className="shrink-0 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-2.5 py-1 font-display text-xs text-[var(--text)]"
             >
-              {message.text}
-            </p>
-            {message.tone === 'err' && onContactSupport && (
-              <button
-                type="button"
-                onClick={onContactSupport}
-                className="shrink-0 rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-2.5 py-1 font-display text-xs text-[var(--text)]"
-              >
-                Написать в поддержку
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+              Написать в поддержку
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* «Проблема с оплатой» — фаза до выпуска (тикет 10 антифрод-трека). */}
+      {showPaymentProblemButton(order) && (
+        <PaymentProblemBlock onReport={onReportPaymentProblem} />
+      )}
 
       {/* «Что дальше» — только когда карта выпущена и заказ выполнен. */}
       {order.status === 'completed' && (
@@ -1232,16 +1254,13 @@ export function OrderDetailView({
 
       {order.payments.length > 0 && (
         <section className="space-y-2">
-          <h3 className="font-display text-sm font-bold uppercase tracking-wider text-[var(--text-muted)]">
+          <h3 className="font-body text-xs font-semibold uppercase tracking-[0.06em] text-[var(--text-muted)]">
             Платежи
           </h3>
           {order.payments.map((p) => (
             <div
               key={`${p.invoiceNumber ?? 'inv'}-${p.createdAt}`}
-              className={[
-                'flex items-center justify-between gap-3 bg-[var(--surface)] px-4 py-3',
-                'rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] shadow-[var(--shadow-comic)]',
-              ].join(' ')}
+              className="flex items-center justify-between gap-3 rounded-[14px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5"
             >
               <div>
                 <p className="font-display text-base font-bold text-[var(--text)]">
@@ -1259,7 +1278,7 @@ export function OrderDetailView({
 
       {order.events.length > 0 && (
         <section className="space-y-2">
-          <h3 className="font-display text-sm font-bold uppercase tracking-wider text-[var(--text-muted)]">
+          <h3 className="font-body text-xs font-semibold uppercase tracking-[0.06em] text-[var(--text-muted)]">
             История
           </h3>
           <ol className="space-y-2 border-l-2 border-[var(--shadow-ink)] pl-4">
@@ -1271,6 +1290,59 @@ export function OrderDetailView({
             ))}
           </ol>
         </section>
+      )}
+
+      {/* Закреплённый низ листа (тикет 05): кнопка оплаты во всю ширину — или
+          нативная MainButton Telegram, тогда своей кнопки нет, — срок цены и
+          отмена. Липкий внутри прокрутки листа, поэтому виден всегда. */}
+      {order.payable && (
+        <div className="sticky bottom-0 -mx-4 mt-1 flex flex-col gap-1.5 border-t-2 border-[color-mix(in_srgb,var(--text-muted)_22%,transparent)] bg-[var(--surface)] px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))]">
+          {!mainButton && (
+            <button
+              type="button"
+              onClick={onPayTap}
+              disabled={busy !== null}
+              className="flex min-h-[50px] w-full items-center justify-center gap-2 rounded-[14px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-4 py-3 font-display text-[17px] font-bold text-[var(--color-paper)] shadow-[var(--shadow-comic)] transition-[transform,box-shadow] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {payLabel}
+            </button>
+          )}
+          {order.expiresAt && (
+            <p className="text-center font-body text-[13px] text-[var(--text-muted)]">
+              Цена зафиксирована до {formatExpires(order.expiresAt)}
+              {order.buyerFeePercent > 0
+                ? ' — наша сумма не изменится.'
+                : ' — после оплаты сумма не изменится.'}
+            </p>
+          )}
+          <CancelOrderBlock
+            invoiceIssued={order.status === 'pending_payment'}
+            payInFlight={busy === 'pay'}
+            onCancel={onCancel}
+          />
+          {/* Условия и политика — здесь, у оплаты, а не кнопками в «Профиле»:
+              в Mini App документы ищут там, где принимают деньги, как в любом
+              платёжном экране. Политику Telegram ещё и сам показывает в меню
+              Mini App — по ссылке из @BotFather. */}
+          <p className="text-center font-body text-xs text-[var(--text-muted)]">
+            Оплачивая, ты принимаешь{' '}
+            <button
+              type="button"
+              onClick={() => onOpenExternalLink(`${SITE_ORIGIN}/terms`)}
+              className="underline underline-offset-2"
+            >
+              условия сервиса
+            </button>{' '}
+            и{' '}
+            <button
+              type="button"
+              onClick={() => onOpenExternalLink(`${SITE_ORIGIN}/privacy`)}
+              className="underline underline-offset-2"
+            >
+              политику конфиденциальности
+            </button>
+          </p>
+        </div>
       )}
     </div>
   );

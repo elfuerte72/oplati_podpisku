@@ -14,7 +14,8 @@ import { rememberClientIp } from '@/lib/contacts/track-ip';
 import { getBotUsername } from '@/lib/telegram/bot';
 import { referralMiniAppShortName } from '@/lib/telegram/deep-links';
 import { upsertCabinetUser, verifyCabinetInitData } from '@/lib/cabinet/auth';
-import { buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
+import { buildCardLive, buildOrderDetail, buildSnapshot } from '@/lib/cabinet/read';
+import { sendCabinetSupportHandoff } from '@/lib/cabinet/support-handoff';
 import { getReferralLinkForCabinet } from '@/lib/cabinet/referral-read';
 import {
   markSubscriptionActivated,
@@ -67,6 +68,10 @@ async function resolveBotUsername(): Promise<string | null> {
 const orderAction = z.object({ initData: z.string().min(1), orderId: z.string().uuid() });
 const requestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('snapshot'), initData: z.string().min(1) }),
+  // Живой баланс основной карты — отдельно от снапшота (см. `buildCardLive`).
+  z.object({ action: z.literal('card-live'), initData: z.string().min(1) }),
+  // «Написать в поддержку» в Mini App: бот присылает в чат кнопку «Поддержка».
+  z.object({ action: z.literal('support-open'), initData: z.string().min(1) }),
   orderAction.extend({ action: z.literal('order') }),
   // `email`/`phone` — из плашки контактов (тикеты 02/05): передаются, когда
   // клиент только что ввёл/поменял значение. Формат проверяется в диспатче
@@ -315,6 +320,21 @@ export async function POST(req: Request): Promise<NextResponse> {
           referralLinkPromise,
         ]);
         return NextResponse.json({ ok: true, ...snapshot, referralLink }, { status: 200 });
+      }
+      case 'support-open': {
+        // Сообщение уходит в чат клиента — туда, куда его и приведёт
+        // закрывшийся кабинет. Недоставку кабинет показывает сам и не
+        // закрывается: иначе клиент оказался бы в чате без кнопки.
+        const delivered = await sendCabinetSupportHandoff(telegramId);
+        return delivered
+          ? NextResponse.json({ ok: true }, { status: 200 })
+          : NextResponse.json({ ok: false, error: 'support_unavailable' }, { status: 502 });
+      }
+      case 'card-live': {
+        // Ходит в PaySpace (~1,2 с), поэтому живёт отдельно: снапшот кабинета
+        // этого ожидания больше не несёт.
+        const card = await buildCardLive(userId);
+        return NextResponse.json({ ok: true, card }, { status: 200 });
       }
       case 'order': {
         const detail = await buildOrderDetail(userId, body.orderId);

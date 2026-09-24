@@ -1,85 +1,57 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { ComicButton } from '@/components/comic/ComicButton';
 import { PaidStamp } from '@/components/comic/PaidStamp';
-import { formatRub } from '@/components/comic/format';
 import { IconArrowLeft, IconArrowRight, IconCheck } from '@/components/comic/icons';
 import { Mascot, type MascotPose } from '@/components/chat/Mascot';
-import { ServiceLogo } from '@/components/chat/ServiceLogos';
-import { sortCatalog, type CatalogService } from '@/lib/catalog/build';
-import { fetchWithTimeout } from '@/lib/http';
+import { track } from '@/lib/analytics/client';
 
 /**
- * Онбординг Telegram Mini App при первом входе в кабинет.
+ * Онбординг Telegram Mini App (трек miniapp-tabs, тикет 11).
  *
- * Первый кадр — приветствие (крупный маскот + понятный текст «что это»), затем
- * три шага реального флоу «выбрать → карта → оплатить на сайте» с наглядными
- * CSS-макетами экранов (не скриншотами — макеты не устаревают). Кабинет
- * кнопочный (не чат, как на сайте), поэтому веб-интро сюда не подходит.
+ * Три кадра вместо четырёх, и главная мысль — первой: раньше «сам
+ * оплачиваешь на сайте сервиса» стояло последним, а «Пропустить» доступен с
+ * первого кадра (находка П17) — пропустившие так и не узнавали, что подписку
+ * оформляют сами. Второй кадр показывает, где что лежит после переделки на
+ * вкладки: карта — во вкладке «Карта», туда же приложение переведёт после
+ * оплаты.
  *
- * Показ — один раз (флаг в CabinetClient), «Пропустить» доступен всегда; повтор —
- * из шапки кабинета. Привязки Telegram тут нет: в Mini App клиент уже авторизован
- * через initData.
+ * Макеты экранов — CSS, а не скриншоты: не устаревают. Показ — один раз
+ * (флаг в CabinetClient), повтор — из «Профиль → Как это работает» и из
+ * полоски трёх шагов на «Оплате».
  */
 
 type IntroHaptic = (kind: 'tick' | 'success') => void;
 
-type StepFrame = { step: string; title: string; text: string; pose: MascotPose };
+type Frame = { title: string; text: string; pose: MascotPose; visual: () => ReactNode };
 
-/** Кадр 0 — знакомство: крупный маскот + короткий понятный ответ «что это». */
-const WELCOME: { pose: MascotPose; title: string; text: string } = {
-  pose: 'wave',
-  title: 'Привет! Я Оплатишка',
-  text: 'Помогу оплатить зарубежные подписки — ChatGPT, Claude, Midjourney и другие — обычными рублями. Покажу за 20 секунд, как всё работает.',
-};
-
-const STEPS = [
+const FRAMES: readonly Frame[] = [
   {
-    step: 'Шаг 1',
-    title: 'Выбираешь сервис и платишь рублями',
-    text: 'Открываешь «Выбрать сервис», жмёшь нужный тариф и платишь российской картой или через СБП. Полную итоговую сумму увидишь до оплаты.',
+    title: 'Три шага к подписке',
+    text: 'Платишь нам рублями — получаешь виртуальную карту в долларах — и этой картой сам оплачиваешь подписку на сайте сервиса.',
+    pose: 'wave',
+    visual: () => <SchemeMock />,
+  },
+  {
+    title: 'Карта — во вкладке «Карта»',
+    text: 'Там номер, срок, CVC и адрес плательщика — всё, что спросит сайт сервиса. После оплаты приложение само переведёт тебя туда.',
     pose: 'presenting',
+    visual: () => <CardTabMock />,
   },
   {
-    step: 'Шаг 2',
-    title: 'Получаешь виртуальную карту',
-    text: 'Я выпущу виртуальную карту и пополню её на сумму подписки — номер, срок и CVC появятся здесь и придут в Telegram. Выпуск первой карты — разовые $4, при повторных пополнениях этой же карты не платится. Карта действует 180 дней.',
-    pose: 'attentive',
-  },
-  {
-    step: 'Шаг 3',
-    title: 'Оплачиваешь подписку на своём аккаунте',
-    text: 'Вводишь реквизиты карты на сайте сервиса — пароль передавать не нужно, аккаунт остаётся у тебя. Если сервису нужен VPN, локацию и валюту покажу в инструкции.',
+    title: 'Оплачиваешь на сайте сервиса',
+    text: 'Включи VPN, если сервис его просит, проверь, что цена в долларах, и плати в браузере, а не в приложении. Аккаунт остаётся твоим — пароль передавать не нужно.',
     pose: 'celebrate',
+    visual: () => <PayOnSiteMock />,
   },
-] as const satisfies readonly StepFrame[];
+];
 
-/** Подписи точек прогресса (первая — знакомство, дальше шаги). */
-const DOT_LABELS = ['Знакомство', ...STEPS.map((s) => s.step)];
-const FRAME_COUNT = DOT_LABELS.length; // знакомство + шаги
-const LAST = FRAME_COUNT - 1;
+const LAST = FRAMES.length - 1;
 
 /** Порог свайпа в px, за которым засчитываем листание кадра. */
 const SWIPE_THRESHOLD = 44;
-
-/** Пример сервиса в макете шага 1 (логотип + подпись). */
-type IntroExample = { slug: string; name: string };
-/** Мини-«чек» в макете шага 1 (сервис + оценка к оплате). */
-type IntroCheck = { name: string; priceLabel: string };
-
-/**
- * Статичный фолбэк на случай недоступного каталога — актуальные слаги, чтобы
- * логотипы точно резолвились. Реальные примеры и цену подтягиваем из
- * `/api/catalog` при показе (см. эффект), чтобы онбординг не устаревал.
- */
-const FALLBACK_EXAMPLES: IntroExample[] = [
-  { slug: 'chatgpt-plus', name: 'ChatGPT' },
-  { slug: 'claude-pro', name: 'Claude' },
-  { slug: 'midjourney-basic', name: 'Midjourney' },
-];
-const FALLBACK_CHECK: IntroCheck = { name: 'ChatGPT', priceLabel: '≈ 1 490 ₽' };
 
 export function CabinetIntro({
   onClose,
@@ -90,36 +62,6 @@ export function CabinetIntro({
 }) {
   const [frame, setFrame] = useState(0);
   const touchStartX = useRef<number | null>(null);
-
-  // Примеры сервисов для макета шага 1 — из реального каталога (с фолбэком),
-  // чтобы онбординг не показывал сервисы, которых уже нет.
-  const [examples, setExamples] = useState<IntroExample[]>(FALLBACK_EXAMPLES);
-  const [check, setCheck] = useState<IntroCheck>(FALLBACK_CHECK);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetchWithTimeout('/api/catalog');
-        const data = (await res.json()) as { ok?: boolean; services?: CatalogService[] };
-        if (cancelled || !data.ok || !data.services?.length) return;
-        const withTiers = sortCatalog(data.services).filter(
-          (s) => !s.customAmount && s.tiers.length > 0,
-        );
-        const top = withTiers.slice(0, 3);
-        const first = top[0];
-        if (!first) return;
-        setExamples(top.map((s) => ({ slug: s.slug, name: s.name })));
-        const cheapest = first.tiers.reduce((a, b) => (b.totalKopecks < a.totalKopecks ? b : a));
-        setCheck({ name: first.name, priceLabel: `≈ ${formatRub(cheapest.totalKopecks)}` });
-      } catch {
-        // каталог недоступен — остаётся статичный фолбэк, интро не ломаем
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const go = useCallback(
     (next: number) => {
@@ -132,7 +74,14 @@ export function CabinetIntro({
     [haptic],
   );
 
+  /** Закрыт до конца — «Пропустить», Escape. Кадр с нуля. */
+  const skip = useCallback(() => {
+    track('intro_skip', { frame });
+    onClose();
+  }, [frame, onClose]);
+
   const finish = useCallback(() => {
+    track('intro_complete');
     haptic?.('success');
     onClose();
   }, [haptic, onClose]);
@@ -144,17 +93,15 @@ export function CabinetIntro({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') skip();
       else if (e.key === 'ArrowRight') advance();
       else if (e.key === 'ArrowLeft') go(frame - 1);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, advance, go, frame]);
+  }, [skip, advance, go, frame]);
 
-  const isWelcome = frame === 0;
-  // Всегда валидный шаг (для кадра-знакомства просто не рендерится) — упрощает типы.
-  const step = STEPS[frame - 1] ?? STEPS[0];
+  const current = FRAMES[frame] ?? FRAMES[0]!;
 
   return (
     <div
@@ -174,17 +121,17 @@ export function CabinetIntro({
         else if (dx >= SWIPE_THRESHOLD) go(frame - 1);
       }}
     >
-      <div className="mx-auto flex min-h-full w-full max-w-md flex-col px-5 pb-6 pt-4">
+      <div className="mx-auto flex min-h-full w-full max-w-md flex-col px-5 pt-4 pb-6">
         {/* Верх: точки прогресса + «Пропустить» */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5" role="tablist" aria-label="Шаги">
-            {DOT_LABELS.map((label, i) => (
+            {FRAMES.map((f, i) => (
               <button
-                key={label}
+                key={f.title}
                 type="button"
                 role="tab"
                 aria-selected={i === frame}
-                aria-label={label}
+                aria-label={`Шаг ${i + 1}`}
                 onClick={() => go(i)}
                 className={[
                   'h-2 rounded-full border-2 border-[var(--shadow-ink)] transition-[width,background-color] duration-200',
@@ -195,66 +142,42 @@ export function CabinetIntro({
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="font-body text-sm text-[var(--text-muted)] underline-offset-2 active:opacity-70"
+            onClick={skip}
+            className="min-h-10 font-body text-sm text-[var(--text-muted)] underline-offset-2 active:opacity-70"
           >
             Пропустить
           </button>
         </div>
 
-        {isWelcome ? (
-          /* ── Кадр 0: знакомство — крупный маскот + понятный текст «что это» ── */
-          <div
-            key="welcome"
-            className="flex flex-1 flex-col items-center justify-center gap-5 text-center motion-safe:animate-[intro-rise_400ms_var(--ease-pop)_both]"
-          >
-            <Mascot pose={WELCOME.pose} size={152} />
-            <h2 className="font-display text-[28px] font-bold leading-tight text-[var(--text)]">
-              {WELCOME.title}
+        <div
+          key={`copy-${frame}`}
+          className="mt-6 flex items-center gap-3 motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_both]"
+        >
+          <Mascot pose={current.pose} size={88} />
+          <div className="min-w-0">
+            <span className="inline-block rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-2.5 py-0.5 font-display text-xs font-bold text-[var(--color-paper)]">
+              {frame + 1} из {FRAMES.length}
+            </span>
+            <h2 className="mt-1.5 font-display text-[22px] leading-tight font-bold text-[var(--text)]">
+              {current.title}
             </h2>
-            <p className="max-w-sm font-body text-[17px] leading-relaxed text-[var(--text)]">
-              {WELCOME.text}
-            </p>
           </div>
-        ) : (
-          /* ── Кадры 1-3: описание сверху крупно, наглядный пример ниже ── */
-          <>
-            <div
-              key={`copy-${frame}`}
-              className="mt-6 flex items-center gap-3 motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_both]"
-            >
-              <Mascot pose={step.pose} size={88} />
-              <div className="min-w-0">
-                <span className="inline-block rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] px-2.5 py-0.5 font-display text-xs font-bold text-[var(--color-paper)]">
-                  {step.step}
-                </span>
-                <h2 className="mt-1.5 font-display text-[22px] font-bold leading-tight text-[var(--text)]">
-                  {step.title}
-                </h2>
-              </div>
-            </div>
+        </div>
 
-            <p
-              key={`text-${frame}`}
-              className="mt-3 font-body text-[16px] leading-relaxed text-[var(--text)] motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_40ms_both]"
-            >
-              {step.text}
-            </p>
+        <p
+          key={`text-${frame}`}
+          className="mt-3 font-body text-[16px] leading-relaxed text-[var(--text)] motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_40ms_both]"
+        >
+          {current.text}
+        </p>
 
-            {/* Наглядный пример — макет экрана (иллюстрация, не живой список:
-                реальный выбор откроется по «Выбрать сервис» в кабинете). Размер
-                ограничен, чтобы не перетягивать внимание с описания. */}
-            <div
-              key={`visual-${frame}`}
-              className="flex flex-1 flex-col items-center justify-center py-5 motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_80ms_both]"
-            >
-              <div className="w-full max-w-[300px]">
-                <IntroVisual mockIndex={frame - 1} examples={examples} check={check} />
-              </div>
-              <p className="mt-3 font-body text-xs text-[var(--text-muted)]">Пример для наглядности</p>
-            </div>
-          </>
-        )}
+        <div
+          key={`visual-${frame}`}
+          className="flex flex-1 flex-col items-center justify-center py-5 motion-safe:animate-[intro-rise_360ms_var(--ease-pop)_80ms_both]"
+        >
+          <div className="w-full max-w-[300px]">{current.visual()}</div>
+          <p className="mt-3 font-body text-xs text-[var(--text-muted)]">Пример для наглядности</p>
+        </div>
 
         {/* Навигация — закреплена внизу (удобно большому пальцу). */}
         <div className="mt-2 flex items-center gap-3">
@@ -263,7 +186,7 @@ export function CabinetIntro({
               type="button"
               onClick={() => go(frame - 1)}
               aria-label="Назад"
-              className="inline-flex items-center gap-1 font-display text-sm font-bold text-[var(--link)] active:opacity-70"
+              className="inline-flex min-h-11 items-center gap-1 font-display text-sm font-bold text-[var(--link)] active:opacity-70"
             >
               <IconArrowLeft size={16} />
               Назад
@@ -277,7 +200,7 @@ export function CabinetIntro({
               </>
             ) : (
               <>
-                {isWelcome ? 'Поехали' : 'Дальше'}
+                Дальше
                 <IconArrowRight size={18} />
               </>
             )}
@@ -288,118 +211,87 @@ export function CabinetIntro({
   );
 }
 
-/** Мини-макеты экранов кабинета — «наглядные примеры» для каждого шага. */
-function IntroVisual({
-  mockIndex,
-  examples,
-  check,
-}: {
-  mockIndex: number;
-  examples: IntroExample[];
-  check: IntroCheck;
-}) {
-  if (mockIndex === 0) return <ChooseAndPayMock examples={examples} check={check} />;
-  if (mockIndex === 1) return <CardMock />;
-  return <PayOnSiteMock />;
+const mockBox =
+  'rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] shadow-[var(--shadow-comic)]';
+
+/** Кадр 1: схема трёх шагов — рубли → карта в долларах → сайт сервиса. */
+function SchemeMock() {
+  const rows = [
+    { n: 1, label: 'Платишь рублями', chip: '2 460 ₽' },
+    { n: 2, label: 'Получаешь карту', chip: '$20' },
+    { n: 3, label: 'Сам платишь на сайте', chip: 'chatgpt.com' },
+  ];
+  return (
+    <div className={`${mockBox} flex flex-col gap-2.5 p-3.5`}>
+      {rows.map((row) => (
+        <div key={row.n} className="flex items-center gap-2.5">
+          <span className="flex size-[26px] shrink-0 items-center justify-center rounded-full border-2 border-[var(--color-teal-light)] bg-[var(--color-teal-deep)] font-body text-[13px] font-bold text-[var(--color-paper)]">
+            {row.n}
+          </span>
+          <span className="min-w-0 flex-1 font-body text-sm font-semibold text-[var(--text)]">{row.label}</span>
+          <span className="shrink-0 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-2.5 py-0.5 font-display text-xs font-bold text-[var(--text)]">
+            {row.chip}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-const mockPlate =
-  'grid h-9 w-9 shrink-0 place-items-center rounded-xl border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)]';
-
-/** Шаг 1: сетка сервисов (первый выбран) → мини-чек с суммой и кнопкой «Оплатить». */
-function ChooseAndPayMock({ examples, check }: { examples: IntroExample[]; check: IntroCheck }) {
-  const tiles = examples.slice(0, 3);
+/** Кадр 2: карта во вкладке «Карта» — вид карты и нижняя панель с подсветкой. */
+function CardTabMock() {
   return (
-    <div className="w-full space-y-2.5">
-      <div className="grid grid-cols-3 gap-2">
-        {tiles.map((t, i) => (
-          <div
-            key={t.slug}
+    <div className="flex w-full flex-col gap-3">
+      <div
+        className="halftone relative flex aspect-[1.6/1] w-full flex-col justify-between overflow-hidden rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] p-4 text-[var(--color-paper)] shadow-[var(--shadow-comic-lg)]"
+        style={{ background: 'linear-gradient(135deg, var(--color-teal-deep), var(--color-teal-primary))' }}
+      >
+        <div className="flex items-start justify-between">
+          <span className="font-display text-base font-bold tracking-tight">Оплатишка</span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)] px-2 py-0.5 font-display text-[10px] font-bold text-[var(--color-ink)]">
+            <span className="size-2 rounded-full" style={{ background: 'var(--success)' }} />
+            Активна
+          </span>
+        </div>
+        <span className="h-6 w-9 rounded-[6px] border-2 border-[var(--shadow-ink)] bg-[var(--color-skin)]" />
+        <p className="font-display text-lg font-bold tracking-[0.14em]">•••• •••• •••• 4242</p>
+        <div className="flex items-end justify-between">
+          <span className="font-body text-[10px] tracking-wider uppercase opacity-80">Виртуальная карта</span>
+          <span className="font-display text-base font-bold">$20</span>
+        </div>
+      </div>
+      <div className={`${mockBox} flex justify-around px-2 py-1.5`}>
+        {['Оплата', 'Карта', 'Профиль'].map((label) => (
+          <span
+            key={label}
             className={[
-              'flex flex-col items-center gap-1.5 rounded-[var(--radius-card)] border-[2.5px] px-1.5 py-2.5 shadow-[var(--shadow-comic)]',
-              i === 0
-                ? 'border-[var(--accent)] bg-[var(--surface)] ring-2 ring-[var(--accent)]'
-                : 'border-[var(--shadow-ink)] bg-[var(--surface)]',
+              'rounded-full px-3 py-1 font-body text-xs',
+              label === 'Карта'
+                ? 'bg-[color-mix(in_srgb,var(--color-teal-primary)_24%,transparent)] font-semibold text-[var(--accent)]'
+                : 'text-[var(--text-muted)]',
             ].join(' ')}
           >
-            <span className={mockPlate}>
-              <ServiceLogo slug={t.slug} name={t.name} size={20} />
-            </span>
-            <span className="max-w-full truncate text-center font-body text-[11px] font-semibold text-[var(--text)]">
-              {t.name}
-            </span>
-          </div>
+            {label}
+          </span>
         ))}
       </div>
-
-      {/* мини-«чек» выбранного тарифа */}
-      <div className="rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] p-3.5 shadow-[var(--shadow-comic)]">
-        <div className="flex items-center justify-between gap-2">
-          <span className="min-w-0 truncate font-body text-sm font-semibold text-[var(--text)]">
-            {check.name}
-          </span>
-          <span className="shrink-0 font-display text-lg font-bold text-[var(--accent)]">
-            {check.priceLabel}
-          </span>
-        </div>
-        <div className="my-2.5 border-t-2 border-dashed border-[var(--shadow-ink)]" />
-        <div className="flex items-center justify-center rounded-[12px] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--color-teal-primary)] py-2 font-display text-sm font-bold text-[var(--color-paper)] shadow-[2px_2px_0_var(--shadow-ink)]">
-          Оплатить
-        </div>
-      </div>
     </div>
   );
 }
 
-/** Шаг 2: виртуальная карта — повторяет вид CardHero (teal-градиент, чип, PAN). */
-function CardMock() {
-  return (
-    <div
-      className="halftone relative flex aspect-[1.6/1] w-full flex-col justify-between overflow-hidden rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] p-4 text-[var(--color-paper)] shadow-[var(--shadow-comic-lg)]"
-      style={{ background: 'linear-gradient(135deg, var(--color-teal-deep), var(--color-teal-primary))' }}
-    >
-      <div className="flex items-start justify-between">
-        <span className="font-display text-base font-bold tracking-tight">Оплатишка</span>
-        <span className="inline-flex items-center gap-1.5 rounded-full border-2 border-[var(--shadow-ink)] bg-[var(--color-paper)] px-2 py-0.5 font-display text-[10px] font-bold text-[var(--color-ink)]">
-          <span className="h-2 w-2 rounded-full" style={{ background: 'var(--success)' }} />
-          Активна
-        </span>
-      </div>
-
-      <span className="h-6 w-9 rounded-[6px] border-2 border-[var(--shadow-ink)] bg-[var(--color-skin)]" />
-
-      <p className="font-display text-lg font-bold tracking-[0.14em]">•••• •••• •••• 4242</p>
-
-      <div className="flex items-end justify-between gap-3">
-        <span className="text-left">
-          <span className="block font-body text-[9px] uppercase tracking-wider opacity-80">Срок</span>
-          <span className="font-display text-sm font-bold">08 / 29</span>
-        </span>
-        <span className="text-left">
-          <span className="block font-body text-[9px] uppercase tracking-wider opacity-80">CVC</span>
-          <span className="font-display text-sm font-bold">•••</span>
-        </span>
-        <span className="font-body text-[10px] uppercase tracking-wider opacity-80">Виртуальная карта</span>
-      </div>
-    </div>
-  );
-}
-
-/** Шаг 3: «оплата на сайте сервиса» — форма с картой + штамп «ОПЛАЧЕНО». */
+/** Кадр 3: «оплата на сайте сервиса» — форма с картой + штамп «ОПЛАЧЕНО». */
 function PayOnSiteMock() {
   return (
     <div className="relative w-full">
-      <div className="rounded-[var(--radius-card)] border-[2.5px] border-[var(--shadow-ink)] bg-[var(--surface)] shadow-[var(--shadow-comic-lg)]">
-        {/* «шапка браузера» */}
+      <div className={mockBox}>
         <div className="flex items-center gap-1.5 rounded-t-[var(--radius-card)] border-b-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3 py-2">
-          <span className="h-2.5 w-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--color-stamp)]" />
-          <span className="h-2.5 w-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--color-skin)]" />
-          <span className="h-2.5 w-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--success)]" />
+          <span className="size-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--color-stamp)]" />
+          <span className="size-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--color-skin)]" />
+          <span className="size-2.5 rounded-full border border-[var(--shadow-ink)] bg-[var(--success)]" />
           <span className="ml-2 font-body text-[11px] text-[var(--text-muted)]">сайт сервиса</span>
         </div>
-
         <div className="space-y-2.5 p-4">
-          <p className="font-display text-sm font-bold text-[var(--text)]">Оплата подписки</p>
+          <p className="font-display text-sm font-bold text-[var(--text)]">Оплата подписки · $20</p>
           <div className="rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--bg)] px-3 py-2 font-display text-sm font-bold tracking-[0.1em] text-[var(--text)]">
             4242 4242 4242 4242
           </div>
@@ -413,9 +305,7 @@ function PayOnSiteMock() {
           </div>
         </div>
       </div>
-
-      {/* штамп «ОПЛАЧЕНО» поверх формы */}
-      <div className="pointer-events-none absolute -bottom-3 right-2">
+      <div className="pointer-events-none absolute right-2 -bottom-3">
         <PaidStamp />
       </div>
     </div>

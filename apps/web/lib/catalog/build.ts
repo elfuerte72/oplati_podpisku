@@ -150,6 +150,18 @@ const POPULAR_ORDER: readonly string[] = [
   'apple-music',
 ];
 
+/**
+ * «от N ₽» на плитке каталога Mini App (трек miniapp-tabs, тикет 04) — самый
+ * дешёвый из УЖЕ посчитанных тарифов. Нового расчёта цены здесь нет намеренно:
+ * плитка обязана совпадать с ценой самого дешёвого тарифа внутри листа сервиса,
+ * а совпадает она по построению, только если берётся то же число.
+ * `null` — у сервиса своя сумма или тарифов нет.
+ */
+export function cheapestTierKopecks(service: CatalogService): number | null {
+  if (service.customAmount || service.tiers.length === 0) return null;
+  return Math.min(...service.tiers.map((t) => t.totalKopecks));
+}
+
 export function sortCatalog(items: CatalogService[]): CatalogService[] {
   return [...items].sort((a, b) => {
     const ai = POPULAR_ORDER.indexOf(a.slug);

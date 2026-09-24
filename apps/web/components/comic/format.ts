@@ -1,15 +1,55 @@
+/*
+ * Форматтеры Intl создаются один раз на набор опций. Создание — самая дорогая
+ * часть форматирования: в каталоге и экране заказа сумм десятки, и каждая
+ * новая `Intl.NumberFormat` на слабом телефоне стоила заметную долю кадра.
+ * `toLocaleString` с опциями внутри делает то же самое — тоже новый форматтер
+ * на каждый вызов.
+ */
+const RUB_WHOLE = new Intl.NumberFormat('ru-RU', {
+  style: 'currency',
+  currency: 'RUB',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+const RUB_FRACTION = new Intl.NumberFormat('ru-RU', {
+  style: 'currency',
+  currency: 'RUB',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const USD_WHOLE = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const USD_FRACTION = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const moscowFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** Форматтер даты по Москве для набора опций — один на набор. */
+function moscowFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = JSON.stringify(options);
+  let formatter = moscowFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', ...options });
+    moscowFormatters.set(key, formatter);
+  }
+  return formatter;
+}
+
 /**
  * Форматирование денег: суммы в БД хранятся в копейках (integer),
  * на отображении конвертируем в рубли.
  */
 export function formatRub(kopecks: number): string {
   const rub = kopecks / 100;
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: 'RUB',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: Number.isInteger(rub) ? 0 : 2,
-  }).format(rub);
+  return (Number.isInteger(rub) ? RUB_WHOLE : RUB_FRACTION).format(rub);
 }
 
 /**
@@ -24,13 +64,7 @@ export function formatUsd(cents: number): string {
   // сохраняется для отрицательных сумм (история выводов партнёрки).
   const sign = cents < 0 ? '-' : '';
   const abs = Math.abs(cents) / 100;
-  const dec = Number.isInteger(abs) ? 0 : 2;
-  return `${sign}${new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: dec,
-    maximumFractionDigits: 2,
-  }).format(abs)}`;
+  return `${sign}${(Number.isInteger(abs) ? USD_WHOLE : USD_FRACTION).format(abs)}`;
 }
 
 /**
@@ -69,13 +103,7 @@ export function formatExpires(iso: string): string {
   const date = parseIsoOrNull(iso);
   if (!date) return iso;
   try {
-    return date.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      hour: '2-digit',
-      minute: '2-digit',
-      day: '2-digit',
-      month: 'long',
-    });
+    return moscowFormatter({ hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'long' }).format(date);
   } catch {
     return iso;
   }
@@ -94,15 +122,53 @@ export function formatDeadlineWithYear(iso: string): string {
   const date = parseIsoOrNull(iso);
   if (!date) return iso;
   try {
-    return date.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
+    return moscowFormatter({
       year: 'numeric',
       month: 'long',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
-    });
+    }).format(date);
   } catch {
     return iso;
   }
+}
+
+/** Части даты по Москве — общие для коротких форматов вкладок Mini App. */
+function moscowParts(iso: string, options: Intl.DateTimeFormatOptions): string | null {
+  const date = parseIsoOrNull(iso);
+  if (!date) return null;
+  try {
+    return moscowFormatter(options).format(date);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * ISO-дата → «20 марта 2027» (МСК), без времени. «Действует до» карты на
+ * вкладке «Карта» (трек miniapp-tabs, тикет 06): срок в месяцах, и часы с
+ * минутами рядом с ним только шумят. Год обязателен — см. `formatDeadlineWithYear`.
+ */
+export function formatDateWithYear(iso: string): string {
+  const out = moscowParts(iso, { day: 'numeric', month: 'long', year: 'numeric' });
+  return out ? out.replace(/\s*г\.$/, '') : iso;
+}
+
+/** ISO-дата → «23 сентября» (МСК) — дата заказа в списке «Заказы по этой карте». */
+export function formatDayMonth(iso: string): string {
+  return moscowParts(iso, { day: 'numeric', month: 'long' }) ?? iso;
+}
+
+/**
+ * ISO-дата → «июля 2026» (МСК) — для строки «в Оплатишке с июля 2026» в профиле.
+ * Родительный падеж берётся у формата «день месяц» (у одного месяца Intl отдаёт
+ * именительный), день затем отрезается. Мусор — `null`: строку не рисуем.
+ */
+export function formatSinceMonth(iso: string): string | null {
+  const dayMonth = moscowParts(iso, { day: 'numeric', month: 'long' });
+  const year = moscowParts(iso, { year: 'numeric' });
+  if (!dayMonth || !year) return null;
+  const month = dayMonth.replace(/^\d+\s+/, '');
+  return `${month} ${year.replace(/\s*г\.$/, '')}`;
 }

@@ -229,6 +229,35 @@ type ErrorBody = z.infer<typeof errorBodySchema>;
  * пишет наш же роут, и не-JSON здесь означает, что ответил кто-то другой
  * (прокси, балансировщик) — это стоит увидеть в логах.
  */
+/**
+ * Отказы, которые клиент получает штатно и сам же исправляет: нет почты,
+ * нужен телефон, истекла цена, баллы или промокод не подошли, сумма выше
+ * потолка шлюза.
+ */
+const CLIENT_REFUSALS: ReadonlySet<string> = new Set([
+  EMAIL_REQUIRED,
+  PHONE_REQUIRED,
+  'order_expired',
+  BONUS_UNAVAILABLE,
+  PROMO_UNAVAILABLE,
+  'above_max_amount',
+]);
+
+/**
+ * Уровень записи о неудачном `payments/create`. Штатный отказ клиенту — `warn`:
+ * алёрт «ошибки в логах» в Grafana срабатывает на шесть строк уровня error за
+ * пять минут, и шесть клиентов без почты поднимали бы ложную аварию (находка
+ * сквозного прогона 2026-09-24). Всё остальное — `error`: 5xx, недоступный
+ * шлюз, неизвестный код, 401 внутреннего токена (наша авария конфига) и
+ * `fulfillment_capacity` — нехватка карточного фонда наша, а не клиента.
+ */
+export function confirmFailureLogLevel(httpStatus: number, errorCode: string | null): 'warn' | 'error' {
+  if (httpStatus >= 400 && httpStatus < 500 && errorCode !== null && CLIENT_REFUSALS.has(errorCode)) {
+    return 'warn';
+  }
+  return 'error';
+}
+
 function parseErrorBody(respText: string): ErrorBody | null {
   let raw: unknown;
   try {
@@ -320,14 +349,14 @@ export async function confirmOrder(input: {
 
     const respText = await resp.text();
     if (!resp.ok) {
-      log.error({
+      const errorBody = parseErrorBody(respText);
+      const errorCode = errorBody?.error ?? null;
+      log[confirmFailureLogLevel(resp.status, errorCode)]({
         event: 'tool.confirm_order.failed',
         orderId: input.orderId,
         httpStatus: resp.status,
         body: respText.slice(0, 500),
       });
-      const errorBody = parseErrorBody(respText);
-      const errorCode = errorBody?.error ?? null;
       if (resp.status === 503 && errorCode === 'provider_unavailable') {
         throw new PaymentProviderUnavailableError();
       }

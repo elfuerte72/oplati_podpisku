@@ -49,6 +49,7 @@ vi.mock('@sentry/nextjs', () => ({
 }));
 
 import {
+  confirmFailureLogLevel,
   confirmOrder,
   OrderAboveMaxAmountError,
   OrderExpiredError,
@@ -323,5 +324,32 @@ describe('confirmOrder — self-call защищён таймаутом', () => {
     const err = await confirmOrder({ orderId: 'order-1' }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TypeError);
     expect(err).not.toBeInstanceOf(PaymentProviderUnavailableError);
+  });
+});
+
+/**
+ * Уровень записи о неудачном выставлении счёта: штатные отказы клиенту не
+ * должны поднимать алёрт «ошибки в логах» (шесть строк error за пять минут).
+ */
+describe('confirmFailureLogLevel', () => {
+  it('штатные отказы клиенту — warn', () => {
+    expect(confirmFailureLogLevel(422, 'email_required')).toBe('warn');
+    expect(confirmFailureLogLevel(422, 'phone_required')).toBe('warn');
+    expect(confirmFailureLogLevel(409, 'order_expired')).toBe('warn');
+    expect(confirmFailureLogLevel(409, 'bonus_unavailable')).toBe('warn');
+    expect(confirmFailureLogLevel(409, 'promo_unavailable')).toBe('warn');
+    expect(confirmFailureLogLevel(422, 'above_max_amount')).toBe('warn');
+  });
+
+  it('наши аварии — error: шлюз, фонд, конфиг, неизвестное', () => {
+    expect(confirmFailureLogLevel(503, 'provider_unavailable')).toBe('error');
+    expect(confirmFailureLogLevel(422, 'fulfillment_capacity')).toBe('error');
+    expect(confirmFailureLogLevel(401, 'unauthorized')).toBe('error');
+    expect(confirmFailureLogLevel(500, null)).toBe('error');
+    expect(confirmFailureLogLevel(400, 'something_new')).toBe('error');
+  });
+
+  it('код отказа клиента с 5xx — всё равно error: статус важнее кода', () => {
+    expect(confirmFailureLogLevel(500, 'email_required')).toBe('error');
   });
 });

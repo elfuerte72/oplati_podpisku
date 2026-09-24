@@ -223,8 +223,14 @@ function scrubEventEnvelope(event: {
         // денилист `init_?data`), а `/api/analytics` — заголовком, поэтому без
         // этого имени в списке она уезжала бы в Sentry целиком (найдено
         // ревью 2026-07-30).
+        //
+        // Заголовки с IP клиента (`x-forwarded-for` от Traefik и родня) —
+        // тоже: IP для нас персональные данные (`last_seen_ip` вычищается по
+        // имени ключа), политика конфиденциальности обещает, что в журналы
+        // ошибок он не уходит, а requestData прикладывала заголовки к каждому
+        // серверному событию целиком (сверка документов с кодом 2026-09-24).
         if (
-          /authorization|cookie|x-telegram-bot-api-secret-token|x-alert-token|x-telegram-init-data/i.test(
+          /authorization|cookie|x-telegram-bot-api-secret-token|x-alert-token|x-telegram-init-data|x-forwarded-for|x-real-ip|^forwarded$|x-client-ip|cf-connecting-ip|true-client-ip/i.test(
             key,
           )
         ) {

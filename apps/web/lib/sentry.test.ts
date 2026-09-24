@@ -184,6 +184,28 @@ describe('beforeSend: карточные реквизиты и секреты', 
     expect(headers['content-type']).toBe('application/json');
     expect(headers['user-agent']).toBe('Mozilla/5.0');
   });
+
+  it('вычищает заголовки с IP клиента — политика обещает, что IP в журналы ошибок не уходит', () => {
+    const event = makeEvent({
+      request: {
+        headers: {
+          'x-forwarded-for': '203.0.113.7, 10.0.0.2',
+          'x-real-ip': '203.0.113.7',
+          forwarded: 'for=203.0.113.7',
+          'X-Client-IP': '203.0.113.7',
+          'cf-connecting-ip': '203.0.113.7',
+          'true-client-ip': '203.0.113.7',
+          host: 'www.oplatishka.com',
+        },
+      },
+    });
+
+    const out = beforeSend(event);
+    const headers = out?.request?.headers as Record<string, string>;
+    expect(JSON.stringify(headers)).not.toContain('203.0.113.7');
+    // Имя хоста — не персональные данные: остаётся для диагностики.
+    expect(headers.host).toBe('www.oplatishka.com');
+  });
 });
 
 /**

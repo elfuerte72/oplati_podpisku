@@ -1,7 +1,7 @@
 'use client';
 
 import { z } from 'zod';
-import { servicePaymentInstructions } from '@oplati/types';
+import { billingAddress as billingAddressSchema, servicePaymentInstructions } from '@oplati/types';
 
 import type { PaymentIssueType, PaymentProblemType } from '@/lib/cabinet/payment-issues';
 import { fetchWithTimeout } from '@/lib/http';
@@ -53,6 +53,14 @@ const orderSummarySchema = z.object({
     })
     .nullable()
     .optional(),
+  /**
+   * Карта, выданная по заказу, и отметка «Подписка оформлена» — по ним вкладка
+   * «Карта» собирает свои заказы и шаг 3 (трек miniapp-tabs, тикет 06).
+   * `.optional()` по той же причине, что у `bonus`: снапшот деплоя без полей
+   * просто не покажет «Остался один шаг», а не уронит кабинет.
+   */
+  cardId: z.string().nullable().optional(),
+  subscriptionActivated: z.boolean().optional(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */
@@ -72,7 +80,17 @@ const cardViewSchema = z.object({
 });
 
 const cardDetailsResultSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), number: z.string(), exp: z.string(), cvc: z.string() }),
+  z.object({
+    ok: z.literal(true),
+    number: z.string(),
+    exp: z.string(),
+    cvc: z.string(),
+    /**
+     * Адрес плательщика, закреплённый за клиентом (тикет 07). Необязательный:
+     * без него лист реквизитов показывает только номер, срок и CVC.
+     */
+    billingAddress: billingAddressSchema.optional(),
+  }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 
@@ -242,7 +260,10 @@ function withMessage<T extends { ok: true }>(
  */
 const CABINET_TIMEOUT_MS = 65_000;
 
-async function callCabinet(body: Record<string, unknown>): Promise<{ status: number; json: unknown } | null> {
+async function callCabinet(
+  body: Record<string, unknown>,
+  timeoutMs: number = CABINET_TIMEOUT_MS,
+): Promise<{ status: number; json: unknown } | null> {
   try {
     const res = await fetchWithTimeout(
       '/api/cabinet',
@@ -251,7 +272,7 @@ async function callCabinet(body: Record<string, unknown>): Promise<{ status: num
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
-      CABINET_TIMEOUT_MS,
+      timeoutMs,
     );
     const json: unknown = await res.json().catch(() => null);
     return { status: res.status, json };
@@ -277,6 +298,41 @@ function parseOrError<T>(
 export async function fetchSnapshot(initData: string): Promise<ApiResult<Snapshot>> {
   const resp = await callCabinet({ action: 'snapshot', initData });
   return parseOrError(resp, snapshotSchema);
+}
+
+/**
+ * Поводок для «Написать в поддержку»: клиент ждёт, пока закроется кабинет, и
+ * минута ожидания щедрого общего таймаута тут означала бы зависшую кнопку.
+ */
+const SUPPORT_OPEN_TIMEOUT_MS = 8_000;
+
+/**
+ * Попросить бота прислать в чат кнопку «Поддержка» (перед закрытием кабинета).
+ * `true` — сообщение доставлено.
+ */
+export async function doOpenSupport(initData: string): Promise<boolean> {
+  const resp = await callCabinet({ action: 'support-open', initData }, SUPPORT_OPEN_TIMEOUT_MS);
+  return resp !== null && resp.status === 200;
+}
+
+const cardLiveResponseSchema = z.object({
+  ok: z.literal(true),
+  card: z
+    .object({ cardId: z.string(), balanceUsdCents: z.number().int(), validUntil: z.string() })
+    .nullable(),
+});
+
+export type CardLive = NonNullable<z.infer<typeof cardLiveResponseSchema>['card']>;
+
+/**
+ * Живой баланс и срок основной карты (PaySpace) — отдельно от снапшота: тот
+ * отвечает из БД сразу, а этот запрос идёт следом в фоне (~1,2 с у провайдера).
+ * `data: null` — карты нет.
+ */
+export async function fetchCardLive(initData: string): Promise<ApiResult<CardLive | null>> {
+  const resp = await callCabinet({ action: 'card-live', initData });
+  const result = parseOrError(resp, cardLiveResponseSchema);
+  return result.ok ? { ok: true, data: result.data.card } : result;
 }
 
 export async function fetchOrderDetail(

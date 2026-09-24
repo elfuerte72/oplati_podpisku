@@ -145,6 +145,17 @@ export type OrderSummary = {
   bonus: OrderRedemptionView | null;
   /** Скидка по промокоду на этом заказе; `null` — промокода не было. */
   promo: OrderPromoView | null;
+  /**
+   * Карта, выданная по заказу (`orders.card_id`); `null` — карты по нему нет.
+   * Вкладка «Карта» по нему собирает «Заказы по этой карте» (трек miniapp-tabs,
+   * тикет 06). Это id строки в нашей БД, не реквизит — как `CardView.id`.
+   */
+  cardId: string | null;
+  /**
+   * Клиент отметил «Подписка оформлена» (событие `subscription_activated`).
+   * По нему вкладка «Карта» перестаёт показывать «Остался один шаг».
+   */
+  subscriptionActivated: boolean;
 };
 
 /**
@@ -174,6 +185,17 @@ export type CardView = {
   purposeOrderId: string | null;
   /** Правила оплаты сервиса последнего заказа (кнопки «Перейти на сайт» / «Инструкция»). */
   instructions: ServicePaymentInstructions | null;
+};
+
+/**
+ * Живые поля основной карты из PaySpace (action `card-live`): кабинет подменяет
+ * ими поля карты из снапшота. Остальное живой ответ не меняет.
+ */
+export type CardLiveView = {
+  cardId: string;
+  balanceUsdCents: number;
+  /** «Действует до» с учётом срока самой карты — см. `cardValidUntil`. */
+  validUntil: string;
 };
 
 export type PaymentView = {
