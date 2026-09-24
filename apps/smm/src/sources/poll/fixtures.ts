@@ -204,3 +204,51 @@ export const TELEGRAM_REPLY_HTML = `<!doctype html>
     </div>
   </div>
 </section></body></html>`;
+
+/**
+ * Архив рассылки Forward Future: разметка снята с живой страницы 23.09.2026 и
+ * урезана до ссылок. Порядок выпусков в фикстуре намеренно перепутан, есть
+ * повтор и ссылка на сам архив.
+ */
+export const FF_ARCHIVE_HTML = `<!doctype html><html><body>
+<a href="/newsletter/daily">Newsletter archive</a>
+<a href="/newsletter/daily/2026-09-22/ai-laptops-un-ai-safeguards">AI Laptops</a>
+<a href="/newsletter/daily/2026-09-23/anthropic-s-claude-5-5">Claude 5.5</a>
+<a href="/newsletter/daily/2026-09-22/ai-laptops-un-ai-safeguards">AI Laptops again</a>
+<a href="/newsletter/daily/2026-09-21/ai-oversight-copyright">AI Oversight</a>
+</body></html>`;
+
+/**
+ * Выпуск рассылки: форма живых выпусков 22.09 и 23.09.2026. Баннер
+ * рекламодателя стоит В НАЧАЛЕ, до первого раздела, и под ним — обычная
+ * ссылка класса `link`; ниже тот же адрес в разделе «Sponsored».
+ */
+export const FF_ISSUE_HTML = `<!doctype html><html><body>
+<nav><a class="link" href="https://example.com/menu">Menu</a></nav>
+<article class="ff-newsletter-body ff-newsletter-body--briefing">
+<div id="content-blocks">
+<div><a href="https://www.eightsleep.com/matthewberman?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" rel="nofollow"><img alt="Powered by Eight Sleep" src="https://media.beehiiv.com/banner.png"></a></div>
+<p><b><a class="link" href="https://www.eightsleep.com/matthewberman?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" target="_blank">Shop the Pod</a></b></p>
+<p>Good morning. It's Tuesday, September 22.</p>
+<h3 style="font-weight:400;margin:0"><a class="link" href="https://www.axios.com/2026/09/21/apple-siri-settlement?utm_source=forwardfuture.ai&amp;utm_medium=newsletter&amp;utm_campaign=ai-laptops" target="_blank">Apple Faces Siri Settlement</a></h3>
+<div style="border-top-width:1px" class="ff-briefing-section-heading"><div ><h5 class="ff-briefing-section-label"><span class="ff-briefing-ad-disclosure">Sponsored</span><span aria-hidden="true"> · </span><span>POWERED BY BOX</span></h5></div><div ><h2><span>Work With Box Content Directly From ChatGPT</span></h2></div></div>
+<p><a class="link" href="https://blog.box.com/box-chatgpt?utm_source=newsletter&amp;utm_medium=paidinfluencer" target="_blank">Access Your Box Content Without Leaving ChatGPT</a></p>
+<div class="ff-briefing-section-heading"><div ><h5 class="ff-briefing-section-label"><span>FORWARD FUTURE ORIGINAL</span></h5></div></div>
+<h2>A Note from the Narita Train</h2>
+<p><a class="link" href="https://forwardfuture.com/newsletter/originals/a-note?utm_source=forwardfuture.ai" target="_blank">→ Read the full article here.</a></p>
+<div class="ff-briefing-section-heading"><div ><h5 class="ff-briefing-section-label"><span>HARDWARE</span></h5></div></div>
+<h2><span>Google Opens Preorders for $899 Googlebook</span></h2>
+<p>Google opened preorders September 21, 2026, for its $899 Googlebook.</p>
+<p><a class="link" href="https://techcrunch.com/2026/09/21/googlebook/?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" target="_blank">→ Read the full article here.</a></p>
+<h2>Apple Faces Siri Settlement</h2>
+<p><a class="link" href="https://www.axios.com/2026/09/21/apple-siri-settlement?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" target="_blank">→ Read the full article here.</a></p>
+<div class="ff-briefing-section-heading"><div ><h5 class="ff-briefing-section-label"><span>NEWS</span></h5></div></div>
+<h2>What Else is Happening</h2>
+<a class="link" href="https://techcrunch.com/2026/09/21/kairos/?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" target="_blank"> Samsung Backs Kairos </a><a class="link" href="https://techcrunch.com/2026/09/21/kairos/?utm_source=forwardfuture.ai&amp;utm_medium=newsletter" target="_blank"> Reactor </a> : Samsung C&amp;T will invest up to $100M.
+<a class="link" href="https://www.youtube.com/channel/UCawZsQWqfGSbCI5yjkdVkTA" target="_blank">Our channel</a>
+<a class="link" href="https://the-decoder.com/bytedance-dramagic/?utm_source=forwardfuture.ai" target="_blank">ByteDance Launches Dramagic</a> : The AI platform handles scripts.
+</div>
+</article>
+<h2>More briefings</h2>
+<a class="link" href="https://example.org/outside-article">Outside</a>
+</body></html>`;

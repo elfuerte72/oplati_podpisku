@@ -1,4 +1,4 @@
-import { decodeEntities } from '../html.ts';
+import { decodeEntities, withoutTags } from '../html.ts';
 import { fetchText, type HttpOptions } from '../http.ts';
 import type { Item, PollResult } from './types.ts';
 
@@ -16,16 +16,7 @@ function blocks(xml: string): string[] {
 function tagText(block: string, tag: string): string | undefined {
   const match = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i').exec(block);
   if (match?.[1] === undefined) return undefined;
-  // ⚠️ Теги снимаются ДО НЕПОДВИЖНОСТИ: один проход обманывается вложенной
-  // формой (`<<b>b>` превращается в `<b>`), а заголовок ленты уезжает и в
-  // промпт ранжирования, и в сообщение владельцу.
-  let stripped = match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
-  for (let pass = 0; pass < 5; pass += 1) {
-    const next = stripped.replace(/<[^>]+>/g, '');
-    if (next === stripped) break;
-    stripped = next;
-  }
-  const value = decodeEntities(stripped.trim());
+  const value = withoutTags(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')).trim();
   return value === '' ? undefined : value;
 }
 
