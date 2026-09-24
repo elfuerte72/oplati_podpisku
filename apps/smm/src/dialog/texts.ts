@@ -1,3 +1,27 @@
+import { PICK_LIMITS, type AngleOption, type SourceCandidate } from './types.ts';
+
+/** Длинный вариант обрезается в тексте тоже: сообщение читают с телефона. */
+const OPTION_MAX_CHARS = 200;
+
+/**
+ * Вопрос с вариантами: ПОЛНЫЙ текст — в сообщении, номер — в кнопке. В кнопку
+ * Telegram на телефоне влезает треть заголовка, и владелец выбирал бы по
+ * обрывку (жалоба 24.09.2026).
+ */
+function numbered(question: string, options: readonly string[]): string {
+  const lines = options.map((option, index) => {
+    const clean = option.replace(/\s+/g, ' ').trim();
+    const short = clean.length > OPTION_MAX_CHARS ? `${clean.slice(0, OPTION_MAX_CHARS - 1)}…` : clean;
+    return `${index + 1}. ${short}`;
+  });
+  return [question, '', ...lines].join('\n');
+}
+
+/** Сайт первоисточника: по нему видно, чья это статья, ещё до перехода. */
+function hostOf(url: string): string {
+  return URL.canParse(url) ? new URL(url).hostname.replace(/^www\./, '') : '';
+}
+
 /**
  * Тексты вопросов и подписи кнопок — ОДИН словарь.
  *
@@ -16,9 +40,22 @@ export const TEXTS = {
     '/settings — настройки',
   ].join('\n'),
   askSource: 'Пришли ссылку на статью или тему словами.',
-  askSourcePick: 'Выбери первоисточник:',
+  askSourcePick: (candidates: readonly SourceCandidate[]): string =>
+    numbered(
+      'Выбери первоисточник — номер кнопкой:',
+      candidates.slice(0, PICK_LIMITS.sources).map((candidate) => {
+        const host = hostOf(candidate.url);
+        return host === '' ? candidate.title : `${candidate.title} (${host})`;
+      }),
+    ),
   askRubric: 'Рубрика:',
-  askAngle: 'Угол:',
+  askAngle: (angles: readonly AngleOption[]): string =>
+    numbered(
+      'Угол — номер кнопкой:',
+      angles
+        .slice(0, PICK_LIMITS.angles)
+        .map((angle) => (angle.idea.trim() === '' ? angle.title : `${angle.title} — ${angle.idea}`)),
+    ),
   working: 'Собираю. Это займёт до минуты.',
   stillWorking: 'Ещё собираю, подожди.',
   previewReady: 'Так пост уйдёт в канал.',
@@ -38,7 +75,18 @@ export const TEXTS = {
   nothingChanges: (note: string): string =>
     `Для читателя тут ничего не меняется: ${note}\nПредложи другую тему или пришли другую ссылку.`,
   publishPending: (seconds: number): string => `Выйдет через ${seconds} с.`,
-  failed: (summary: string): string => `Пост не прошёл проверку.\n${summary}`,
+  // Что делают кнопки, сказано прямо под ними: «Показать как есть» без
+  // пояснения читалась загадкой (вопрос владельца 24.09.2026).
+  failed: (summary: string): string =>
+    [
+      'Пост не прошёл проверку.',
+      summary,
+      '',
+      '«Показать как есть» — посмотреть текст и решить самому: опубликовать, поправить или взять другой угол.',
+      '«Снять» — выбросить черновик.',
+    ]
+      .filter((line, index) => index !== 1 || line !== '')
+      .join('\n'),
   stepFailed: (reason: string): string => `Шаг не прошёл: ${reason}`,
   buttons: {
     publish: 'Опубликовать',

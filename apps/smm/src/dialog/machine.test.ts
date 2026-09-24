@@ -270,7 +270,57 @@ describe('счастливый путь', () => {
     const result = transition(state, { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates }, at: NOW }, ctx());
     expect(result.state.name).toBe('post.await_source_pick');
     const send = result.effects.find((effect) => effect.type === 'send');
-    expect(send?.type === 'send' && send.keyboard?.rows).toHaveLength(3); // два кандидата и «Отменить»
+    // Ряд номеров и «Отменить»: полный заголовок живёт в тексте, а не в кнопке.
+    expect(send?.type === 'send' && send.keyboard?.rows.map((row) => row.map((b) => b.text))).toEqual([
+      ['1', '2'],
+      ['Отменить'],
+    ]);
+    expect(send?.type === 'send' && send.text).toContain('1. Первый (a.example.com)');
+    expect(send?.type === 'send' && send.text).toContain('2. Второй (b.example.com)');
+  });
+
+  // Жалоба 24.09.2026: подпись в кнопке Telegram обрезается на телефоне, и
+  // выбирать приходилось по обрывку заголовка.
+  it('длинный заголовок первоисточника виден в тексте целиком, а не обрывком в кнопке', () => {
+    const title = 'Anthropic выпустила Claude Opus 5.5: дешевле на 40 процентов и быстрее на длинных задачах';
+    const candidates = Array.from({ length: 7 }, (_, index) => ({
+      url: `https://www.site${index}.example/a`,
+      title: `${title} ${index + 1}`,
+    }));
+    const send = transition(
+      { name: 'post.generating' },
+      { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates }, at: NOW },
+      ctx(),
+    ).effects.find((effect) => effect.type === 'send');
+    if (send?.type !== 'send') throw new Error('вопрос не отправлен');
+    expect(send.text).toContain(`1. ${title} 1 (site0.example)`);
+    // Список и кнопки режутся одним числом: пятого варианта шестой кнопкой нет.
+    expect(send.text).toContain('5. ');
+    expect(send.text).not.toContain('6. ');
+    expect(send.keyboard?.rows[0]?.map((button) => button.text)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('непрошедший проверку пост объясняет, что делают его кнопки', () => {
+    const text = TEXTS.failed('ОШИБКА: видимого текста 752 знаков');
+    expect(text.startsWith('Пост не прошёл проверку.\nОШИБКА: видимого текста 752 знаков\n')).toBe(true);
+    expect(text).toContain('«Показать как есть» — посмотреть текст и решить самому');
+    expect(text).toContain('«Снять» — выбросить черновик.');
+    // Пустая сводка не оставляет лишней пустой строки под заголовком.
+    expect(TEXTS.failed('').split('\n')[1]).toBe('');
+    expect(TEXTS.failed('').split('\n')[2]).toContain('Показать как есть');
+  });
+
+  it('угол: суть варианта в тексте, в кнопке номер', () => {
+    const result = transition(
+      { name: 'post.await_rubric', postId: POST_ID, payload: { stamp: 'stamp123', angles: ANGLES, rubric: 'news', anglesShown: 1 } },
+      callback('rub.news'),
+      ctx(),
+    );
+    const send = result.effects.find((effect) => effect.type === 'send');
+    if (send?.type !== 'send') throw new Error('вопрос не отправлен');
+    expect(send.text).toContain('1. Память включена всем — что изменилось');
+    expect(send.text).toContain('3. Чем отличается от истории — разница');
+    expect(send.keyboard?.rows[0]?.map((button) => button.text)).toEqual(['1', '2', '3']);
   });
 
   it('план спрашивает рубрику, предложенная помечена и стоит первой', () => {
