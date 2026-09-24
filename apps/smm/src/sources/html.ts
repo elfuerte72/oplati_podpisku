@@ -144,3 +144,21 @@ export function mainText(html: string, minParagraph = 60): string {
     .filter((line) => line.length >= minParagraph)
     .join('\n\n');
 }
+
+/**
+ * Текст фрагмента без разметки, сущности раскрыты.
+ *
+ * ⚠️ Теги снимаются ДО НЕПОДВИЖНОСТИ: один проход обманывается вложенной
+ * формой (`<<b>b>` превращается в `<b>`), а заголовки лент уезжают и в промпт
+ * ранжирования, и в сообщение владельцу. `joiner` — чем заменить тег: пустая
+ * строка для заголовка ленты, пробел там, где теги разделяют слова.
+ */
+export function withoutTags(html: string, joiner = ''): string {
+  let stripped = html;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const next = stripped.replace(/<[^>]+>/g, joiner);
+    if (next === stripped) break;
+    stripped = next;
+  }
+  return decodeEntities(stripped);
+}

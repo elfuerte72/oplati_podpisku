@@ -29,6 +29,7 @@ import { handleFunnelCallback } from './funnel-callbacks';
 import { notifyStaffAboutInboundMessage } from './inbound-alert';
 import { handleStartCommand } from './start-menu';
 import { openSupportEntry } from './support-entry';
+import { handlePrivacyCommand, isPrivacyCommand } from './privacy-command';
 import {
   extractSupportInline,
   handleSupportCommand,
@@ -331,6 +332,13 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<void
 
   if (isStartCommand(text)) {
     await handleStartCommand(update, message, chatId, text);
+    return;
+  }
+
+  // /privacy — ссылки на политику и соглашение (требование Telegram к ботам).
+  // До флага BOT_AI_ENABLED: работает при выключенном AI-диалоге, как /start.
+  if (isPrivacyCommand(text)) {
+    await handlePrivacyCommand(chatId, update.update_id);
     return;
   }
 
