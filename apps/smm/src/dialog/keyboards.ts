@@ -1,4 +1,4 @@
-import { RUBRIC_KEYS, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
+import { RUBRIC_KEYS, smmConfig, type ChannelKey, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import { buildCallback } from './callback.ts';
 import { TEXTS } from './texts.ts';
 import {
@@ -73,17 +73,57 @@ export function angleKeyboard(
   return { rows };
 }
 
-export function previewKeyboard(postId: string, stamp: string): Keyboard {
+/** Канал, в который пост можно опубликовать: ключ для действия и подпись кнопки. */
+export interface PublishButton {
+  readonly key: ChannelKey;
+  readonly label: string;
+}
+
+/**
+ * Префикс действий черновика по расписанию. Такие кнопки называют свой пост
+ * сами и «усыновляют» его в диалог, а не сверяются с текущим постом диалога:
+ * черновик приходит, когда владелец может быть занят другим постом.
+ */
+export const AUTO_PREFIX = 'a.';
+
+/**
+ * Кнопки под превью поста канала.
+ *
+ * Один канал — прежний вид («Опубликовать»). Два — кнопка на каждый канал и
+ * «В оба канала». Какие каналы сюда попадут, решает исполнитель: канал без
+ * рекламы не получает текст с упоминанием Оплатишки, и его кнопки тогда нет.
+ */
+export function previewKeyboard(
+  postId: string,
+  stamp: string,
+  targets: readonly PublishButton[] = [],
+  prefix = '',
+): Keyboard {
+  const button = (text: string, action: string): KeyboardButton => ({
+    text,
+    data: buildCallback(`${prefix}${action}`, postId, stamp),
+  });
+  const edit = button(TEXTS.buttons.edit, 'edit');
+  const otherAngle = button(TEXTS.buttons.otherAngle, 'angle');
+  const drop = button(TEXTS.buttons.drop, 'drop');
+
+  const only = targets.length === 1 ? targets[0] : undefined;
+  if (targets.length <= 1) {
+    // Единственный канал — основной: действие `pub`, как у всех кнопок до
+    // второго канала. Единственный НЕосновной называется по имени: «Опубликовать»
+    // без адреса там читалось бы как публикация в Оплатишку.
+    const publish =
+      only === undefined || only.key === 'main'
+        ? button(TEXTS.buttons.publish, 'pub')
+        : button(only.label, `pub.${only.key}`);
+    return { rows: [[publish, edit], [otherAngle, drop]] };
+  }
   return {
     rows: [
-      [
-        { text: TEXTS.buttons.publish, data: buildCallback('pub', postId, stamp) },
-        { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
-      ],
-      [
-        { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },
-        { text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) },
-      ],
+      targets.map((target) => button(target.label, `pub.${target.key}`)),
+      [button(TEXTS.buttons.publishBoth, 'pub.both')],
+      [edit, otherAngle],
+      [drop],
     ],
   };
 }
@@ -112,16 +152,18 @@ export function threadsPreviewKeyboard(
   // ⚠️ Кнопку строит ОДНО место — сборка передачи (`threads/handoff.ts`):
   // адрес Web Intent обязан совпадать с тем, по которому линт проверял длину.
   open?: KeyboardButton,
+  prefix = '',
 ): Keyboard {
+  const data = (action: string): string => buildCallback(`${prefix}${action}`, postId, stamp);
   return {
     rows: [
       ...(open === undefined ? [] : [[open]]),
-      [{ text: TEXTS.buttons.posted, data: buildCallback('posted', postId, stamp) }],
+      [{ text: TEXTS.buttons.posted, data: data('posted') }],
       [
-        { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
-        { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },
+        { text: TEXTS.buttons.edit, data: data('edit') },
+        { text: TEXTS.buttons.otherAngle, data: data('angle') },
       ],
-      [{ text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) }],
+      [{ text: TEXTS.buttons.drop, data: data('drop') }],
     ],
   };
 }

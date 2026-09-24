@@ -175,12 +175,14 @@ describe('переходы поста', () => {
       from: ['approved'],
       to: 'published',
       decision: { kind: 'publish', actor: 'code' },
-      patch: { channelMessageId: 10 },
+      patch: { channelMessageId: 10, channel: 'main' },
     });
     const published = store.posts.get(post.id);
     expect(published?.publishedAt).toBe('2026-09-22T10:03:00.000Z');
     expect(published?.channelMessageId).toBe(10);
-    expect(store.posts.findByMessageId(10)?.id).toBe(post.id);
+    expect(store.posts.findByMessageId('main', 10)?.id).toBe(post.id);
+    // Номер уникален только внутри канала: у второго канала свой счётчик.
+    expect(store.posts.findByMessageId('second', 10)).toBeUndefined();
   });
 });
 

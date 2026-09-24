@@ -43,6 +43,7 @@ export async function producePost(
     rubric: brief.rubric,
     config,
     ...(brief.history === undefined ? {} : { history: brief.history }),
+    ...(brief.noAds === true ? { noAds: true } : {}),
   });
 
   const draft = await writeDraft(

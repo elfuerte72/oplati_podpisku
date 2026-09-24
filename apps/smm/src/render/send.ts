@@ -55,7 +55,9 @@ export type SendResult =
   | { readonly ok: false; readonly message: string; readonly code?: number };
 
 function toReplyMarkup(keyboard?: RenderKeyboard) {
-  if (keyboard === undefined) return undefined;
+  // Пустая клавиатура — это «кнопок нет»: пост канала без рекламы и без своей
+  // кнопки уходит без разметки вовсе, а не с пустым рядом.
+  if (keyboard === undefined || keyboard.rows.length === 0) return undefined;
   return {
     inline_keyboard: keyboard.rows.map((row) => row.map((button) => ({ text: button.text, url: button.url }))),
   };

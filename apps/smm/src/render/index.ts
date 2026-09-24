@@ -5,6 +5,7 @@ export {
   type Outgoing,
   type RenderButton,
   type RenderKeyboard,
+  type RenderOptions,
   type RenderResult,
   type RenderablePost,
   type RichMedia,
