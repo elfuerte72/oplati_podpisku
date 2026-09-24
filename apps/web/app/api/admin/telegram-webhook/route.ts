@@ -105,6 +105,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
       await bot.api.setMyCommands([
         { command: 'support', description: 'Написать в поддержку' },
+        // Требование Telegram к ботам: политика — по команде /privacy.
+        { command: 'privacy', description: 'Политика конфиденциальности' },
       ]);
     } catch (cmdErr) {
       log.warn({ event: 'admin.telegram.set_commands.failed', err: cmdErr });
