@@ -260,7 +260,10 @@ function withMessage<T extends { ok: true }>(
  */
 const CABINET_TIMEOUT_MS = 65_000;
 
-async function callCabinet(body: Record<string, unknown>): Promise<{ status: number; json: unknown } | null> {
+async function callCabinet(
+  body: Record<string, unknown>,
+  timeoutMs: number = CABINET_TIMEOUT_MS,
+): Promise<{ status: number; json: unknown } | null> {
   try {
     const res = await fetchWithTimeout(
       '/api/cabinet',
@@ -269,7 +272,7 @@ async function callCabinet(body: Record<string, unknown>): Promise<{ status: num
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
-      CABINET_TIMEOUT_MS,
+      timeoutMs,
     );
     const json: unknown = await res.json().catch(() => null);
     return { status: res.status, json };
@@ -295,6 +298,21 @@ function parseOrError<T>(
 export async function fetchSnapshot(initData: string): Promise<ApiResult<Snapshot>> {
   const resp = await callCabinet({ action: 'snapshot', initData });
   return parseOrError(resp, snapshotSchema);
+}
+
+/**
+ * Поводок для «Написать в поддержку»: клиент ждёт, пока закроется кабинет, и
+ * минута ожидания щедрого общего таймаута тут означала бы зависшую кнопку.
+ */
+const SUPPORT_OPEN_TIMEOUT_MS = 8_000;
+
+/**
+ * Попросить бота прислать в чат кнопку «Поддержка» (перед закрытием кабинета).
+ * `true` — сообщение доставлено.
+ */
+export async function doOpenSupport(initData: string): Promise<boolean> {
+  const resp = await callCabinet({ action: 'support-open', initData }, SUPPORT_OPEN_TIMEOUT_MS);
+  return resp !== null && resp.status === 200;
 }
 
 const cardLiveResponseSchema = z.object({

@@ -60,6 +60,7 @@ import {
   checkPromo,
   doCancelOrder,
   doMarkSubscriptionPaid,
+  doOpenSupport,
   doPay,
   doReportPaymentIssue,
   doReportPaymentProblem,
@@ -890,11 +891,27 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
     [detail, openExternalLink, refreshDetail, reloadSnapshot],
   );
 
-  // Выход в поддержку: закрываем Mini App — пользователь оказывается в чате
-  // бота, где работает /support. Своего канала связи у кабинета нет.
+  /*
+   * Выход в поддержку: бот присылает в чат кнопку «Поддержка», и кабинет
+   * закрывается — клиент оказывается ровно под ней, а не в чате, где кнопку
+   * надо искать в меню выше. Своего канала связи у кабинета нет. Не
+   * доставилось — кабинет остаётся открытым и говорит, куда нажать: закрыться
+   * в чат без кнопки значило бы бросить клиента.
+   */
+  const supportBusyRef = useRef(false);
   const contactSupport = useCallback(() => {
-    tgRef.current?.close?.();
-  }, []);
+    if (supportBusyRef.current) return;
+    supportBusyRef.current = true;
+    haptic('tick');
+    void doOpenSupport(initDataRef.current).then((delivered) => {
+      supportBusyRef.current = false;
+      if (delivered) {
+        tgRef.current?.close?.();
+        return;
+      }
+      setNotice('Не получилось открыть поддержку. Закрой приложение и нажми «Поддержка» в чате с ботом.');
+    });
+  }, [haptic]);
 
   // «Взять из Telegram»: requestContact НЕ отдаёт номер приложению — Telegram
   // доставляет его боту contact-сообщением. Поэтому после «поделился»
@@ -1114,12 +1131,15 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         </div>
       </div>
 
+      {/* Над листами (z-60): уведомления приходят и из открытого листа —
+          «поддержка не открылась», «обнови Telegram» у контактов, — а под
+          листом их не было видно. Гаснет само и по тапу. */}
       {notice && (
         <button
           type="button"
           role="status"
           onClick={() => setNotice(null)}
-          className="absolute inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] z-40 mx-auto max-w-md rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5 text-left font-body text-sm text-[var(--text)] shadow-[3px_3px_0_var(--shadow-ink)]"
+          className="absolute inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] z-[70] mx-auto max-w-md rounded-[12px] border-2 border-[var(--shadow-ink)] bg-[var(--surface-2)] px-3.5 py-2.5 text-left font-body text-sm text-[var(--text)] shadow-[3px_3px_0_var(--shadow-ink)]"
         >
           {notice}
         </button>

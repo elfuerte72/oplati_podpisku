@@ -219,7 +219,7 @@ export function ProfileTab({
           <HelpRow
             icon={<IconChat />}
             title="Написать в поддержку"
-            hint="откроется чат с ботом"
+            hint="бот пришлёт кнопку в чат"
             onClick={onContactSupport}
           />
         )}
