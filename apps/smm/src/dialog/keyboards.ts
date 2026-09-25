@@ -1,24 +1,43 @@
-import { RUBRIC_KEYS, smmConfig, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
+import { RUBRIC_KEYS, smmConfig, type ChannelKey, type RubricKey, type SmmConfig } from '../config/smm.config.ts';
 import { buildCallback } from './callback.ts';
 import { TEXTS } from './texts.ts';
-import type { AngleOption, Keyboard, KeyboardButton, SourceCandidate } from './types.ts';
+import {
+  PICK_LIMITS,
+  type AngleOption,
+  type Keyboard,
+  type KeyboardButton,
+  type SourceCandidate,
+} from './types.ts';
 
 /** Клавиатуры — функции от состояния: один вопрос, один набор кнопок. */
+
+/**
+ * Ряд кнопок-номеров к вопросу с вариантами. Сами варианты целиком стоят в
+ * тексте сообщения (`TEXTS.askSourcePick`, `TEXTS.askAngle`): подпись в
+ * кнопке Telegram на телефоне обрезается, и выбирать приходилось по обрывку.
+ */
+function numberRow(count: number, action: (index: number) => string, postId: string, stamp: string): KeyboardButton[][] {
+  if (count <= 0) return [];
+  return [
+    Array.from({ length: count }, (_, index) => ({
+      text: String(index + 1),
+      data: buildCallback(action(index), postId, stamp),
+    })),
+  ];
+}
 
 export function sourcePickKeyboard(
   postId: string,
   stamp: string,
   candidates: readonly SourceCandidate[],
 ): Keyboard {
-  const rows = candidates.slice(0, 5).map((candidate, index) => [
-    {
-      // Заголовок обрезается: в кнопке Telegram всё равно помещается немного.
-      text: `${index + 1}. ${candidate.title.slice(0, 50)}`,
-      data: buildCallback(`pick.${index}`, postId, stamp),
-    },
-  ]);
-  rows.push([{ text: TEXTS.buttons.cancel, data: buildCallback('drop', postId, stamp) }]);
-  return { rows };
+  const count = Math.min(candidates.length, PICK_LIMITS.sources);
+  return {
+    rows: [
+      ...numberRow(count, (index) => `pick.${index}`, postId, stamp),
+      [{ text: TEXTS.buttons.cancel, data: buildCallback('drop', postId, stamp) }],
+    ],
+  };
 }
 
 export function rubricKeyboard(
@@ -46,26 +65,65 @@ export function angleKeyboard(
   angles: readonly AngleOption[],
   canAskMore: boolean,
 ): Keyboard {
-  const rows = angles.slice(0, 3).map((angle, index) => [
-    { text: angle.title.slice(0, 60), data: buildCallback(`ang.${index}`, postId, stamp) },
-  ]);
+  const count = Math.min(angles.length, PICK_LIMITS.angles);
+  const rows = numberRow(count, (index) => `ang.${index}`, postId, stamp);
   if (canAskMore) {
     rows.push([{ text: TEXTS.buttons.moreAngles, data: buildCallback('more', postId, stamp) }]);
   }
   return { rows };
 }
 
-export function previewKeyboard(postId: string, stamp: string): Keyboard {
+/** Канал, в который пост можно опубликовать: ключ для действия и подпись кнопки. */
+export interface PublishButton {
+  readonly key: ChannelKey;
+  readonly label: string;
+}
+
+/**
+ * Префикс действий черновика по расписанию. Такие кнопки называют свой пост
+ * сами и «усыновляют» его в диалог, а не сверяются с текущим постом диалога:
+ * черновик приходит, когда владелец может быть занят другим постом.
+ */
+export const AUTO_PREFIX = 'a.';
+
+/**
+ * Кнопки под превью поста канала.
+ *
+ * Один канал — прежний вид («Опубликовать»). Два — кнопка на каждый канал и
+ * «В оба канала». Какие каналы сюда попадут, решает исполнитель: канал без
+ * рекламы не получает текст с упоминанием Оплатишки, и его кнопки тогда нет.
+ */
+export function previewKeyboard(
+  postId: string,
+  stamp: string,
+  targets: readonly PublishButton[] = [],
+  prefix = '',
+): Keyboard {
+  const button = (text: string, action: string): KeyboardButton => ({
+    text,
+    data: buildCallback(`${prefix}${action}`, postId, stamp),
+  });
+  const edit = button(TEXTS.buttons.edit, 'edit');
+  const otherAngle = button(TEXTS.buttons.otherAngle, 'angle');
+  const drop = button(TEXTS.buttons.drop, 'drop');
+
+  const only = targets.length === 1 ? targets[0] : undefined;
+  if (targets.length <= 1) {
+    // Единственный канал — основной: действие `pub`, как у всех кнопок до
+    // второго канала. Единственный НЕосновной называется по имени: «Опубликовать»
+    // без адреса там читалось бы как публикация в Оплатишку.
+    const publish =
+      only === undefined || only.key === 'main'
+        ? button(TEXTS.buttons.publish, 'pub')
+        : button(only.label, `pub.${only.key}`);
+    return { rows: [[publish, edit], [otherAngle, drop]] };
+  }
   return {
     rows: [
-      [
-        { text: TEXTS.buttons.publish, data: buildCallback('pub', postId, stamp) },
-        { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
-      ],
-      [
-        { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },
-        { text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) },
-      ],
+      targets.map((target) => button(target.label, `pub.${target.key}`)),
+      [button(TEXTS.buttons.publishBoth, 'pub.both')],
+      [edit, otherAngle],
+      [drop],
     ],
   };
 }
@@ -94,16 +152,18 @@ export function threadsPreviewKeyboard(
   // ⚠️ Кнопку строит ОДНО место — сборка передачи (`threads/handoff.ts`):
   // адрес Web Intent обязан совпадать с тем, по которому линт проверял длину.
   open?: KeyboardButton,
+  prefix = '',
 ): Keyboard {
+  const data = (action: string): string => buildCallback(`${prefix}${action}`, postId, stamp);
   return {
     rows: [
       ...(open === undefined ? [] : [[open]]),
-      [{ text: TEXTS.buttons.posted, data: buildCallback('posted', postId, stamp) }],
+      [{ text: TEXTS.buttons.posted, data: data('posted') }],
       [
-        { text: TEXTS.buttons.edit, data: buildCallback('edit', postId, stamp) },
-        { text: TEXTS.buttons.otherAngle, data: buildCallback('angle', postId, stamp) },
+        { text: TEXTS.buttons.edit, data: data('edit') },
+        { text: TEXTS.buttons.otherAngle, data: data('angle') },
       ],
-      [{ text: TEXTS.buttons.drop, data: buildCallback('drop', postId, stamp) }],
+      [{ text: TEXTS.buttons.drop, data: data('drop') }],
     ],
   };
 }

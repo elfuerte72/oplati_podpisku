@@ -9,6 +9,12 @@
  * показывать тому, кто давно оформил, — превратить подсказку в шум.
  */
 
+import {
+  ISSUE_FAILED_MAX_AGE_MS,
+  isRecentIssueFailure,
+  type IssueFailedOrderLike,
+} from './issue-failed';
+
 /** Сколько дней после заказа ещё напоминаем про шаг 3. */
 export const NEXT_STEP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -23,7 +29,7 @@ export const ISSUING_OVER_CARD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 /** Статусы «деньги пришли, карта в пути». */
 const ISSUING_STATUSES = new Set(['paid', 'in_fulfillment']);
 
-export type CardTabOrderLike = {
+export type CardTabOrderLike = IssueFailedOrderLike & {
   orderId: string;
   status: string;
   createdAt: string;
@@ -45,6 +51,11 @@ export type CardTabState<O extends CardTabOrderLike, C extends CardTabCardLike> 
       order: O;
       /** Деньги ложатся на уже выпущенную активную карту (второй сервис). */
       topUp: boolean;
+    }
+  | {
+      /** Оплачен, а выдача упала: разбирается оператор (`isPaidButIssueFailed`). */
+      kind: 'issue_failed';
+      order: O;
     }
   | {
       kind: 'active';
@@ -78,6 +89,25 @@ export function selectCardTabState<O extends CardTabOrderLike, C extends CardTab
     .sort(byCreatedDesc)[0];
   if (issuing) {
     return { kind: 'issuing', order: issuing, topUp: hasActiveCard };
+  }
+
+  // Выдача сорвалась после оплаты. Без этой ветки «Выпускаю карту…» сменялось
+  // «Карты пока нет» (или прошлой картой с шагом по прошлому сервису): только
+  // что заплативший клиент видел пустоту. Поверх рабочей карты — не дольше, чем
+  // выпуск (иначе карта недоступна с вкладки), без неё — до `ISSUE_FAILED_MAX_AGE_MS`.
+  // Возраст — от оплаты (`isRecentIssueFailure`), не от создания заказа.
+  const issueFailed = [...orders]
+    .filter(
+      (o) =>
+        isRecentIssueFailure(
+          o,
+          now,
+          hasActiveCard ? ISSUING_OVER_CARD_MAX_AGE_MS : ISSUE_FAILED_MAX_AGE_MS,
+        ) && !(o.cardId && cards.some((c) => c.id === o.cardId)),
+    )
+    .sort(byCreatedDesc)[0];
+  if (issueFailed) {
+    return { kind: 'issue_failed', order: issueFailed };
   }
 
   // Основная карта — свежая активная; активной нет — свежая по выпуску.

@@ -346,6 +346,7 @@ export {
   type PanelOrderListItem,
   type PanelOrderListPage,
   type PanelOrderPayment,
+  type PanelOrderPromo,
   type PanelOrderSort,
 } from './panel.ts';
 export {
@@ -446,12 +447,12 @@ export {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
-  dailyPromoDiscounts,
+  promoDiscountsInPeriod,
   dailySupport,
   type DailyAudience,
   type DailyOrderFlow,
   type DailyPaidOrder,
-  type DailyPromoDiscounts,
+  type PromoDiscounts,
   type DailySupport,
 } from './daily-report.ts';
 

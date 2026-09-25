@@ -14,7 +14,7 @@ import { errorTextFor } from './error-text';
  * данных вслепую. Схемы зеркалят view-типы из `lib/cabinet/types.ts`.
  */
 
-const orderSummarySchema = z.object({
+export const orderSummarySchema = z.object({
   orderId: z.string(),
   shortId: z.string(),
   status: z.string(),
@@ -61,6 +61,13 @@ const orderSummarySchema = z.object({
    */
   cardId: z.string().nullable().optional(),
   subscriptionActivated: z.boolean().optional(),
+  /**
+   * Время оплаты — по нему вкладка «Карта» узнаёт «оплатил, а выдача упала»
+   * (`isPaidButIssueFailed`). Без поля в схеме zod его отрезал бы, даже когда
+   * сервер его прислал, и ветка «Карта задерживается» не срабатывала бы никогда.
+   * `.optional()` — снапшот деплоя без поля покажет прежний экран, а не упадёт.
+   */
+  paidAt: z.string().nullable().optional(),
 });
 
 /** Правила оплаты сервиса (VPN/валюта/billing/ссылка) — как в каталоге. */

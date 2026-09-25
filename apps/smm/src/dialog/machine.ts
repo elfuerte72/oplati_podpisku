@@ -4,7 +4,7 @@ import {
   angleKeyboard,
   editChoiceKeyboard,
   failedKeyboard,
-  previewKeyboard,
+  AUTO_PREFIX,
   publishPendingKeyboard,
   rubricKeyboard,
   sourcePickKeyboard,
@@ -21,7 +21,7 @@ import type {
   Transition,
   TransitionContext,
 } from './types.ts';
-import { TEXT_STATES } from './types.ts';
+import { ADOPTABLE_STATES, PUBLISH_CHANNELS, TEXT_STATES } from './types.ts';
 
 /**
  * Автомат диалога: чистая функция `transition(state, event, ctx)`.
@@ -278,6 +278,30 @@ function handleCallback(
     };
   }
 
+  if (parsed.action.startsWith(AUTO_PREFIX)) {
+    // Кнопки черновика по расписанию: пост называет сама кнопка, а нажатие
+    // «усыновляет» его в диалог — исполнитель сверит отпечаток с постом,
+    // сделает его текущим и повторит нажатие обычным действием. Черновик не
+    // трогает диалог, пока владелец его не коснулся.
+    if (!ADOPTABLE_STATES.includes(state.name)) {
+      return { state, effects: [{ type: 'answer_callback', text: TEXTS.notNow }] };
+    }
+    const action = parsed.action.slice(AUTO_PREFIX.length);
+    if (action === '' || action.startsWith(AUTO_PREFIX)) return stale(event, state);
+    return {
+      state,
+      effects: [
+        {
+          type: 'adopt',
+          postId: parsed.id,
+          action,
+          stamp: parsed.stamp,
+          ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+        },
+      ],
+    };
+  }
+
   const currentStamp = state.payload?.stamp;
   const samePost =
     state.postId === undefined ? parsed.id === NO_POST_ID : state.postId === parsed.id;
@@ -348,7 +372,7 @@ function handleCallback(
             : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
           {
             type: 'send',
-            text: TEXTS.askAngle,
+            text: TEXTS.askAngle(angles),
             keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
           },
         ],
@@ -404,7 +428,8 @@ function handleCallback(
     }
 
     case 'post.previewed': {
-      if (parsed.action === 'pub') {
+      const channels = PUBLISH_CHANNELS.get(parsed.action);
+      if (channels !== undefined) {
         const at = new Date(Date.parse(ctx.now) + ctx.undoSeconds * 1000).toISOString();
         return {
           state: {
@@ -416,8 +441,9 @@ function handleCallback(
           effects: [
             answer,
             // Решение владельца — ФАКТ клика: слово «публикуй» текстом кнопку
-            // не заменяет. Отпечаток текста уходит в журнал вместе с решением.
-            { type: 'decision', postId, kind: 'approve', textSha: parsed.stamp },
+            // не заменяет. Отпечаток текста и каналы уходят в журнал вместе с
+            // решением: публикация читает каналы оттуда, а не из поля поста.
+            { type: 'decision', postId, kind: 'approve', textSha: parsed.stamp, payload: { channels } },
             ...(event.messageId === undefined
               ? []
               : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
@@ -469,7 +495,7 @@ function handleCallback(
             answer,
             {
               type: 'send',
-              text: TEXTS.askAngle,
+              text: TEXTS.askAngle(angles),
               keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
             },
           ],
@@ -519,10 +545,7 @@ function handleCallback(
         }
         return {
           state: { name: 'post.previewed', postId, payload, expiresAt: expiresAt(ctx) },
-          effects: [
-            answer,
-            { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(postId, parsed.stamp) },
-          ],
+          effects: [answer, { type: 'preview_controls', postId, stamp: parsed.stamp, note: 'ready' }],
         };
       }
       return stale(event, state);
@@ -540,11 +563,7 @@ function handleCallback(
           ...(event.messageId === undefined
             ? []
             : [{ type: 'edit_keyboard' as const, messageId: event.messageId, keyboard: null }]),
-          {
-            type: 'send',
-            text: TEXTS.cancelled,
-            keyboard: previewKeyboard(postId, parsed.stamp),
-          },
+          { type: 'preview_controls', postId, stamp: parsed.stamp, note: 'cancelled' },
         ],
       };
     }
@@ -594,7 +613,7 @@ function handleCallback(
             answer,
             {
               type: 'send',
-              text: TEXTS.askAngle,
+              text: TEXTS.askAngle(angles),
               keyboard: angleKeyboard(postId, stamp, angles, (payload.anglesShown ?? 1) < 2),
             },
           ],
@@ -658,7 +677,7 @@ function previewTransition(
     effects: [
       ...before,
       { type: 'preview', postId },
-      { type: 'send', text: TEXTS.previewReady, keyboard: previewKeyboard(postId, stamp) },
+      { type: 'preview_controls', postId, stamp, note: 'ready' },
     ],
   };
 }
@@ -683,7 +702,7 @@ function handlePipelineDone(
       effects: [
         {
           type: 'send',
-          text: TEXTS.askSourcePick,
+          text: TEXTS.askSourcePick(outcome.candidates),
           keyboard: sourcePickKeyboard(state.postId ?? NO_POST_ID, stamp, outcome.candidates),
         },
       ],
@@ -737,7 +756,7 @@ function handlePipelineDone(
       effects: [
         {
           type: 'send',
-          text: TEXTS.published,
+          text: outcome.summary ?? TEXTS.published,
           keyboard: publishedKeyboard(outcome.postId, outcome.textSha.slice(0, 8)),
         },
       ],

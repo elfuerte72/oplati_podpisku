@@ -1,3 +1,4 @@
+import type { ChannelKey } from '../config/smm.config.ts';
 import type { Db, SqlValue } from './db.ts';
 import { isTransitionAllowed, type PostStatus } from './post-state.ts';
 import { textShaOf } from './text-sha.ts';
@@ -36,6 +37,9 @@ interface PostRow {
   button_text: string | null;
   button_url: string | null;
   channel_message_id: number | null;
+  channel: string | null;
+  origin: string;
+  angles: string | null;
   item_id: string | null;
   parent_post_id: string | null;
   publish_at: string | null;
@@ -50,6 +54,15 @@ interface PostRow {
 }
 
 export type OnCorruptJson = (reason: string) => void;
+
+/**
+ * «Пост не копия для второго канала». Копия «в оба» — отдельная строка с тем
+ * же текстом, рубрикой и рекламой; в истории и в статистике СОДЕРЖАНИЯ она
+ * раздвоила бы пост (дефицит рубрик, доля рекламы, свежесть, калибровка
+ * редактора). Одно определение на все выборки: второе разошлось бы молча.
+ * Пост Telegram с родителем — это ВСЕГДА копия: у Threads платформа своя.
+ */
+export const NOT_CHANNEL_COPY_SQL = "NOT (platform = 'telegram' AND parent_post_id IS NOT NULL)";
 
 function makeJsonParser(onCorrupt?: OnCorruptJson) {
   return (raw: string | null, column: string, id: string): unknown => {
@@ -90,11 +103,13 @@ const PATCH_COLUMNS: Record<keyof PostPatch, string> = {
   buttonText: 'button_text',
   buttonUrl: 'button_url',
   channelMessageId: 'channel_message_id',
+  channel: 'channel',
+  angles: 'angles',
   itemId: 'item_id',
   publishAt: 'publish_at',
 };
 
-const JSON_FIELDS = new Set<keyof PostPatch>(['dossier', 'judge', 'lint']);
+const JSON_FIELDS = new Set<keyof PostPatch>(['dossier', 'judge', 'lint', 'angles']);
 
 /**
  * Патч в SQL. `undefined` ПРОПУСКАЕТСЯ, а не превращается в NULL: без
@@ -145,7 +160,22 @@ export interface PostsRepo {
    * первыми: на них смотрит линт свежести и советник рубрик.
    */
   recentPublished(options?: { platform?: Platform; limit?: number; excludeId?: string }): Post[];
-  findByMessageId(messageId: number): Post | undefined;
+  findByMessageId(channel: ChannelKey, messageId: number): Post | undefined;
+  /** Сколько показанных черновиков по расписанию площадки ждут решения владельца. */
+  countPendingAuto(platform: Platform): number;
+  /** Копии поста для других каналов («в оба»). */
+  channelCopies(parentId: string): Post[];
+  /**
+   * Копия поста для второго канала — ОДНИМ кликом «в оба». Проходит те же
+   * статусы до `approved` и получает решение `approve` владельца с тем же
+   * отпечатком: гейт публикации проверяет копию так же, как исходник.
+   */
+  createChannelCopy(input: {
+    sourceId: string;
+    channel: ChannelKey;
+    approve: DecisionInput;
+    publishAt?: string;
+  }): TransitionResult;
   /**
    * Можно ли публиковать. Три условия, и все проверяются в БАЗЕ:
    *   1) пост показан владельцу и сейчас в оплатимом для публикации статусе;
@@ -200,6 +230,9 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
       buttonText: optional(row.button_text),
       buttonUrl: optional(row.button_url),
       channelMessageId: row.channel_message_id ?? undefined,
+      channel: optional(row.channel) as Post['channel'],
+      origin: row.origin === 'auto' ? 'auto' : 'owner',
+      angles: parseJson(row.angles, 'angles', row.id),
       itemId: optional(row.item_id),
       parentPostId: optional(row.parent_post_id),
       publishAt: optional(row.publish_at),
@@ -241,8 +274,8 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
       db.transaction(() => {
         db.run(
           `INSERT INTO posts (id, platform, status, rubric, layout, cta, brief, source_url,
-             source_title, dossier, item_id, parent_post_id, status_changed_at, created_at, updated_at)
-           VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             source_title, dossier, item_id, parent_post_id, origin, status_changed_at, created_at, updated_at)
+           VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           input.platform,
           input.rubric ?? null,
@@ -254,6 +287,7 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
           input.dossier === undefined ? null : JSON.stringify(input.dossier),
           input.itemId ?? null,
           input.parentPostId ?? null,
+          input.origin ?? 'owner',
           at,
           at,
           at,
@@ -370,6 +404,7 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
         `SELECT * FROM posts
          WHERE status IN ('published', 'withdrawn', 'posted')
            AND platform = ?
+           AND ${NOT_CHANNEL_COPY_SQL}
            AND (? IS NULL OR id != ?)
          ORDER BY COALESCE(published_at, status_changed_at) DESC, id DESC
          LIMIT ?`,
@@ -381,9 +416,114 @@ export function createPostsRepo(db: Db, now: () => Date, onCorrupt?: OnCorruptJs
       return rows.map(toPost);
     },
 
-    findByMessageId(messageId) {
-      const row = db.get<PostRow>('SELECT * FROM posts WHERE channel_message_id = ?', messageId);
+    findByMessageId(channel, messageId) {
+      // Номер сообщения уникален только ВНУТРИ канала: у двух каналов свои счётчики.
+      const row = db.get<PostRow>(
+        "SELECT * FROM posts WHERE COALESCE(channel, 'main') = ? AND channel_message_id = ?",
+        channel,
+        messageId,
+      );
       return row === undefined ? undefined : toPost(row);
+    },
+
+    countPendingAuto(platform) {
+      // Считаются только ПОКАЗАННЫЕ владельцу черновики: застрявший на сборке
+      // пост ждёт не решения, а уборки, и забивал бы потолок навсегда.
+      const row = db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM posts
+          WHERE origin = 'auto' AND platform = ?
+            AND status IN ('previewed', 'handed')`,
+        platform,
+      );
+      return row?.n ?? 0;
+    },
+
+    channelCopies(parentId) {
+      return db
+        .all<PostRow>(
+          `SELECT * FROM posts
+            WHERE parent_post_id = ? AND platform = 'telegram' AND channel IS NOT NULL
+            ORDER BY created_at, id`,
+          parentId,
+        )
+        .map(toPost);
+    },
+
+    createChannelCopy(input) {
+      return db.transaction<TransitionResult>(() => {
+        const source = repo.get(input.sourceId);
+        if (source === undefined) return { ok: false, actual: null };
+        if (source.platform !== 'telegram' || source.body === undefined || source.textSha === undefined) {
+          return { ok: false, actual: source.status };
+        }
+        // Копия — ТОТ ЖЕ текст: отпечаток обязан совпасть с тем, что владелец
+        // видел и подтвердил. Разошёлся — подтверждения под копией нет.
+        if (input.approve.textSha !== source.textSha) return { ok: false, actual: source.status };
+        // Решение под копией выводится из НАСТОЯЩЕГО решения владельца на
+        // исходнике: без него проверка гейта копии замыкалась бы на саму себя
+        // (код пишет решение и сам же его проверяет — ревью 24.09.2026).
+        const owned = db.get<{ found: number }>(
+          `SELECT 1 AS found FROM decisions
+            WHERE post_id = ? AND kind = 'approve' AND actor = 'owner'
+              AND actor_id = ? AND text_sha = ?
+            LIMIT 1`,
+          source.id,
+          input.approve.actorId ?? null,
+          source.textSha,
+        );
+        if (input.approve.actor !== 'owner' || owned === undefined) return { ok: false, actual: source.status };
+
+        const at = nowIso();
+        const id = ulid(now().getTime());
+        db.run(
+          `INSERT INTO posts (id, platform, status, rubric, layout, angle, cta, brief, source_url,
+             source_title, dossier, body, text_sha, image_path, owner_text, judge, lint, rounds,
+             tag, button_text, button_url, item_id, parent_post_id, channel, origin, angles,
+             status_changed_at, created_at, updated_at)
+           SELECT ?, platform, 'draft', rubric, layout, angle, cta, brief, source_url,
+             source_title, dossier, body, text_sha, image_path, owner_text, judge, lint, rounds,
+             tag, button_text, button_url, item_id, id, ?, origin, angles, ?, ?, ?
+             FROM posts WHERE id = ?`,
+          id,
+          input.channel,
+          at,
+          at,
+          at,
+          source.id,
+        );
+        addDecision(id, { kind: 'edit', actor: 'code', payload: { copyOf: source.id, channel: input.channel } }, at);
+
+        // Копия идёт ТЕМ ЖЕ путём статусов, что исходный пост, — прямой записи
+        // статуса нет нигде (канарейка). Проверки линта и редактора — те же, что
+        // у исходника: текст тот же до буквы.
+        const steps: { to: PostStatus; kind: DecisionInput['kind'] }[] = [
+          { to: 'linted', kind: 'lint' },
+          { to: 'reviewed', kind: 'judge' },
+          { to: 'previewed', kind: 'preview' },
+        ];
+        let from: PostStatus = 'draft';
+        for (const step of steps) {
+          const moved = repo.transition({
+            id,
+            from: [from],
+            to: step.to,
+            decision: { kind: step.kind, actor: 'code', payload: { copyOf: source.id } },
+          });
+          if (!moved.ok) throw new Error(`копия ${id} не прошла ${from} → ${step.to}`);
+          from = step.to;
+        }
+        const approved = repo.transition({
+          id,
+          from: ['previewed'],
+          to: 'approved',
+          decision: input.approve,
+          ...(input.publishAt === undefined ? {} : { patch: { publishAt: input.publishAt } }),
+        });
+        // Несостоявшийся последний шаг откатывает ВСЮ копию: «показанная»
+        // копия в /queue предлагала бы опубликовать уже вышедший пост ещё раз.
+        if (!approved.ok) throw new Error(`копия ${id} не подтвердилась: ${approved.actual ?? 'нет поста'}`);
+        return approved;
+      });
     },
 
     isApprovedForPublish(id, ownerId) {

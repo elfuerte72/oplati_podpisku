@@ -126,6 +126,28 @@ describe('checkRateLimit', () => {
     expect(res.allowed).toBe(true);
     expect(res.configured).toBe(false);
   });
+
+  it('РЕГРЕСС: таймаут библиотеки — это недоступный backend, а не «разрешено»', async () => {
+    // Так `@upstash/ratelimit` 2.0.8 отвечает при зависшем Redis через 5 с.
+    // С `configured: true` гейт второго фактора панели (fail-closed по
+    // `configured`) пропускал перебор кода (аудит CRM 2026-09-17).
+    setUpstashEnv();
+    h.limitMock.mockResolvedValue({
+      success: true,
+      limit: 0,
+      remaining: 0,
+      reset: 0,
+      pending: Promise.resolve(),
+      reason: 'timeout',
+    });
+    const { checkRateLimit } = await loadModule();
+
+    const res = await checkRateLimit('admin-totp', 'staff-1');
+
+    expect(res.configured).toBe(false);
+    // Клиентские пути остаются fail-open: решение принимает вызывающий.
+    expect(res.allowed).toBe(true);
+  });
 });
 
 describe('getClientIp (M3: анти-спуфинг)', () => {

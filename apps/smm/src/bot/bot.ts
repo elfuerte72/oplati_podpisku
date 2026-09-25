@@ -21,6 +21,7 @@ import { queueEmptyText, queueItems } from './queue-view.ts';
 import { recoverPendingPublishes } from './recovery.ts';
 import { createRunner } from './runner.ts';
 import { runPolling, type PollingState } from './polling.ts';
+import { AutodraftEnabled, createAutodraftScheduler, SETTINGS_AUTODRAFT_ENABLED } from './autodraft.ts';
 import { createTicker, SETTINGS_DIGEST_ENABLED, SETTINGS_DIGEST_HOUR } from './ticker.ts';
 import { buildReport, renderReport, type ReportPeriod } from '../stats/report.ts';
 import { collectViews } from '../stats/views.ts';
@@ -108,7 +109,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         const keyboard =
           message.button === undefined
             ? undefined
-            : threadsPreviewKeyboard(target.postId, target.stamp, message.button);
+            : threadsPreviewKeyboard(target.postId, target.stamp, message.button, target.prefix ?? '');
         await bot.api.sendMessage(ownerChatId, message.text, {
           ...(message.html === true ? { parse_mode: 'HTML' as const } : {}),
           ...(keyboard === undefined ? {} : { reply_markup: toReplyMarkup(keyboard) }),
@@ -122,6 +123,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     ownerId: deps.env.ownerId,
     ownerChatId,
     channelId: deps.env.channelId,
+    channels: deps.env.channels,
     config,
     // Обложки живут рядом с базой: один том в Dokploy, один бэкап.
     mediaDir: join(dirname(deps.env.dbPath), 'media'),
@@ -250,16 +252,26 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     sendDigest: handleIdeas,
     http: {},
     collectViews: async () => {
-      const result = await collectViews({
-        store: deps.store,
-        logger: deps.logger,
-        channelUsername: deps.env.channelUsername,
-        config,
-      });
-      // Снятые посты — это событие для владельца, а не строка в логе: пост
-      // пропал из канала, и знать об этом он должен.
-      for (const postId of result.withdrawn) {
-        await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала: помечен снятым.`);
+      // Витрина у каждого канала своя, и номера сообщений тоже: читаем по
+      // одной, и каждая смотрит только свои посты.
+      for (const channel of deps.env.channels) {
+        // Каналы изолированы: сбой сообщения о снятом посте первого канала не
+        // должен оставлять второй без просмотров до следующего окна.
+        try {
+          const result = await collectViews({
+            store: deps.store,
+            logger: deps.logger,
+            channel: { key: channel.key, username: channel.username },
+            config,
+          });
+          // Снятые посты — это событие для владельца, а не строка в логе: пост
+          // пропал из канала, и знать об этом он должен.
+          for (const postId of result.withdrawn) {
+            await bot.api.sendMessage(ownerChatId, `Пост ${postId} пропал с витрины канала ${channel.title}: помечен снятым.`);
+          }
+        } catch (error) {
+          deps.logger.error({ err: error, channel: channel.key }, 'просмотры канала не собрались');
+        }
       }
     },
     sendWeekly: async () => {
@@ -283,6 +295,18 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     logger: deps.logger,
     ownerId: deps.env.ownerId,
     undoSeconds: deps.env.publishUndoSeconds,
+    channels: deps.env.channels,
+    config,
+  });
+
+  // Черновики по расписанию пишутся мимо диалога: кнопки их превью называют
+  // пост сами и усыновляют его в диалог только по нажатию владельца.
+  const autodraft = createAutodraftScheduler({
+    store: deps.store,
+    runner,
+    send: (text, keyboard) => ports.send(text, keyboard),
+    logger: deps.logger,
+    channels: deps.env.channels,
     config,
   });
 
@@ -312,12 +336,12 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   }
 
   /** Подписчиков спрашиваем у Telegram: в базе их нет и быть не может. */
-  async function subscribers(): Promise<number | undefined> {
+  async function subscribers(chatId: string = deps.env.channelId): Promise<number | undefined> {
     try {
       // Свой короткий поводок: без него дефолт grammY — 500 с, и `/stats`
       // столько же молчит, а недельная сводка держит весь тикер.
       return await Promise.race([
-        bot.api.getChatMemberCount(deps.env.channelId),
+        bot.api.getChatMemberCount(chatId),
         new Promise<number>((_, reject) =>
           setTimeout(() => reject(new Error('getChatMemberCount не ответил за 5 с')), 5000).unref?.(),
         ),
@@ -330,12 +354,21 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
   }
 
   async function statsText(period: ReportPeriod): Promise<string> {
-    const count = await subscribers();
+    const counts = await Promise.all(deps.env.channels.map((channel) => subscribers(channel.id)));
+    const count = counts[0];
     const report = buildReport({
       store: deps.store,
       period,
       config,
       ...(count === undefined ? {} : { subscribers: count }),
+      channels: deps.env.channels.map((channel, index) => {
+        const people = counts[index];
+        return {
+          key: channel.key,
+          title: channel.title,
+          ...(people === undefined ? {} : { subscribers: people }),
+        };
+      }),
     });
     return renderReport(report);
   }
@@ -353,7 +386,9 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
     // Две настройки живут в БАЗЕ, потому что их меняет владелец на ходу:
     // ежедневный дайджест и его час. Остальное — переменные окружения.
     const command = args.trim().toLowerCase();
-    if (command === 'digest on' || command === 'digest off') {
+    if (command === 'autodraft on' || command === 'autodraft off') {
+      deps.store.settings.set(SETTINGS_AUTODRAFT_ENABLED, AutodraftEnabled, command.endsWith('on'));
+    } else if (command === 'digest on' || command === 'digest off') {
       deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, command.endsWith('on'));
     } else if (command.startsWith('digest ')) {
       const hour = Number(command.slice('digest '.length));
@@ -367,19 +402,31 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
       deps.store.settings.set(SETTINGS_DIGEST_HOUR, DigestHour, hour);
       deps.store.settings.set(SETTINGS_DIGEST_ENABLED, DigestEnabled, true);
     } else if (command !== '') {
-      await ports.send('Не понял. Дайджест: /settings digest on | off | <час 0-23>');
+      await ports.send(
+        'Не понял. Дайджест: /settings digest on | off | <час 0-23>. Черновики по расписанию: /settings autodraft on | off',
+      );
       return;
     }
 
     const enabled = deps.store.settings.get(SETTINGS_DIGEST_ENABLED, DigestEnabled) ?? false;
     const hour = deps.store.settings.get(SETTINGS_DIGEST_HOUR, DigestHour) ?? 10;
+    const autodraftOn = deps.store.settings.get(SETTINGS_AUTODRAFT_ENABLED, AutodraftEnabled) ?? true;
+    const slots = config.autodraft.slotsMsk;
     const lines = [
       'Настройки:',
+      `Черновики по расписанию: ${
+        autodraftOn
+          ? `включены — канал в ${slots.telegram.join(', ')}, Threads в ${slots.threads.join(', ')} МСК`
+          : 'выключены'
+      }`,
       `Ежедневный дайджест: ${enabled ? `включён, ${hour}:00 МСК` : 'выключен'}`,
       `Окно отмены: ${deps.env.publishUndoSeconds} с`,
-      `Канал: ${deps.env.channelUsername}`,
+      ...deps.env.channels.map(
+        (channel) =>
+          `Канал ${channel.title}: @${channel.username}${config.channels[channel.key].botButton ? '' : ' (без рекламы)'}`,
+      ),
       `Модель автора: ${deps.env.model.writer}`,
-      'Дайджест: /settings digest on | off | <час 0-23>. Остальное — переменные окружения.',
+      'Дайджест: /settings digest on | off | <час 0-23>. Черновики: /settings autodraft on | off. Остальное — переменные окружения.',
     ];
     await ports.send(lines.join('\n'));
   }
@@ -453,6 +500,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         await bot.api.sendMessage(ownerChatId, recovery.message);
       }
       ticker.start();
+      autodraft.start();
       // Здоровье проверяется СРАЗУ при старте и дальше раз в час: инцидент
       // 08.09.2026 (счёт провайдера в минусе) сутки жил незамеченным.
       void runHealth().catch((error: unknown) => {
@@ -493,6 +541,7 @@ export function createSmmBot(deps: SmmBotDeps): SmmBot {
         healthTimer = undefined;
       }
       ticker.stop();
+      autodraft.stop();
       timers.stopAll();
       await bot.stop();
     },

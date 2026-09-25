@@ -88,6 +88,12 @@ export interface AdviseInput {
    * тогда уместно даже там, где рубрика по умолчанию молчит.
    */
   readonly aboutPaidService?: boolean;
+  /**
+   * Пост без рекламы ВНЕ зависимости от рубрики: черновик по расписанию
+   * уходит и в канал без рекламы (Aibromotion), и один текст обязан годиться
+   * для обоих. Перекрывает всё остальное, включая `aboutPaidService`.
+   */
+  readonly noAds?: boolean;
   readonly config?: SmmConfig;
 }
 
@@ -123,6 +129,11 @@ export function advise(input: AdviseInput): Advice {
   if (input.aboutPaidService === true && cta === 'none') {
     cta = 'soft';
     reasons.push('речь о платной подписке на ИИ-сервис: одно упоминание уместно');
+  }
+
+  if (input.noAds === true && cta !== 'none') {
+    cta = 'none';
+    reasons.push('черновик по расписанию: без рекламы, чтобы текст годился и для канала без рекламы');
   }
 
   const deficit = rubricDeficit(window, config);

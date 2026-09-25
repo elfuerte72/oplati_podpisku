@@ -1,8 +1,10 @@
 import {
   CARD_STATUS_LABELS,
+  CELL_TEXT,
   ORDER_ACTOR_LABELS,
   ORDER_EVENT_LABELS,
   ORDER_STATUS_LABELS,
+  PANEL_DISCOUNT_TEXT,
   PAYMENT_PROVIDER_LABELS,
   PAYMENT_STATUS_LABELS,
   PROVIDER_STATUS_LABELS,
@@ -42,6 +44,61 @@ export function formatKopecks(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   const rubles = Math.round(value / 100);
   return `${rubles.toLocaleString('ru-RU')} ₽`;
+}
+
+/**
+ * Приглушённая строка под ПОЛНОЙ ценой заказа в списках панели — «Все заказы»,
+ * «Ждут оплаты», «Проверка платежей»: «счёт 2 295 ₽ · −405 ₽ промокод ·
+ * −300 ₽ баллами». `null` — скидок нет, строка не нужна (заказ без скидок
+ * выглядит как раньше).
+ *
+ * Одна функция на три экрана (тикет 05 аудита CRM): раньше каждый экран сам
+ * печатал «−X баллами» и ни один не знал про промокод — оператор сверял
+ * поступление шлюза с числом, которого у шлюза не было.
+ *
+ * `invoiceKopecks` — сумма РЕАЛЬНОГО счёта, когда выборка её знает (экран
+ * проверки платежей: именно её называют поддержке шлюза). Нет — счёт выводится
+ * как цена минус живые скидки: так же его считает `payments/create`.
+ */
+export function discountedInvoiceLine(row: {
+  amountRubKopecks: number | null;
+  bonusDiscountKopecks: number;
+  promoDiscountKopecks: number;
+  invoiceKopecks?: number | null | undefined;
+}): string | null {
+  const bonus = row.bonusDiscountKopecks;
+  const promo = row.promoDiscountKopecks;
+  if (bonus <= 0 && promo <= 0) return null;
+  const invoice =
+    row.invoiceKopecks ??
+    (row.amountRubKopecks === null ? null : row.amountRubKopecks - promo - bonus);
+  const parts = [`${PANEL_DISCOUNT_TEXT.invoiceShort} ${formatKopecks(invoice)}`];
+  if (promo > 0) parts.push(`−${formatKopecks(promo)} ${PANEL_DISCOUNT_TEXT.promoShort}`);
+  if (bonus > 0) parts.push(`−${formatKopecks(bonus)} ${CELL_TEXT.bonusPaid}`);
+  return parts.join(' · ');
+}
+
+/**
+ * «Запрошено у шлюза» на карточке заказа — сумма счёта (`payments.amount_rub`),
+ * а не цена минус скидки на экране: число обязано совпадать с таблицей
+ * платежей ниже и с тем, что видел шлюз. `null` — счетов не было, строки нет.
+ *
+ * Какой счёт: оплаченный, иначе живой, иначе последний любой. Последний пункт
+ * нужен недоплате и протухшему счёту — платёж там `failed`, и именно на таком
+ * заказе оператор сверяет, сколько просили и сколько пришло (ревью
+ * 2026-09-25, ось E).
+ */
+export function invoicedPaymentKopecks(
+  payments: readonly { status: string; amountRubKopecks: number; createdAt: Date }[],
+): number | null {
+  const rank = (status: string) => (status === 'succeeded' ? 2 : status === 'pending' ? 1 : 0);
+  const best = payments.reduce<(typeof payments)[number] | null>((current, p) => {
+    if (current === null) return p;
+    const byRank = rank(p.status) - rank(current.status);
+    if (byRank !== 0) return byRank > 0 ? p : current;
+    return p.createdAt > current.createdAt ? p : current;
+  }, null);
+  return best?.amountRubKopecks ?? null;
 }
 
 /**

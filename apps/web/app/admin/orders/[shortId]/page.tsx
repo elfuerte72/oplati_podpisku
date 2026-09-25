@@ -15,6 +15,7 @@ import {
   formatKopecks,
   formatOriginalAmount,
   formatUsdCents,
+  invoicedPaymentKopecks,
   orderActorLabel,
   orderEventLabel,
   orderStatusLabel,
@@ -34,6 +35,7 @@ import {
   CELL_TEXT,
   COLUMN_TITLES,
   PANEL_BONUS_TEXT,
+  PANEL_DISCOUNT_TEXT,
   SECTION_TITLES,
 } from '@/lib/panel/labels';
 import { canAccess } from '@/lib/panel/permissions';
@@ -88,6 +90,7 @@ export default async function PanelOrderPage({
 
   const { order, client } = detail;
   const price = priceBreakdown(order.amountRubKopecks, order.cardIssueFeeKopecks);
+  const invoicedKopecks = invoicedPaymentKopecks(detail.payments);
 
   return (
     <PanelShell actor={access.actor} current="/admin/orders">
@@ -148,21 +151,46 @@ export default async function PanelOrderPage({
             <dd>
               <strong>{price.total}</strong>
             </dd>
-            {/* Три числа, которые оператор сверяет с поступлением шлюза:
-                полная цена заказа, погашенное баллами и то, что реально
-                просили у клиента. Без средней строки разница между чеком и
-                поступлением выглядит недоплатой. */}
-            {detail.bonus && detail.bonus.status !== 'released' ? (
+            {/* Числа, которые оператор сверяет с поступлением шлюза: полная
+                цена, скидки (промокод, баллы) и то, что реально просили у
+                клиента. Без средних строк разница между чеком и поступлением
+                выглядит недоплатой (тикет 05 аудита CRM). */}
+            {detail.promo?.live ? (
+              <>
+                <dt>{PANEL_DISCOUNT_TEXT.promo(detail.promo.code)}</dt>
+                <dd>−{formatKopecks(detail.promo.discountKopecks)}</dd>
+              </>
+            ) : null}
+            {/* Право вернули, а счёт уже был со скидкой — без этой строки
+                «итого больше оплаченного» снова читалось бы недоплатой. */}
+            {detail.promo && detail.promo.status === 'released' ? (
+              <>
+                <dt>{PANEL_DISCOUNT_TEXT.promo(detail.promo.code)}</dt>
+                <dd className="panel-muted">
+                  {PANEL_DISCOUNT_TEXT.promoReturned(formatKopecks(detail.promo.discountKopecks))}
+                </dd>
+              </>
+            ) : null}
+            {/* По ЖИВОМУ списанию, а не по `status !== 'released'`: у
+                протухшего заказа без платежа баллы уже вернулись правилом. */}
+            {detail.bonus?.live ? (
               <>
                 <dt>{PANEL_BONUS_TEXT.redeemed}</dt>
                 <dd>−{formatKopecks(detail.bonus.discountKopecks)}</dd>
+              </>
+            ) : null}
+            {/* Сумма реального счёта, а не вычитание на экране: число обязано
+                совпадать с таблицей платежей ниже. Счёта нет — строки нет;
+                счёт равен цене и скидок нет — тоже нет (заказ без скидок
+                выглядит как раньше). */}
+            {invoicedKopecks !== null &&
+            (detail.promo !== null ||
+              detail.bonus !== null ||
+              invoicedKopecks !== order.amountRubKopecks) ? (
+              <>
                 <dt>{PANEL_BONUS_TEXT.invoiced}</dt>
                 <dd>
-                  <strong>
-                    {formatKopecks(
-                      (order.amountRubKopecks ?? 0) - detail.bonus.discountKopecks,
-                    )}
-                  </strong>
+                  <strong>{formatKopecks(invoicedKopecks)}</strong>
                 </dd>
               </>
             ) : null}

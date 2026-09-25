@@ -9,7 +9,7 @@ import {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
-  dailyPromoDiscounts,
+  promoDiscountsInPeriod,
   dailySupport,
   getDb,
   getVccBalanceSnapshot,
@@ -57,7 +57,7 @@ export async function runDailyReport(input: {
     dailyAudience(db, range),
     dailyOrderFlow(db, range),
     dailyPaidOrders(db, range),
-    dailyPromoDiscounts(db, range),
+    promoDiscountsInPeriod(db, range),
     dailySupport(db, range),
     readNow(),
   ]);

@@ -150,11 +150,21 @@ describe('подписи истории заказа', () => {
 
     const seen = new Set<string>();
     for (const file of sources) {
-      for (const match of readFileSync(file, 'utf8').matchAll(/eventType: '([a-z_]+)'/g)) {
+      // Две формы: литерал в вызове (`eventType: 'x'`) и именованная константа
+      // (`BONUS_SPENT_EVENT = 'bonus_spent'`). Прежняя канарейка видела только
+      // первую — и события баллов и промокода печатались в истории заказа
+      // сырыми идентификаторами при зелёном тесте (тикет 05 аудита CRM).
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(/eventType: '([a-z_]+)'/g)) {
+        if (match[1]) seen.add(match[1]);
+      }
+      for (const match of text.matchAll(/[A-Z_]+_EVENT = '([a-z_]+)'/g)) {
         if (match[1]) seen.add(match[1]);
       }
     }
     expect(seen.size).toBeGreaterThan(10);
+    // Константы тоже собраны — иначе вторая ветка молча ничего не ловит.
+    expect(seen.has('promo_spent')).toBe(true);
 
     const missing = [...seen].filter((e) => !Object.hasOwn(labels.ORDER_EVENT_LABELS, e));
     expect(missing).toEqual([]);

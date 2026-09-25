@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   access: vi.fn(),
   revenueByDay: vi.fn(),
   revenueSummary: vi.fn(),
+  promoDiscountsInPeriod: vi.fn(),
   funnelByPeriod: vi.fn(),
   topServicesByPaidOrders: vi.fn(),
   catalogClicksByService: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('@oplati/db', async (importOriginal) => {
     getDb: () => ({}) as unknown,
     revenueByDay: h.revenueByDay,
     revenueSummary: h.revenueSummary,
+    promoDiscountsInPeriod: h.promoDiscountsInPeriod,
     funnelByPeriod: h.funnelByPeriod,
     topServicesByPaidOrders: h.topServicesByPaidOrders,
     catalogClicksByService: h.catalogClicksByService,
@@ -66,6 +68,7 @@ function fixture() {
     { day: '2026-09-02', amountKopecks: 0, paidOrders: 0 },
   ]);
   h.revenueSummary.mockResolvedValue({ amountKopecks: 150_000, paidOrders: 1, averageKopecks: 150_000 });
+  h.promoDiscountsInPeriod.mockResolvedValue({ orders: 1, kopecks: 40_500 });
   h.funnelByPeriod.mockResolvedValue([
     { step: 1, name: 'page_view', title: 'Зашёл на сайт', subjects: 10 },
     { step: 2, name: 'catalog_open', title: 'Открыл список сервисов', subjects: 5 },
@@ -89,6 +92,7 @@ function fixture() {
 function empty() {
   h.revenueByDay.mockResolvedValue([{ day: '2026-09-01', amountKopecks: 0, paidOrders: 0 }]);
   h.revenueSummary.mockResolvedValue({ amountKopecks: 0, paidOrders: 0, averageKopecks: 0 });
+  h.promoDiscountsInPeriod.mockResolvedValue({ orders: 0, kopecks: 0 });
   h.funnelByPeriod.mockResolvedValue([{ step: 1, name: 'page_view', title: 'Зашёл', subjects: 0 }]);
   h.topServicesByPaidOrders.mockResolvedValue([]);
   h.catalogClicksByService.mockResolvedValue([]);
@@ -158,6 +162,19 @@ describe('/admin/analytics — блоки', () => {
     expect(html).toMatch(/1\u00a0500 ₽|1\u202f500 ₽/);
     expect(html).toContain('panel-chart__bar');
     expect(html).toContain('panel-chart__line');
+    // Средний чек — по полной цене, а выручка — деньгами: подпись это говорит.
+    expect(html).toContain('Средний чек (по полной цене)');
+  });
+
+  it('скидки по промокодам — отдельной плашкой, только когда ими пользовались', async () => {
+    // Тикет 05 аудита CRM: без этой строки выручка ниже суммы заказов
+    // читалась как недостача.
+    const html = await render();
+    expect(html).toContain('Скидки по промокодам');
+    expect(html).toContain('405 ₽');
+
+    h.promoDiscountsInPeriod.mockResolvedValue({ orders: 0, kopecks: 0 });
+    expect(await render()).not.toContain('Скидки по промокодам');
   });
 
   it('воронка: семь строк с конверсией, прочерк там, где предыдущий шаг нулевой', async () => {

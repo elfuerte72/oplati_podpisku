@@ -55,7 +55,7 @@ vi.mock('@oplati/db', () => ({
     ],
     total: 1,
   }),
-  dailyPromoDiscounts: async () => ({ orders: 0, kopecks: 0 }),
+  promoDiscountsInPeriod: async () => ({ orders: 0, kopecks: 0 }),
   dailySupport: async () => ({ requests: 0, ratings: 0, ratingAverage: null, lowRatings: 0 }),
   countPendingOrdersForPanel: async () => ({ count: 2, sumKopecks: 400_000 }),
   countHoldsForPanel: h.countHoldsForPanel,

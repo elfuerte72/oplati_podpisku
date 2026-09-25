@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { smmConfig, type ChannelKey } from './smm.config.ts';
+
 /**
  * Переменные окружения бота. Разбираются один раз при старте: недостающая
  * обязательная переменная роняет процесс с её именем, а не даёт боту подняться
@@ -48,6 +50,20 @@ const schema = z.object({
     .transform((raw) => raw.replace(/^@/, ''))
     .refine((raw) => /^[A-Za-z0-9_]{4,}$/.test(raw), 'SMM_CHANNEL_USERNAME: только имя канала, без ссылки'),
 
+  // Второй канал (Aibromotion). Не задан — канал один, кнопки прежние. Правила
+  // канала (кнопка бота, реклама в тексте) живут в `smmConfig.channels`, не здесь.
+  SMM_SECOND_CHANNEL_ID: chatRef('SMM_SECOND_CHANNEL_ID').optional(),
+  SMM_SECOND_CHANNEL_USERNAME: z
+    .string()
+    .min(4)
+    .transform((raw) => raw.replace(/^@/, ''))
+    .refine(
+      (raw) => /^[A-Za-z0-9_]{4,}$/.test(raw),
+      'SMM_SECOND_CHANNEL_USERNAME: только имя канала, без ссылки',
+    )
+    .optional(),
+  SMM_SECOND_CHANNEL_TITLE: z.string().max(40).optional(),
+
   // Группа SMM: тема «Черновики» для превью, тема «Отчёты» для сводки. Не задана —
   // превью и сводка идут владельцу в личку (dev-режим), это не отказ.
   SMM_GROUP_ID: chatRef('SMM_GROUP_ID').optional(),
@@ -87,6 +103,23 @@ const schema = z.object({
   // Тестовый канал для eval:live. Живой канал там указывать нельзя, поэтому
   // переменная отдельная, а не переиспользование SMM_CHANNEL_ID.
   SMM_EVAL_CHANNEL_ID: chatRef('SMM_EVAL_CHANNEL_ID').optional(),
+}).superRefine((env, ctx) => {
+  // Половина второго канала хуже никакой: без имени не соберутся просмотры, а
+  // без id некуда публиковать. Молча включать полканала нельзя.
+  if ((env.SMM_SECOND_CHANNEL_ID === undefined) !== (env.SMM_SECOND_CHANNEL_USERNAME === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SMM_SECOND_CHANNEL_ID'],
+      message: 'второй канал задаётся парой SMM_SECOND_CHANNEL_ID и SMM_SECOND_CHANNEL_USERNAME',
+    });
+  }
+  if (env.SMM_SECOND_CHANNEL_ID !== undefined && env.SMM_SECOND_CHANNEL_ID === env.SMM_CHANNEL_ID) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SMM_SECOND_CHANNEL_ID'],
+      message: 'второй канал совпадает с основным: «в оба» опубликовало бы пост дважды',
+    });
+  }
 });
 
 export interface ModelEnv {
@@ -103,11 +136,24 @@ export interface OpsEnv {
   readonly threadErrors?: number;
 }
 
+/** Канал публикации: ключ, куда слать и откуда читать просмотры. Правила — в `smmConfig.channels`. */
+export interface ChannelTarget {
+  readonly key: ChannelKey;
+  readonly id: string;
+  readonly username: string;
+  readonly title: string;
+  /** Подпись кнопки публикации («В Оплатишку»). */
+  readonly label: string;
+}
+
 export interface SmmEnv {
   readonly botToken: string;
   readonly ownerId: number;
+  /** Основной канал (`main`). Он же первый элемент `channels`. */
   readonly channelId: string;
   readonly channelUsername: string;
+  /** Все каналы публикации: основной первым, второй — если задан. */
+  readonly channels: readonly ChannelTarget[];
   readonly groupId?: string;
   readonly groupThreadDrafts?: number;
   readonly groupThreadReports?: number;
@@ -145,6 +191,29 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     ownerId: raw.SMM_OWNER_ID,
     channelId: raw.SMM_CHANNEL_ID,
     channelUsername: raw.SMM_CHANNEL_USERNAME,
+    channels: [
+      {
+        key: 'main',
+        id: raw.SMM_CHANNEL_ID,
+        username: raw.SMM_CHANNEL_USERNAME,
+        title: smmConfig.channels.main.title,
+        label: smmConfig.channels.main.label,
+      },
+      ...(raw.SMM_SECOND_CHANNEL_ID === undefined || raw.SMM_SECOND_CHANNEL_USERNAME === undefined
+        ? []
+        : [
+            {
+              key: 'second' as const,
+              id: raw.SMM_SECOND_CHANNEL_ID,
+              username: raw.SMM_SECOND_CHANNEL_USERNAME,
+              title: raw.SMM_SECOND_CHANNEL_TITLE ?? smmConfig.channels.second.title,
+              label:
+                raw.SMM_SECOND_CHANNEL_TITLE === undefined
+                  ? smmConfig.channels.second.label
+                  : `В ${raw.SMM_SECOND_CHANNEL_TITLE}`,
+            },
+          ]),
+    ],
     groupId: raw.SMM_GROUP_ID,
     groupThreadDrafts: raw.SMM_GROUP_THREAD_DRAFTS,
     groupThreadReports: raw.SMM_GROUP_THREAD_REPORTS,

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { PANEL_DEFAULT_ROWS, getDb, listHoldsForPanel } from '@oplati/db';
 import { FREEKASSA_ORDER_STATUS } from '@oplati/types';
 
+import { InvoiceLine } from '@/components/panel/InvoiceLine';
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
@@ -123,11 +124,9 @@ export default async function PanelHoldsPage({
                     <td data-label={COLUMN_TITLES.service}>{hold.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(hold.amountRubKopecks)}
-                      {hold.bonusDiscountKopecks > 0 && (
-                        <div className="panel-muted">
-                          −{formatKopecks(hold.bonusDiscountKopecks)} {CELL_TEXT.bonusPaid}
-                        </div>
-                      )}
+                      {/* Именно сумма СЧЁТА: её оператор называет поддержке
+                          шлюза, а вычтенная на экране могла бы с ней разойтись. */}
+                      <InvoiceLine row={{ ...hold, invoiceKopecks: hold.paymentAmountRubKopecks }} />
                     </td>
                     <td data-label={COLUMN_TITLES.orderStatus}>
                       <span className={STATUS_TONE_CLASS[orderStatusTone(hold.orderStatus)]}>

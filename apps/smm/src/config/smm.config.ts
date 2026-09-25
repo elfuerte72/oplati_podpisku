@@ -17,6 +17,25 @@ export type CtaLevel = (typeof CTA_LEVELS)[number];
 
 export type PostFormat = 'rich' | 'classic';
 
+/**
+ * Каналы публикации. Ключ хранится в `posts.channel`; id и имя канала — из env,
+ * а правила (кнопка бота, реклама) — здесь, в коде: это решение владельца, а
+ * не настройка окружения.
+ */
+export const CHANNEL_KEYS = ['main', 'second'] as const;
+export type ChannelKey = (typeof CHANNEL_KEYS)[number];
+
+export interface ChannelPolicy {
+  /** Название по умолчанию: в отчётах и итогах публикации. */
+  readonly title: string;
+  /** Подпись кнопки публикации. Отдельным полем: «В Оплатишку», а не «В Оплатишка». */
+  readonly label: string;
+  /** Кнопка «Оплатить подписку» под постом. */
+  readonly botButton: boolean;
+  /** Можно ли упоминать Оплатишку и её бота в теле поста. */
+  readonly ads: boolean;
+}
+
 export const MODEL_ROLES = [
   'dossier',
   'plan',
@@ -422,6 +441,23 @@ export interface SmmConfig {
   readonly buttons: {
     readonly bot: { readonly text: string; readonly url: string };
   };
+  readonly channels: Record<ChannelKey, ChannelPolicy>;
+  /** Черновики по расписанию: бот сам берёт идею и присылает готовое превью. */
+  readonly autodraft: {
+    /** Часы по Москве, в которые приходит черновик площадки. */
+    readonly slotsMsk: { readonly telegram: readonly number[]; readonly threads: readonly number[] };
+    /** Столько неразобранных автодрафтов площадки — и следующий слот пропускается. */
+    readonly maxPending: number;
+    /** Идея ниже этой оценки на черновик не идёт: лучше пропустить слот. */
+    readonly minRelevance: number;
+    /** Как часто планировщик смотрит на часы. */
+    readonly checkEveryMinutes: number;
+    /**
+     * Насколько слот может опоздать (часы): после выката или простоя утренний
+     * черновик не приходит вечером — пропущенный слот просто пропущен.
+     */
+    readonly lateHours: number;
+  };
   readonly sources: {
     readonly telegramChannels: readonly string[];
     readonly rss: readonly string[];
@@ -532,6 +568,22 @@ export const smmConfig: SmmConfig = {
   },
   buttons: {
     bot: { text: 'Оплатить подписку', url: 'https://t.me/oplatishkaa_bot?start=channel' },
+  },
+  channels: {
+    main: { title: 'Оплатишка', label: 'В Оплатишку', botButton: true, ads: true },
+    // Второй канал — про ИИ, а не витрина сервиса: упоминаний Оплатишки в ТЕКСТЕ
+    // нет (решение владельца 24.09.2026), а кнопка «Оплатить подписку» под
+    // постом есть, как в основном (решение владельца 25.09.2026).
+    second: { title: 'Aibromotion', label: 'В Aibromotion', botButton: true, ads: false },
+  },
+  autodraft: {
+    // Решение владельца 24.09.2026: три поста для канала и два для Threads.
+    // Часы лежат внутри окна опроса источников — к слоту идеи уже свежие.
+    slotsMsk: { telegram: [10, 14, 19], threads: [12, 17] },
+    maxPending: 3,
+    minRelevance: 3,
+    checkEveryMinutes: 5,
+    lateHours: 2,
   },
   sources: {
     // ⚠️ Пустой список означает «источник не опрашиваем». Ленты ниже проверены

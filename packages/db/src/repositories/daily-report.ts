@@ -235,7 +235,7 @@ export async function dailyPaidOrders(
   };
 }
 
-export type DailyPromoDiscounts = {
+export type PromoDiscounts = {
   /** Заказов, оплаченных со скидкой по промокоду. */
   orders: number;
   /** Сумма скидок по промокодам, копейки. */
@@ -243,12 +243,17 @@ export type DailyPromoDiscounts = {
 };
 
 /**
- * Скидки по промокодам, погашенные за сутки — по моменту оплаты (`settled_at`
+ * Скидки по промокодам, погашенные за период — по моменту оплаты (`settled_at`
  * строки `spent`), тем же событием, которым платёж попадает в выручку. Пара к
  * `bonusRedeemedKopecks` из `revenueSummary`: без неё «Получено денег» ниже
  * суммы покупок читалось бы как недостача.
+ *
+ * ОБЩАЯ для утреннего отчёта (сутки) и раздела «Отчёты» панели (7/30/90 дней),
+ * поэтому в имени «период», а не «сутки»: иначе следующий автор написал бы для
+ * панели вторую выборку — зеркало, которое разъехалось бы в первом же отчёте о
+ * выручке (тикет 05 аудита CRM).
  */
-export async function dailyPromoDiscounts(db: DB, range: AnalyticsRange): Promise<DailyPromoDiscounts> {
+export async function promoDiscountsInPeriod(db: DB, range: AnalyticsRange): Promise<PromoDiscounts> {
   const rows = await db.execute<{ orders: string | number; kopecks: string | number | null }>(sql`
     SELECT count(DISTINCT order_id) AS orders, COALESCE(sum(discount_kopecks), 0) AS kopecks
     FROM promo_redemptions

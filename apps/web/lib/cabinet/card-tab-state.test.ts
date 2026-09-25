@@ -5,6 +5,11 @@ import {
   NEXT_STEP_MAX_AGE_MS,
   selectCardTabState,
 } from './card-tab-state.ts';
+import {
+  ISSUE_FAILED_MAX_AGE_MS,
+  isPaidButIssueFailed,
+  isRecentIssueFailure,
+} from './issue-failed.ts';
 
 /**
  * Что показывает вкладка «Карта» (тикет 06). Главный риск — спрятать шаг 3
@@ -169,5 +174,114 @@ describe('selectCardTabState', () => {
     const a = card({ id: 'a', status: 'idle', createdAt: new Date(NOW - 9 * DAY).toISOString() });
     const b = card({ id: 'b', status: 'idle', createdAt: new Date(NOW - DAY).toISOString() });
     expect(selectCardTabState({ orders: [], cards: [a, b] }, NOW)).toMatchObject({ card: b });
+  });
+});
+
+/**
+ * Оплачен, а выдача упала. Раньше «Выпускаю карту…» сменялось «Карты пока
+ * нет»: заплативший клиент видел пустоту (разбор бэклога 2026-09-24).
+ */
+describe('selectCardTabState: выдача сорвалась после оплаты', () => {
+  const HOUR = 60 * 60 * 1000;
+  const paidFailed = (overrides: Partial<O & { paidAt: string | null }> = {}) => ({
+    ...order({ orderId: 'o-failed', status: 'failed', cardId: null }),
+    createdAt: new Date(NOW - HOUR).toISOString(),
+    paidAt: new Date(NOW - HOUR).toISOString(),
+    ...overrides,
+  });
+
+  it('без карты — issue_failed вместо «Карты пока нет»', () => {
+    const state = selectCardTabState({ orders: [paidFailed()], cards: [] }, NOW);
+    expect(state).toMatchObject({ kind: 'issue_failed', order: { orderId: 'o-failed' } });
+  });
+
+  it('failed БЕЗ оплаты (недоплата, отвергнутый счёт) — это не сбой выдачи', () => {
+    const state = selectCardTabState({ orders: [paidFailed({ paidAt: null })], cards: [] }, NOW);
+    expect(state).toEqual({ kind: 'none' });
+  });
+
+  it('старый снапшот без paidAt — ничего не выдумываем', () => {
+    const legacy: Record<string, unknown> = { ...paidFailed() };
+    delete legacy.paidAt;
+    expect(selectCardTabState({ orders: [legacy as O], cards: [] }, NOW)).toEqual({ kind: 'none' });
+  });
+
+  it('без рабочей карты держится до ISSUE_FAILED_MAX_AGE_MS, дальше — как раньше', () => {
+    const at = (ms: number) =>
+      paidFailed({ createdAt: new Date(NOW - ms).toISOString(), paidAt: new Date(NOW - ms).toISOString() });
+    expect(
+      selectCardTabState({ orders: [at(ISSUE_FAILED_MAX_AGE_MS)], cards: [] }, NOW),
+    ).toMatchObject({ kind: 'issue_failed' });
+    expect(
+      selectCardTabState({ orders: [at(ISSUE_FAILED_MAX_AGE_MS + 1)], cards: [] }, NOW),
+    ).toEqual({ kind: 'none' });
+  });
+
+  it('поверх рабочей карты — не дольше выпуска, иначе карта недоступна с вкладки', () => {
+    const fresh = paidFailed();
+    expect(selectCardTabState({ orders: [fresh], cards: [card()] }, NOW)).toMatchObject({
+      kind: 'issue_failed',
+    });
+    const staleIso = new Date(NOW - ISSUING_OVER_CARD_MAX_AGE_MS - 1).toISOString();
+    const stale = paidFailed({ createdAt: staleIso, paidAt: staleIso });
+    expect(selectCardTabState({ orders: [stale], cards: [card()] }, NOW)).toMatchObject({
+      kind: 'active',
+    });
+  });
+
+  it('возраст — от ОПЛАТЫ: заказ с проверки банка создан давно, оплачен только что', () => {
+    // `payment_review` не протухает: заказ может провисеть дни и оплатиться
+    // потом. По `createdAt` его сбой не показался бы вовсе (ревью, ось E).
+    const order = paidFailed({
+      createdAt: new Date(NOW - 5 * DAY).toISOString(),
+      paidAt: new Date(NOW - HOUR).toISOString(),
+    });
+    expect(selectCardTabState({ orders: [order], cards: [] }, NOW)).toMatchObject({
+      kind: 'issue_failed',
+    });
+    expect(selectCardTabState({ orders: [order], cards: [card()] }, NOW)).toMatchObject({
+      kind: 'issue_failed',
+    });
+  });
+
+  it('карта по заказу видна в кабинете (выдали вручную) — сбой уже не показываем', () => {
+    const state = selectCardTabState(
+      { orders: [paidFailed({ cardId: 'card-1' })], cards: [card()] },
+      NOW,
+    );
+    expect(state).toMatchObject({ kind: 'active' });
+  });
+
+  it('идущий выпуск важнее прошлого сбоя', () => {
+    const issuing = order({ orderId: 'o-new', status: 'in_fulfillment', cardId: null });
+    const state = selectCardTabState({ orders: [paidFailed(), issuing], cards: [] }, NOW);
+    expect(state).toMatchObject({ kind: 'issuing', order: { orderId: 'o-new' } });
+  });
+});
+
+describe('isPaidButIssueFailed', () => {
+  it('только failed с временем оплаты', () => {
+    expect(isPaidButIssueFailed({ status: 'failed', paidAt: '2026-09-23T10:00:00.000Z' })).toBe(true);
+    expect(isPaidButIssueFailed({ status: 'failed', paidAt: null })).toBe(false);
+    expect(isPaidButIssueFailed({ status: 'failed' })).toBe(false);
+    expect(isPaidButIssueFailed({ status: 'completed', paidAt: '2026-09-23T10:00:00.000Z' })).toBe(false);
+  });
+});
+
+/**
+ * Окно пояснения на листе заказа — то же, что у вкладки: после возврата денег
+ * вне системы заказ остаётся `failed`, и бессрочное «выдадим или вернём» стало
+ * бы враньём (ревью 2026-09-25, ось E).
+ */
+describe('isRecentIssueFailure', () => {
+  const paidAt = new Date(NOW - 2 * DAY).toISOString();
+
+  it('свежий сбой — да, старше окна — нет', () => {
+    expect(isRecentIssueFailure({ status: 'failed', paidAt }, NOW)).toBe(true);
+    expect(isRecentIssueFailure({ status: 'failed', paidAt }, NOW + 2 * DAY)).toBe(false);
+  });
+
+  it('без оплаты сбоя выдачи нет вовсе', () => {
+    expect(isRecentIssueFailure({ status: 'failed', paidAt: null }, NOW)).toBe(false);
   });
 });

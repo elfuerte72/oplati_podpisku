@@ -3,7 +3,7 @@ import type {
   DailyAudience,
   DailyOrderFlow,
   DailyPaidOrder,
-  DailyPromoDiscounts,
+  PromoDiscounts,
   DailySupport,
   RevenueSummary,
 } from '@oplati/db';
@@ -99,7 +99,7 @@ export type DailyReportData = {
   audience: DailyAudience;
   flow: DailyOrderFlow;
   paid: { items: DailyPaidOrder[]; total: number };
-  promo: DailyPromoDiscounts;
+  promo: PromoDiscounts;
   support: DailySupport;
   now: DailyReportNow;
 };

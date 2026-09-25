@@ -26,20 +26,89 @@ import type * as SentryTypes from '@sentry/nextjs';
 const PII_KEY_RE =
   /^(content|message|text|email|phone|tel|card|password|token|pan|cvc|cvv|card_?no|init_?data|signature|last_?seen_?ip|query|q|http\.query|telegram_?username|chat_?id|promo_?code)$/i;
 
+/**
+ * Денилист ТЕЛА запроса — шире общего.
+ *
+ * `code` — шесть цифр второго фактора панели (`/api/panel/auth/totp`), `hash` —
+ * подпись первого фактора. В общий денилист их не кладём намеренно: он чистит и
+ * `extra`/`contexts`, где `code` — это код ошибки (`ECONNREFUSED`, код Postgres),
+ * без которого событие теряет смысл. А в теле запроса поле с таким именем несёт
+ * секрет входа.
+ *
+ * Остальное — поля тел, которые реально приходят к нам: `phone_number` —
+ * контакт из `request_contact` в апдейте бота, `username`/`first_name`/
+ * `last_name` — профиль `from` того же апдейта, `question` — вопрос AI-аналитику
+ * (владелец пишет туда почту клиента), `comment` — комментарий ручной выдачи
+ * (ревью 2026-09-25, ось C). `id` не берём: иначе из события пропадут номера
+ * заказов, по которым его и разбирают.
+ */
+const BODY_KEY_RE = new RegExp(
+  `${PII_KEY_RE.source}|^(code|totp|otp|hash|phone_?number|username|first_?name|last_?name|question|comment)$`,
+  'i',
+);
+
+/**
+ * Атрибут спана, в который интеграция requestData кладёт ТЕЛО запроса строкой
+ * (`@sentry/core` 10.53, режим потоковой отправки спанов). По имени ключа общий
+ * денилист его не узнаёт, а значение — сырое тело.
+ */
+const BODY_ATTR_RE = /^http\.request\.body/i;
+
 /** Рекурсивно редактирует значения PII-полей во вложенных объектах. */
-function scrubPii(value: unknown, depth = 0): unknown {
+function scrubPii(value: unknown, depth = 0, keyRe: RegExp = PII_KEY_RE): unknown {
   if (depth > 6 || value == null) return value;
   if (Array.isArray(value)) {
-    return value.map((item) => scrubPii(item, depth + 1));
+    return value.map((item) => scrubPii(item, depth + 1, keyRe));
   }
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = PII_KEY_RE.test(k) ? '[REDACTED]' : scrubPii(v, depth + 1);
+      if (keyRe.test(k)) out[k] = '[REDACTED]';
+      else if (BODY_ATTR_RE.test(k)) out[k] = scrubRequestBody(v);
+      else out[k] = scrubPii(v, depth + 1, keyRe);
     }
     return out;
   }
   return value;
+}
+
+/** Похоже на `application/x-www-form-urlencoded`: пары `ключ=значение` без пробелов. */
+const FORM_BODY_RE = /^[\w.%+\-[\]]+=[^\s&]*(?:&[\w.%+\-[\]]+=[^\s&]*)*$/;
+
+/** Разбор JSON без исключения наружу: не-JSON — штатный исход, а не ошибка. */
+function parseJsonObject(text: string): object | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    // Не JSON — значит форма или мусор; решает вызывающий. Логировать здесь
+    // нечем и незачем: мы внутри хука Sentry, и ошибка разбора тела клиента
+    // не событие.
+    return null;
+  }
+}
+
+/**
+ * Второй эшелон чистки ТЕЛА запроса.
+ *
+ * Первый — выключенный перехват тела в `sentry.server.config.ts`. Этот нужен на
+ * случай, если тело всё-таки приедет: SDK кладёт его СТРОКОЙ (`@sentry/node-core`
+ * `captureRequestBody`), а денилист по ключам строку пропускал как есть — то есть
+ * поиск ⌘K по почте, код TOTP, `initData` кабинета и текст ответа оператора
+ * уезжали во внешний сервис целиком (аудит CRM 2026-09-17, тикет 06).
+ *
+ * JSON — разбираем и чистим по ключам; форма — денилистом строки запроса; всё
+ * остальное (обрезанное SDK тело, текст, мусор) — целиком: разобрать нельзя,
+ * значит и доказать, что в нём нет PII, нельзя.
+ */
+function scrubRequestBody(data: unknown): unknown {
+  if (typeof data !== 'string') return scrubPii(data, 0, BODY_KEY_RE);
+  const trimmed = data.trim();
+  if (trimmed === '') return data;
+  const parsed = parseJsonObject(trimmed);
+  if (parsed) return JSON.stringify(scrubPii(parsed, 0, BODY_KEY_RE));
+  if (FORM_BODY_RE.test(trimmed)) return scrubQueryString(trimmed);
+  return '[REDACTED]';
 }
 
 /**
@@ -87,6 +156,15 @@ function scrubQueryString(query: string): string {
       // `?q=` — по той же схеме: якорь на границу параметра, иначе выражение
       // задело бы `seq=`, `uniq=` и прочее.
       .replace(/(^|[?&])q=[^&]*/gi, '$1q=[REDACTED]')
+      // Первый фактор панели: Telegram Login Widget возвращает профиль
+      // сотрудника и подпись GET-параметрами на `/api/panel/auth/telegram`,
+      // второй — форма `code=` на `/api/panel/auth/totp`. Плюс поля тела,
+      // которые встречаются в формах. Тоже с якорем: `id=` без него задел бы
+      // `orderid=`, а `code=` — `promocode=` (тот и так в списке).
+      .replace(
+        /(^|[?&])(code|hash|auth_date|id|username|first_name|last_name|photo_url|query|tel|pan|cvc|cvv|card_?no|promo_?code|last_?seen_?ip)=[^&]*/gi,
+        '$1$2=[REDACTED]',
+      )
   );
 }
 
@@ -104,12 +182,26 @@ function scrubBotToken(url: string): string {
   return url.replace(/\/bot\d+:[A-Za-z0-9_-]+/g, '/bot[REDACTED]');
 }
 
-/** Тот же денилист для строки запроса внутри полного URL — плюс токен в пути. */
+/**
+ * Тот же денилист для строки запроса внутри полного URL — плюс токен в пути и
+ * ФРАГМЕНТ целиком.
+ *
+ * ⚠️ Фрагмент — не косметика. Telegram открывает Mini App адресом
+ * `…/cabinet#tgWebAppData=<initData>`: подписанная initData живёт 24 часа и
+ * даёт `card-details`, то есть номер и CVC карты клиента. Браузерный SDK кладёт
+ * `location.href` вместе с фрагментом в `request.url` каждого события и
+ * pageload-транзакции, а навигационные крошки — в `from`/`to`; денилист строки
+ * запроса фрагмент не видел вовсе (ревью 2026-09-25, ось C). Разбирать фрагмент
+ * по параметрам незачем — для отладки он не нужен, поэтому закрывается целиком.
+ */
 function scrubUrl(url: string): string {
   const withoutToken = scrubBotToken(url);
-  const cut = withoutToken.indexOf('?');
-  if (cut === -1) return withoutToken;
-  return `${withoutToken.slice(0, cut)}?${scrubQueryString(withoutToken.slice(cut + 1))}`;
+  const hashAt = withoutToken.indexOf('#');
+  const base = hashAt === -1 ? withoutToken : withoutToken.slice(0, hashAt);
+  const fragment = hashAt === -1 ? '' : '#[REDACTED]';
+  const cut = base.indexOf('?');
+  if (cut === -1) return `${base}${fragment}`;
+  return `${base.slice(0, cut)}?${scrubQueryString(base.slice(cut + 1))}${fragment}`;
 }
 
 export type SentryEvent = SentryTypes.ErrorEvent;
@@ -191,7 +283,7 @@ function scrubEventEnvelope(event: {
   // Request body / query / headers — денилист PII
   if (event.request) {
     if (event.request.data) {
-      event.request.data = scrubPii(event.request.data) as typeof event.request.data;
+      event.request.data = scrubRequestBody(event.request.data) as typeof event.request.data;
     }
     if (event.request.query_string && typeof event.request.query_string === 'string') {
       event.request.query_string = scrubQueryString(event.request.query_string);
@@ -219,10 +311,13 @@ function scrubEventEnvelope(event: {
       for (const key of Object.keys(headers)) {
         // `x-telegram-init-data` — подписанная initData Mini App: живёт 24 часа
         // и её достаточно для `/api/cabinet` `card-details`, то есть для показа
-        // PAN+CVC чужой карты. `/api/cabinet` возит её в ТЕЛЕ (там ловит
-        // денилист `init_?data`), а `/api/analytics` — заголовком, поэтому без
-        // этого имени в списке она уезжала бы в Sentry целиком (найдено
-        // ревью 2026-07-30).
+        // PAN+CVC чужой карты. `/api/cabinet` возит её в ТЕЛЕ, а `/api/analytics`
+        // — заголовком, поэтому без этого имени в списке она уезжала бы в
+        // Sentry целиком (найдено ревью 2026-07-30). Тело на сервере не
+        // перехватывается вовсе (`sentry.server.config.ts`), а если приедет —
+        // `scrubRequestBody` разберёт JSON и вычистит `initData` по ключу.
+        // До 2026-09-25 тело приезжало СТРОКОЙ, и денилист `init_?data` её не
+        // видел: обещание в этом комментарии было неправдой (тикет 06).
         //
         // Заголовки с IP клиента (`x-forwarded-for` от Traefik и родня) —
         // тоже: IP для нас персональные данные (`last_seen_ip` вычищается по
@@ -310,6 +405,17 @@ export function beforeSendTransaction<T extends { transaction?: string; spans?: 
     // значит прописать транзитивную зависимость. Значение здесь заведомо
     // строка (проверено строкой выше).
     event.transaction = scrubUrl(event.transaction) as T['transaction'];
+  }
+  // Атрибуты КОРНЕВОГО спана живут в `contexts.trace.data`, а не в `spans`:
+  // адрес pageload-транзакции (`url.full` с фрагментом initData Mini App)
+  // иначе прошёл бы мимо — чистка `contexts` выше смотрит только на ключи.
+  const traceData = (event as { contexts?: { trace?: { data?: unknown } } }).contexts?.trace?.data;
+  if (typeof traceData === 'object' && traceData !== null) {
+    const bag = traceData as Record<string, unknown>;
+    for (const key of Object.keys(bag)) {
+      const value = bag[key];
+      if (typeof value === 'string') bag[key] = scrubUrl(value);
+    }
   }
   if (!Array.isArray(event.spans)) return event;
   for (const span of event.spans) {

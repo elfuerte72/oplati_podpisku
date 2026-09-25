@@ -270,7 +270,57 @@ describe('счастливый путь', () => {
     const result = transition(state, { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates }, at: NOW }, ctx());
     expect(result.state.name).toBe('post.await_source_pick');
     const send = result.effects.find((effect) => effect.type === 'send');
-    expect(send?.type === 'send' && send.keyboard?.rows).toHaveLength(3); // два кандидата и «Отменить»
+    // Ряд номеров и «Отменить»: полный заголовок живёт в тексте, а не в кнопке.
+    expect(send?.type === 'send' && send.keyboard?.rows.map((row) => row.map((b) => b.text))).toEqual([
+      ['1', '2'],
+      ['Отменить'],
+    ]);
+    expect(send?.type === 'send' && send.text).toContain('1. Первый (a.example.com)');
+    expect(send?.type === 'send' && send.text).toContain('2. Второй (b.example.com)');
+  });
+
+  // Жалоба 24.09.2026: подпись в кнопке Telegram обрезается на телефоне, и
+  // выбирать приходилось по обрывку заголовка.
+  it('длинный заголовок первоисточника виден в тексте целиком, а не обрывком в кнопке', () => {
+    const title = 'Anthropic выпустила Claude Opus 5.5: дешевле на 40 процентов и быстрее на длинных задачах';
+    const candidates = Array.from({ length: 7 }, (_, index) => ({
+      url: `https://www.site${index}.example/a`,
+      title: `${title} ${index + 1}`,
+    }));
+    const send = transition(
+      { name: 'post.generating' },
+      { kind: 'pipeline_done', outcome: { kind: 'candidates', candidates }, at: NOW },
+      ctx(),
+    ).effects.find((effect) => effect.type === 'send');
+    if (send?.type !== 'send') throw new Error('вопрос не отправлен');
+    expect(send.text).toContain(`1. ${title} 1 (site0.example)`);
+    // Список и кнопки режутся одним числом: пятого варианта шестой кнопкой нет.
+    expect(send.text).toContain('5. ');
+    expect(send.text).not.toContain('6. ');
+    expect(send.keyboard?.rows[0]?.map((button) => button.text)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('непрошедший проверку пост объясняет, что делают его кнопки', () => {
+    const text = TEXTS.failed('ОШИБКА: видимого текста 752 знаков');
+    expect(text.startsWith('Пост не прошёл проверку.\nОШИБКА: видимого текста 752 знаков\n')).toBe(true);
+    expect(text).toContain('«Показать как есть» — посмотреть текст и решить самому');
+    expect(text).toContain('«Снять» — выбросить черновик.');
+    // Пустая сводка не оставляет лишней пустой строки под заголовком.
+    expect(TEXTS.failed('').split('\n')[1]).toBe('');
+    expect(TEXTS.failed('').split('\n')[2]).toContain('Показать как есть');
+  });
+
+  it('угол: суть варианта в тексте, в кнопке номер', () => {
+    const result = transition(
+      { name: 'post.await_rubric', postId: POST_ID, payload: { stamp: 'stamp123', angles: ANGLES, rubric: 'news', anglesShown: 1 } },
+      callback('rub.news'),
+      ctx(),
+    );
+    const send = result.effects.find((effect) => effect.type === 'send');
+    if (send?.type !== 'send') throw new Error('вопрос не отправлен');
+    expect(send.text).toContain('1. Память включена всем — что изменилось');
+    expect(send.text).toContain('3. Чем отличается от истории — разница');
+    expect(send.keyboard?.rows[0]?.map((button) => button.text)).toEqual(['1', '2', '3']);
   });
 
   it('план спрашивает рубрику, предложенная помечена и стоит первой', () => {
@@ -571,12 +621,11 @@ describe('превью и кнопки под ним', () => {
       ctx(),
     );
     expect(result.state.name).toBe('post.previewed');
-    expect(types(result.effects)).toEqual(['preview', 'send']);
-    const send = result.effects.find((effect) => effect.type === 'send');
-    const rows = send?.type === 'send' ? (send.keyboard?.rows ?? []) : [];
-    expect(rows.flat().map((button) => button.text)).toContain(TEXTS.buttons.publish);
-    // Отпечаток кнопки — от ТЕКСТА: по нему сверяется право на публикацию.
-    expect(rows.flat()[0]?.data).toContain('abcdef12');
+    // Кнопки собирает исполнитель: какие каналы доступны, зависит от env и от
+    // текста поста, а автомат не знает ни того, ни другого.
+    expect(types(result.effects)).toEqual(['preview', 'preview_controls']);
+    // Отпечаток кнопок — от ТЕКСТА: по нему сверяется право на публикацию.
+    expect(result.effects[1]).toEqual({ type: 'preview_controls', postId: POST_ID, stamp: 'abcdef12', note: 'ready' });
   });
 
   it('«Показать как есть» тоже даёт кнопки', () => {
@@ -587,10 +636,7 @@ describe('превью и кнопки под ним', () => {
     };
     const result = transition(state, callback('show', POST_ID, 'abcdef12'), ctx());
     expect(result.state.name).toBe('post.previewed');
-    const send = result.effects.find((effect) => effect.type === 'send');
-    expect(send?.type === 'send' && send.keyboard?.rows.flat().map((b) => b.text)).toContain(
-      TEXTS.buttons.publish,
-    );
+    expect(result.effects).toContainEqual({ type: 'preview_controls', postId: POST_ID, stamp: 'abcdef12', note: 'ready' });
   });
 
   it('сбой шага помечает пост отпечатком ТЕКСТА, а не вопроса', () => {
@@ -625,11 +671,7 @@ describe('кнопки из /queue', () => {
     const result = transition({ name: 'idle' }, callback('q.show', POST_ID, 'abcdef12'), ctx());
     expect(result.state.name).toBe('post.previewed');
     expect(result.state.payload?.stamp).toBe('abcdef12');
-    expect(types(result.effects)).toEqual(['answer_callback', 'preview', 'send']);
-    const send = result.effects.find((effect) => effect.type === 'send');
-    expect(send?.type === 'send' && send.keyboard?.rows.flat().map((b) => b.text)).toContain(
-      TEXTS.buttons.publish,
-    );
+    expect(types(result.effects)).toEqual(['answer_callback', 'preview', 'preview_controls']);
   });
 
   it('«Снять» из списка хоронит пост', () => {
@@ -863,5 +905,62 @@ describe('данные кнопок', () => {
   it('отпечаток вопроса меняется вместе с вариантами', () => {
     expect(stampOf(ANGLES)).not.toBe(stampOf([...ANGLES].reverse()));
     expect(stampOf(ANGLES)).toBe(stampOf(ANGLES));
+  });
+});
+
+describe('публикация по каналам', () => {
+  it.each([
+    ['pub', ['main']],
+    ['pub.main', ['main']],
+    ['pub.second', ['second']],
+    ['pub.both', ['main', 'second']],
+  ])('%s — каналы уходят в решение владельца', (action, channels) => {
+    const result = transition(previewed(), callback(action), ctx());
+    expect(result.state.name).toBe('post.publish_pending');
+    expect(result.effects.find((effect) => effect.type === 'decision')).toMatchObject({
+      kind: 'approve',
+      textSha: 'stamp123',
+      payload: { channels },
+    });
+    expect(types(result.effects)).toContain('schedule_publish');
+  });
+
+  it('незнакомое действие публикации — старая кнопка, а не публикация', () => {
+    const result = transition(previewed(), callback('pub.everywhere'), ctx());
+    expect(result.state.name).toBe('post.previewed');
+    expect(types(result.effects)).not.toContain('decision');
+  });
+
+  it('отмена в окне публикации возвращает кнопки превью через исполнителя', () => {
+    const state: FlowState = { name: 'post.publish_pending', postId: POST_ID, payload: { stamp: 'stamp123' } };
+    const result = transition(state, callback('cancel'), ctx());
+    expect(result.effects).toContainEqual({ type: 'preview_controls', postId: POST_ID, stamp: 'stamp123', note: 'cancelled' });
+  });
+});
+
+describe('кнопки черновика по расписанию', () => {
+  it('в покое кнопка усыновляет пост: исполнитель сверит и повторит действие', () => {
+    const result = transition({ name: 'idle' }, callback('a.pub.both', 'другой-пост', 'abcdef12', 77), ctx());
+    expect(result.state.name).toBe('idle');
+    expect(result.effects).toEqual([
+      { type: 'adopt', postId: 'другой-пост', action: 'pub.both', stamp: 'abcdef12', messageId: 77 },
+    ]);
+  });
+
+  it('с открытым превью другого поста — тоже можно: это ожидание, а не работа', () => {
+    const result = transition(previewed(), callback('a.edit', 'другой-пост', 'abcdef12'), ctx());
+    expect(types(result.effects)).toEqual(['adopt']);
+  });
+
+  it('посреди правки нельзя: начатое владельцем не обрывается', () => {
+    const state: FlowState = { name: 'post.await_edit_text', postId: POST_ID, payload: { stamp: 'stamp123' } };
+    const result = transition(state, callback('a.pub', 'другой-пост', 'abcdef12'), ctx());
+    expect(result.state).toEqual(state);
+    expect(result.effects).toEqual([{ type: 'answer_callback', text: TEXTS.notNow }]);
+  });
+
+  it('пустое или двойное действие — старая кнопка', () => {
+    expect(types(transition({ name: 'idle' }, callback('a.', POST_ID, 'abcdef12'), ctx()).effects)).toContain('answer_callback');
+    expect(types(transition({ name: 'idle' }, callback('a.a.pub', POST_ID, 'abcdef12'), ctx()).effects)).not.toContain('adopt');
   });
 });
