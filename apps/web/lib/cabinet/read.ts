@@ -161,6 +161,7 @@ function mapOrderSummary(
     promo,
     cardId: order.cardId ?? null,
     subscriptionActivated,
+    paidAt: toIso(order.paidAt),
   };
 }
 

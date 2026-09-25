@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { formatRub } from '@/components/comic/format';
 
-import { buildOrderExpiredMessage, paymentRulesHtml } from './templates';
+import { buildOrderExpiredMessage, cardIssueFailedClientText, paymentRulesHtml } from './templates';
 
 describe('paymentRulesHtml', () => {
   it('напоминает оплачивать в веб-версии сервиса, а не в мобильном приложении', () => {
@@ -55,5 +55,33 @@ describe('buildOrderExpiredMessage', () => {
     expect(text).not.toContain('₽');
     expect(text).toContain('19 июля');
     expect(text).toContain('/start');
+  });
+});
+
+/**
+ * Сообщение о сорванной выдаче уходит по нескольким путям: карты нет, пополнение
+ * зависло с неизвестным исходом, карта выпущена без записи у нас. Текст обязан
+ * быть правдой для всех — отсюда запреты ниже.
+ */
+describe('cardIssueFailedClientText', () => {
+  const text = cardIssueFailedClientText('ORD-AB12C');
+
+  it('называет заказ и говорит, что оплата у нас', () => {
+    expect(text).toContain('ORD-AB12C');
+    expect(text).toContain('Оплату по заказу');
+    expect(text).toContain('Деньги не потерялись');
+  });
+
+  it('не утверждает, что карты нет, и не обещает срока', () => {
+    expect(text).not.toMatch(/карта не выпущен|карту не выпустили|в течение|минут|час/i);
+  });
+
+  it('на «ты», как сообщения с картой, и без страны выпуска', () => {
+    // Границы слова — явным классом: `\b` в JS кириллицу не видит, и
+    // `/\bвы\b/` не совпал бы ни с чем.
+    expect(text).not.toMatch(/(^|[^а-яё])(вы|вам|вас|ваш[а-яё]*)([^а-яё]|$)/i);
+    expect(text).not.toMatch(/нажмите|напишите/i);
+    expect(text).toMatch(/(^|[^а-яё])тебе([^а-яё]|$)/i);
+    expect(text).not.toMatch(/США|американ/i);
   });
 });

@@ -31,6 +31,7 @@ import {
   orderEvents,
   orders,
   payments,
+  promoCodes,
   promoRedemptions,
   referralRedemptions,
   services,
@@ -47,6 +48,7 @@ import {
 import { livePromoRedemptionSql } from './promo-redemption-sql.ts';
 import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
+import type { PromoRedemptionStatus } from './promo-codes.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import {
   SUPPORT_MARK_ANSWERED_TRIGGER,
@@ -382,16 +384,43 @@ export type PanelOrderDetail = {
    * (точнее, получил бы непонятный отказ и пошёл спрашивать).
    */
   bonus: PanelOrderBonus | null;
+  /**
+   * Применение промокода к заказу В ЛЮБОМ статусе; `null` — промокода не было.
+   * Без него карточка считала «Запрошено у шлюза» как цена − баллы, и оператор
+   * принимал скидку за недоплату (аудит CRM 2026-09-17, тикет 05).
+   *
+   * Любой статус, а не только живой — по той же причине, что у баллов: право,
+   * возвращённое оператором ПОСЛЕ оплаты, счёт уже не увеличит, и без строки
+   * «возвращён» карточка снова показывала бы «итого 3 000, оплачено 2 595»
+   * (ревью 2026-09-25, ось A).
+   */
+  promo: PanelOrderPromo | null;
 };
 
 export type PanelOrderBonus = {
   amountUsdCents: number;
   discountKopecks: number;
   status: RedemptionStatus;
+  /**
+   * Уменьшает ли списание счёт СЕЙЧАС — общий `liveRedemptionSql`, тот же, по
+   * которому считается баланс партнёра. `status !== 'released'` для этого не
+   * годится: у протухшего заказа без платежа резерв уже вернулся правилом, а
+   * статус строки так и остался `reserved`.
+   */
+  live: boolean;
   reservedAt: Date;
   settledAt: Date | null;
   /** Кто вернул баллы руками; `null` — автоматика или ещё не возвращали. */
   releasedByName: string | null;
+};
+
+export type PanelOrderPromo = {
+  /** Нормализованный код, как его вводил клиент (`promo_codes.code`). */
+  code: string;
+  discountKopecks: number;
+  status: PromoRedemptionStatus;
+  /** Уменьшает ли скидка счёт СЕЙЧАС — общий `livePromoRedemptionSql`. */
+  live: boolean;
 };
 
 export async function getOrderDetailForPanel(
@@ -425,7 +454,7 @@ export async function getOrderDetailForPanel(
   const head = headRows[0];
   if (!head) return null;
 
-  const [eventRows, paymentRows, cardRows, bonusRows] = await Promise.all([
+  const [eventRows, paymentRows, cardRows, bonusRows, promoRows] = await Promise.all([
     // Берём СВЕЖИЕ и разворачиваем в памяти. `ASC LIMIT 100` у заказа с сотней
     // событий показал бы самые старые и молча отрезал последние — ровно те,
     // ради которых карточку и открывают.
@@ -473,18 +502,36 @@ export async function getOrderDetailForPanel(
         amountUsdCents: referralRedemptions.amountUsdCents,
         discountKopecks: referralRedemptions.discountKopecks,
         status: referralRedemptions.status,
+        // Условие «живо» ссылается на `orders` — отсюда соединение с заказом.
+        live: sql<boolean>`${liveRedemptionSql()}`,
         reservedAt: referralRedemptions.reservedAt,
         settledAt: referralRedemptions.settledAt,
         releasedByName: staff.displayName,
       })
       .from(referralRedemptions)
+      .innerJoin(orders, eq(orders.id, referralRedemptions.orderId))
       .leftJoin(staff, eq(referralRedemptions.releasedBy, staff.id))
       .where(eq(referralRedemptions.orderId, head.order.id))
+      .limit(1),
+    // В любом статусе, с признаком «живо»: экран сам решает, писать скидку или
+    // «возвращён клиенту» (см. `PanelOrderDetail.promo`).
+    db
+      .select({
+        code: promoCodes.code,
+        discountKopecks: promoRedemptions.discountKopecks,
+        status: promoRedemptions.status,
+        live: sql<boolean>`${livePromoRedemptionSql()}`,
+      })
+      .from(promoRedemptions)
+      .innerJoin(orders, eq(orders.id, promoRedemptions.orderId))
+      .innerJoin(promoCodes, eq(promoCodes.id, promoRedemptions.promoCodeId))
+      .where(eq(promoRedemptions.orderId, head.order.id))
       .limit(1),
   ]);
 
   const card = cardRows[0];
   const bonusRow = bonusRows[0];
+  const promoRow = promoRows[0];
 
   return {
     hasSucceededPayment: paymentRows.some((p) => p.status === 'succeeded'),
@@ -540,9 +587,18 @@ export async function getOrderDetailForPanel(
           amountUsdCents: bonusRow.amountUsdCents,
           discountKopecks: bonusRow.discountKopecks,
           status: bonusRow.status,
+          live: bonusRow.live === true,
           reservedAt: bonusRow.reservedAt,
           settledAt: bonusRow.settledAt,
           releasedByName: bonusRow.releasedByName,
+        }
+      : null,
+    promo: promoRow
+      ? {
+          code: promoRow.code,
+          discountKopecks: promoRow.discountKopecks,
+          status: promoRow.status,
+          live: promoRow.live === true,
         }
       : null,
     // Явное перечисление полей, а не `...card`: строка карты не должна утекать
@@ -890,6 +946,12 @@ export type PanelHoldRow = {
    *  который держит вебхуки Freekassa и Telegram, ни к чему. */
   client: PanelHoldClient;
   paymentId: string | null;
+  /**
+   * Сумма СЧЁТА выбранного платежа (`payments.amount_rub`) — то, что оператор
+   * называет поддержке шлюза. Со скидкой она меньше цены заказа, и вычитать
+   * скидки на экране — значит назвать число, которого провайдер не видел.
+   */
+  paymentAmountRubKopecks: number | null;
   provider: string | null;
   providerRef: string | null;
   lastProviderStatus: number | null;
@@ -986,6 +1048,7 @@ export async function listHoldsForPanel(
       clientDisplayName: users.displayName,
       clientTelegramId: users.telegramId,
       paymentId: payments.id,
+      paymentAmountRub: payments.amountRub,
       provider: payments.provider,
       providerRef: payments.providerRef,
       lastProviderStatus: payments.lastProviderStatus,
@@ -1037,6 +1100,7 @@ export async function listHoldsForPanel(
         telegramId: row.clientTelegramId,
       },
       paymentId: row.paymentId,
+      paymentAmountRubKopecks: row.paymentAmountRub,
       provider: row.provider,
       providerRef: row.providerRef,
       lastProviderStatus: row.lastProviderStatus,

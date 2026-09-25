@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cardStatusLabel,
+  discountedInvoiceLine,
+  invoicedPaymentKopecks,
   formatAge,
   formatKopecks,
   formatOriginalAmount,
@@ -192,5 +194,81 @@ describe('cardStatusLabel / paymentStatusLabel', () => {
     expect(cardStatusLabel('toString')).toBe('toString');
     expect(paymentStatusLabel('constructor')).toBe('constructor');
     expect(orderStatusLabel('hasOwnProperty')).toBe('hasOwnProperty');
+  });
+});
+
+/**
+ * Строка под ценой в трёх списках (тикет 05 аудита CRM): раньше экраны знали
+ * только баллы, и скидка по промокоду выглядела недоплатой.
+ */
+describe('discountedInvoiceLine', () => {
+  const nbsp = (s: string) => s.replace(/ /g, ' ');
+
+  it('без скидок строки нет — заказ выглядит как раньше', () => {
+    expect(
+      discountedInvoiceLine({ amountRubKopecks: 3000_00, bonusDiscountKopecks: 0, promoDiscountKopecks: 0 }),
+    ).toBeNull();
+  });
+
+  it('обе скидки: счёт = цена − промокод − баллы, каждая скидка названа', () => {
+    const line = discountedInvoiceLine({
+      amountRubKopecks: 3000_00,
+      bonusDiscountKopecks: 300_00,
+      promoDiscountKopecks: 405_00,
+    });
+    expect(nbsp(line ?? '')).toBe('счёт 2 295 ₽ · −405 ₽ промокод · −300 ₽ баллами');
+  });
+
+  it('только промокод', () => {
+    const line = discountedInvoiceLine({
+      amountRubKopecks: 3000_00,
+      bonusDiscountKopecks: 0,
+      promoDiscountKopecks: 405_00,
+    });
+    expect(nbsp(line ?? '')).toBe('счёт 2 595 ₽ · −405 ₽ промокод');
+  });
+
+  it('известна сумма реального счёта — берётся она, а не вычитание', () => {
+    // Экран проверки платежей: именно эту сумму называют поддержке шлюза.
+    const line = discountedInvoiceLine({
+      amountRubKopecks: 3000_00,
+      bonusDiscountKopecks: 0,
+      promoDiscountKopecks: 405_00,
+      invoiceKopecks: 2600_00,
+    });
+    expect(nbsp(line ?? '')).toContain('счёт 2 600 ₽');
+  });
+});
+
+describe('invoicedPaymentKopecks', () => {
+  const at = (iso: string) => new Date(iso);
+
+  it('оплаченный счёт важнее живого и сорвавшегося, даже более свежих', () => {
+    expect(
+      invoicedPaymentKopecks([
+        { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T12:00:00Z') },
+        { status: 'succeeded', amountRubKopecks: 2295_00, createdAt: at('2026-09-20T11:00:00Z') },
+        { status: 'pending', amountRubKopecks: 2400_00, createdAt: at('2026-09-20T10:00:00Z') },
+      ]),
+    ).toBe(2295_00);
+  });
+
+  it('оплаченного нет — живой; живого нет — последний сорвавшийся (недоплата)', () => {
+    expect(
+      invoicedPaymentKopecks([
+        { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T12:00:00Z') },
+        { status: 'pending', amountRubKopecks: 2400_00, createdAt: at('2026-09-20T10:00:00Z') },
+      ]),
+    ).toBe(2400_00);
+    expect(
+      invoicedPaymentKopecks([
+        { status: 'failed', amountRubKopecks: 2595_00, createdAt: at('2026-09-20T12:00:00Z') },
+        { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T09:00:00Z') },
+      ]),
+    ).toBe(2595_00);
+  });
+
+  it('счетов нет — null, и строки «Запрошено у шлюза» нет', () => {
+    expect(invoicedPaymentKopecks([])).toBeNull();
   });
 });

@@ -14,6 +14,7 @@ import { normalizeUsername } from './username';
 import type { ExpiredSurveyAnswer, StartSurveyAnswer } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
+import { ISSUE_FAILED_CORE } from '@/lib/cabinet/issue-failed';
 // Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
 // панели и `serverEnv`, а здесь нужна чистая функция сравнения дат.
 import { isUnlimitedExpiry } from '@/lib/remnawave/period';
@@ -360,6 +361,27 @@ export function cardMessageFooter(shortId: string): string {
     'Не проходит оплата — напиши /support, поможем.',
     `Номер заказа: ${escapeHtml(shortId)}`,
   ].join('\n');
+}
+
+/**
+ * Клиент заплатил, а выдача карты упала (`issue-card` → `failed`). Раньше он не
+ * получал НИЧЕГО: тревога уходила персоналу, а клиенту — тишина и плашка
+ * «Ошибка» в приложении (разбор бэклога 2026-09-24).
+ *
+ * Текст обязан быть правдой для всех путей, которые сюда ведут: карты нет
+ * вовсе, пополнение зависло с неизвестным исходом, карта выпущена, но реквизиты
+ * не дошли. Поэтому ни «карта не выпустилась», ни «деньги вернём» — только то,
+ * что верно всегда: оплата у нас, дальше разбирается человек. Клиенту, уже
+ * получившему карту, это сообщение не уходит вовсе (решает `issue-card`).
+ *
+ * Простой текст, без HTML: номер заказа подставляется как есть. Ядро — общее
+ * с Mini App (`ISSUE_FAILED_CORE`), чтобы чат и приложение не расходились.
+ */
+export function cardIssueFailedClientText(shortId: string): string {
+  return [
+    `Оплату по заказу ${shortId} мы получили, но ${ISSUE_FAILED_CORE}. Он напишет тебе сюда, в этот чат.`,
+    'Делать ничего не нужно. Есть вопрос — нажми «Поддержка» ниже.',
+  ].join('\n\n');
 }
 
 /**

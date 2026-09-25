@@ -6,6 +6,7 @@ import { formatDayMonth, formatRub, formatUsd } from '@/components/comic/format'
 import { IconArrowRight } from '@/components/comic/icons';
 import { track } from '@/lib/analytics/client';
 import type { CardTabState } from '@/lib/cabinet/card-tab-state';
+import { ISSUE_FAILED_TEXT, issueFailedTitle } from '@/lib/cabinet/issue-failed';
 import { buildPathSteps, siteHostFromUrl, serviceStepHint } from '@/lib/cabinet/path-steps';
 
 import type { CardView, OrderSummary, SubscriptionPaidResult } from './cabinet-api';
@@ -77,6 +78,7 @@ export function CardTab({
   onOpenIssue,
   onMarkSubscriptionPaid,
   onOpenExternalLink,
+  onContactSupport,
 }: {
   state: CardTabState<OrderSummary, CardView>;
   /** Сколько ляжет на карту и сайт сервиса (из детали заказа); null — не знаем. */
@@ -88,6 +90,8 @@ export function CardTab({
   onOpenIssue: (orderId: string) => void;
   onMarkSubscriptionPaid: (orderId: string) => Promise<SubscriptionPaidResult>;
   onOpenExternalLink: (url: string) => void;
+  /** Выход в поддержку; `undefined` — приложение не умеет закрыться в чат. */
+  onContactSupport?: (() => void) | undefined;
 }) {
   return (
     <div className="flex flex-col gap-[18px]">
@@ -103,6 +107,14 @@ export function CardTab({
           topUp={state.topUp}
           usdCents={issuing?.usdCents ?? null}
           siteHost={issuing?.siteHost ?? null}
+        />
+      )}
+
+      {state.kind === 'issue_failed' && (
+        <IssueFailed
+          order={state.order}
+          onOpenOrder={onOpenOrder}
+          onContactSupport={onContactSupport}
         />
       )}
 
@@ -191,6 +203,48 @@ function Issuing({
             topUp,
           })}
         />
+      </div>
+    </>
+  );
+}
+
+/**
+ * Оплачен, а выдача упала. Без этого экрана «Выпускаю карту…» сменялось
+ * «Карты пока нет»: только что заплативший видел пустоту. Слова — те же, что в
+ * сообщении бота (`ISSUE_FAILED_TEXT`), и не обещают ни срока, ни того, что
+ * карты нет: при части сбоев она выпущена, но не записалась у нас.
+ */
+function IssueFailed({
+  order,
+  onOpenOrder,
+  onContactSupport,
+}: {
+  order: OrderSummary;
+  onOpenOrder: (orderId: string) => void;
+  onContactSupport?: (() => void) | undefined;
+}) {
+  return (
+    <>
+      <div
+        role="status"
+        className="flex aspect-[1.6/1] flex-col items-center justify-center gap-1.5 rounded-[20px] border-[2.5px] border-dashed border-[color-mix(in_srgb,var(--text-muted)_45%,transparent)] p-5 text-center"
+      >
+        <p className="font-display text-xl font-bold text-[var(--text)]">
+          {issueFailedTitle(order.service)}
+        </p>
+        <p className="font-body text-sm text-[var(--text-muted)]">Заказ {order.shortId}</p>
+      </div>
+      <div className={cardBox}>
+        <p className={sectionTitle}>Оплата прошла</p>
+        <p className="font-body text-sm text-[var(--text)]">{ISSUE_FAILED_TEXT}</p>
+        {onContactSupport && (
+          <button type="button" onClick={onContactSupport} className={secondaryButton}>
+            Написать в поддержку
+          </button>
+        )}
+        <button type="button" onClick={() => onOpenOrder(order.orderId)} className={quietLink}>
+          Открыть заказ
+        </button>
       </div>
     </>
   );

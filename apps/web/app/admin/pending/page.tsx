@@ -3,6 +3,7 @@ import Link from 'next/link';
 
 import { PANEL_DEFAULT_ROWS, getDb, listPendingOrdersForPanel } from '@oplati/db';
 
+import { InvoiceLine } from '@/components/panel/InvoiceLine';
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelHelp } from '@/components/panel/PanelHelp';
 import { PanelPageHeader } from '@/components/panel/PanelPageHeader';
@@ -108,11 +109,7 @@ export default async function PanelPendingPage({
                     <td data-label={COLUMN_TITLES.service}>{item.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(item.amountRubKopecks)}
-                      {item.bonusDiscountKopecks > 0 && (
-                        <div className="panel-muted">
-                          −{formatKopecks(item.bonusDiscountKopecks)} {CELL_TEXT.bonusPaid}
-                        </div>
-                      )}
+                      <InvoiceLine row={item} />
                     </td>
                     <td data-label={COLUMN_TITLES.status}>
                       <span className={STATUS_TONE_CLASS[orderStatusTone(item.status)]}>

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { beforeSend, beforeSendTransaction, type SentryEvent } from './sentry.ts';
@@ -473,5 +475,246 @@ describe('beforeSend: крошки', () => {
     const message = out.breadcrumbs[0]?.message ?? '';
     expect(message).not.toContain('AAHsecretvalue_x');
     expect(message).not.toContain('4111111111111111');
+  });
+});
+
+/**
+ * Тело запроса приезжает от SDK СТРОКОЙ (`@sentry/node-core` `captureRequestBody`),
+ * а прежние тесты моделировали его объектом — поэтому денилист по ключам
+ * выглядел рабочим, а на проде пропускал тело целиком (аудит CRM 2026-09-17,
+ * тикет 06).
+ */
+describe('тело запроса строкой: второй эшелон', () => {
+  const secrets = ['ivan@mail.ru', '+79991234567', '123456', 'query_id=AAE', 'Добрый день, Иван'];
+
+  function bodyOf(data: string): string {
+    const out = beforeSend(makeEvent({ request: { data } }));
+    return String(out?.request?.data);
+  }
+
+  it('РЕГРЕСС: JSON-строка с почтой в поиске не уезжает', () => {
+    expect(bodyOf('{"query":"ivan@mail.ru"}')).not.toContain('ivan@mail.ru');
+  });
+
+  it('РЕГРЕСС: код TOTP, initData и текст оператора в JSON вычищаются', () => {
+    const body = bodyOf(
+      JSON.stringify({
+        code: '123456',
+        initData: 'query_id=AAE&hash=abc',
+        text: 'Добрый день, Иван',
+        phone: '+79991234567',
+        conversationId: 'c-1',
+      }),
+    );
+    for (const secret of secrets) expect(body).not.toContain(secret);
+    // Безопасные поля остаются — событие не должно терять смысл целиком.
+    expect(body).toContain('c-1');
+  });
+
+  it('РЕГРЕСС: форма второго фактора (`code=`) вычищается', () => {
+    expect(bodyOf('code=123456')).toBe('code=[REDACTED]');
+  });
+
+  it('форма уведомления Freekassa: почта и телефон плательщика вычищаются', () => {
+    const body = bodyOf(
+      'MERCHANT_ID=74953&AMOUNT=2560&P_EMAIL=ivan%40mail.ru&P_PHONE=79991234567&intid=1',
+    );
+    expect(body).not.toContain('ivan%40mail.ru');
+    expect(body).not.toContain('79991234567');
+    expect(body).toContain('MERCHANT_ID=74953');
+  });
+
+  it('неразборчивое тело (обрезанный JSON, текст) уходит целиком закрытым', () => {
+    expect(bodyOf('{"query":"ivan@mail.ru","text":"оч')).toBe('[REDACTED]');
+    expect(bodyOf('просто текст ivan@mail.ru')).toBe('[REDACTED]');
+  });
+
+  it('объектное тело чистится тем же расширенным денилистом', () => {
+    const out = beforeSend(makeEvent({ request: { data: { code: '123456', s: 'unpaid' } } }));
+    const data = out?.request?.data as Record<string, unknown>;
+    expect(data.code).toBe('[REDACTED]');
+    expect(data.s).toBe('unpaid');
+  });
+
+  it('`code` в extra НЕ вычищается: там это код ошибки, а не секрет', () => {
+    const out = beforeSend(makeEvent({ extra: { err: { code: 'ECONNREFUSED' } } }));
+    expect((out?.extra as { err: { code: string } }).err.code).toBe('ECONNREFUSED');
+  });
+
+  it('РЕГРЕСС: транзакция проходит тот же набор, что и ошибка', () => {
+    const out = beforeSendTransaction({
+      transaction: 'POST /api/panel/search',
+      request: { data: '{"query":"ivan@mail.ru"}' },
+    } as never) as unknown as { request: { data: string } };
+    expect(out.request.data).not.toContain('ivan@mail.ru');
+  });
+
+  it('атрибут спана `http.request.body.data` чистится как тело', () => {
+    const out = beforeSendTransaction({
+      transaction: 'POST /api/panel/auth/totp',
+      contexts: { trace: { data: { 'http.request.body.data': 'code=123456' } } },
+      spans: [{ data: { 'http.request.body.data': '{"text":"Добрый день, Иван"}' } }],
+    } as never) as unknown as {
+      contexts: { trace: { data: Record<string, unknown> } };
+      spans: { data: Record<string, unknown> }[];
+    };
+    expect(String(out.contexts.trace.data['http.request.body.data'])).not.toContain('123456');
+    expect(String(out.spans[0]?.data['http.request.body.data'])).not.toContain('Иван');
+  });
+});
+
+/**
+ * initData Mini App приезжает во ФРАГМЕНТЕ адреса (`#tgWebAppData=…`): 24 часа
+ * она даёт реквизиты карты клиента. Браузерный SDK кладёт `location.href` с
+ * фрагментом в `request.url` и навигационные крошки (ревью 2026-09-25, ось C).
+ */
+describe('фрагмент адреса: initData Mini App', () => {
+  const MINIAPP_URL =
+    'https://www.oplatishka.com/cabinet?src=tg#tgWebAppData=query_id%3DAAE123%26user%3D%257B%2522id%2522%253A42%257D%26hash%3Ddeadbeef&tgWebAppVersion=8.0';
+
+  it('РЕГРЕСС: фрагмент с initData вычищается из request.url целиком', () => {
+    const out = beforeSend(makeEvent({ request: { url: MINIAPP_URL } }));
+    const url = String(out?.request?.url);
+
+    expect(url).not.toContain('tgWebAppData');
+    expect(url).not.toContain('deadbeef');
+    expect(url).toBe('https://www.oplatishka.com/cabinet?src=tg#[REDACTED]');
+  });
+
+  it('РЕГРЕСС: и из навигационных крошек, и из имени pageload-транзакции', () => {
+    const crumbs = beforeSend(
+      makeEvent({ breadcrumbs: [{ category: 'navigation', data: { from: MINIAPP_URL, to: MINIAPP_URL } }] }),
+    ) as unknown as { breadcrumbs: { data: Record<string, string> }[] };
+    expect(JSON.stringify(crumbs.breadcrumbs)).not.toContain('tgWebAppData');
+
+    const tx = beforeSendTransaction({
+      transaction: MINIAPP_URL,
+      request: { url: MINIAPP_URL },
+    } as never) as unknown as { transaction: string; request: { url: string } };
+    expect(tx.transaction).not.toContain('tgWebAppData');
+    expect(tx.request.url).not.toContain('tgWebAppData');
+  });
+
+  it('РЕГРЕСС: и из атрибутов корневого спана (contexts.trace.data)', () => {
+    const tx = beforeSendTransaction({
+      transaction: '/cabinet',
+      contexts: { trace: { data: { 'url.full': MINIAPP_URL } } },
+    } as never) as unknown as { contexts: { trace: { data: Record<string, string> } } };
+    expect(tx.contexts.trace.data['url.full']).not.toContain('tgWebAppData');
+  });
+
+  it('РЕГРЕСС: и из кадров стека — WebView подписывает встроенный скрипт адресом документа', () => {
+    const out = beforeSend(
+      makeEvent({
+        exception: {
+          values: [
+            {
+              type: 'TypeError',
+              value: 'x',
+              stacktrace: { frames: [{ filename: MINIAPP_URL, abs_path: MINIAPP_URL }] },
+            },
+          ],
+        },
+      }),
+    );
+    expect(JSON.stringify(out?.exception)).not.toContain('tgWebAppData');
+  });
+
+  it('CSS-селектор в атрибуте спана — не адрес, решётка остаётся', () => {
+    const tx = beforeSendTransaction({
+      transaction: '/cabinet',
+      spans: [{ data: { 'lcp.element': 'body > button#pay' } }],
+    } as never) as unknown as { spans: { data: Record<string, string> }[] };
+    expect(tx.spans[0]?.data['lcp.element']).toBe('body > button#pay');
+  });
+
+  it('адрес без фрагмента не меняется', () => {
+    const out = beforeSend(makeEvent({ request: { url: 'https://www.oplatishka.com/cabinet' } }));
+    expect(out?.request?.url).toBe('https://www.oplatishka.com/cabinet');
+  });
+});
+
+describe('заголовок Referer', () => {
+  it('РЕГРЕСС: поиск панели в адресе предыдущей страницы вычищается', () => {
+    // Внутри сайта `Referer` несёт `/admin/orders?q=<почта>`, а проверка по
+    // имени заголовка его пропускала (ревью 2026-09-25).
+    const out = beforeSend(
+      makeEvent({
+        request: {
+          headers: { Referer: 'https://admin.oplatishka.com/admin/orders?q=ivan%40mail.ru&s=live' },
+        },
+      }),
+    );
+    const referer = String((out?.request?.headers as Record<string, string>).Referer);
+    expect(referer).not.toContain('ivan');
+    expect(referer).toContain('/admin/orders?');
+  });
+});
+
+describe('тело запроса: поля, которые реально к нам приходят', () => {
+  it('контакт и профиль из апдейта бота, вопрос аналитику, комментарий выдачи', () => {
+    const body = String(
+      beforeSend(
+        makeEvent({
+          request: {
+            data: JSON.stringify({
+              message: undefined,
+              contact: {
+                phone_number: '+79991234567',
+                user_id: 42,
+                vcard: 'BEGIN:VCARD\nTEL:+79990001122\nEND:VCARD',
+              },
+              from: { id: 42, username: 'ivanp', first_name: 'Иван', last_name: 'П' },
+              question: 'сколько заказов у ivan@mail.ru',
+              comment: 'выдал карту Ивану',
+              orderId: 'ORD-AAAAA',
+            }),
+          },
+        }),
+      )?.request?.data,
+    );
+
+    for (const secret of ['+79991234567', '+79990001122', 'ivanp', 'Иван', 'ivan@mail.ru', 'выдал карту']) {
+      expect(body).not.toContain(secret);
+    }
+    // Номер заказа остаётся — по нему событие и разбирают.
+    expect(body).toContain('ORD-AAAAA');
+  });
+});
+
+describe('строка запроса: первый фактор панели', () => {
+  it('РЕГРЕСС: профиль и подпись Telegram Login Widget вычищаются из адреса', () => {
+    const out = beforeSend(
+      makeEvent({
+        request: {
+          url:
+            'https://admin.oplatishka.com/api/panel/auth/telegram?id=8069374561&first_name=Ivan&last_name=P&username=ivanp&photo_url=https%3A%2F%2Ft.me%2Fi.jpg&auth_date=1790000000&hash=deadbeef',
+        },
+      }),
+    );
+    const url = String(out?.request?.url);
+    for (const secret of ['8069374561', 'Ivan', 'ivanp', 't.me', '1790000000', 'deadbeef']) {
+      expect(url).not.toContain(secret);
+    }
+  });
+
+  it('якорь на границу параметра: `orderid=` не режется по `id=`', () => {
+    const out = beforeSend(makeEvent({ request: { query_string: 'orderid=ORD-1&sort=oldest' } }));
+    expect(out?.request?.query_string).toBe('orderid=ORD-1&sort=oldest');
+  });
+});
+
+/**
+ * Первый эшелон держит конфиг, а не код скраббера: достаточно убрать
+ * интеграцию — и тело снова поедет, при зелёных тестах выше. Канарейка по
+ * исходнику, как у локов промокодов.
+ */
+describe('канарейка: перехват тела выключен в серверном конфиге', () => {
+  it('sentry.server.config.ts ставит maxIncomingRequestBodySize: none', () => {
+    const src = readFileSync(new URL('../sentry.server.config.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/maxIncomingRequestBodySize:\s*'none'/);
+    // Без этого флага спаны входящих запросов задвоились бы: наш экземпляр
+    // ЗАМЕНЯЕТ стандартный из @sentry/nextjs, а тот его ставит.
+    expect(src).toMatch(/disableIncomingRequestSpans:\s*true/);
   });
 });
