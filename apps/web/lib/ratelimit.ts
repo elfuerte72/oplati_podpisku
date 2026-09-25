@@ -292,7 +292,20 @@ export async function checkRateLimit(
   }
 
   try {
-    const { success, limit, remaining } = await limiter.limit(identity);
+    const { success, limit, remaining, reason } = await limiter.limit(identity);
+    // ⚠️ Зависший Redis НЕ бросает: `@upstash/ratelimit` 2.0.8 через 5 с сам
+    // отвечает `{ success: true, reason: 'timeout' }`. Отдать это как
+    // «сконфигурирован и разрешил» значило пропустить мимо fail-closed гейтов
+    // (второй фактор панели смотрит на `configured`) ровно тот случай, ради
+    // которого они fail-closed: счётчик попыток не работает. Таймаут — это
+    // недоступный backend, то же, что исключение ниже. Клиентские пути
+    // по-прежнему fail-open (аудит CRM 2026-09-17).
+    if (reason === 'timeout') {
+      // Без Sentry на каждый запрос: при зависшем Redis это поток событий на
+      // весь трафик. След — строка лога, по ней видно и частоту.
+      log.error({ event: 'ratelimit.check_timeout', name });
+      return { allowed: true, configured: false, limit: cfg.limit, remaining: cfg.limit };
+    }
     if (!success) {
       log.warn({ event: 'ratelimit.blocked', name, limit, remaining });
     }
