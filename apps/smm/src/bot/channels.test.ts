@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChannelTarget } from '../config/env.ts';
+import { smmConfig } from '../config/smm.config.ts';
 import { TEXTS } from '../dialog/texts.ts';
 import { createLogger } from '../logger.ts';
 import { GOOD_DRAFT } from '../pipeline/fixtures.ts';
@@ -102,6 +103,23 @@ describe('кнопки под превью', () => {
       [TEXTS.buttons.drop],
     ]);
     expect(controls.keyboard.rows[1]?.[0]?.data).toBe('p:pub.both:p1:abcdef12');
+    // С 25.09 кнопка бота стоит в обоих каналах: пометки «без кнопки» нет.
+    expect(controls.text).toBe(TEXTS.previewReady);
+  });
+
+  it('канал без кнопки бота назван под превью: превью нарисовано для основного', () => {
+    const config = {
+      ...smmConfig,
+      channels: { ...smmConfig.channels, second: { ...smmConfig.channels.second, botButton: false } },
+    };
+    const controls = buildPreviewControls({
+      post: { body: GOOD_DRAFT },
+      postId: 'p1',
+      stamp: 'abcdef12',
+      channels: BOTH,
+      note: 'ready',
+      config,
+    });
     expect(controls.text).toContain('Aibromotion: без кнопки «Оплатить подписку» под постом.');
   });
 
@@ -206,11 +224,12 @@ describe('публикация в два канала', () => {
     expect(copy).toMatchObject({ status: 'published', channel: 'second', body: source?.body });
     expect(copy?.channelMessageId).not.toBe(source?.channelMessageId);
 
-    // Кнопка бота — только в Оплатишке: во втором канале её нет вовсе.
+    // Кнопка бота — в обоих каналах (решение владельца 25.09.2026); реклама в
+    // тексте для второго канала по-прежнему запрещена (тесты ниже).
     const toMain = sent.find((item) => item.chatId === MAIN.id);
     const toSecond = sent.find((item) => item.chatId === SECOND.id);
     expect(toMain?.options.keyboard?.rows.flat().map((b) => b.text)).toContain('Оплатить подписку');
-    expect(toSecond?.options.keyboard?.rows.flat() ?? []).toEqual([]);
+    expect(toSecond?.options.keyboard?.rows.flat().map((b) => b.text)).toContain('Оплатить подписку');
     store.close();
   });
 

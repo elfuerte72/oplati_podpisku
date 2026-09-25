@@ -51,7 +51,7 @@ const schema = z.object({
     .refine((raw) => /^[A-Za-z0-9_]{4,}$/.test(raw), 'SMM_CHANNEL_USERNAME: только имя канала, без ссылки'),
 
   // Второй канал (Aibromotion). Не задан — канал один, кнопки прежние. Правила
-  // канала (без кнопки бота и без рекламы) живут в `smmConfig.channels`, не здесь.
+  // канала (кнопка бота, реклама в тексте) живут в `smmConfig.channels`, не здесь.
   SMM_SECOND_CHANNEL_ID: chatRef('SMM_SECOND_CHANNEL_ID').optional(),
   SMM_SECOND_CHANNEL_USERNAME: z
     .string()
