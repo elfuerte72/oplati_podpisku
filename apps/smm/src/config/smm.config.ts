@@ -571,9 +571,10 @@ export const smmConfig: SmmConfig = {
   },
   channels: {
     main: { title: 'Оплатишка', label: 'В Оплатишку', botButton: true, ads: true },
-    // Решение владельца 24.09.2026: во втором канале ни кнопки бота, ни
-    // упоминаний Оплатишки — это канал про ИИ, а не витрина сервиса.
-    second: { title: 'Aibromotion', label: 'В Aibromotion', botButton: false, ads: false },
+    // Второй канал — про ИИ, а не витрина сервиса: упоминаний Оплатишки в ТЕКСТЕ
+    // нет (решение владельца 24.09.2026), а кнопка «Оплатить подписку» под
+    // постом есть, как в основном (решение владельца 25.09.2026).
+    second: { title: 'Aibromotion', label: 'В Aibromotion', botButton: true, ads: false },
   },
   autodraft: {
     // Решение владельца 24.09.2026: три поста для канала и два для Threads.
