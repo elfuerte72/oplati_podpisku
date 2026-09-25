@@ -31,12 +31,15 @@ import { isCardReusable } from '../pay-space/funding.ts';
 import { getPaySpaceClient, isPaySpaceConfigured, PaySpaceApiError } from '../pay-space/index.ts';
 import { reverseReferralAccrualsForFailedOrder } from '../referral/reverse.ts';
 import { getBot } from '../telegram/bot.ts';
+import { sendSafely } from '../telegram/send.ts';
+import { buildSupportHintKeyboard } from '../telegram/silent-hint.ts';
 import {
   BILLING_ADDRESS_HINT,
   BILLING_ADDRESS_TITLE_HTML,
   CARD_COPY_HINT,
   CARD_HOWTO_BUTTON,
   CARD_IN_APP_BUTTON,
+  cardIssueFailedClientText,
   cardIssuedIntroHtml,
   cardMessageFooter,
   cardToppedUpIntroHtml,
@@ -117,7 +120,7 @@ export async function issueCard(orderId: string): Promise<void> {
   }
   if (!order.originalAmount || order.originalAmount <= 0) {
     log.error({ event: 'job.issue_card.invalid_amount', orderId });
-    await markOrderFailed(orderId, 'invalid_amount', order.shortId);
+    await markOrderFailed(orderId, 'invalid_amount', order.shortId, { userId: order.userId });
     return;
   }
 
@@ -192,6 +195,12 @@ export async function issueCard(orderId: string): Promise<void> {
   /** Идентификатор карты у провайдера — для ops-алёрта, если наша строка не записалась. */
   let issuedProviderCardId: string | null = null;
   let credentialsDelivered = false;
+  /**
+   * Клиенту ушло сообщение «карта пополнена» (реюз активной карты). Как и
+   * `credentialsDelivered`, решает, писать ли ему о сбое: карта у него уже есть,
+   * и второе, тревожное сообщение поверх «всё готово» только сбило бы с толку.
+   */
+  let topupNoticeDelivered = false;
 
   try {
     const paypace = getPaySpaceClient();
@@ -239,7 +248,7 @@ export async function issueCard(orderId: string): Promise<void> {
         });
         // Повторная оплата: карта пополнена, новых реквизитов нет — шлём короткое
         // подтверждение с ценой и кнопкой-инструкцией (раньше не уходило ничего).
-        await sendTopupNotice({
+        topupNoticeDelivered = await sendTopupNotice({
           telegramId: await resolveTelegramIdByUserId(order.userId),
           serviceShortId: order.shortId,
           priceUsdCents,
@@ -492,7 +501,11 @@ export async function issueCard(orderId: string): Promise<void> {
           action: { text: 'проверить операцию в кабинете PaySpace, затем выдать вручную', path: `/admin/orders/${order.shortId}` },
         },
       );
-      await markOrderFailed(orderId, 'paypace_topup_pending', order.shortId);
+      // Клиенту пишем: исход неизвестен, и ждать карту в тишине он не должен.
+      // Текст не утверждает, что карты нет, — только что разбирается человек.
+      await markOrderFailed(orderId, 'paypace_topup_pending', order.shortId, {
+        userId: order.userId,
+      });
       return;
     }
 
@@ -548,20 +561,48 @@ export async function issueCard(orderId: string): Promise<void> {
       );
     }
 
-    await markOrderFailed(orderId, 'paypace_error', order.shortId);
+    // Клиенту, у которого карта уже на руках (реквизиты или «карта пополнена»
+    // дошли до сбоя записи у нас), о сбое НЕ пишем: для него заказ исполнен, а
+    // сводить состояние будет человек. Остальным — одно честное сообщение.
+    const clientAlreadyHasCard = credentialsDelivered || topupNoticeDelivered;
+    await markOrderFailed(
+      orderId,
+      'paypace_error',
+      order.shortId,
+      clientAlreadyHasCard ? null : { userId: order.userId },
+    );
   }
 }
 
-async function markOrderFailed(orderId: string, reason: string, shortId?: string): Promise<void> {
+/**
+ * Перевод заказа в `failed` + тревога персоналу + (если передан `client`)
+ * сообщение клиенту.
+ *
+ * Клиенту пишем ТОЛЬКО когда переход состоялся: иначе заказ остался в прежнем
+ * статусе, и следующий прогон (recovery-крон по `paid`) пришёл бы сюда снова —
+ * клиент получал бы одно и то же сообщение каждые пять минут. Переход в
+ * `failed` случается один раз, значит и сообщение уходит один раз.
+ */
+async function markOrderFailed(
+  orderId: string,
+  reason: string,
+  shortId: string,
+  client: { userId: string } | null = null,
+): Promise<void> {
+  // `Detailed`, а не `transitionOrder`: повтор по уже `failed` заказу — это
+  // idempotent no-op без исключения, и только флаг отличает «перевёл сейчас» от
+  // «уже был». Без него клиент получал бы сообщение на каждом повторе.
+  let transitioned = false;
   try {
     const db = getDb();
-    await transitionOrder(db, {
+    const result = await transitionOrderDetailed(db, {
       orderId,
       toStatus: 'failed',
       actorType: 'system',
       eventType: 'fulfillment_failed',
       payload: { reason },
     });
+    transitioned = result.transitioned;
   } catch (err) {
     log.error({ event: 'job.issue_card.mark_failed_error', orderId, err });
     Sentry.captureException(err, {
@@ -590,11 +631,52 @@ async function markOrderFailed(orderId: string, reason: string, shortId?: string
     stream: 'critical',
     title: 'Оплаченный заказ не доставлен',
     facts: [
-      { label: 'Заказ', value: shortId ?? orderId },
+      { label: 'Заказ', value: shortId },
       { label: 'Причина', value: reason },
+      // Персоналу — знать, что клиент уже предупреждён и чего от него ждать.
+      {
+        label: 'Клиенту',
+        value: client && transitioned ? 'отправлено сообщение о задержке' : 'не писали',
+      },
     ],
-    action: { text: 'разобрать и выдать вручную', path: shortId ? `/admin/orders/${shortId}` : '/admin/orders?s=failed' },
+    action: { text: 'разобрать и выдать вручную', path: `/admin/orders/${shortId}` },
   });
+
+  // Клиенту — ПОСЛЕ тревоги персоналу: сообщение обещает, что оператор уже
+  // знает о заказе, и это должно быть правдой к моменту, когда клиент его
+  // прочтёт.
+  if (client && transitioned) {
+    await notifyClientIssueFailed(client.userId, shortId);
+  }
+}
+
+/**
+ * Сообщение клиенту о сбое выдачи. Раньше при `failed` клиент не получал
+ * ничего: тревога уходила персоналу, а он видел тишину в чате и плашку
+ * «Ошибка» в приложении (разбор бэклога 2026-09-24).
+ *
+ * Кнопка — та же «Поддержка», что под подсказкой и в меню: второго входа в
+ * поддержку нет, обращение создаёт только её нажатие (правило В3).
+ * `sendSafely` не бросает и сам разбирает 403 «заблокировал бота». В `messages`
+ * не пишем по той же причине, что и сообщения с картой: бот держит ожидаемое
+ * от клиента в meta последней реплики, и эта строка затёрла бы начатый флоу.
+ */
+async function notifyClientIssueFailed(userId: string, shortId: string): Promise<void> {
+  const telegramId = await resolveTelegramIdByUserId(userId);
+  if (!telegramId) {
+    // Оплата без привязки Telegram невозможна (`TelegramLinkRequiredError`),
+    // так что это сбой чтения, а не веб-клиент. Лог — след для персонала.
+    log.warn({ event: 'job.issue_card.failure_notice.no_telegram', shortId });
+    return;
+  }
+  // Number() без потери точности: Telegram гарантирует id в пределах 52 бит.
+  const delivered = await sendSafely(
+    Number(telegramId),
+    cardIssueFailedClientText(shortId),
+    0,
+    buildSupportHintKeyboard(),
+  );
+  log.info({ event: 'job.issue_card.failure_notice', shortId, delivered });
 }
 
 /**
@@ -763,6 +845,9 @@ async function sendCardCredentialsToUser(args: SendCredentialsArgs): Promise<boo
  * с ценой и кнопками, чтобы клиент оплатил по правильному прайсу (раньше при
  * топ-апе не уходило ничего, кроме «Оплата получена»). Реквизиты — по кнопке
  * «Карта в приложении»: повторять PAN в чате незачем.
+ *
+ * Возвращает ФАКТ доставки: если запись у нас упадёт после этого сообщения,
+ * клиенту, уже прочитавшему «карта пополнена», не надо слать «выдача сорвалась».
  */
 async function sendTopupNotice(args: {
   telegramId: string | null;
@@ -770,10 +855,10 @@ async function sendTopupNotice(args: {
   priceUsdCents: number;
   service: CardServiceInfo;
   billingAddress: BillingAddress;
-}): Promise<void> {
+}): Promise<boolean> {
   if (!args.telegramId) {
     log.warn({ event: 'job.issue_card.topup_notice.no_telegram', shortId: args.serviceShortId });
-    return;
+    return false;
   }
 
   // Сборка текста — внутри try: сбой не должен всплыть в issueCard и свалить
@@ -797,6 +882,7 @@ async function sendTopupNotice(args: {
       reply_markup: buildCardActionKeyboard(args.service),
     });
     log.info({ event: 'job.issue_card.topup_notice_sent', shortId: args.serviceShortId });
+    return true;
   } catch (err) {
     // Реквизитов в этом сообщении нет, но текст всё равно клиентский —
     // логируем так же узко, как и в ветке с реквизитами.
@@ -804,6 +890,7 @@ async function sendTopupNotice(args: {
     Sentry.captureException(sanitizeSendError(err), {
       tags: { source: 'job.issue-card', step: 'topup_notice' },
     });
+    return false;
   }
 }
 

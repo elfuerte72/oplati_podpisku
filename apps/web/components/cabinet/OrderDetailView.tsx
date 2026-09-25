@@ -18,6 +18,7 @@ import {
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
+import { ISSUE_FAILED_TEXT, isPaidButIssueFailed } from '@/lib/cabinet/issue-failed';
 import { buildPathSteps, siteHostFromUrl, type PathStage } from '@/lib/cabinet/path-steps';
 import { PAY_BLOCK_TEXT, payBlockReason, type PayBlockReason } from '@/lib/cabinet/pay-block';
 import { track } from '@/lib/analytics/client';
@@ -1081,6 +1082,26 @@ export function OrderDetailView({
         <span className="font-body text-sm text-[var(--text-muted)]">{order.shortId}</span>
         <StatusBadge status={order.status} label={order.statusLabel} />
       </div>
+
+      {/* Оплачен, а выдача упала: без этого плашка «Ошибка» стояла без единого
+          слова, и заплативший клиент не знал, пропали ли деньги. */}
+      {isPaidButIssueFailed(order) && (
+        <div
+          role="status"
+          className="flex flex-col gap-2 rounded-[12px] border-2 border-[var(--color-stamp)] px-3 py-2.5"
+        >
+          <p className="font-body text-sm text-[var(--text)]">{ISSUE_FAILED_TEXT}</p>
+          {onContactSupport && (
+            <button
+              type="button"
+              onClick={onContactSupport}
+              className="self-start rounded-[10px] border-2 border-[var(--shadow-ink)] bg-[var(--surface)] px-2.5 py-1 font-display text-xs text-[var(--text)]"
+            >
+              Написать в поддержку
+            </button>
+          )}
+        </div>
+      )}
 
       {awaitingPayment && order.status === 'pending_payment' && (
         <p

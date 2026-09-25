@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Обязательные ключи для lazy-валидации serverEnv (logger и пр.).
 process.env.APP_URL = 'https://example.com';
@@ -312,7 +312,7 @@ describe('issueCard', () => {
         payload: expect.objectContaining({ requestId: 'topup_order-1_card-1', cardId: 'card-1' }),
       }),
     );
-    expect(db.transitionOrder).toHaveBeenCalledWith(
+    expect(db.transitionOrderDetailed).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
     );
@@ -330,7 +330,7 @@ describe('issueCard', () => {
 
     await issueCard('order-1');
 
-    expect(db.transitionOrder).toHaveBeenCalledWith(
+    expect(db.transitionOrderDetailed).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
     );
@@ -348,10 +348,10 @@ describe('issueCard', () => {
     await issueCard('order-1');
 
     const failedAt = vi
-      .mocked(db.transitionOrder)
+      .mocked(db.transitionOrderDetailed)
       .mock.invocationCallOrder.at(
         vi
-          .mocked(db.transitionOrder)
+          .mocked(db.transitionOrderDetailed)
           .mock.calls.findIndex((c) => (c[1] as { toStatus?: string }).toStatus === 'failed'),
       );
     const reversedAt = vi.mocked(reverseReferralAccrualsForFailedOrder).mock.invocationCallOrder[0];
@@ -385,7 +385,7 @@ describe('issueCard', () => {
     await issueCard('order-1');
 
     expect(db.appendOrderEvent).not.toHaveBeenCalled();
-    expect(db.transitionOrder).toHaveBeenCalledWith(
+    expect(db.transitionOrderDetailed).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
     );
@@ -501,7 +501,7 @@ describe('issueCard', () => {
     expect(texts.some((t) => t.includes('pc-new'))).toBe(true);
 
     // Заказ всё равно уходит в failed — сводить будет человек.
-    expect(db.transitionOrder).toHaveBeenCalledWith(
+    expect(db.transitionOrderDetailed).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ toStatus: 'failed' }),
     );
@@ -766,7 +766,7 @@ describe('issueCard', () => {
 
       expect(db.markIdle).not.toHaveBeenCalled();
       expect(h.createCardMock).not.toHaveBeenCalled();
-      expect(db.transitionOrder).toHaveBeenCalledWith(
+      expect(db.transitionOrderDetailed).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ toStatus: 'failed' }),
       );
@@ -794,5 +794,146 @@ describe('issueCard', () => {
 
     expect(db.markIdle).toHaveBeenCalledTimes(1);
     expect(h.createCardMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Клиент заплатил, а выдача упала: раньше он не получал НИЧЕГО — тревога
+   * уходила персоналу, клиенту тишина (разбор бэклога 2026-09-24). Сообщения
+   * клиенту уходят в его чат (12345), тревоги — в ops-чат (111222333).
+   */
+  describe('сообщение клиенту о сбое выдачи', () => {
+    const FAILURE_MARK = 'выдать карту автоматически не получилось';
+
+    // Реализацию отправки один тест подменяет; `clearAllMocks` её не снимает.
+    afterEach(() => {
+      h.sendMessageMock.mockReset();
+    });
+
+    function clientTexts(): string[] {
+      return h.sendMessageMock.mock.calls
+        .filter((c) => String(c[0]) === '12345')
+        .map((c) => String(c[1]));
+    }
+
+    function opsTexts(): string[] {
+      return h.sendMessageMock.mock.calls
+        .filter((c) => String(c[0]) !== '12345')
+        .map((c) => String(c[1]));
+    }
+
+    it('карты нет вовсе → клиенту одно сообщение с номером заказа и кнопкой «Поддержка»', async () => {
+      h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+      h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+
+      await issueCard('order-1');
+
+      const failure = h.sendMessageMock.mock.calls.filter((c) => String(c[1]).includes(FAILURE_MARK));
+      expect(failure).toHaveLength(1);
+      expect(String(failure[0]?.[0])).toBe('12345');
+      expect(String(failure[0]?.[1])).toContain('ORD-AAAAA');
+      // Та же кнопка, что под подсказкой и в меню: callback `support`.
+      expect(JSON.stringify(failure[0]?.[2])).toContain('"callback_data":"support"');
+      expect(opsTexts().some((t) => t.includes('отправлено сообщение о задержке'))).toBe(true);
+    });
+
+    it('сообщение уходит ПОСЛЕ тревоги персоналу: оно обещает, что оператор уже знает', async () => {
+      h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+      h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+
+      await issueCard('order-1');
+
+      const calls = h.sendMessageMock.mock.calls;
+      const clientAt = calls.findIndex((c) => String(c[1]).includes(FAILURE_MARK));
+      const opsAt = calls.findIndex((c) => String(c[1]).includes('выпуск карты упал'));
+      expect(opsAt).toBeGreaterThanOrEqual(0);
+      expect(clientAt).toBeGreaterThan(opsAt);
+    });
+
+    it('пополнение зависло (исход неизвестен) → клиенту тоже пишем', async () => {
+      h.topupMock.mockResolvedValue({
+        cardId: 'pc-1',
+        requestId: 'topup_order-1_card-1',
+        status: 'pending',
+        balanceUsdCents: null,
+      });
+
+      await issueCard('order-1');
+
+      expect(clientTexts().filter((t) => t.includes(FAILURE_MARK))).toHaveLength(1);
+    });
+
+    it('реквизиты уже дошли, а запись у нас упала → о сбое клиенту НЕ пишем', async () => {
+      h.dbState.activeCard = null;
+      h.createCardMock.mockResolvedValue({
+        cardId: 'pc-new',
+        panMasked: '****1234',
+        pan: '4111111111111234',
+        expMonth: 12,
+        expYear: 2030,
+        cvc: '123',
+        balanceUsdCents: 2400,
+      });
+      vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+
+      await issueCard('order-1');
+
+      expect(clientTexts().some((t) => t.includes('4111111111111234'))).toBe(true);
+      expect(clientTexts().some((t) => t.includes(FAILURE_MARK))).toBe(false);
+      expect(opsTexts().some((t) => t.includes('не писали'))).toBe(true);
+    });
+
+    it('«карта пополнена» уже дошло, а запись у нас упала → о сбое клиенту НЕ пишем', async () => {
+      vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+
+      await issueCard('order-1');
+
+      expect(clientTexts().some((t) => t.includes('пополнена'))).toBe(true);
+      expect(clientTexts().some((t) => t.includes(FAILURE_MARK))).toBe(false);
+    });
+
+    it('реквизиты НЕ дошли (спасение сорвалось) → о сбое пишем', async () => {
+      h.dbState.activeCard = null;
+      h.createCardMock.mockResolvedValue({
+        cardId: 'pc-new',
+        panMasked: '****1234',
+        pan: '4111111111111234',
+        expMonth: 12,
+        expYear: 2030,
+        cvc: '123',
+        balanceUsdCents: 2400,
+      });
+      vi.mocked(db.setOrderCardId).mockRejectedValueOnce(new Error('БД недоступна'));
+      // Обе отправки реквизитов (штатная и спасение) отвергнуты Telegram.
+      h.sendMessageMock.mockImplementation(async (chatId: unknown, text: unknown) => {
+        if (String(chatId) === '12345' && String(text).includes('4111111111111234')) {
+          throw new Error('telegram 500');
+        }
+        return {};
+      });
+
+      await issueCard('order-1');
+
+      expect(clientTexts().filter((t) => t.includes(FAILURE_MARK))).toHaveLength(1);
+    });
+
+    it('заказ уже был в failed (повтор) → переход не состоялся, клиенту НЕ пишем повторно', async () => {
+      h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+      h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+      vi.mocked(db.transitionOrderDetailed)
+        .mockResolvedValueOnce({ order: { status: 'in_fulfillment' }, transitioned: true } as never)
+        .mockResolvedValueOnce({ order: { status: 'failed' }, transitioned: false } as never);
+
+      await issueCard('order-1');
+
+      expect(clientTexts().some((t) => t.includes(FAILURE_MARK))).toBe(false);
+    });
+
+    it('неверная сумма заказа → клиенту пишем (деньги получены, карты нет)', async () => {
+      h.dbState.order = { ...baseOrder, originalAmount: 0 };
+
+      await issueCard('order-1');
+
+      expect(clientTexts().filter((t) => t.includes(FAILURE_MARK))).toHaveLength(1);
+    });
   });
 });

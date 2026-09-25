@@ -1091,6 +1091,7 @@ export function CabinetClient({ previewSnapshot }: { previewSnapshot?: Snapshot 
         onOpenIssue={onOpenIssue}
         onMarkSubscriptionPaid={markSubscriptionPaid}
         onOpenExternalLink={openExternalLink}
+        onContactSupport={supportAction}
       />
     ),
     profile: (
