@@ -243,10 +243,14 @@ export type DailyPromoDiscounts = {
 };
 
 /**
- * Скидки по промокодам, погашенные за сутки — по моменту оплаты (`settled_at`
+ * Скидки по промокодам, погашенные за период — по моменту оплаты (`settled_at`
  * строки `spent`), тем же событием, которым платёж попадает в выручку. Пара к
  * `bonusRedeemedKopecks` из `revenueSummary`: без неё «Получено денег» ниже
  * суммы покупок читалось бы как недостача.
+ *
+ * ОБЩАЯ для утреннего отчёта (сутки) и раздела «Отчёты» панели (7/30/90 дней):
+ * период любой, название историческое. Вторая копия выборки — зеркало, которое
+ * разъехалось бы в первом же отчёте о выручке (тикет 05 аудита CRM).
  */
 export async function dailyPromoDiscounts(db: DB, range: AnalyticsRange): Promise<DailyPromoDiscounts> {
   const rows = await db.execute<{ orders: string | number; kopecks: string | number | null }>(sql`

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import {
   activeSubjectsByDay,
   catalogClicksByService,
+  dailyPromoDiscounts,
   funnelByPeriod,
   getDb,
   revenueByDay,
@@ -74,9 +75,12 @@ export default async function PanelAnalyticsPage({
   const range = { since: bounds.since.toISOString(), until: bounds.until.toISOString() };
   const db = getDb();
 
-  const [revenue, summary, funnel, topServices, clicks, activity] = await Promise.all([
+  const [revenue, summary, promo, funnel, topServices, clicks, activity] = await Promise.all([
     revenueByDay(db, range),
     revenueSummary(db, range),
+    // Та же выборка, что у утреннего отчёта в «Отчётах» группы: одно
+    // определение «скидки по промокодам за период», не два (тикет 05).
+    dailyPromoDiscounts(db, range),
     funnelByPeriod(db, range),
     topServicesByPaidOrders(db, range),
     catalogClicksByService(db, range),
@@ -119,6 +123,11 @@ export default async function PanelAnalyticsPage({
                 label={ANALYTICS_TEXT.bonusRedeemed}
                 value={formatKopecks(summary.bonusRedeemedKopecks)}
               />
+            ) : null}
+            {/* Пара к баллам по тому же правилу: плашка есть, только когда
+                скидкой реально пользовались. */}
+            {promo.kopecks > 0 ? (
+              <Stat label={ANALYTICS_TEXT.promoDiscounts} value={formatKopecks(promo.kopecks)} />
             ) : null}
           </div>
           {hasMoney ? (

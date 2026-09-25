@@ -346,6 +346,7 @@ export {
   type PanelOrderListItem,
   type PanelOrderListPage,
   type PanelOrderPayment,
+  type PanelOrderPromo,
   type PanelOrderSort,
 } from './panel.ts';
 export {

@@ -8,6 +8,7 @@ import {
   listOrdersForPanel,
 } from '@oplati/db';
 
+import { InvoiceLine } from '@/components/panel/InvoiceLine';
 import { LocalAge, LocalTime } from '@/components/panel/LocalTime';
 import { PanelFilterSelect } from '@/components/panel/PanelFilterSelect';
 import { PanelHelp } from '@/components/panel/PanelHelp';
@@ -251,14 +252,10 @@ export default async function PanelOrdersPage({
                     <td data-label={COLUMN_TITLES.service}>{order.serviceName ?? '—'}</td>
                     <td className="panel-num" data-label={COLUMN_TITLES.amount}>
                       {formatKopecks(order.amountRubKopecks)}
-                      {/* Полная цена заказа сверху, погашенное баллами — под
-                          ней: шлюз принёс разницу, и без строки оператор
-                          сверяет поступление с числом, которого не было. */}
-                      {order.bonusDiscountKopecks > 0 && (
-                        <div className="panel-muted">
-                          −{formatKopecks(order.bonusDiscountKopecks)} {CELL_TEXT.bonusPaid}
-                        </div>
-                      )}
+                      {/* Полная цена заказа сверху, счёт и скидки — под ней:
+                          шлюз принёс разницу, и без строки оператор сверяет
+                          поступление с числом, которого не было. */}
+                      <InvoiceLine row={order} />
                     </td>
                     <td data-label={COLUMN_TITLES.status}>
                       <span
