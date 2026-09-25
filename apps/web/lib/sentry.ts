@@ -34,8 +34,18 @@ const PII_KEY_RE =
  * `extra`/`contexts`, где `code` — это код ошибки (`ECONNREFUSED`, код Postgres),
  * без которого событие теряет смысл. А в теле запроса поле с таким именем несёт
  * секрет входа.
+ *
+ * Остальное — поля тел, которые реально приходят к нам: `phone_number` —
+ * контакт из `request_contact` в апдейте бота, `username`/`first_name`/
+ * `last_name` — профиль `from` того же апдейта, `question` — вопрос AI-аналитику
+ * (владелец пишет туда почту клиента), `comment` — комментарий ручной выдачи
+ * (ревью 2026-09-25, ось C). `id` не берём: иначе из события пропадут номера
+ * заказов, по которым его и разбирают.
  */
-const BODY_KEY_RE = new RegExp(`${PII_KEY_RE.source}|^(code|totp|otp|hash)$`, 'i');
+const BODY_KEY_RE = new RegExp(
+  `${PII_KEY_RE.source}|^(code|totp|otp|hash|phone_?number|username|first_?name|last_?name|question|comment)$`,
+  'i',
+);
 
 /**
  * Атрибут спана, в который интеграция requestData кладёт ТЕЛО запроса строкой
@@ -172,12 +182,26 @@ function scrubBotToken(url: string): string {
   return url.replace(/\/bot\d+:[A-Za-z0-9_-]+/g, '/bot[REDACTED]');
 }
 
-/** Тот же денилист для строки запроса внутри полного URL — плюс токен в пути. */
+/**
+ * Тот же денилист для строки запроса внутри полного URL — плюс токен в пути и
+ * ФРАГМЕНТ целиком.
+ *
+ * ⚠️ Фрагмент — не косметика. Telegram открывает Mini App адресом
+ * `…/cabinet#tgWebAppData=<initData>`: подписанная initData живёт 24 часа и
+ * даёт `card-details`, то есть номер и CVC карты клиента. Браузерный SDK кладёт
+ * `location.href` вместе с фрагментом в `request.url` каждого события и
+ * pageload-транзакции, а навигационные крошки — в `from`/`to`; денилист строки
+ * запроса фрагмент не видел вовсе (ревью 2026-09-25, ось C). Разбирать фрагмент
+ * по параметрам незачем — для отладки он не нужен, поэтому закрывается целиком.
+ */
 function scrubUrl(url: string): string {
   const withoutToken = scrubBotToken(url);
-  const cut = withoutToken.indexOf('?');
-  if (cut === -1) return withoutToken;
-  return `${withoutToken.slice(0, cut)}?${scrubQueryString(withoutToken.slice(cut + 1))}`;
+  const hashAt = withoutToken.indexOf('#');
+  const base = hashAt === -1 ? withoutToken : withoutToken.slice(0, hashAt);
+  const fragment = hashAt === -1 ? '' : '#[REDACTED]';
+  const cut = base.indexOf('?');
+  if (cut === -1) return `${base}${fragment}`;
+  return `${base.slice(0, cut)}?${scrubQueryString(base.slice(cut + 1))}${fragment}`;
 }
 
 export type SentryEvent = SentryTypes.ErrorEvent;
@@ -381,6 +405,17 @@ export function beforeSendTransaction<T extends { transaction?: string; spans?: 
     // значит прописать транзитивную зависимость. Значение здесь заведомо
     // строка (проверено строкой выше).
     event.transaction = scrubUrl(event.transaction) as T['transaction'];
+  }
+  // Атрибуты КОРНЕВОГО спана живут в `contexts.trace.data`, а не в `spans`:
+  // адрес pageload-транзакции (`url.full` с фрагментом initData Mini App)
+  // иначе прошёл бы мимо — чистка `contexts` выше смотрит только на ключи.
+  const traceData = (event as { contexts?: { trace?: { data?: unknown } } }).contexts?.trace?.data;
+  if (typeof traceData === 'object' && traceData !== null) {
+    const bag = traceData as Record<string, unknown>;
+    for (const key of Object.keys(bag)) {
+      const value = bag[key];
+      if (typeof value === 'string') bag[key] = scrubUrl(value);
+    }
   }
   if (!Array.isArray(event.spans)) return event;
   for (const span of event.spans) {

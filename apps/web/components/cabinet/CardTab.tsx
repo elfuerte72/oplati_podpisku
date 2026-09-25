@@ -6,7 +6,7 @@ import { formatDayMonth, formatRub, formatUsd } from '@/components/comic/format'
 import { IconArrowRight } from '@/components/comic/icons';
 import { track } from '@/lib/analytics/client';
 import type { CardTabState } from '@/lib/cabinet/card-tab-state';
-import { ISSUE_FAILED_TEXT } from '@/lib/cabinet/issue-failed';
+import { ISSUE_FAILED_TEXT, issueFailedTitle } from '@/lib/cabinet/issue-failed';
 import { buildPathSteps, siteHostFromUrl, serviceStepHint } from '@/lib/cabinet/path-steps';
 
 import type { CardView, OrderSummary, SubscriptionPaidResult } from './cabinet-api';
@@ -230,7 +230,7 @@ function IssueFailed({
         className="flex aspect-[1.6/1] flex-col items-center justify-center gap-1.5 rounded-[20px] border-[2.5px] border-dashed border-[color-mix(in_srgb,var(--text-muted)_45%,transparent)] p-5 text-center"
       >
         <p className="font-display text-xl font-bold text-[var(--text)]">
-          Карта для {order.service} задерживается
+          {issueFailedTitle(order.service)}
         </p>
         <p className="font-body text-sm text-[var(--text-muted)]">Заказ {order.shortId}</p>
       </div>

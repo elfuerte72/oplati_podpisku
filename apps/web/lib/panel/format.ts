@@ -79,21 +79,26 @@ export function discountedInvoiceLine(row: {
 }
 
 /**
- * «Запрошено у шлюза» на карточке заказа — сумма ПОСЛЕДНЕГО живого или
- * оплаченного счёта (`payments.amount_rub`), а не цена минус скидки на экране:
- * число обязано совпадать с таблицей платежей ниже и с тем, что видел шлюз.
- * `null` — счёта нет, строки нет.
+ * «Запрошено у шлюза» на карточке заказа — сумма счёта (`payments.amount_rub`),
+ * а не цена минус скидки на экране: число обязано совпадать с таблицей
+ * платежей ниже и с тем, что видел шлюз. `null` — счетов не было, строки нет.
+ *
+ * Какой счёт: оплаченный, иначе живой, иначе последний любой. Последний пункт
+ * нужен недоплате и протухшему счёту — платёж там `failed`, и именно на таком
+ * заказе оператор сверяет, сколько просили и сколько пришло (ревью
+ * 2026-09-25, ось E).
  */
 export function invoicedPaymentKopecks(
   payments: readonly { status: string; amountRubKopecks: number; createdAt: Date }[],
 ): number | null {
-  const latest = payments
-    .filter((p) => p.status === 'pending' || p.status === 'succeeded')
-    .reduce<(typeof payments)[number] | null>(
-      (best, p) => (best === null || p.createdAt > best.createdAt ? p : best),
-      null,
-    );
-  return latest?.amountRubKopecks ?? null;
+  const rank = (status: string) => (status === 'succeeded' ? 2 : status === 'pending' ? 1 : 0);
+  const best = payments.reduce<(typeof payments)[number] | null>((current, p) => {
+    if (current === null) return p;
+    const byRank = rank(p.status) - rank(current.status);
+    if (byRank !== 0) return byRank > 0 ? p : current;
+    return p.createdAt > current.createdAt ? p : current;
+  }, null);
+  return best?.amountRubKopecks ?? null;
 }
 
 /**

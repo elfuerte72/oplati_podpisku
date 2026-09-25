@@ -243,7 +243,7 @@ describe('discountedInvoiceLine', () => {
 describe('invoicedPaymentKopecks', () => {
   const at = (iso: string) => new Date(iso);
 
-  it('последний живой или оплаченный счёт; отменённые не считаются', () => {
+  it('оплаченный счёт важнее живого и сорвавшегося, даже более свежих', () => {
     expect(
       invoicedPaymentKopecks([
         { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T12:00:00Z') },
@@ -253,12 +253,22 @@ describe('invoicedPaymentKopecks', () => {
     ).toBe(2295_00);
   });
 
-  it('счёта нет — null, и строки «Запрошено у шлюза» нет', () => {
-    expect(invoicedPaymentKopecks([])).toBeNull();
+  it('оплаченного нет — живой; живого нет — последний сорвавшийся (недоплата)', () => {
     expect(
       invoicedPaymentKopecks([
         { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T12:00:00Z') },
+        { status: 'pending', amountRubKopecks: 2400_00, createdAt: at('2026-09-20T10:00:00Z') },
       ]),
-    ).toBeNull();
+    ).toBe(2400_00);
+    expect(
+      invoicedPaymentKopecks([
+        { status: 'failed', amountRubKopecks: 2595_00, createdAt: at('2026-09-20T12:00:00Z') },
+        { status: 'failed', amountRubKopecks: 3000_00, createdAt: at('2026-09-20T09:00:00Z') },
+      ]),
+    ).toBe(2595_00);
+  });
+
+  it('счетов нет — null, и строки «Запрошено у шлюза» нет', () => {
+    expect(invoicedPaymentKopecks([])).toBeNull();
   });
 });

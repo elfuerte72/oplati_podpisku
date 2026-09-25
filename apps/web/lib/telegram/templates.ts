@@ -14,6 +14,7 @@ import { normalizeUsername } from './username';
 import type { ExpiredSurveyAnswer, StartSurveyAnswer } from '@oplati/types';
 
 import { buyerFeeAmountNote, buyerFeeNote } from '@/lib/payments/buyer-fee';
+import { ISSUE_FAILED_CORE } from '@/lib/cabinet/issue-failed';
 // Прямо из `period`, а не через баррель `@/lib/remnawave`: баррель тянет клиент
 // панели и `serverEnv`, а здесь нужна чистая функция сравнения дат.
 import { isUnlimitedExpiry } from '@/lib/remnawave/period';
@@ -373,12 +374,12 @@ export function cardMessageFooter(shortId: string): string {
  * что верно всегда: оплата у нас, дальше разбирается человек. Клиенту, уже
  * получившему карту, это сообщение не уходит вовсе (решает `issue-card`).
  *
- * Простой текст, без HTML: номер заказа подставляется как есть.
+ * Простой текст, без HTML: номер заказа подставляется как есть. Ядро — общее
+ * с Mini App (`ISSUE_FAILED_CORE`), чтобы чат и приложение не расходились.
  */
 export function cardIssueFailedClientText(shortId: string): string {
   return [
-    `Оплату по заказу ${shortId} мы получили, но выдать карту автоматически не получилось — сбой на нашей стороне.`,
-    'Деньги не потерялись. Оператор уже знает о заказе: выдаст карту вручную, а если не выйдет — вернёт оплату. Он напишет тебе сюда, в этот чат.',
+    `Оплату по заказу ${shortId} мы получили, но ${ISSUE_FAILED_CORE}. Он напишет тебе сюда, в этот чат.`,
     'Делать ничего не нужно. Есть вопрос — нажми «Поддержка» ниже.',
   ].join('\n\n');
 }

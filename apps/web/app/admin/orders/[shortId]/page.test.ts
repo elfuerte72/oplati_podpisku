@@ -115,6 +115,14 @@ const bonus = (over: Partial<NonNullable<PanelOrderDetail['bonus']>> = {}) => ({
   ...over,
 });
 
+const promo = (over: Partial<NonNullable<PanelOrderDetail['promo']>> = {}) => ({
+  code: 'ДАРЛИНГ',
+  discountKopecks: 405_00,
+  status: 'spent' as const,
+  live: true,
+  ...over,
+});
+
 /** Разделитель тысяч у `toLocaleString('ru-RU')` — неразрывный пробел. */
 const plain = (html: string) => html.replace(/[  ]/g, ' ');
 
@@ -132,7 +140,7 @@ describe('/admin/orders/<shortId> — скидки в блоке «Цена»', 
   it('промокод и баллы: четыре строки по порядку, последняя совпадает с платежом', async () => {
     h.detail.mockResolvedValue(
       detail({
-        promo: { code: 'ДАРЛИНГ', discountKopecks: 405_00 },
+        promo: promo(),
         bonus: bonus(),
         payments: [payment(2295_00, 'succeeded')],
       }),
@@ -141,12 +149,12 @@ describe('/admin/orders/<shortId> — скидки в блоке «Цена»', 
     const html = await render();
 
     const total = html.indexOf('Итого');
-    const promo = html.indexOf('Промокод ДАРЛИНГ');
+    const promoAt = html.indexOf('Промокод ДАРЛИНГ');
     const redeemed = html.indexOf('Погашено баллами');
     const invoiced = html.indexOf('Запрошено у шлюза');
     expect(total).toBeGreaterThan(-1);
-    expect(promo).toBeGreaterThan(total);
-    expect(redeemed).toBeGreaterThan(promo);
+    expect(promoAt).toBeGreaterThan(total);
+    expect(redeemed).toBeGreaterThan(promoAt);
     expect(invoiced).toBeGreaterThan(redeemed);
     expect(html).toContain('−405 ₽');
     expect(html).toContain('−300 ₽');
@@ -158,7 +166,7 @@ describe('/admin/orders/<shortId> — скидки в блоке «Цена»', 
       detail({
         order: { ...detail().order, status: 'pending_payment', paidAt: null, fulfilledAt: null },
         hasSucceededPayment: false,
-        promo: { code: 'ДАРЛИНГ', discountKopecks: 405_00 },
+        promo: promo(),
         payments: [payment(2595_00, 'pending')],
       }),
     );
@@ -201,7 +209,7 @@ describe('/admin/orders/<shortId> — скидки в блоке «Цена»', 
       detail({
         order: { ...detail().order, status: 'ready_for_payment', paidAt: null, fulfilledAt: null },
         hasSucceededPayment: false,
-        promo: { code: 'ДАРЛИНГ', discountKopecks: 405_00 },
+        promo: promo(),
       }),
     );
 
@@ -209,6 +217,41 @@ describe('/admin/orders/<shortId> — скидки в блоке «Цена»', 
 
     expect(html).toContain('Промокод ДАРЛИНГ');
     expect(html).not.toContain('Запрошено у шлюза');
+  });
+
+  it('промокод вернули ПОСЛЕ оплаты со скидкой: строка «возвращён» и счёт 2 595', async () => {
+    // Ревью 2026-09-25, ось A: без строки карточка показывала «Итого 3 000»
+    // при платеже 2 595 — ту самую «недоплату», которую чинит тикет 05.
+    h.detail.mockResolvedValue(
+      detail({
+        order: { ...detail().order, status: 'failed', fulfilledAt: null },
+        promo: promo({ status: 'released', live: false }),
+        payments: [payment(2595_00, 'succeeded')],
+      }),
+    );
+
+    const html = await render();
+
+    expect(html).toContain('Промокод ДАРЛИНГ');
+    expect(html).toContain('промокод возвращён клиенту');
+    expect(html).toContain('<strong>2 595 ₽</strong>');
+  });
+
+  it('недоплата: платёж failed — «Запрошено у шлюза» всё равно называет сумму счёта', async () => {
+    // Ревью 2026-09-25, ось E: именно на недоплате оператор сверяет, сколько
+    // просили и сколько пришло, а строка исчезала вместе с живым платежом.
+    h.detail.mockResolvedValue(
+      detail({
+        order: { ...detail().order, status: 'failed', paidAt: null, fulfilledAt: null },
+        hasSucceededPayment: false,
+        promo: promo({ status: 'reserved' }),
+        payments: [payment(2595_00, 'failed')],
+      }),
+    );
+
+    const html = await render();
+
+    expect(html).toContain('<strong>2 595 ₽</strong>');
   });
 
   it('история заказа подписывает события скидок человеческими словами', async () => {

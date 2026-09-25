@@ -8,7 +8,7 @@ import { createDraftOrder } from './repositories/orders.ts';
 import { getOrderDetailForPanel, listHoldsForPanel } from './repositories/panel.ts';
 import { upsertPromoCode } from './repositories/promo-codes.ts';
 import { revenueSummary, type AnalyticsRange } from './repositories/analytics-panel.ts';
-import { dailyPromoDiscounts } from './repositories/daily-report.ts';
+import { promoDiscountsInPeriod } from './repositories/daily-report.ts';
 
 /**
  * Скидки заказа на экранах панели (аудит CRM 2026-09-17, тикет 05) — РЕАЛЬНЫЙ
@@ -130,7 +130,7 @@ describe('карточка заказа: промокод и баллы', () => 
 
     const detail = await getOrderDetailForPanel(db, order.shortId);
 
-    expect(detail?.promo).toEqual({ code: 'ДАРЛИНГ', discountKopecks: 405_00 });
+    expect(detail?.promo).toMatchObject({ code: 'ДАРЛИНГ', discountKopecks: 405_00, live: true });
     expect(detail?.bonus).toMatchObject({ discountKopecks: 300_00, live: true });
     expect(detail?.payments.map((p) => p.amountRubKopecks)).toEqual([2295_00]);
   });
@@ -143,7 +143,7 @@ describe('карточка заказа: промокод и баллы', () => 
 
     const detail = await getOrderDetailForPanel(db, order.shortId);
 
-    expect(detail?.promo).toEqual({ code: 'ДАРЛИНГ', discountKopecks: 405_00 });
+    expect(detail?.promo).toMatchObject({ code: 'ДАРЛИНГ', discountKopecks: 405_00, live: true });
     expect(detail?.bonus).toBeNull();
   });
 
@@ -155,7 +155,7 @@ describe('карточка заказа: промокод и баллы', () => 
 
     const detail = await getOrderDetailForPanel(db, order.shortId);
 
-    expect(detail?.promo).toBeNull();
+    expect(detail?.promo).toMatchObject({ status: 'reserved', live: false });
     // Строка баллов возвращается (кнопке возврата нужен статус), но не «живая».
     expect(detail?.bonus).toMatchObject({ status: 'reserved', live: false });
   });
@@ -169,16 +169,22 @@ describe('карточка заказа: промокод и баллы', () => 
 
     const detail = await getOrderDetailForPanel(db, order.shortId);
 
-    expect(detail?.promo).not.toBeNull();
+    expect(detail?.promo?.live).toBe(true);
     expect(detail?.bonus?.live).toBe(true);
   });
 
-  it('возвращённый оператором промокод на карточке не показывается', async () => {
+  it('возвращённый оператором промокод приходит со статусом, но не «живым»', async () => {
+    // Экран пишет «возвращён клиенту», а не скидку: иначе оплаченный со скидкой
+    // заказ снова выглядел бы недоплатой (ревью 2026-09-25, ось A).
     const userId = await makeUser();
     const order = await makeOrder({ userId, amountKopecks: 3000_00, status: 'failed', paidAt: IN_RANGE });
     await addPromo(order.id, userId, 405_00, 'released');
 
-    expect((await getOrderDetailForPanel(db, order.shortId))?.promo).toBeNull();
+    expect((await getOrderDetailForPanel(db, order.shortId))?.promo).toMatchObject({
+      code: 'ДАРЛИНГ',
+      status: 'released',
+      live: false,
+    });
   });
 });
 
@@ -220,7 +226,7 @@ describe('«Отчёты»: выручка + скидки = полные цен�
     await addPayment(plain.id, 1000_00, 'succeeded', at);
 
     const summary = await revenueSummary(db, window);
-    const promo = await dailyPromoDiscounts(db, window);
+    const promo = await promoDiscountsInPeriod(db, window);
     const fullPrices = 3000_00 + 1000_00;
 
     expect(summary.amountKopecks + summary.bonusRedeemedKopecks + promo.kopecks).toBe(fullPrices);

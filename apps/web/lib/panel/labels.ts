@@ -1009,6 +1009,8 @@ export const PANEL_BONUS_TEXT = {
 export const PANEL_DISCOUNT_TEXT = {
   /** Строка карточки заказа: «Промокод ДАРЛИНГ». */
   promo: (code: string) => `Промокод ${code}`,
+  /** Право вернули оператором, а счёт уже был выставлен со скидкой. */
+  promoReturned: (amount: string) => `${amount} — промокод возвращён клиенту`,
   /** Под полной ценой в списках: «счёт 2 295 ₽ · −405 ₽ промокод · −300 ₽ баллами». */
   invoiceShort: 'счёт',
   promoShort: 'промокод',

@@ -9,7 +9,11 @@
  * показывать тому, кто давно оформил, — превратить подсказку в шум.
  */
 
-import { isPaidButIssueFailed, type IssueFailedOrderLike } from './issue-failed';
+import {
+  ISSUE_FAILED_MAX_AGE_MS,
+  isRecentIssueFailure,
+  type IssueFailedOrderLike,
+} from './issue-failed';
 
 /** Сколько дней после заказа ещё напоминаем про шаг 3. */
 export const NEXT_STEP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -21,14 +25,6 @@ export const NEXT_STEP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
  * рабочей карты показать больше нечего — тогда выпуск виден как есть.
  */
 export const ISSUING_OVER_CARD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-
-/**
- * Сколько «выдача сорвалась» держится на вкладке без рабочей карты. Сбой выдачи
- * разбирают часами, а не неделями; дольше экран врал бы тому, кому оператор уже
- * вернул деньги вне системы (`refunded` в проде не ставит никто, заказ так и
- * остаётся `failed`).
- */
-export const ISSUE_FAILED_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Статусы «деньги пришли, карта в пути». */
 const ISSUING_STATUSES = new Set(['paid', 'in_fulfillment']);
@@ -99,13 +95,15 @@ export function selectCardTabState<O extends CardTabOrderLike, C extends CardTab
   // «Карты пока нет» (или прошлой картой с шагом по прошлому сервису): только
   // что заплативший клиент видел пустоту. Поверх рабочей карты — не дольше, чем
   // выпуск (иначе карта недоступна с вкладки), без неё — до `ISSUE_FAILED_MAX_AGE_MS`.
+  // Возраст — от оплаты (`isRecentIssueFailure`), не от создания заказа.
   const issueFailed = [...orders]
     .filter(
       (o) =>
-        isPaidButIssueFailed(o) &&
-        !(o.cardId && cards.some((c) => c.id === o.cardId)) &&
-        now - Date.parse(o.createdAt) <=
-          (hasActiveCard ? ISSUING_OVER_CARD_MAX_AGE_MS : ISSUE_FAILED_MAX_AGE_MS),
+        isRecentIssueFailure(
+          o,
+          now,
+          hasActiveCard ? ISSUING_OVER_CARD_MAX_AGE_MS : ISSUE_FAILED_MAX_AGE_MS,
+        ) && !(o.cardId && cards.some((c) => c.id === o.cardId)),
     )
     .sort(byCreatedDesc)[0];
   if (issueFailed) {

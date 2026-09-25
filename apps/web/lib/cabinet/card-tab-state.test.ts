@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ISSUE_FAILED_MAX_AGE_MS,
   ISSUING_OVER_CARD_MAX_AGE_MS,
   NEXT_STEP_MAX_AGE_MS,
   selectCardTabState,
 } from './card-tab-state.ts';
-import { isPaidButIssueFailed } from './issue-failed.ts';
+import {
+  ISSUE_FAILED_MAX_AGE_MS,
+  isPaidButIssueFailed,
+  isRecentIssueFailure,
+} from './issue-failed.ts';
 
 /**
  * Что показывает вкладка «Карта» (тикет 06). Главный риск — спрятать шаг 3
@@ -219,11 +222,25 @@ describe('selectCardTabState: выдача сорвалась после опл�
     expect(selectCardTabState({ orders: [fresh], cards: [card()] }, NOW)).toMatchObject({
       kind: 'issue_failed',
     });
-    const stale = paidFailed({
-      createdAt: new Date(NOW - ISSUING_OVER_CARD_MAX_AGE_MS - 1).toISOString(),
-    });
+    const staleIso = new Date(NOW - ISSUING_OVER_CARD_MAX_AGE_MS - 1).toISOString();
+    const stale = paidFailed({ createdAt: staleIso, paidAt: staleIso });
     expect(selectCardTabState({ orders: [stale], cards: [card()] }, NOW)).toMatchObject({
       kind: 'active',
+    });
+  });
+
+  it('возраст — от ОПЛАТЫ: заказ с проверки банка создан давно, оплачен только что', () => {
+    // `payment_review` не протухает: заказ может провисеть дни и оплатиться
+    // потом. По `createdAt` его сбой не показался бы вовсе (ревью, ось E).
+    const order = paidFailed({
+      createdAt: new Date(NOW - 5 * DAY).toISOString(),
+      paidAt: new Date(NOW - HOUR).toISOString(),
+    });
+    expect(selectCardTabState({ orders: [order], cards: [] }, NOW)).toMatchObject({
+      kind: 'issue_failed',
+    });
+    expect(selectCardTabState({ orders: [order], cards: [card()] }, NOW)).toMatchObject({
+      kind: 'issue_failed',
     });
   });
 
@@ -248,5 +265,23 @@ describe('isPaidButIssueFailed', () => {
     expect(isPaidButIssueFailed({ status: 'failed', paidAt: null })).toBe(false);
     expect(isPaidButIssueFailed({ status: 'failed' })).toBe(false);
     expect(isPaidButIssueFailed({ status: 'completed', paidAt: '2026-09-23T10:00:00.000Z' })).toBe(false);
+  });
+});
+
+/**
+ * Окно пояснения на листе заказа — то же, что у вкладки: после возврата денег
+ * вне системы заказ остаётся `failed`, и бессрочное «выдадим или вернём» стало
+ * бы враньём (ревью 2026-09-25, ось E).
+ */
+describe('isRecentIssueFailure', () => {
+  const paidAt = new Date(NOW - 2 * DAY).toISOString();
+
+  it('свежий сбой — да, старше окна — нет', () => {
+    expect(isRecentIssueFailure({ status: 'failed', paidAt }, NOW)).toBe(true);
+    expect(isRecentIssueFailure({ status: 'failed', paidAt }, NOW + 2 * DAY)).toBe(false);
+  });
+
+  it('без оплаты сбоя выдачи нет вовсе', () => {
+    expect(isRecentIssueFailure({ status: 'failed', paidAt: null }, NOW)).toBe(false);
   });
 });

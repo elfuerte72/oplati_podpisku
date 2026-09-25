@@ -48,6 +48,7 @@ import {
 import { livePromoRedemptionSql } from './promo-redemption-sql.ts';
 import { liveRedemptionSql } from './referral-redemption-sql.ts';
 import type { RedemptionStatus } from './referral-redemptions.ts';
+import type { PromoRedemptionStatus } from './promo-codes.ts';
 import { PURCHASED_STATUSES_SQL } from './order-status-sql.ts';
 import {
   SUPPORT_MARK_ANSWERED_TRIGGER,
@@ -384,10 +385,14 @@ export type PanelOrderDetail = {
    */
   bonus: PanelOrderBonus | null;
   /**
-   * ЖИВАЯ скидка по промокоду (`livePromoRedemptionSql`); `null` — промокода не
-   * было или право уже вернули. Без неё карточка считала «Запрошено у шлюза»
-   * как цена − баллы, и оператор принимал скидку за недоплату (аудит CRM
-   * 2026-09-17, тикет 05).
+   * Применение промокода к заказу В ЛЮБОМ статусе; `null` — промокода не было.
+   * Без него карточка считала «Запрошено у шлюза» как цена − баллы, и оператор
+   * принимал скидку за недоплату (аудит CRM 2026-09-17, тикет 05).
+   *
+   * Любой статус, а не только живой — по той же причине, что у баллов: право,
+   * возвращённое оператором ПОСЛЕ оплаты, счёт уже не увеличит, и без строки
+   * «возвращён» карточка снова показывала бы «итого 3 000, оплачено 2 595»
+   * (ревью 2026-09-25, ось A).
    */
   promo: PanelOrderPromo | null;
 };
@@ -413,6 +418,9 @@ export type PanelOrderPromo = {
   /** Нормализованный код, как его вводил клиент (`promo_codes.code`). */
   code: string;
   discountKopecks: number;
+  status: PromoRedemptionStatus;
+  /** Уменьшает ли скидка счёт СЕЙЧАС — общий `livePromoRedemptionSql`. */
+  live: boolean;
 };
 
 export async function getOrderDetailForPanel(
@@ -505,17 +513,19 @@ export async function getOrderDetailForPanel(
       .leftJoin(staff, eq(referralRedemptions.releasedBy, staff.id))
       .where(eq(referralRedemptions.orderId, head.order.id))
       .limit(1),
-    // Только ЖИВОЕ применение: вернувшееся право счёт уже не уменьшает, и
-    // показывать его рядом с «Запрошено у шлюза» значило бы снова путать.
+    // В любом статусе, с признаком «живо»: экран сам решает, писать скидку или
+    // «возвращён клиенту» (см. `PanelOrderDetail.promo`).
     db
       .select({
         code: promoCodes.code,
         discountKopecks: promoRedemptions.discountKopecks,
+        status: promoRedemptions.status,
+        live: sql<boolean>`${livePromoRedemptionSql()}`,
       })
       .from(promoRedemptions)
       .innerJoin(orders, eq(orders.id, promoRedemptions.orderId))
       .innerJoin(promoCodes, eq(promoCodes.id, promoRedemptions.promoCodeId))
-      .where(and(eq(promoRedemptions.orderId, head.order.id), livePromoRedemptionSql()))
+      .where(eq(promoRedemptions.orderId, head.order.id))
       .limit(1),
   ]);
 
@@ -584,7 +594,12 @@ export async function getOrderDetailForPanel(
         }
       : null,
     promo: promoRow
-      ? { code: promoRow.code, discountKopecks: promoRow.discountKopecks }
+      ? {
+          code: promoRow.code,
+          discountKopecks: promoRow.discountKopecks,
+          status: promoRow.status,
+          live: promoRow.live === true,
+        }
       : null,
     // Явное перечисление полей, а не `...card`: строка карты не должна утекать
     // целиком, если в неё когда-нибудь добавят чувствительное поле.

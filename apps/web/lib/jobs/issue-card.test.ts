@@ -833,7 +833,29 @@ describe('issueCard', () => {
       expect(String(failure[0]?.[1])).toContain('ORD-AAAAA');
       // Та же кнопка, что под подсказкой и в меню: callback `support`.
       expect(JSON.stringify(failure[0]?.[2])).toContain('"callback_data":"support"');
-      expect(opsTexts().some((t) => t.includes('отправлено сообщение о задержке'))).toBe(true);
+      expect(opsTexts().some((t) => t.includes('пишем о задержке в Telegram'))).toBe(true);
+    });
+
+    it('сообщение не дошло (нет telegram_id) → вторая тревога «клиент не предупреждён»', async () => {
+      // Первая тревога говорит «пишем клиенту» — намерение, а не факт. Без
+      // второй персонал решил бы, что клиент предупреждён (ревью 2026-09-25).
+      h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+      h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+      vi.mocked(db.getUserTelegramId).mockResolvedValueOnce(null);
+
+      await issueCard('order-1');
+
+      expect(clientTexts().some((t) => t.includes(FAILURE_MARK))).toBe(false);
+      expect(opsTexts().some((t) => t.includes('НЕ дошло сообщение о задержке'))).toBe(true);
+    });
+
+    it('сообщение дошло → второй тревоги нет', async () => {
+      h.topupMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'topup_failed', message: 'no' }));
+      h.createCardMock.mockRejectedValue(new h.PaySpaceApiError({ code: 'denied', message: 'no' }));
+
+      await issueCard('order-1');
+
+      expect(opsTexts().some((t) => t.includes('НЕ дошло сообщение о задержке'))).toBe(false);
     });
 
     it('сообщение уходит ПОСЛЕ тревоги персоналу: оно обещает, что оператор уже знает', async () => {

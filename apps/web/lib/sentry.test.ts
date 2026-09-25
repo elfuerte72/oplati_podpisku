@@ -563,6 +563,79 @@ describe('тело запроса строкой: второй эшелон', ()
   });
 });
 
+/**
+ * initData Mini App приезжает во ФРАГМЕНТЕ адреса (`#tgWebAppData=…`): 24 часа
+ * она даёт реквизиты карты клиента. Браузерный SDK кладёт `location.href` с
+ * фрагментом в `request.url` и навигационные крошки (ревью 2026-09-25, ось C).
+ */
+describe('фрагмент адреса: initData Mini App', () => {
+  const MINIAPP_URL =
+    'https://www.oplatishka.com/cabinet?src=tg#tgWebAppData=query_id%3DAAE123%26user%3D%257B%2522id%2522%253A42%257D%26hash%3Ddeadbeef&tgWebAppVersion=8.0';
+
+  it('РЕГРЕСС: фрагмент с initData вычищается из request.url целиком', () => {
+    const out = beforeSend(makeEvent({ request: { url: MINIAPP_URL } }));
+    const url = String(out?.request?.url);
+
+    expect(url).not.toContain('tgWebAppData');
+    expect(url).not.toContain('deadbeef');
+    expect(url).toBe('https://www.oplatishka.com/cabinet?src=tg#[REDACTED]');
+  });
+
+  it('РЕГРЕСС: и из навигационных крошек, и из имени pageload-транзакции', () => {
+    const crumbs = beforeSend(
+      makeEvent({ breadcrumbs: [{ category: 'navigation', data: { from: MINIAPP_URL, to: MINIAPP_URL } }] }),
+    ) as unknown as { breadcrumbs: { data: Record<string, string> }[] };
+    expect(JSON.stringify(crumbs.breadcrumbs)).not.toContain('tgWebAppData');
+
+    const tx = beforeSendTransaction({
+      transaction: MINIAPP_URL,
+      request: { url: MINIAPP_URL },
+    } as never) as unknown as { transaction: string; request: { url: string } };
+    expect(tx.transaction).not.toContain('tgWebAppData');
+    expect(tx.request.url).not.toContain('tgWebAppData');
+  });
+
+  it('РЕГРЕСС: и из атрибутов корневого спана (contexts.trace.data)', () => {
+    const tx = beforeSendTransaction({
+      transaction: '/cabinet',
+      contexts: { trace: { data: { 'url.full': MINIAPP_URL } } },
+    } as never) as unknown as { contexts: { trace: { data: Record<string, string> } } };
+    expect(tx.contexts.trace.data['url.full']).not.toContain('tgWebAppData');
+  });
+
+  it('адрес без фрагмента не меняется', () => {
+    const out = beforeSend(makeEvent({ request: { url: 'https://www.oplatishka.com/cabinet' } }));
+    expect(out?.request?.url).toBe('https://www.oplatishka.com/cabinet');
+  });
+});
+
+describe('тело запроса: поля, которые реально к нам приходят', () => {
+  it('контакт и профиль из апдейта бота, вопрос аналитику, комментарий выдачи', () => {
+    const body = String(
+      beforeSend(
+        makeEvent({
+          request: {
+            data: JSON.stringify({
+              message: undefined,
+              contact: { phone_number: '+79991234567', user_id: 42 },
+              from: { id: 42, username: 'ivanp', first_name: 'Иван', last_name: 'П' },
+              question: 'сколько заказов у ivan@mail.ru',
+              comment: 'выдал карту Ивану',
+              orderId: 'ORD-AAAAA',
+            }),
+          },
+        }),
+      )?.request?.data,
+    );
+
+    for (const secret of ['+79991234567', 'ivanp', 'Иван', 'ivan@mail.ru', 'выдал карту']) {
+      expect(body).not.toContain(secret);
+    }
+    // Номер заказа остаётся — по нему событие и разбирают.
+    expect(body).toContain('ORD-AAAAA');
+  });
+});
+
 describe('строка запроса: первый фактор панели', () => {
   it('РЕГРЕСС: профиль и подпись Telegram Login Widget вычищаются из адреса', () => {
     const out = beforeSend(

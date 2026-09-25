@@ -18,7 +18,7 @@ import {
   type PaymentProblemType,
 } from '@/lib/cabinet/payment-issues';
 import { showCardAlreadyOwnedNote } from '@/lib/cabinet/card-fee-note';
-import { ISSUE_FAILED_TEXT, isPaidButIssueFailed } from '@/lib/cabinet/issue-failed';
+import { ISSUE_FAILED_TEXT, isRecentIssueFailure } from '@/lib/cabinet/issue-failed';
 import { buildPathSteps, siteHostFromUrl, type PathStage } from '@/lib/cabinet/path-steps';
 import { PAY_BLOCK_TEXT, payBlockReason, type PayBlockReason } from '@/lib/cabinet/pay-block';
 import { track } from '@/lib/analytics/client';
@@ -941,6 +941,9 @@ export function OrderDetailView({
   // Чего не хватило при последнем нажатии «Оплатить» (тикет 05). Текст висит,
   // пока поле не станет валидным, — см. `emailError`/`phoneError` ниже.
   const [blocked, setBlocked] = useState<PayBlockReason | null>(null);
+  // Момент открытия листа — для окна «выдача задерживается» (3 дня). Берётся
+  // один раз: рендер обязан быть чистым, а точности до открытия листа хватает.
+  const [openedAt] = useState(() => Date.now());
   const emailRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
   // При применённом промокоде баллы считаются от остатка маржи — берём
@@ -1084,8 +1087,10 @@ export function OrderDetailView({
       </div>
 
       {/* Оплачен, а выдача упала: без этого плашка «Ошибка» стояла без единого
-          слова, и заплативший клиент не знал, пропали ли деньги. */}
-      {isPaidButIssueFailed(order) && (
+          слова, и заплативший клиент не знал, пропали ли деньги. Окно то же,
+          что у вкладки «Карта»: после ручного возврата вне системы заказ
+          остаётся `failed`, и бессрочное «выдадим или вернём» стало бы враньём. */}
+      {isRecentIssueFailure(order, openedAt) && (
         <div
           role="status"
           className="flex flex-col gap-2 rounded-[12px] border-2 border-[var(--color-stamp)] px-3 py-2.5"

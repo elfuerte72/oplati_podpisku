@@ -11,7 +11,7 @@ import {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
-  dailyPromoDiscounts,
+  promoDiscountsInPeriod,
   dailySupport,
 } from './repositories/daily-report.ts';
 
@@ -289,8 +289,8 @@ describe('dailyPaidOrders', () => {
     const row = items.find((i) => i.shortId === order.shortId);
 
     expect(row).toMatchObject({ amountKopecks: 228_500, discountKopecks: 43_900 + 8_780 });
-    expect(await dailyPromoDiscounts(db, RANGE)).toEqual({ orders: 1, kopecks: 43_900 });
-    expect(await dailyPromoDiscounts(db, EMPTY_RANGE)).toEqual({ orders: 0, kopecks: 0 });
+    expect(await promoDiscountsInPeriod(db, RANGE)).toEqual({ orders: 1, kopecks: 43_900 });
+    expect(await promoDiscountsInPeriod(db, EMPTY_RANGE)).toEqual({ orders: 0, kopecks: 0 });
   });
 
   it('потолок списка не прячет общее число', async () => {

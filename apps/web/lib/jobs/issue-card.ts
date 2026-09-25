@@ -633,10 +633,13 @@ async function markOrderFailed(
     facts: [
       { label: 'Заказ', value: shortId },
       { label: 'Причина', value: reason },
-      // Персоналу — знать, что клиент уже предупреждён и чего от него ждать.
+      // Персоналу — знать, будет ли клиент предупреждён. Это НАМЕРЕНИЕ, а не
+      // факт: сообщение уходит после тревоги (у клиентского бота нет короткого
+      // поводка, и зависшая отправка задержала бы тревогу). Недоставку
+      // сообщает отдельная тревога ниже.
       {
         label: 'Клиенту',
-        value: client && transitioned ? 'отправлено сообщение о задержке' : 'не писали',
+        value: client && transitioned ? 'пишем о задержке в Telegram' : 'не писали',
       },
     ],
     action: { text: 'разобрать и выдать вручную', path: `/admin/orders/${shortId}` },
@@ -663,20 +666,29 @@ async function markOrderFailed(
  */
 async function notifyClientIssueFailed(userId: string, shortId: string): Promise<void> {
   const telegramId = await resolveTelegramIdByUserId(userId);
-  if (!telegramId) {
-    // Оплата без привязки Telegram невозможна (`TelegramLinkRequiredError`),
-    // так что это сбой чтения, а не веб-клиент. Лог — след для персонала.
-    log.warn({ event: 'job.issue_card.failure_notice.no_telegram', shortId });
-    return;
-  }
-  // Number() без потери точности: Telegram гарантирует id в пределах 52 бит.
-  const delivered = await sendSafely(
-    Number(telegramId),
-    cardIssueFailedClientText(shortId),
-    0,
-    buildSupportHintKeyboard(),
-  );
-  log.info({ event: 'job.issue_card.failure_notice', shortId, delivered });
+  // Оплата без привязки Telegram невозможна (`TelegramLinkRequiredError`), так
+  // что пустой telegramId — сбой чтения, а не веб-клиент.
+  const delivered = telegramId
+    ? // Number() без потери точности: Telegram гарантирует id в пределах 52 бит.
+      await sendSafely(
+        Number(telegramId),
+        cardIssueFailedClientText(shortId),
+        0,
+        buildSupportHintKeyboard(),
+      )
+    : false;
+  log.info({ event: 'job.issue_card.failure_notice', shortId, delivered, hasTelegram: telegramId !== null });
+  if (delivered) return;
+
+  // Тревога выше обещала «пишем клиенту». Не дошло (заблокировал бота, 400/5xx,
+  // не прочитался telegram_id) — персонал обязан это знать, иначе он решит,
+  // что клиент предупреждён, и не напишет ему сам (ревью 2026-09-25).
+  await notifyOps(`Клиенту НЕ дошло сообщение о задержке выдачи — написать ему вручную.`, {
+    stream: 'critical',
+    title: 'Клиент не предупреждён о сбое выдачи',
+    facts: [{ label: 'Заказ', value: shortId }],
+    action: { text: 'связаться с клиентом', path: `/admin/orders/${shortId}` },
+  });
 }
 
 /**

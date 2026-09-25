@@ -155,10 +155,20 @@ export default async function PanelOrderPage({
                 цена, скидки (промокод, баллы) и то, что реально просили у
                 клиента. Без средних строк разница между чеком и поступлением
                 выглядит недоплатой (тикет 05 аудита CRM). */}
-            {detail.promo ? (
+            {detail.promo?.live ? (
               <>
                 <dt>{PANEL_DISCOUNT_TEXT.promo(detail.promo.code)}</dt>
                 <dd>−{formatKopecks(detail.promo.discountKopecks)}</dd>
+              </>
+            ) : null}
+            {/* Право вернули, а счёт уже был со скидкой — без этой строки
+                «итого больше оплаченного» снова читалось бы недоплатой. */}
+            {detail.promo && detail.promo.status === 'released' ? (
+              <>
+                <dt>{PANEL_DISCOUNT_TEXT.promo(detail.promo.code)}</dt>
+                <dd className="panel-muted">
+                  {PANEL_DISCOUNT_TEXT.promoReturned(formatKopecks(detail.promo.discountKopecks))}
+                </dd>
               </>
             ) : null}
             {/* По ЖИВОМУ списанию, а не по `status !== 'released'`: у
@@ -170,8 +180,13 @@ export default async function PanelOrderPage({
               </>
             ) : null}
             {/* Сумма реального счёта, а не вычитание на экране: число обязано
-                совпадать с таблицей платежей ниже. Счёта нет — строки нет. */}
-            {(detail.promo || detail.bonus?.live) && invoicedKopecks !== null ? (
+                совпадать с таблицей платежей ниже. Счёта нет — строки нет;
+                счёт равен цене и скидок нет — тоже нет (заказ без скидок
+                выглядит как раньше). */}
+            {invoicedKopecks !== null &&
+            (detail.promo !== null ||
+              detail.bonus !== null ||
+              invoicedKopecks !== order.amountRubKopecks) ? (
               <>
                 <dt>{PANEL_BONUS_TEXT.invoiced}</dt>
                 <dd>

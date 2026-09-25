@@ -447,12 +447,12 @@ export {
   dailyAudience,
   dailyOrderFlow,
   dailyPaidOrders,
-  dailyPromoDiscounts,
+  promoDiscountsInPeriod,
   dailySupport,
   type DailyAudience,
   type DailyOrderFlow,
   type DailyPaidOrder,
-  type DailyPromoDiscounts,
+  type PromoDiscounts,
   type DailySupport,
 } from './daily-report.ts';
 

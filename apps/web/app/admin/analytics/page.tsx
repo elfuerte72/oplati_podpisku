@@ -4,7 +4,7 @@ import Link from 'next/link';
 import {
   activeSubjectsByDay,
   catalogClicksByService,
-  dailyPromoDiscounts,
+  promoDiscountsInPeriod,
   funnelByPeriod,
   getDb,
   revenueByDay,
@@ -80,7 +80,7 @@ export default async function PanelAnalyticsPage({
     revenueSummary(db, range),
     // Та же выборка, что у утреннего отчёта в «Отчётах» группы: одно
     // определение «скидки по промокодам за период», не два (тикет 05).
-    dailyPromoDiscounts(db, range),
+    promoDiscountsInPeriod(db, range),
     funnelByPeriod(db, range),
     topServicesByPaidOrders(db, range),
     catalogClicksByService(db, range),
