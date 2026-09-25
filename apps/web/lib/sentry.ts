@@ -43,7 +43,7 @@ const PII_KEY_RE =
  * заказов, по которым его и разбирают.
  */
 const BODY_KEY_RE = new RegExp(
-  `${PII_KEY_RE.source}|^(code|totp|otp|hash|phone_?number|username|first_?name|last_?name|question|comment)$`,
+  `${PII_KEY_RE.source}|^(code|totp|otp|hash|phone_?number|vcard|username|first_?name|last_?name|question|comment)$`,
   'i',
 );
 
@@ -183,6 +183,12 @@ function scrubBotToken(url: string): string {
 }
 
 /**
+ * Адрес: схема (`https://`, `app://`) или путь от корня (`/cabinet`, в том числе
+ * имя транзакции `GET /cabinet`). Селектор вроде `button#pay` сюда не попадает.
+ */
+const LOOKS_LIKE_URL_RE = /^(?:[a-z][a-z0-9+.-]*:\/\/|(?:[A-Z]+ )?\/)/i;
+
+/**
  * Тот же денилист для строки запроса внутри полного URL — плюс токен в пути и
  * ФРАГМЕНТ целиком.
  *
@@ -196,7 +202,10 @@ function scrubBotToken(url: string): string {
  */
 function scrubUrl(url: string): string {
   const withoutToken = scrubBotToken(url);
-  const hashAt = withoutToken.indexOf('#');
+  // Фрагмент режем только у того, что похоже на адрес: `scrubUrl` проходит и по
+  // КАЖДОМУ строковому атрибуту спана, а там CSS-селекторы (`button#pay` в
+  // `lcp.element`, `ui.interaction.*`) — терять их незачем.
+  const hashAt = LOOKS_LIKE_URL_RE.test(withoutToken) ? withoutToken.indexOf('#') : -1;
   const base = hashAt === -1 ? withoutToken : withoutToken.slice(0, hashAt);
   const fragment = hashAt === -1 ? '' : '#[REDACTED]';
   const cut = base.indexOf('?');
@@ -330,6 +339,11 @@ function scrubEventEnvelope(event: {
           )
         ) {
           headers[key] = '[REDACTED]';
+        } else if (/^referer$/i.test(key) && typeof headers[key] === 'string') {
+          // `Referer` несёт адрес ПРЕДЫДУЩЕЙ страницы целиком: внутри сайта это
+          // `/admin/orders?q=<почта или телефон клиента>` из поиска панели, и
+          // проверка по имени заголовка его пропускала (ревью 2026-09-25).
+          headers[key] = scrubUrl(headers[key]);
         }
       }
     }
@@ -382,6 +396,12 @@ function scrubEventEnvelope(event: {
   if (event.exception?.values) {
     for (const value of event.exception.values) {
       if (typeof value.value === 'string') value.value = scrubText(value.value);
+      // Кадр встроенного скрипта (`self.__next_f.push` и т.п.) WebView
+      // подписывает адресом ДОКУМЕНТА — вместе с фрагментом initData Mini App.
+      for (const frame of value.stacktrace?.frames ?? []) {
+        if (typeof frame.filename === 'string') frame.filename = scrubUrl(frame.filename);
+        if (typeof frame.abs_path === 'string') frame.abs_path = scrubUrl(frame.abs_path);
+      }
     }
   }
 }

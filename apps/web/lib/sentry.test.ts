@@ -603,9 +603,51 @@ describe('фрагмент адреса: initData Mini App', () => {
     expect(tx.contexts.trace.data['url.full']).not.toContain('tgWebAppData');
   });
 
+  it('РЕГРЕСС: и из кадров стека — WebView подписывает встроенный скрипт адресом документа', () => {
+    const out = beforeSend(
+      makeEvent({
+        exception: {
+          values: [
+            {
+              type: 'TypeError',
+              value: 'x',
+              stacktrace: { frames: [{ filename: MINIAPP_URL, abs_path: MINIAPP_URL }] },
+            },
+          ],
+        },
+      }),
+    );
+    expect(JSON.stringify(out?.exception)).not.toContain('tgWebAppData');
+  });
+
+  it('CSS-селектор в атрибуте спана — не адрес, решётка остаётся', () => {
+    const tx = beforeSendTransaction({
+      transaction: '/cabinet',
+      spans: [{ data: { 'lcp.element': 'body > button#pay' } }],
+    } as never) as unknown as { spans: { data: Record<string, string> }[] };
+    expect(tx.spans[0]?.data['lcp.element']).toBe('body > button#pay');
+  });
+
   it('адрес без фрагмента не меняется', () => {
     const out = beforeSend(makeEvent({ request: { url: 'https://www.oplatishka.com/cabinet' } }));
     expect(out?.request?.url).toBe('https://www.oplatishka.com/cabinet');
+  });
+});
+
+describe('заголовок Referer', () => {
+  it('РЕГРЕСС: поиск панели в адресе предыдущей страницы вычищается', () => {
+    // Внутри сайта `Referer` несёт `/admin/orders?q=<почта>`, а проверка по
+    // имени заголовка его пропускала (ревью 2026-09-25).
+    const out = beforeSend(
+      makeEvent({
+        request: {
+          headers: { Referer: 'https://admin.oplatishka.com/admin/orders?q=ivan%40mail.ru&s=live' },
+        },
+      }),
+    );
+    const referer = String((out?.request?.headers as Record<string, string>).Referer);
+    expect(referer).not.toContain('ivan');
+    expect(referer).toContain('/admin/orders?');
   });
 });
 
@@ -617,7 +659,11 @@ describe('тело запроса: поля, которые реально к н
           request: {
             data: JSON.stringify({
               message: undefined,
-              contact: { phone_number: '+79991234567', user_id: 42 },
+              contact: {
+                phone_number: '+79991234567',
+                user_id: 42,
+                vcard: 'BEGIN:VCARD\nTEL:+79990001122\nEND:VCARD',
+              },
               from: { id: 42, username: 'ivanp', first_name: 'Иван', last_name: 'П' },
               question: 'сколько заказов у ivan@mail.ru',
               comment: 'выдал карту Ивану',
@@ -628,7 +674,7 @@ describe('тело запроса: поля, которые реально к н
       )?.request?.data,
     );
 
-    for (const secret of ['+79991234567', 'ivanp', 'Иван', 'ivan@mail.ru', 'выдал карту']) {
+    for (const secret of ['+79991234567', '+79990001122', 'ivanp', 'Иван', 'ivan@mail.ru', 'выдал карту']) {
       expect(body).not.toContain(secret);
     }
     // Номер заказа остаётся — по нему событие и разбирают.
